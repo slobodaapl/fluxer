@@ -58,16 +58,18 @@ export function createVoiceActivityGate(
 	config: VoiceActivityGateConfig,
 	onLevel: (level: VoiceInputLevel) => void,
 	onFailure: () => void,
+	activityOutput = false,
 ): AudioWorkletNode {
 	const node = new AudioWorkletNode(context, 'fluxer-voice-gate', {
 		numberOfInputs: 1,
-		numberOfOutputs: 1,
-		outputChannelCount: [channelCount],
+		numberOfOutputs: activityOutput ? 2 : 1,
+		outputChannelCount: activityOutput ? [channelCount, 1] : [channelCount],
 		channelCount,
 		channelCountMode: 'explicit',
 		channelInterpretation: 'speakers',
 		processorOptions: {
 			...config,
+			activityOutput,
 			channelCount,
 			minRms: LOCAL_AUTO_MIN_RMS,
 			maxRms: LOCAL_MAX_RMS,

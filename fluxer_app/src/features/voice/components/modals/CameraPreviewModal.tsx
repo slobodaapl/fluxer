@@ -51,7 +51,6 @@ import {VOICE_CHANNEL_CAMERA_USER_LIMIT} from '@fluxer/constants/src/LimitConsta
 import {msg} from '@lingui/core/macro';
 import {Trans, useLingui} from '@lingui/react/macro';
 import {CameraIcon, ImageIcon} from '@phosphor-icons/react';
-import {clsx} from 'clsx';
 import type {LocalParticipant, LocalVideoTrack, Room} from 'livekit-client';
 import {createLocalVideoTrack, RoomEvent} from 'livekit-client';
 import {observer} from 'mobx-react-lite';
@@ -102,6 +101,7 @@ interface CameraPreviewConfig {
 	videoDeviceId: string;
 	backgroundImageId: string;
 	backgroundBlurStrength: number;
+	mirrorCamera: boolean;
 	cameraResolution: 'low' | 'medium' | 'high';
 	videoFrameRate: number;
 }
@@ -168,6 +168,7 @@ function hasSameCameraPreviewTopology(previous: CameraPreviewConfig | null, next
 	return (
 		previous != null &&
 		previous.videoDeviceId === next.videoDeviceId &&
+		previous.mirrorCamera === next.mirrorCamera &&
 		previous.cameraResolution === next.cameraResolution &&
 		previous.videoFrameRate === next.videoFrameRate
 	);
@@ -244,6 +245,7 @@ interface CameraPreviewTrackSetupArgs {
 	videoElement: HTMLVideoElement;
 	effectiveVideoDeviceId: string | null;
 	backgroundImageId: string;
+	mirrorCamera: boolean;
 	cameraResolution: 'low' | 'medium' | 'high';
 	videoFrameRate: number;
 	isCurrentInitialization: () => boolean;
@@ -293,7 +295,10 @@ async function setupPreviewTrackAndProcessor(args: CameraPreviewTrackSetupArgs):
 	args.onResolutionNegotiated(negotiatedResolution);
 	let processor: CameraPreviewProcessor | null = null;
 	try {
-		processor = await applyBackgroundProcessor(track, {backgroundImageId: args.backgroundImageId});
+		processor = await applyBackgroundProcessor(track, {
+			backgroundImageId: args.backgroundImageId,
+			mirrorCamera: args.mirrorCamera,
+		});
 	} catch (error) {
 		logger.warn('Camera background processing failed; falling back to basic camera', {error});
 	}
@@ -489,6 +494,7 @@ const CameraPreviewModalContent = observer((props: CameraPreviewModalProps) => {
 				videoDeviceId: effectiveVideoDeviceId ?? 'default',
 				backgroundImageId,
 				backgroundBlurStrength: voiceSettings.backgroundBlurStrength,
+				mirrorCamera: voiceSettings.mirrorCamera,
 				cameraResolution: voiceSettings.getCameraResolution(),
 				videoFrameRate: voiceSettings.getVideoFrameRate(),
 			};
@@ -506,7 +512,10 @@ const CameraPreviewModalContent = observer((props: CameraPreviewModalProps) => {
 			const activeProcessor = processorRef.current;
 			if (activeTrack && activeProcessor && hasSameCameraPreviewTopology(prevConfigRef.current, currentConfig)) {
 				try {
-					const updatedProcessor = await applyBackgroundProcessor(activeTrack, {backgroundImageId});
+					const updatedProcessor = await applyBackgroundProcessor(activeTrack, {
+						backgroundImageId,
+						mirrorCamera: currentConfig.mirrorCamera,
+					});
 					if (!isCurrentInitialization()) {
 						return;
 					}
@@ -527,6 +536,7 @@ const CameraPreviewModalContent = observer((props: CameraPreviewModalProps) => {
 				videoElement,
 				effectiveVideoDeviceId,
 				backgroundImageId,
+				mirrorCamera: currentConfig.mirrorCamera,
 				cameraResolution: voiceSettings.getCameraResolution(),
 				videoFrameRate: voiceSettings.getVideoFrameRate(),
 				isCurrentInitialization,
@@ -650,6 +660,7 @@ const CameraPreviewModalContent = observer((props: CameraPreviewModalProps) => {
 			videoDeviceId: voiceSettings.videoDeviceId,
 			backgroundImageId,
 			backgroundBlurStrength: voiceSettings.backgroundBlurStrength,
+			mirrorCamera: voiceSettings.mirrorCamera,
 			cameraResolution: voiceSettings.getCameraResolution(),
 			videoFrameRate: voiceSettings.getVideoFrameRate(),
 		};
@@ -663,13 +674,14 @@ const CameraPreviewModalContent = observer((props: CameraPreviewModalProps) => {
 		VoiceSettings.videoDeviceId,
 		VoiceSettings.backgroundImageId,
 		VoiceSettings.backgroundBlurStrength,
+		VoiceSettings.mirrorCamera,
 		VoiceSettings.getCameraResolution(),
 		VoiceSettings.getVideoFrameRate(),
 		voiceBackgroundsAvailable,
 	]);
 	const voiceSettings = VoiceSettings;
 	const effectiveVideoDeviceId = resolveEffectiveDeviceId(voiceSettings.videoDeviceId, videoDevices) ?? 'default';
-	const previewVideoClassName = clsx(styles.video, voiceSettings.mirrorCamera && styles.mirroredVideo);
+	const previewVideoClassName = styles.video;
 	const videoDeviceOptions =
 		videoDevices.length > 0
 			? videoDevices.map((device) => ({

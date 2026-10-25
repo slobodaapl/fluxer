@@ -1,0 +1,21 @@
+Streamr combines modified third-party inference implementations.
+
+re-use-rs: https://github.com/altunenes/re-use-rs
+Revision 88638f3e137848a50d6aca6906530ed2b2b72acc.
+Changes include AVX2 scan, stateful Vulkan execution and Streamr composition.
+The included reuse-LICENSE.txt applies to this runner, not the NVIDIA weights.
+
+VoxLock: https://github.com/arbazsiddiqui/voxlock
+Revision 1348686e7bbb74573daadcd7c33ea654977a501f.
+Rust ports preserve streaming padding, recurrent state, overlap-add, window
+normalization and waveform gain. Vulkan execution groups band projections
+and runs recurrent steps in persistent workgroups. CPU exports lower
+InstanceNormalization to per-instance primitive operations.
+VoxLock builds on REAL-TSE, WeSep and WeSpeaker; see upstream acknowledgements.
+The included VoxLock-LICENSE.txt contains its Apache-2.0 terms.
+
+Tract linalg 0.21.4: AVX-512 dispatch disabled in the local copy.
+Included under the Apache-2.0 option of its dual license.
+
+NVIDIA Real-time RE-USE model weights have separate noncommercial research
+and education terms in streamr-models/REUSE-MODEL-LICENSE.txt.

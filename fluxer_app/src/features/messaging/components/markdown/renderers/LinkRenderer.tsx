@@ -20,7 +20,6 @@ import Guilds from '@app/features/guild/state/Guilds';
 import {COPY_LINK_DESCRIPTOR, OPEN_LINK_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import * as InviteCommands from '@app/features/invite/commands/InviteCommands';
 import * as InviteUtils from '@app/features/invite/utils/InviteUtils';
-import {LinkDestinationTooltip} from '@app/features/messaging/components/LinkDestinationTooltip';
 import jumpLinkStyles from '@app/features/messaging/components/markdown/renderers/MessageJumpLink.module.css';
 import {
 	isRestrictedInlineContext,
@@ -55,6 +54,7 @@ import {currentInstanceTarget} from '@app/features/platform/transport/InstanceHT
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import StreamerMode from '@app/features/streamer_mode/state/StreamerMode';
 import * as ThemeCommands from '@app/features/theme/commands/ThemeCommands';
+import linkRendererStyles from '@app/features/theme/styles/LinkRenderer.module.css';
 import markupStyles from '@app/features/theme/styles/Markup.module.css';
 import * as ThemeUtils from '@app/features/theme/utils/ThemeUtils';
 import TrustedDomain from '@app/features/trusted_domain/state/TrustedDomain';
@@ -67,6 +67,8 @@ import {modal} from '@app/features/ui/commands/ModalCommands';
 import * as TextCopyCommands from '@app/features/ui/commands/TextCopyCommands';
 import FocusRing from '@app/features/ui/focus_ring/FocusRing';
 import {CaretRightIcon} from '@app/features/ui/icons/DirectionalIcons';
+import MobileLayout from '@app/features/ui/state/MobileLayout';
+import {Tooltip} from '@app/features/ui/tooltip/Tooltip';
 import {APP_PROTOCOL_PREFIX, APP_PROTOCOL_SCHEME, isAppProtocolUrl} from '@app/features/ui/utils/AppProtocol';
 import {openExternalUrl} from '@app/features/ui/utils/NativeUtils';
 import {
@@ -81,7 +83,7 @@ import {isProbablyAValidSnowflake} from '@fluxer/snowflake/src/SnowflakeUtils';
 import type {I18n} from '@lingui/core';
 import {msg} from '@lingui/core/macro';
 import {useLingui} from '@lingui/react';
-import {ChatTeardropIcon, LockIcon} from '@phosphor-icons/react';
+import {ChatTeardropIcon, LockIcon, WarningIcon} from '@phosphor-icons/react';
 import {clsx} from 'clsx';
 import {observer} from 'mobx-react-lite';
 import type React from 'react';
@@ -916,7 +918,8 @@ export const LinkRenderer = observer(function LinkRenderer({
 	const shouldShowAccessDeniedModal = Boolean(jumpTarget && !jumpChannel);
 	let isInternal = false;
 	let handleClick: ((e: React.MouseEvent) => void) | undefined;
-	let isUntrustedExternalDestination = false;
+	let isExternalDestination = false;
+	let isTrustedExternalDestination = false;
 	if (userProfileId) {
 		handleClick = (event) => {
 			event.preventDefault();
@@ -1057,7 +1060,8 @@ export const LinkRenderer = observer(function LinkRenderer({
 			}
 			if (!isInternal && !inviteCode) {
 				const isTrusted = TrustedDomain.isTrustedDomain(parsed.hostname);
-				isUntrustedExternalDestination = !isTrusted;
+				isExternalDestination = true;
+				isTrustedExternalDestination = isTrusted;
 				if (!isTrusted) {
 					handleClick = (e) => {
 						e.preventDefault();
@@ -1078,7 +1082,7 @@ export const LinkRenderer = observer(function LinkRenderer({
 	}
 	const href = AttachmentUrlRefresher.fresh(url);
 	const warmAttachmentUrl = () => AttachmentUrlRefresher.warm(url);
-	const showDestinationTooltip = text != null;
+	const showDestinationTooltip = isExternalDestination && text != null;
 	const linkElement = (
 		<FocusRing key={id} offset={-2} data-flx="messaging.markdown.renderers.link-renderer.focus-ring--2">
 			<a
@@ -1109,13 +1113,30 @@ export const LinkRenderer = observer(function LinkRenderer({
 	if (!showDestinationTooltip) {
 		return linkElement;
 	}
+	const destinationTooltipText = MobileLayout.enabled
+		? url
+		: () => (
+				<span className={linkRendererStyles.destination} data-flx="messaging.markdown.renderers.link-renderer.span">
+					{!isTrustedExternalDestination && (
+						<WarningIcon
+							size={16}
+							weight="fill"
+							className={linkRendererStyles.destinationWarningIcon}
+							data-flx="messaging.markdown.renderers.link-renderer.warning-icon"
+						/>
+					)}
+					<span data-flx="messaging.markdown.renderers.link-renderer.span--2">{url}</span>
+				</span>
+			);
 	return (
-		<LinkDestinationTooltip
-			url={url}
-			untrusted={isUntrustedExternalDestination}
-			data-flx="messaging.markdown.renderers.link-renderer.link-destination-tooltip"
+		<Tooltip
+			text={destinationTooltipText}
+			type="normal"
+			position="bottom"
+			maxWidth="xl"
+			data-flx="messaging.markdown.renderers.link-renderer.tooltip.normal"
 		>
 			{linkElement}
-		</LinkDestinationTooltip>
+		</Tooltip>
 	);
 });

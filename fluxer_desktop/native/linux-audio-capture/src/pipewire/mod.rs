@@ -3,5 +3,6 @@
 pub(crate) mod common;
 pub(crate) mod device_enum;
 pub(crate) mod event_loop;
+mod node_info;
 pub(crate) mod routing;
 pub(crate) mod stream_ops;

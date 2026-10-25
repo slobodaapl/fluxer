@@ -2,7 +2,6 @@
 
 import {ChannelHeaderIcon} from '@app/features/channel/components/channel_header_components/ChannelHeaderIcon';
 import type {Channel} from '@app/features/channel/models/Channel';
-import Channels from '@app/features/channel/state/Channels';
 import {NOTIFICATION_SETTINGS_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import * as ThreadCommands from '@app/features/threads/commands/ThreadCommands';
 import {ThreadBrowser, ThreadBrowserCreateButton} from '@app/features/threads/components/ThreadBrowser';
@@ -28,17 +27,11 @@ function isThreadBrowserParent(channel: Channel): boolean {
 	return TEXT_THREAD_PARENT_CHANNEL_TYPES.has(channel.type);
 }
 
-function resolveThreadBrowserParent(channel: Channel): Channel | null {
-	const parent = channel.isThread() && channel.parentId != null ? Channels.getChannel(channel.parentId) : channel;
-	return parent != null && isThreadBrowserParent(parent) ? parent : null;
-}
-
 export const ThreadsButton = observer(({channel}: {channel: Channel}) => {
 	const {i18n} = useLingui();
 	const {isOpen, openProps} = usePopout(`thread-browser-${channel.id}`);
 	const [sheetOpen, setSheetOpen] = useState(false);
-	const parent = resolveThreadBrowserParent(channel);
-	if (!ThreadGuilds.isActive(channel.guildId) || parent == null) return null;
+	if (!ThreadGuilds.isActive(channel.guildId) || !isThreadBrowserParent(channel)) return null;
 	if (MobileLayout.enabled) {
 		return (
 			<>
@@ -60,7 +53,7 @@ export const ThreadsButton = observer(({channel}: {channel: Channel}) => {
 					disablePadding
 					leadingAction={
 						<ThreadBrowserCreateButton
-							parent={parent}
+							parent={channel}
 							onClose={() => setSheetOpen(false)}
 							sheet
 							data-flx="threads.threads-button.thread-browser-create-button"
@@ -69,7 +62,7 @@ export const ThreadsButton = observer(({channel}: {channel: Channel}) => {
 					data-flx="threads.threads-button.bottom-sheet"
 				>
 					<ThreadBrowser
-						parent={parent}
+						parent={channel}
 						onClose={() => setSheetOpen(false)}
 						sheet
 						data-flx="threads.threads-button.thread-browser--sheet"
@@ -83,7 +76,7 @@ export const ThreadsButton = observer(({channel}: {channel: Channel}) => {
 			{...openProps}
 			position="bottom-end"
 			render={({onClose}) => (
-				<ThreadBrowser parent={parent} onClose={onClose} data-flx="threads.threads-button.thread-browser" />
+				<ThreadBrowser parent={channel} onClose={onClose} data-flx="threads.threads-button.thread-browser" />
 			)}
 			subscribeTo="THREAD_BROWSER_OPEN"
 			data-flx="threads.threads-button.popout"

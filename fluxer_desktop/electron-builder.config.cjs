@@ -1193,6 +1193,9 @@ async function readAsarEntry(asarPath, entryPath) {
 }
 
 async function afterPack(context) {
+	await require('./scripts/streamr-package.cjs').packageStreamr(
+		resolveAppDir(context), packagedResourcesDir(context), context.electronPlatformName, normalizeArch(context.arch),
+	);
 	if (context.electronPlatformName === 'linux') {
 		if (!customLinuxElectron) {
 			throw new Error('Custom Electron was not configured before Linux packaging.');

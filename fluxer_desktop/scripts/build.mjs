@@ -973,6 +973,7 @@ async function build() {
 	}
 	console.log(`Building Electron app (${isProduction ? 'production' : 'development'})...`);
 	buildNativeAddons();
+	if (!skipNative) await (await import('./streamr-native.mjs')).buildStreamr();
 	if (!options.useSharedRenderer) {
 		buildRendererBundle();
 	}

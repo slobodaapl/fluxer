@@ -90,6 +90,7 @@ pub(crate) struct PortRecord {
 #[derive(Default)]
 pub(crate) struct InventorySnapshot {
     pub(crate) nodes: HashMap<u32, PropMap>,
+    pub(crate) pending_node_info: HashSet<u32>,
     pub(crate) clients: HashMap<u32, PropMap>,
     pub(crate) ports: HashMap<u32, PortRecord>,
 }

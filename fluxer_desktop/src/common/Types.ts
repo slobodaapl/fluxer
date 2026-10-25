@@ -250,7 +250,10 @@ export type TrayActionPayload =
 			action: 'toggle-custom-css';
 	  };
 
+import type {StreamrAPI} from '@fluxer/desktop_ipc/src/StreamrContract';
+
 export interface ElectronAPI {
+	streamr?: StreamrAPI;
 	platform: NodeJS.Platform;
 	buildChannel: BuildChannel;
 	localDevelopmentInstanceUrl: string | null;

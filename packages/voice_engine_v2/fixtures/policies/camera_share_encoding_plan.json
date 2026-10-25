@@ -1,5 +1,16 @@
 [
 	{
+		"name": "mirror toggle updates in place",
+		"input": {
+			"published": {"deviceId": "camera-1", "width": 1280, "height": 720, "mirror": false},
+			"desired": null,
+			"update": {"mirror": true}
+		},
+		"expectedAction": "updateEncoding",
+		"expectedReason": "effectsOrEncodingChanged",
+		"expectedMirror": true
+	},
+	{
 		"name": "background mode and blur strength update in place",
 		"input": {
 			"published": {"deviceId": "camera-1", "width": 1280, "height": 720, "backgroundMode": "none"},
@@ -46,9 +57,9 @@
 	{
 		"name": "identical options is a no-op",
 		"input": {
-			"published": {"deviceId": "camera-1", "width": 1280, "height": 720},
+			"published": {"deviceId": "camera-1", "width": 1280, "height": 720, "mirror": true},
 			"desired": null,
-			"update": {"width": 1280, "height": 720}
+			"update": {"width": 1280, "height": 720, "mirror": true}
 		},
 		"expectedAction": "noop",
 		"expectedReason": "unchanged"
@@ -58,7 +69,7 @@
 		"input": {
 			"published": null,
 			"desired": null,
-			"update": {"backgroundMode": "blur"}
+			"update": {"mirror": true}
 		},
 		"expectedAction": "reject",
 		"expectedReason": "missingPublishedCamera",

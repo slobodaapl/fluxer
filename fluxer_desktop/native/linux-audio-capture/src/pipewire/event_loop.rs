@@ -23,6 +23,7 @@ use super::device_enum::{
     DirectGlobalAddedArgs, GlobalAddedContext, handle_direct_global_added,
     handle_direct_global_removed, handle_global_added, handle_global_removed,
 };
+use super::node_info::{NodeWatches, watch_node};
 use super::routing::{
     DirectRoutingState, RoutingState, clear_pinned_capture_targets, recompute_direct_links,
     recompute_routing, refresh_direct_sink_input_ports,
@@ -64,6 +65,8 @@ fn install_bridge_registry(
     core: &pw::core::CoreRc,
     worker: &BridgeWorkerState,
 ) -> pw::registry::Listener {
+    let node_watches = NodeWatches::default();
+    let removed_node_watches = node_watches.clone();
     let inv_for_global = worker.snapshot.clone();
     let link_snapshot_for_global = worker.owned_link_snapshot.clone();
     let state_for_global = worker.state.clone();
@@ -93,8 +96,32 @@ fn install_bridge_registry(
                     sink_node_name: SINK_NODE_NAME,
                 },
             );
+            let inventory = inv_for_global.clone();
+            let state = state_for_global.clone();
+            let core = core_for_global.clone();
+            let owned = owned_for_global.clone();
+            let links = link_snapshot_for_global.clone();
+            let metadata = metadata_for_global.clone();
+            watch_node(
+                obj,
+                &registry_for_global,
+                &inv_for_global,
+                &node_watches,
+                move || {
+                    recompute_routing(
+                        &inventory,
+                        &state,
+                        &core,
+                        &owned,
+                        &links,
+                        &metadata,
+                        SINK_NODE_NAME,
+                    );
+                },
+            );
         })
         .global_remove(move |id| {
+            removed_node_watches.borrow_mut().remove(&id);
             let changed = handle_global_removed(id, &inv_rm, &state_rm);
             if changed && state_rm.borrow().active_rule.is_some() {
                 recompute_routing(
@@ -305,6 +332,8 @@ fn install_direct_registry(
     runtime: &std::rc::Rc<DirectStreamRuntime>,
     metadata_watchers: &std::rc::Rc<std::cell::RefCell<Vec<MetadataWatch>>>,
 ) -> pw::registry::Listener {
+    let node_watches = NodeWatches::default();
+    let removed_node_watches = node_watches.clone();
     let inv_added = inventory.clone();
     let state_added = state.clone();
     let core_added = core.clone();
@@ -340,8 +369,16 @@ fn install_direct_registry(
             if changed {
                 recompute_direct_streams(&core_added, &inv_added, &state_added, &runtime_added);
             }
+            let inventory = inv_added.clone();
+            let state = state_added.clone();
+            let core = core_added.clone();
+            let runtime = runtime_added.clone();
+            watch_node(obj, &registry_added, &inv_added, &node_watches, move || {
+                recompute_direct_streams(&core, &inventory, &state, &runtime);
+            });
         })
         .global_remove(move |id| {
+            removed_node_watches.borrow_mut().remove(&id);
             let changed = handle_direct_global_removed(id, &inv_rm, &state_rm, &runtime_rm);
             if changed {
                 recompute_direct_streams(&core_rm, &inv_rm, &state_rm, &runtime_rm);

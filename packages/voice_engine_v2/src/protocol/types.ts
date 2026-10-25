@@ -176,6 +176,7 @@ export interface VoiceEngineV2CameraOptions {
 	frameRate?: number;
 	codec?: VoiceEngineV2VideoCodec;
 	maxBitrateBps?: number;
+	mirror?: boolean;
 	backgroundMode?: VoiceEngineV2CameraBackgroundMode;
 	backgroundBlurStrength?: number;
 	backgroundCustomMediaPath?: string;
@@ -190,6 +191,7 @@ export interface VoiceEngineV2CameraEncodingOptions {
 	frameRate?: number;
 	codec?: VoiceEngineV2VideoCodec;
 	maxBitrateBps?: number;
+	mirror?: boolean;
 	backgroundMode?: VoiceEngineV2CameraBackgroundMode;
 	backgroundBlurStrength?: number;
 	backgroundCustomMediaPath?: string;

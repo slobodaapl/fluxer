@@ -1,0 +1,29 @@
+[package]
+name = "streamr-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-or-later"
+
+[workspace]
+members = ["."]
+exclude = ["vendor/reuse", "vendor/tract-linalg"]
+
+[features]
+default = ["vulkan"]
+vulkan = ["reuse-rs/vulkan"]
+autotune = ["vulkan", "reuse-rs/tuned"]
+
+[dependencies]
+eyre = "0.6"
+rayon = "1.12"
+reuse-rs = { path = "vendor/reuse", features = ["streamr"] }
+
+[dev-dependencies]
+hound = "3.5"
+
+[patch.crates-io]
+tract-linalg = { path = "vendor/tract-linalg" }
+
+[profile.release]
+opt-level = 3

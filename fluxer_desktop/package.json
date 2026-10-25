@@ -12,7 +12,10 @@
 		"build": "node scripts/build.mjs",
 		"generate:windows-badges": "electron scripts/generate-windows-badges.mjs",
 		"set-channel": "../tools/ci/run.sh build-desktop --step set_build_channel",
-		"typecheck": "pnpm set-channel && tsc --noEmit"
+		"typecheck": "pnpm set-channel && tsc --noEmit",
+		"streamr:build": "node scripts/streamr-native.mjs",
+		"test:streamr": "node --test src/main/streamr/*.test.cjs",
+		"test:streamr:native": "cd native/streamr && cargo test --release --locked"
 	},
 	"dependencies": {
 		"@fluxer/constants": "workspace:*",

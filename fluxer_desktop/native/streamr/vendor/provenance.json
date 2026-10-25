@@ -1,0 +1,31 @@
+{
+  "reuse": {
+    "repository": "https://github.com/altunenes/re-use-rs",
+    "revision": "88638f3e137848a50d6aca6906530ed2b2b72acc",
+    "changes": [
+      "AVX2 scan",
+      "stateful Vulkan RE-USE",
+      "VoxLock FP32 Vulkan",
+      "native Streamr composition"
+    ]
+  },
+  "VoxLock": {
+    "repository": "https://github.com/arbazsiddiqui/voxlock",
+    "revision": "1348686e7bbb74573daadcd7c33ea654977a501f",
+    "changes": [
+      "Rust waveform and Vulkan separator ports",
+      "per-instance normalization lowering for Tract export"
+    ]
+  },
+  "WeSpeaker": {
+    "repository": "https://github.com/wenet-e2e/wespeaker",
+    "revision": "8f53b6485d9f88a207bd17e7f8dba899495ec794",
+    "use": "VoxLock speaker enrollment export"
+  },
+  "tract-linalg": {
+    "version": "0.21.4",
+    "changes": [
+      "disable AVX-512 dispatch"
+    ]
+  }
+}

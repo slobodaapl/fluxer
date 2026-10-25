@@ -45,6 +45,7 @@ import {
 } from '@app/features/voice/engine/voice_screen_share_manager/shared';
 import ActiveScreenShareSource from '@app/features/voice/state/ActiveScreenShareSource';
 import SoftwareEncoderWarning from '@app/features/voice/state/SoftwareEncoderWarning';
+import VoiceSettings from '@app/features/voice/state/VoiceSettings';
 import {
 	prepareHighFidelityScreenShareAudioTrack,
 	SCREEN_SHARE_AUDIO_PUBLISH_OPTIONS,
@@ -57,6 +58,7 @@ import {
 import {commitNativeAudioBridgeReplacement} from '@app/features/voice/utils/NativeAudioCaptureBridge';
 import {ScreenShareAudioCaptureError} from '@app/features/voice/utils/ScreenShareAudioCaptureError';
 import {ScreenShareRollbackIncompleteError} from '@app/features/voice/utils/ScreenShareRollbackIncompleteError';
+import {applyCameraMirrorProcessor} from '@app/features/voice/utils/VideoBackgroundProcessor';
 import {
 	createLocalAudioTrack,
 	createLocalVideoTrack,
@@ -100,6 +102,7 @@ interface EnforcedScreenSharePublish {
 
 interface ScreenShareReplacementSnapshot extends ScreenShareSourceSnapshot {
 	videoTrack: MediaStreamTrack;
+	videoHadProcessor: boolean;
 	audioPublication?: LocalTrackPublication;
 	audioTrack?: LocalAudioTrack;
 	audioMediaStreamTrack?: MediaStreamTrack;
@@ -249,30 +252,35 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		} else {
 			logger.error('Failed', {enabled, error});
 		}
-		const actual = participant.isScreenShareEnabled;
-		if (enabled && !actual) {
-			this.adapter.setStreamingPriorityInternal(false);
-			this.adapter.clearScreenShareKeepAliveSinkInternal();
+		try {
+			const actual = participant.isScreenShareEnabled;
+			if (enabled && !actual) {
+				this.adapter.setStreamingPriorityInternal(false);
+				this.adapter.clearScreenShareKeepAliveSinkInternal();
+			}
+			if (!actual) {
+				await this.adapter.cleanupLingeringScreenShareTracks(participant, stopCleanupSnapshot ?? undefined);
+			}
+		} catch (cleanupError) {
+			throw new ScreenShareRollbackIncompleteError([error, cleanupError]);
+		} finally {
+			settleScreenShareFailure({
+				adapter: this.adapter,
+				room,
+				participant,
+				actual: participant.isScreenShareEnabled,
+				applyState,
+				onInactiveAfterSync: null,
+				monitorEndOnActive: true,
+				playSound: !cancelled && playSound,
+				buildTransition: (actualNow) =>
+					buildScreenShareFailureTransition({
+						cancelled,
+						active: actualNow,
+						sourceType: actualNow ? this.adapter.getActiveScreenShareSourceTypeInternal() : null,
+					}),
+			});
 		}
-		if (!actual) {
-			await this.adapter.cleanupLingeringScreenShareTracks(participant, stopCleanupSnapshot ?? undefined);
-		}
-		settleScreenShareFailure({
-			adapter: this.adapter,
-			room,
-			participant,
-			actual,
-			applyState,
-			onInactiveAfterSync: null,
-			monitorEndOnActive: true,
-			playSound: !cancelled && playSound,
-			buildTransition: (actualNow) =>
-				buildScreenShareFailureTransition({
-					cancelled,
-					active: actualNow,
-					sourceType: actualNow ? this.adapter.getActiveScreenShareSourceTypeInternal() : null,
-				}),
-		});
 		if (!cancelled) throw error;
 	}
 
@@ -375,6 +383,7 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 				: undefined,
 		});
 		createdTracks.push(videoTrack);
+		await applyCameraMirrorProcessor(videoTrack);
 		let audioTrack: LocalAudioTrack | undefined;
 		if (audioDeviceId !== undefined) {
 			audioTrack = await createLocalAudioTrack({
@@ -516,29 +525,34 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		error: unknown,
 	): Promise<void> {
 		assert.ok(participant);
-		if (publishedTracks.length > 0) {
-			await Promise.allSettled(publishedTracks.map((track) => participant.unpublishTrack(track)));
-		}
-		createdTracks.forEach((track) => {
-			track.stop();
-		});
 		const cancelled = (error instanceof Error && error.name === 'AbortError') || isPermissionDeniedError(error);
-		settleScreenShareFailure({
-			adapter: this.adapter,
-			room,
-			participant,
-			actual: participant.isScreenShareEnabled,
-			applyState,
-			onInactiveAfterSync: null,
-			monitorEndOnActive: false,
-			playSound: false,
-			buildTransition: (actualNow) =>
-				buildScreenShareFailureTransition({
-					cancelled,
-					active: actualNow,
-					sourceType: actualNow ? this.adapter.getActiveScreenShareSourceTypeInternal() : null,
-				}),
-		});
+		try {
+			if (publishedTracks.length > 0) {
+				await Promise.allSettled(publishedTracks.map((track) => participant.unpublishTrack(track)));
+			}
+			createdTracks.forEach((track) => {
+				track.stop();
+			});
+		} catch (cleanupError) {
+			throw new ScreenShareRollbackIncompleteError([error, cleanupError]);
+		} finally {
+			settleScreenShareFailure({
+				adapter: this.adapter,
+				room,
+				participant,
+				actual: participant.isScreenShareEnabled,
+				applyState,
+				onInactiveAfterSync: null,
+				monitorEndOnActive: false,
+				playSound: false,
+				buildTransition: (actualNow) =>
+					buildScreenShareFailureTransition({
+						cancelled,
+						active: actualNow,
+						sourceType: actualNow ? this.adapter.getActiveScreenShareSourceTypeInternal() : null,
+					}),
+			});
+		}
 		if (!cancelled) {
 			logger.error('Failed to start device screen share', {
 				error,
@@ -862,7 +876,10 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		screenShareTrack: LocalVideoTrack,
 		publishOptions: TrackPublishOptions,
 	): ScreenShareReplacementSnapshot {
-		const sourceVideoTrack = screenShareTrack.mediaStream?.getVideoTracks()[0] ?? screenShareTrack.mediaStreamTrack;
+		const videoHadProcessor = screenShareTrack.getProcessor() != null;
+		const sourceVideoTrack =
+			screenShareTrack.mediaStream?.getVideoTracks()[0] ??
+			(videoHadProcessor ? undefined : screenShareTrack.mediaStreamTrack);
 		if (sourceVideoTrack?.readyState !== 'live') {
 			throw new Error('Active screen share has no live source video track to preserve');
 		}
@@ -878,6 +895,7 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		}
 		return {
 			videoTrack: sourceVideoTrack,
+			videoHadProcessor,
 			...(audioPublication ? {audioPublication} : {}),
 			...(localAudioTrack && sourceAudioTrack
 				? {audioTrack: localAudioTrack, audioMediaStreamTrack: sourceAudioTrack}
@@ -932,6 +950,14 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		const sourceNeedsReplacement = activeVideoTrack !== snapshot.videoTrack;
 		if (sourceNeedsReplacement) {
 			await screenShareTrack.stageTrackReplacement(snapshot.videoTrack);
+		}
+		if (snapshot.videoHadProcessor) {
+			const restoredProcessor = await applyCameraMirrorProcessor(screenShareTrack, true);
+			if (!restoredProcessor) {
+				throw new Error('Screen share rollback could not restore the previous video processor');
+			}
+		} else if (screenShareTrack.getProcessor()) {
+			await screenShareTrack.stopProcessor(false);
 		}
 		if (snapshot.audioPublication && snapshot.audioTrack && snapshot.audioMediaStreamTrack) {
 			const restoredAudioPublication = Array.from(participant.audioTrackPublications.values()).find(
@@ -1308,6 +1334,18 @@ export class VoiceEngineV2AppScreenShareLiveKitFlows {
 		this.adapter.cleanupActiveScreenShareEndListenerInternal();
 		try {
 			await screenShareTrack.stageTrackReplacement(tracks.videoTrack);
+			if (nextContentSource === 'device') {
+				const mirrorCamera = VoiceSettings.getMirrorCamera();
+				const processor = await applyCameraMirrorProcessor(screenShareTrack, mirrorCamera);
+				if (mirrorCamera && !processor) {
+					throw new Error('Replacement device share could not apply its required mirror processor');
+				}
+				if (!mirrorCamera && screenShareTrack.getProcessor()) {
+					throw new Error('Replacement device share could not clear its previous video processor');
+				}
+			} else if (screenShareTrack.getProcessor()) {
+				await screenShareTrack.stopProcessor(false);
+			}
 			const activeVideoTrack = screenShareTrack.mediaStream?.getVideoTracks()[0] ?? screenShareTrack.mediaStreamTrack;
 			if (activeVideoTrack !== tracks.videoTrack) {
 				throw new Error('Replacement screen share video track did not take ownership of its publication');
