@@ -10,11 +10,7 @@ import {
 } from '@app/features/i18n/utils/CommonMessageDescriptors';
 import {remFromPx} from '@app/features/theme/layout/RemFromPx';
 import * as ThreadCommands from '@app/features/threads/commands/ThreadCommands';
-import {
-	openCreateThread,
-	openThreadFromEvent,
-	type ThreadOpenEvent,
-} from '@app/features/threads/commands/ThreadNavigation';
+import {openCreateThread, openThread} from '@app/features/threads/commands/ThreadNavigation';
 import styles from '@app/features/threads/components/ThreadBrowser.module.css';
 import {ThreadContextMenu} from '@app/features/threads/components/ThreadContextMenu';
 import {reportThreadActionError} from '@app/features/threads/hooks/useThreadMenuData';
@@ -41,13 +37,12 @@ import {observer} from 'mobx-react-lite';
 import {type ReactNode, useCallback, useEffect, useState} from 'react';
 
 type BrowserTab = 'active' | 'archived' | 'archivedPrivate';
-type ThreadOpenHandler = (thread: Channel, event: ThreadOpenEvent) => void;
 
 function byLastActivity(a: Channel, b: Channel): number {
 	return SnowflakeUtils.compare(lastActivityId(b), lastActivityId(a));
 }
 
-const ThreadBrowserItem = observer(({thread, onOpen}: {thread: Channel; onOpen: ThreadOpenHandler}) => {
+const ThreadBrowserItem = observer(({thread, onOpen}: {thread: Channel; onOpen: (thread: Channel) => void}) => {
 	const {i18n} = useLingui();
 	const lastActivity = new Date(SnowflakeUtils.extractTimestamp(lastActivityId(thread)));
 	return (
@@ -55,7 +50,7 @@ const ThreadBrowserItem = observer(({thread, onOpen}: {thread: Channel; onOpen: 
 			<button
 				type="button"
 				className={styles.item}
-				onClick={(event) => onOpen(thread, event)}
+				onClick={() => onOpen(thread)}
 				onContextMenu={(event) =>
 					ContextMenuCommands.openFromEvent(event, ({onClose}) => (
 						<ThreadContextMenu
@@ -108,7 +103,17 @@ function matchesTab(thread: Channel, tab: BrowserTab): boolean {
 }
 
 const SearchResults = observer(
-	({parent, query, tab, onOpen}: {parent: Channel; query: string; tab: BrowserTab; onOpen: ThreadOpenHandler}) => {
+	({
+		parent,
+		query,
+		tab,
+		onOpen,
+	}: {
+		parent: Channel;
+		query: string;
+		tab: BrowserTab;
+		onOpen: (thread: Channel) => void;
+	}) => {
 		const {i18n} = useLingui();
 		const {state, retry} = useThreadSearch(parent.id, query, tab !== 'active');
 		const threads =
@@ -205,7 +210,7 @@ const ThreadSearchInput = ({value, onChange}: {value: string; onChange: (value: 
 	);
 };
 
-const ActiveThreads = observer(({parent, onOpen}: {parent: Channel; onOpen: ThreadOpenHandler}) => {
+const ActiveThreads = observer(({parent, onOpen}: {parent: Channel; onOpen: (thread: Channel) => void}) => {
 	const {i18n} = useLingui();
 	const threads = [...ChannelThreads.getActiveThreadsForParent(parent.id)].sort(byLastActivity);
 	if (threads.length === 0) return <EmptyState data-flx="threads.thread-browser.active-threads.empty-state" />;
@@ -244,7 +249,7 @@ const ActiveThreads = observer(({parent, onOpen}: {parent: Channel; onOpen: Thre
 });
 
 const ArchivedThreads = observer(
-	({parent, privateOnly, onOpen}: {parent: Channel; privateOnly: boolean; onOpen: ThreadOpenHandler}) => {
+	({parent, privateOnly, onOpen}: {parent: Channel; privateOnly: boolean; onOpen: (thread: Channel) => void}) => {
 		const {i18n} = useLingui();
 		const moderator = isModeratorOfParent(parent);
 		const [threadIds, setThreadIds] = useState<ReadonlyArray<string>>([]);
@@ -356,9 +361,9 @@ export const ThreadBrowser = observer(
 		const searching = query.trim().length > 0;
 		const current = Channels.getChannel(parent.id) ?? parent;
 		const handleOpen = useCallback(
-			(thread: Channel, event: ThreadOpenEvent) => {
+			(thread: Channel) => {
 				onClose?.();
-				openThreadFromEvent(thread, event);
+				openThread(thread);
 			},
 			[onClose],
 		);

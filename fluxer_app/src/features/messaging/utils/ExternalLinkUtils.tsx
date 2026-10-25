@@ -13,7 +13,7 @@ export const MIDDLE_MOUSE_BUTTON = 1;
 
 let externalLinkInterceptorAttached = false;
 
-export function isTrustedExternalUrl(url: string): boolean {
+function isTrustedExternalUrl(url: string): boolean {
 	try {
 		return TrustedDomain.isTrustedDomain(new URL(url).hostname);
 	} catch {

@@ -67,6 +67,7 @@ fn handle_global_added_node(
         return;
     };
     snap.nodes.insert(obj.id, props);
+    snap.pending_node_info.insert(obj.id);
     drop(snap);
     if is_our_sink {
         ctx.state.borrow_mut().sink_global_id = obj.id;
@@ -225,6 +226,7 @@ pub(crate) fn handle_global_removed(
     let mut changed = false;
     if let Ok(mut snap) = inventory.lock() {
         changed |= snap.nodes.remove(&id).is_some();
+        snap.pending_node_info.remove(&id);
         changed |= snap.clients.remove(&id).is_some();
         changed |= snap.ports.remove(&id).is_some();
     }
@@ -282,6 +284,7 @@ fn direct_added_node(
             return false;
         };
         snap.nodes.insert(obj.id, props);
+        snap.pending_node_info.insert(obj.id);
     }
     if is_our_sink {
         args.state.borrow_mut().sink_global_id = obj.id;
@@ -371,6 +374,7 @@ pub(crate) fn handle_direct_global_removed(
     let mut changed = false;
     if let Ok(mut snap) = inventory.lock() {
         changed |= snap.nodes.remove(&id).is_some();
+        snap.pending_node_info.remove(&id);
         changed |= snap.clients.remove(&id).is_some();
         changed |= snap.ports.remove(&id).is_some();
     }

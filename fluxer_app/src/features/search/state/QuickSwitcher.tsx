@@ -2,14 +2,13 @@
 
 import AccountEngine from '@app/features/account_engine/state/AccountEngine';
 import Guilds from '@app/features/guild/state/Guilds';
-import {OPEN_LINK_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import {onLocaleChange} from '@app/features/i18n/utils/LocaleChangeListener';
 import type {GuildMember} from '@app/features/member/models/GuildMember';
 import GuildMembers from '@app/features/member/state/GuildMembers';
 import MemberSearch, {type SearchContext} from '@app/features/member/state/MemberSearch';
 import type {TransformedMember} from '@app/features/member/workers/MemberSearchProtocol';
 import SelectedGuild from '@app/features/navigation/state/SelectedGuild';
-import {isAppDeepLink, parseChannelUrl} from '@app/features/navigation/utils/DeepLinkUtils';
+import {parseChannelUrl} from '@app/features/navigation/utils/DeepLinkUtils';
 import {AccountScopedWork} from '@app/features/platform/state/AccountScopedWork';
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import {loadLazyModule} from '@app/features/platform/utils/LazyModuleLoader';
@@ -568,15 +567,6 @@ class QuickSwitcher {
 				title: i18n._(GO_TO_MESSAGE_DESCRIPTOR),
 				subtitle: query,
 				path: channelPath,
-			};
-			linkResults.push(linkResult);
-		} else if (isAppDeepLink(query)) {
-			const linkResult: LinkResult = {
-				type: QuickSwitcherResultTypes.LINK,
-				id: 'link-open',
-				title: i18n._(OPEN_LINK_DESCRIPTOR),
-				subtitle: query,
-				path: query,
 			};
 			linkResults.push(linkResult);
 		}

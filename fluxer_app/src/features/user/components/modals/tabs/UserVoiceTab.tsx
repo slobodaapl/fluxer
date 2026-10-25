@@ -27,6 +27,7 @@ import {WarningAlert} from '@app/features/ui/warning_alert/WarningAlert';
 import {CompactComboboxRow} from '@app/features/user/components/modals/tabs/components/CompactComboboxRow';
 import {EntranceSoundSection} from '@app/features/user/components/modals/tabs/components/EntranceSoundSection';
 import {MicTestSection} from '@app/features/user/components/modals/tabs/components/MicTestSection';
+import {StreamrEnrollment} from '@app/features/user/components/modals/tabs/components/StreamrEnrollment';
 import {SystemShortcutsPushToTalkAlert} from '@app/features/user/components/modals/tabs/components/SystemShortcutsSection';
 import {useMediaPermission} from '@app/features/user/components/modals/tabs/hooks/useMediaPermission';
 import {SystemShortcutRowHint} from '@app/features/user/components/modals/tabs/keybinds_tab/SystemShortcutRowHint';
@@ -502,6 +503,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings}) => {
 				dataFlx="user.voice-tab.render-custom-profile.select.set-noise-suppression-method"
 				data-flx="user.user-voice-tab.render-custom-profile.compact-combobox-row.set-noise-suppression-method"
 			/>
+			{noiseSuppressionChoice === 'streamr' && <StreamrEnrollment />}
 			{renderStereoMicrophoneSwitch('user.voice-tab.render-custom-profile.switch.set-stereo-microphone')}
 			<Switch
 				label={i18n._(VOICE_ECHO_CANCELLATION_DESCRIPTOR)}

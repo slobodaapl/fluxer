@@ -8,7 +8,7 @@
 		{"type": "connection.connectSucceeded", "operationId": 1},
 		{
 			"type": "camera.publishRequested",
-			"options": {"deviceId": "camera-1", "width": 1280, "height": 720}
+			"options": {"deviceId": "camera-1", "width": 1280, "height": 720, "mirror": false}
 		},
 		{"type": "camera.publishSucceeded", "operationId": 2},
 		{
@@ -17,6 +17,7 @@
 				"width": 1920,
 				"height": 1080,
 				"frameRate": 60,
+				"mirror": true,
 				"backgroundMode": "blur",
 				"backgroundBlurStrength": 60
 			}
@@ -32,7 +33,7 @@
 		{
 			"type": "camera.publish",
 			"operationId": 2,
-			"options": {"deviceId": "camera-1", "width": 1280, "height": 720}
+			"options": {"deviceId": "camera-1", "width": 1280, "height": 720, "mirror": false}
 		},
 		{
 			"type": "camera.updateEncoding",
@@ -41,6 +42,7 @@
 				"width": 1920,
 				"height": 1080,
 				"frameRate": 60,
+				"mirror": true,
 				"backgroundMode": "blur",
 				"backgroundBlurStrength": 60
 			}
@@ -52,6 +54,7 @@
 		"cameraDeviceId": "camera-1",
 		"cameraWidth": 1920,
 		"cameraFrameRate": 60,
+		"cameraMirror": true,
 		"cameraBackgroundMode": "blur",
 		"lastFailureCode": null
 	}

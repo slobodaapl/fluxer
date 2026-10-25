@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use pipewire as pw;
 
+use crate::capture_graph::CaptureGraph;
 use crate::routing::{
-    MEDIA_CLASS_PLAYBACK_STREAM, PropMap, RoutingRule, SelfIdentity, matches_any, should_route_node,
+    MEDIA_CLASS_PLAYBACK_STREAM, PropMap, RoutingRule, SelfIdentity, matches_any,
 };
 
 use super::common::{
@@ -173,18 +174,19 @@ fn resolve_routing_inputs(
 
 fn build_desired_links(
     nodes: &HashMap<u32, PropMap>,
+    pending_node_info: &HashSet<u32>,
     ports: &HashMap<u32, super::common::PortRecord>,
     resolved: &RoutingResolved,
     default_sink_target_id: &str,
 ) -> Vec<LinkKey> {
+    let graph = CaptureGraph::new(nodes, pending_node_info);
     let mut desired_links = Vec::new();
-    for (node_id, props) in nodes {
+    for node_id in nodes.keys() {
         if *node_id == resolved.sink_id {
             continue;
         }
-        if !should_route_node(
+        if !graph.should_route(
             *node_id,
-            props,
             &resolved.rule,
             &resolved.default_sink_name,
             default_sink_target_id,
@@ -231,6 +233,7 @@ pub(crate) fn recompute_routing(
         return;
     };
     let nodes = snap.enriched_nodes();
+    let pending_node_info = snap.pending_node_info.clone();
     let ports = snap.ports.clone();
     drop(snap);
     let default_sink_target_id = default_sink_target_id(&nodes, &resolved.default_sink_name);
@@ -244,7 +247,13 @@ pub(crate) fn recompute_routing(
         metadata_watchers,
     );
 
-    let desired_links = build_desired_links(&nodes, &ports, &resolved, &default_sink_target_id);
+    let desired_links = build_desired_links(
+        &nodes,
+        &pending_node_info,
+        &ports,
+        &resolved,
+        &default_sink_target_id,
+    );
     sync_owned_links(core, owned_links, owned_link_snapshot, desired_links);
 }
 
@@ -306,18 +315,19 @@ fn resolve_direct_inputs(
 
 fn build_direct_desired_links(
     nodes: &HashMap<u32, PropMap>,
+    pending_node_info: &HashSet<u32>,
     ports: &HashMap<u32, super::common::PortRecord>,
     resolved: &DirectResolved,
     default_sink_target_id: &str,
 ) -> Vec<LinkKey> {
+    let graph = CaptureGraph::new(nodes, pending_node_info);
     let mut desired_links = Vec::new();
-    for (node_id, props) in nodes {
+    for node_id in nodes.keys() {
         if *node_id == resolved.sink_id {
             continue;
         }
-        if !should_route_node(
+        if !graph.should_route(
             *node_id,
-            props,
             &resolved.rule,
             &resolved.default_sink_name,
             default_sink_target_id,
@@ -359,11 +369,17 @@ pub(crate) fn recompute_direct_links(
         return false;
     };
     let nodes = snap.enriched_nodes();
+    let pending_node_info = snap.pending_node_info.clone();
     let ports = snap.ports.clone();
     drop(snap);
     let default_sink_target_id = default_sink_target_id(&nodes, &resolved.default_sink_name);
-    let desired_links =
-        build_direct_desired_links(&nodes, &ports, &resolved, &default_sink_target_id);
+    let desired_links = build_direct_desired_links(
+        &nodes,
+        &pending_node_info,
+        &ports,
+        &resolved,
+        &default_sink_target_id,
+    );
     sync_owned_links(core, owned_links, owned_link_snapshot, desired_links);
     true
 }

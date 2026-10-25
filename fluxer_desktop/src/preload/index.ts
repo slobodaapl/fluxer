@@ -68,6 +68,7 @@ import {applyLegacyRawLocalStorage} from '@electron/preload/LegacyRawStorageSeed
 import {createLocalAppPreloadAPI} from '@electron/preload/LocalAppPreload';
 import {createNativeGatewayPreloadAPI} from '@electron/preload/NativeGatewayPreload';
 import {createOtherPlatformTemplatePreloadAPI} from '@electron/preload/OtherPlatformTemplatePreload';
+import {createStreamrPreloadAPI} from '@electron/preload/StreamrPreload';
 import type {DesktopCapabilityManifest} from '@fluxer/desktop_ipc/src/CapabilityManifest';
 import {DESKTOP_CAPABILITY_MANIFEST_CHANNEL} from '@fluxer/desktop_ipc/src/CapabilityManifest';
 import {DESKTOP_DIRECT_MESSAGES_AVAILABLE_CHANNEL} from '@fluxer/desktop_ipc/src/DirectMessagesContract';
@@ -403,6 +404,7 @@ document.addEventListener('visibilitychange', () => {
 applyStartupAccessibilitySettings();
 
 const api: ElectronAPI = {
+	streamr: process.arch === 'x64' ? createStreamrPreloadAPI() : undefined,
 	platform: process.platform,
 	buildChannel: BUILD_CHANNEL,
 	localDevelopmentInstanceUrl: LOCAL_DEVELOPMENT_INSTANCE_URL,

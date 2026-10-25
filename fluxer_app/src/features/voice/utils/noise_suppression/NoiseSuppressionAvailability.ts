@@ -10,7 +10,7 @@ type DeepFilterAssetState = 'idle' | 'loading' | 'ready';
 
 export type NoiseSuppressionFailureReason = 'assets' | 'model_encoding' | 'build' | 'runtime' | 'sample_rate';
 
-type NoiseSuppressionFallback = 'loading' | 'failed';
+type NoiseSuppressionFallback = 'loading' | 'failed' | 'enrollment';
 
 interface NoiseSuppressionFailure {
 	count: number;
@@ -24,6 +24,9 @@ const FAILURE_BACKOFF_MAX_MS = 15 * 60_000;
 
 class NoiseSuppressionAvailability {
 	deepFilterAssets: DeepFilterAssetState = 'idle';
+	streamrEnrolled: boolean | null = null;
+	streamrRevision = 0;
+	streamrStarting = 0;
 	failures = new Map<VoiceNoiseSuppressionBackend, NoiseSuppressionFailure>();
 	inputContextRate: number | null = null;
 	voiceInputGraphUnavailable = false;
@@ -56,9 +59,11 @@ class NoiseSuppressionAvailability {
 	}
 
 	isBackendUsable(backend: VoiceNoiseSuppressionBackend): boolean {
+		if (backend === 'streamr' && (this.streamrEnrolled === false || this.failures.get('deep_filter')?.active))
+			return false;
 		if (this.failures.get(backend)?.active) return false;
 		const descriptor = getNoiseSuppressionBackendDescriptor(backend);
-		if (descriptor.engine === 'worklet' || descriptor.engine === 'deep_filter') {
+		if (descriptor.engine === 'worklet' || descriptor.engine === 'deep_filter' || descriptor.engine === 'streamr') {
 			if (this.voiceInputGraphUnavailable) return false;
 			const rates = descriptor.supportedSampleRates;
 			if (this.inputContextRate !== null && rates !== null && !rates.includes(this.inputContextRate)) return false;
@@ -71,10 +76,25 @@ class NoiseSuppressionAvailability {
 	}
 
 	getFallback(requested: VoiceNoiseSuppressionBackend): NoiseSuppressionFallback | null {
+		if (requested === 'streamr' && this.streamrEnrolled === false) return 'enrollment';
 		if (this.failures.get(requested)?.active) return 'failed';
 		if (requested === 'deep_filter' && this.deepFilterAssets !== 'ready') return 'loading';
 		if (!this.isBackendUsable(requested)) return 'failed';
 		return null;
+	}
+
+	setStreamrEnrollment(enrolled: boolean, changed = false): void {
+		if (this.streamrEnrolled === enrolled && !changed) return;
+		this.streamrEnrolled = enrolled;
+		if (changed) {
+			this.streamrRevision++;
+			this.failures.delete('streamr');
+		}
+		this.notifyListeners();
+	}
+
+	changeStreamrStarting(delta: number): void {
+		this.streamrStarting += delta;
 	}
 
 	setVoiceInputRuntime(

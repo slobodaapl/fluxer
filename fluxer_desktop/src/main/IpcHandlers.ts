@@ -179,7 +179,10 @@ function applyUnreadBadge(badge: number): void {
 	setDesktopTrayUnreadBadge(badge);
 }
 
+import {registerStreamrIpcHandlers} from '@electron/main/Streamr';
+
 export function registerIpcHandlers(): void {
+	registerStreamrIpcHandlers();
 	registerVoiceDebugEventSinkPopoutIpcHandlers();
 	registerVoiceBackgroundMediaCacheHandlers();
 	ipcMain.handle(DESKTOP_MODULE_CHANNELS.ensure, (event, moduleName: unknown) => {

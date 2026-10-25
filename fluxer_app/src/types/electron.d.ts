@@ -233,7 +233,10 @@ interface DesktopLegacyHarvestAPI {
 	discard: () => Promise<void>;
 }
 
+import type {StreamrAPI} from '@fluxer/desktop_ipc/src/StreamrContract';
+
 export interface ElectronAPI {
+	streamr?: StreamrAPI;
 	platform: 'darwin' | 'win32' | 'linux' | string;
 	buildChannel: 'stable' | 'canary' | 'development';
 	localDevelopmentInstanceUrl?: string | null;

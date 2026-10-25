@@ -245,7 +245,10 @@ export type TrayActionPayload =
 			action: 'open-account-switcher';
 	  };
 
+import type {StreamrAPI} from '@fluxer/desktop_ipc/src/StreamrContract';
+
 export interface ElectronAPI {
+	streamr?: StreamrAPI;
 	platform: NodeJS.Platform;
 	buildChannel: BuildChannel;
 	localDevelopmentInstanceUrl: string | null;

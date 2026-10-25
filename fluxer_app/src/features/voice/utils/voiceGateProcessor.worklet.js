@@ -10,6 +10,7 @@ class VoiceGateProcessor extends AudioWorkletProcessor {
 	constructor(options) {
 		super();
 		const config = options.processorOptions;
+		this.activityOutput = config.activityOutput === true;
 		this.apply = config.apply;
 		this.auto = config.auto;
 		this.manualThresholdRms = config.manualThresholdRms;
@@ -17,7 +18,7 @@ class VoiceGateProcessor extends AudioWorkletProcessor {
 		this.maxRms = config.maxRms;
 		this.releaseFrames = Math.round((config.releaseMs / 1000) * sampleRate);
 		this.channelCount = config.channelCount;
-		this.delayFrames = this.channelCount === 1 ? Math.round(LOOKAHEAD_SECONDS * sampleRate) : 0;
+		this.delayFrames = this.channelCount === 1 && !this.activityOutput ? Math.round(LOOKAHEAD_SECONDS * sampleRate) : 0;
 		this.delay = new Float32Array(this.delayFrames);
 		this.delayIndex = 0;
 		this.energy = new Float64Array(4);
@@ -114,7 +115,8 @@ class VoiceGateProcessor extends AudioWorkletProcessor {
 			this.silenceFrames += length;
 			if (this.silenceFrames >= this.releaseFrames) this.speaking = false;
 		} else this.silenceFrames = 0;
-		const open = !this.apply || this.speaking || (this.auto && this.frame < this.seedUntilFrame);
+		if (this.activityOutput) outputs[1]?.[0]?.fill(!this.apply || this.speaking ? 1 : 0);
+		const open = this.activityOutput || !this.apply || this.speaking || (this.auto && this.frame < this.seedUntilFrame);
 		for (let index = 0; index < length; index++) {
 			this.gain = open ? Math.min(1, this.gain + this.attackStep) : this.gain * this.releaseFactor;
 			for (let channel = 0; channel < output.length; channel++) {
@@ -123,7 +125,7 @@ class VoiceGateProcessor extends AudioWorkletProcessor {
 				if (this.delayFrames > 0) {
 					output[channel][index] = this.delay[this.delayIndex] * this.gain;
 					this.delay[this.delayIndex] = sample;
-				} else output[channel][index] = sample * this.gain;
+				} else output[channel][index] = this.activityOutput ? sample : sample * this.gain;
 			}
 			if (this.delayFrames > 0) this.delayIndex = (this.delayIndex + 1) % this.delayFrames;
 		}

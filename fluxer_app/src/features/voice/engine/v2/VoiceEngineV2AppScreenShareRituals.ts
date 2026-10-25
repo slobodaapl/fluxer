@@ -135,19 +135,22 @@ export function settleScreenShareFailure(args: ScreenShareFailureSettleArgs): bo
 	const {adapter, room, participant, actual} = args;
 	assert.ok(participant, 'participant is required to settle a screen-share failure');
 	assert.equal(typeof actual, 'boolean', 'settle actual flag must be a boolean');
-	args.applyState(actual);
-	updateLocalParticipantFromRoom(room);
-	adapter.syncLocalStreamWatchStateInternal(actual);
-	if (!actual) {
-		args.onInactiveAfterSync?.();
+	try {
+		args.applyState(actual);
+		updateLocalParticipantFromRoom(room);
+		adapter.syncLocalStreamWatchStateInternal(actual);
+		if (!actual) {
+			args.onInactiveAfterSync?.();
+		}
+		if (actual && args.monitorEndOnActive) {
+			adapter.monitorActiveScreenShareEndInternal(room, participant);
+		}
+		if (args.playSound) {
+			SoundCommands.playSound(actual ? SoundType.ScreenShareStart : SoundType.ScreenShareStop);
+		}
+	} finally {
+		adapter.transitionScreenShareLifecycleInternal(args.buildTransition(actual));
 	}
-	if (actual && args.monitorEndOnActive) {
-		adapter.monitorActiveScreenShareEndInternal(room, participant);
-	}
-	if (args.playSound) {
-		SoundCommands.playSound(actual ? SoundType.ScreenShareStart : SoundType.ScreenShareStop);
-	}
-	adapter.transitionScreenShareLifecycleInternal(args.buildTransition(actual));
 	return actual;
 }
 

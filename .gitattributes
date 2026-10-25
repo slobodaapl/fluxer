@@ -17,3 +17,20 @@ fluxer_docs/src/installer/install.sh text eol=lf
 fluxer_docs/src/installer/install.ps1 text eol=lf
 fluxer_rexctl/internal/stack/files/** text eol=lf
 fluxer_docs/src/content/docs/operator/rexctl.mdx text eol=lf linguist-generated
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.ort filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text
+*.ckpt filter=lfs diff=lfs merge=lfs -text
+*.safetensors filter=lfs diff=lfs merge=lfs -text
+*.gguf filter=lfs diff=lfs merge=lfs -text
+*.ggml filter=lfs diff=lfs merge=lfs -text
+*.tflite filter=lfs diff=lfs merge=lfs -text
+*.pb filter=lfs diff=lfs merge=lfs -text
+*.h5 filter=lfs diff=lfs merge=lfs -text
+*.hdf5 filter=lfs diff=lfs merge=lfs -text
+*.weights filter=lfs diff=lfs merge=lfs -text
+*.caffemodel filter=lfs diff=lfs merge=lfs -text
+*_onnx.tar.gz filter=lfs diff=lfs merge=lfs -text
+*.nnef filter=lfs diff=lfs merge=lfs -text
+fluxer_desktop/streamr-models/resampler.f64 filter=lfs diff=lfs merge=lfs -text

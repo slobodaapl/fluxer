@@ -34,6 +34,7 @@ const BACKEND_MODEL_NAMES: Readonly<Partial<Record<VoiceNoiseSuppressionBackend,
 	rnnoise: 'RNNoise',
 	gtcrn: 'GTCRN',
 	deep_filter: 'DeepFilterNet',
+	streamr: 'Streamr',
 };
 
 const TRANSLATED_LABELS: Readonly<Partial<Record<VoiceNoiseSuppressionBackend, MessageDescriptor>>> = {
@@ -52,6 +53,7 @@ export function getNoiseSuppressionFallbackMessage(i18n: I18n): string | null {
 	const requested = readRequestedNoiseSuppressionBackend();
 	const fallback = NoiseSuppressionAvailability.getFallback(requested);
 	if (!fallback) return null;
+	if (fallback === 'enrollment') return i18n._(msg`Record a voice sample to enable Streamr.`);
 	const requestedLabel = getNoiseSuppressionChoiceLabel(i18n, requested);
 	const effectiveLabel = getNoiseSuppressionChoiceLabel(i18n, readEffectiveNoiseSuppressionBackend());
 	return fallback === 'loading'

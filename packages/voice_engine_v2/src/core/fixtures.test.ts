@@ -39,6 +39,7 @@ interface VoiceEngineV2ScreenFixtureExpected {
 	cameraDeviceId?: string | null;
 	cameraWidth?: number;
 	cameraFrameRate?: number;
+	cameraMirror?: boolean;
 	cameraBackgroundMode?: string;
 	screenStatus?: string;
 	screenCaptureId?: string | null;
@@ -111,6 +112,9 @@ describe('voice engine v2 shared fixtures', () => {
 		}
 		if (fixture.expected.cameraFrameRate !== undefined) {
 			expect(snapshot.camera.published?.frameRate).toBe(fixture.expected.cameraFrameRate);
+		}
+		if (fixture.expected.cameraMirror !== undefined) {
+			expect(snapshot.camera.published?.mirror).toBe(fixture.expected.cameraMirror);
 		}
 		if (fixture.expected.cameraBackgroundMode !== undefined) {
 			expect(snapshot.camera.published?.backgroundMode).toBe(fixture.expected.cameraBackgroundMode);

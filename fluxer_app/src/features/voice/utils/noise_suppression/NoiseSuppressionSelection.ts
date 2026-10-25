@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {getElectronAPI} from '@app/features/ui/utils/NativeUtils';
 import {
 	detectWasmSimdSupport,
 	getNoiseSuppressionBackendDescriptor,
@@ -18,6 +19,7 @@ export function readNoiseSuppressionRuntimeCapabilities(): NoiseSuppressionRunti
 		sampleRate: NOISE_SUPPRESSION_SAMPLE_RATE,
 		wasmSimd: detectWasmSimdSupport(),
 		audioWorklet: typeof AudioWorkletNode === 'function',
+		nativeStreamr: typeof getElectronAPI()?.streamr?.start === 'function',
 	};
 }
 

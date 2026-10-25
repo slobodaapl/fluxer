@@ -1,0 +1,64 @@
+{
+  "pipeline": [
+    "VoxLock",
+    "NVIDIA Real-time RE-USE"
+  ],
+  "precision": "FP32",
+  "cpu": "x86-64 AVX2",
+  "gpu": "Vulkan",
+  "sources": {
+    "reuse": {
+      "repository": "nvidia/Real-time_RE-USE",
+      "revision": "4c0c186272ca853cd18d832fc5c28777b62f32d1",
+      "license": "NVIDIA One-Way Noncommercial License"
+    },
+    "voxlock": {
+      "repository": "arbazsiddiqui/voxlock",
+      "revision": "a50f4e1d109301d4b6f61dec57ebb1a61e7d8f03",
+      "license": "Apache-2.0"
+    }
+  },
+  "resampler": {
+    "taps": 385,
+    "cutoff_hz": 7500,
+    "sample_rate": 48000,
+    "window": "Kaiser",
+    "beta": 8.6,
+    "format": "little-endian float64"
+  },
+  "files": {
+    "REUSE-MODEL-LICENSE.txt": {
+      "bytes": 4060,
+      "sha256": "6d1daa9c89ec421ba80fe051ac9f0dd46010d4fa4e8f4af654eb8e62f64e2ad5"
+    },
+    "resampler.f64": {
+      "bytes": 3080,
+      "sha256": "5506a6fbf84c8ddd3417efb6d7a2566aecdb70d7bec19e441e6eaf80467a8dfe"
+    },
+    "reuse.safetensors": {
+      "bytes": 54055764,
+      "sha256": "6eac4e8cc721f99a22cde7eac3c9f8e2826ced5dc8a4234fd1977de1ec0d3ade"
+    },
+    "vox_cache_fp32.nnef": {
+      "bytes": 8695296,
+      "sha256": "813b1387793e1115585c49b84c26eedf9b2e396651c6500a480dc1cd6a6b0031"
+    },
+    "vox_cache_names.json": {
+      "bytes": 3547,
+      "sha256": "28b8922c8b3a905e782e2b3416910df17f9d84d31c55fe7defc375c5c558784a"
+    },
+    "vox_chunk_fp32.nnef": {
+      "bytes": 79013376,
+      "sha256": "d61bf0ca78a279b82f2959a1caa96445d9746aa0d1dbdadb50c56f4dd5dec72b"
+    },
+    "vox_chunk_fp32.safetensors": {
+      "bytes": 77959784,
+      "sha256": "e262d2ecb98d44d17b4efda12d5bad65ffc6ba0593d7d11fe6be16756f20cbca"
+    },
+    "vox_enroll_fp32.nnef": {
+      "bytes": 12707328,
+      "sha256": "a051e77b38ccc1853d14e56877617752e4050bb42f17f6313279e078481ac0e3"
+    }
+  },
+  "input": "48 kHz mono audio from Fluxer DeepFilterNet3"
+}
