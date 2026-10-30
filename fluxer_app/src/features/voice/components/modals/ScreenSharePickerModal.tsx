@@ -59,10 +59,7 @@ import {
 	shouldCheckDesktopSourceScreenRecordingPermission,
 	useScreenSharePickerDisplayPermission,
 } from '@app/features/voice/components/modals/screen_share_picker_modal/useScreenSharePickerDisplayPermission';
-import {
-	StreamSettingsMenuContent,
-	useHasHigherVideoQuality,
-} from '@app/features/voice/components/StreamSettingsMenuContent';
+import {StreamSettingsMenuContent} from '@app/features/voice/components/StreamSettingsMenuContent';
 import {
 	offeredScreenShareResolution,
 	selectStreamSettingsAudioMenuState,
@@ -888,7 +885,6 @@ const ScreenSharePickerModalLoadedContent = observer(
 			autoRefresh: activeTab === 'devices',
 			requestPermissions: false,
 		});
-		const hasHigherVideoQuality = useHasHigherVideoQuality();
 		const usesNativeDisplayPicker = usesNativeDisplaySharePicker(displayShareEnvironment);
 		const showDesktopDownloadCta = shouldShowDesktopDownloadCta(displayShareEnvironment);
 		const [desktopSources, setDesktopSources] = useState<Array<DesktopSource>>(
@@ -1332,8 +1328,8 @@ const ScreenSharePickerModalLoadedContent = observer(
 		const streamSummary = resolveScreenShareTarget({
 			mode: VoiceSettings.getStreamingMode(),
 			storedResolution: VoiceSettings.getScreenshareResolution(),
-			storedFrameRate: VoiceSettings.getVideoFrameRate(),
-			entitled: hasHigherVideoQuality,
+			storedFrameRate: VoiceSettings.getScreenShareFrameRate(),
+			entitled: true,
 			context: shareContext,
 			sourceDimensions: null,
 			hintSetting: VoiceSettings.getScreenShareContentHint(),

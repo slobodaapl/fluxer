@@ -42,7 +42,6 @@ import {getDisplayShareEnvironment} from '@app/features/voice/utils/ScreenShareE
 import {getRecentScreenShares} from '@app/features/voice/utils/ScreenShareLifecycleLog';
 import {getScreenShareBitrateBps, resolveStreamingModeSettings} from '@app/features/voice/utils/ScreenShareOptions';
 import {getScreenShareDecodeFailures} from '@app/features/voice/utils/VideoDecoderCapabilities';
-import {hasHigherVideoQuality} from '@app/features/voice/utils/VideoQualityEntitlement';
 import {
 	buildVoiceStatsForNerdsPresentation,
 	collectScreenShareAudioPublicationDiagnostics,
@@ -280,8 +279,8 @@ async function collectVoiceSettingsMetadata(): Promise<Record<string, unknown>> 
 	const configuredScreenShare = resolveStreamingModeSettings(
 		VoiceSettings.getStreamingMode(),
 		VoiceSettings.getScreenshareResolution(),
-		VoiceSettings.getVideoFrameRate(),
-		hasHigherVideoQuality(),
+		VoiceSettings.getScreenShareFrameRate(),
+		true,
 	);
 	return {
 		inputDeviceIdHash: await hashString(VoiceSettings.getInputDeviceId()),
@@ -298,6 +297,7 @@ async function collectVoiceSettingsMetadata(): Promise<Record<string, unknown>> 
 		cameraResolution: VoiceSettings.getCameraResolution(),
 		screenshareResolution: VoiceSettings.getScreenshareResolution(),
 		videoFrameRate: VoiceSettings.getVideoFrameRate(),
+		screenShareFrameRate: VoiceSettings.getScreenShareFrameRate(),
 		streamingMode: VoiceSettings.getStreamingMode(),
 		hideStreamPreview: VoiceSettings.getHideStreamPreview(),
 		muteStreamAudio: VoiceSettings.getMuteStreamAudio(),
@@ -500,8 +500,8 @@ export function collectStatsForNerdsSnapshot(): StatsForNerdsData {
 	const effectiveScreenShareSettings = resolveStreamingModeSettings(
 		VoiceSettings.getStreamingMode(),
 		VoiceSettings.getScreenshareResolution(),
-		VoiceSettings.getVideoFrameRate(),
-		hasHigherVideoQuality(),
+		VoiceSettings.getScreenShareFrameRate(),
+		true,
 	);
 	const localParticipant = MediaEngine.room?.localParticipant ?? null;
 	const voicePresentation = buildVoiceStatsForNerdsPresentation({

@@ -92,20 +92,11 @@ const SMOOTH_60_FPS_AT_UP_TO_1440P_DESCRIPTOR = msg({
 	comment:
 		'Description for the high-tier Gaming streaming preset (Plutonium). Resolution and frame rate are technical tokens.',
 });
-const SMOOTH_30_FPS_AT_UP_TO_720P_DESCRIPTOR = msg({
-	message: 'Smooth 30 FPS at up to 720p',
-	comment: 'Description for the free-tier Gaming streaming preset. Resolution and frame rate are technical tokens.',
-});
 
 const SHARP_TEXT_AT_UP_TO_4K_DESCRIPTOR = msg({
 	message: 'Sharp text at up to 4K, up to 15 FPS',
 	comment:
 		'Description for the high-tier Screen share streaming preset (Plutonium). Resolution and frame rate are technical tokens.',
-});
-const SHARP_TEXT_AT_720P_DESCRIPTOR = msg({
-	message: 'Sharp text at 720p, up to 30 FPS',
-	comment:
-		'Description for the free-tier Screen share streaming preset. Resolution and frame rate are technical tokens.',
 });
 
 const DIAL_IN_YOUR_OWN_NUMBERS_DESCRIPTOR = msg({
@@ -343,12 +334,12 @@ export const StreamSettingsMenuContent = observer(
 		const {inputDevices} = useMediaDevices({autoRefresh: true, requestPermissions: false});
 		const currentMode = VoiceSettings.getStreamingMode();
 		const currentResolution = VoiceSettings.getScreenshareResolution();
-		const currentFrameRate = resolveScreenShareFrameRate(VoiceSettings.getVideoFrameRate());
+		const currentFrameRate = resolveScreenShareFrameRate(VoiceSettings.getScreenShareFrameRate());
 		const quality: ScreenShareQualityInput = {
 			mode: currentMode,
 			storedResolution: currentResolution,
 			storedFrameRate: currentFrameRate,
-			entitled: hasHigherVideoQuality,
+			entitled: true,
 			context: shareContext,
 		};
 		const target: ScreenShareTarget = resolveScreenShareTarget({
@@ -419,9 +410,7 @@ export const StreamSettingsMenuContent = observer(
 				{
 					value: 'gaming',
 					label: i18n._(GAMING_DESCRIPTOR),
-					description: hasHigherVideoQuality
-						? i18n._(SMOOTH_60_FPS_AT_UP_TO_1440P_DESCRIPTOR)
-						: i18n._(SMOOTH_30_FPS_AT_UP_TO_720P_DESCRIPTOR),
+					description: i18n._(SMOOTH_60_FPS_AT_UP_TO_1440P_DESCRIPTOR),
 					isPremium: false,
 				},
 			];
@@ -429,9 +418,7 @@ export const StreamSettingsMenuContent = observer(
 				modes.push({
 					value: 'screenshare',
 					label: i18n._(SCREENSHARE_DESCRIPTOR),
-					description: hasHigherVideoQuality
-						? i18n._(SHARP_TEXT_AT_UP_TO_4K_DESCRIPTOR)
-						: i18n._(SHARP_TEXT_AT_720P_DESCRIPTOR),
+					description: i18n._(SHARP_TEXT_AT_UP_TO_4K_DESCRIPTOR),
 					isPremium: false,
 				});
 			}
@@ -442,7 +429,7 @@ export const StreamSettingsMenuContent = observer(
 				isPremium: false,
 			});
 			return modes;
-		}, [isDeviceShare, hasHigherVideoQuality, i18n.locale]);
+		}, [isDeviceShare, i18n.locale]);
 		const qualityMenuState = selectStreamSettingsQualityMenuState({quality, target, showPremiumFeatures});
 		const audioDeviceOptions = useMemo(() => {
 			const real = inputDevices.filter((d) => d.deviceId && d.deviceId !== 'default');
@@ -557,7 +544,7 @@ export const StreamSettingsMenuContent = observer(
 										{i18n._(FRAMERATE_DESCRIPTOR)}
 									</MenuGroupLabel>
 									{qualityMenuState.frameRates.map((option) => {
-										const isPlutoniumReserved = showPremiumFeatures && option.premium;
+										const isPlutoniumReserved = showPremiumFeatures && option.premium && !quality.entitled;
 										return (
 											<MenuItemRadio
 												key={option.value}
@@ -591,7 +578,7 @@ export const StreamSettingsMenuContent = observer(
 										{i18n._(RESOLUTION_DESCRIPTOR)}
 									</MenuGroupLabel>
 									{qualityMenuState.resolutions.map((option) => {
-										const isPlutoniumReserved = showPremiumFeatures && option.premium;
+										const isPlutoniumReserved = showPremiumFeatures && option.premium && !quality.entitled;
 										return (
 											<MenuItemRadio
 												key={option.value}
@@ -692,7 +679,7 @@ export const StreamSettingsMenuContent = observer(
 							render={() => (
 								<MenuGroup data-flx="voice.stream-settings-menu-content.menu-group--3">
 									{qualityMenuState.resolutions.map((option) => {
-										const isPlutoniumReserved = showPremiumFeatures && option.premium;
+										const isPlutoniumReserved = showPremiumFeatures && option.premium && !quality.entitled;
 										return (
 											<MenuItemRadio
 												key={option.value}
@@ -720,7 +707,7 @@ export const StreamSettingsMenuContent = observer(
 							render={() => (
 								<MenuGroup data-flx="voice.stream-settings-menu-content.menu-group--4">
 									{qualityMenuState.frameRates.map((option) => {
-										const isPlutoniumReserved = showPremiumFeatures && option.premium;
+										const isPlutoniumReserved = showPremiumFeatures && option.premium && !quality.entitled;
 										return (
 											<MenuItemRadio
 												key={option.value}

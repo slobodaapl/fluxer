@@ -50,7 +50,6 @@ const VIDEO_FRAME_RATE_MAX = 120;
 const VIDEO_FRAME_RATE_DEFAULT = 30;
 const FREE_VIDEO_FRAME_RATE_MAX = 30;
 const RETIRED_SCREENSHARE_RESOLUTION_REPLACEMENT: ScreenshareResolution = 'low_480p';
-const PREMIUM_SCREENSHARE_RESOLUTIONS: ReadonlySet<ScreenshareResolution> = new Set(['high', 'ultra', 'source']);
 export const CAMERA_EFFECT_STRENGTH_MIN = 0;
 export const CAMERA_EFFECT_STRENGTH_MAX = 100;
 export const CAMERA_EFFECT_STRENGTH_DEFAULT = 50;
@@ -510,6 +509,7 @@ class VoiceSettings {
 				getCameraResolution: false,
 				getMirrorCamera: false,
 				getScreenshareResolution: false,
+				getScreenShareFrameRate: false,
 				getVideoFrameRate: false,
 				getStreamingMode: false,
 				getHideStreamPreview: false,
@@ -798,10 +798,11 @@ class VoiceSettings {
 	}
 
 	getScreenshareResolution(): ScreenshareResolution {
-		if (PREMIUM_SCREENSHARE_RESOLUTIONS.has(this.screenshareResolution) && !hasHigherVideoQuality()) {
-			return 'medium';
-		}
 		return this.screenshareResolution;
+	}
+
+	getScreenShareFrameRate(): number {
+		return this.videoFrameRate;
 	}
 
 	getVideoFrameRate(): number {

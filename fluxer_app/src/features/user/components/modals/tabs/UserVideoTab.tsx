@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import RuntimeConfig from '@app/features/app/state/RuntimeConfig';
-import {
-	CAMERA_DESCRIPTOR as CAMERA_2_DESCRIPTOR,
-	GET_PREMIUM_DESCRIPTOR,
-} from '@app/features/i18n/utils/CommonMessageDescriptors';
+import {CAMERA_DESCRIPTOR as CAMERA_2_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
-import * as PremiumModalCommands from '@app/features/premium/commands/PremiumModalCommands';
 import {getPremiumProductName, shouldShowPremiumFeatures} from '@app/features/premium/utils/PremiumUtils';
 import {remFromPx} from '@app/features/theme/layout/RemFromPx';
 import {Button} from '@app/features/ui/button/Button';
@@ -64,18 +60,6 @@ const HIGH_1080P_LABEL = '1080p';
 const PRODUCT_NEEDS_CAMERA_ACCESS_DESCRIPTOR = msg({
 	message: '{productName} needs camera access to list your devices.',
 	comment: 'Camera settings notice shown when camera permission has not been granted.',
-});
-const UNLOCK_HD_SCREEN_SHARE_DESCRIPTOR = msg({
-	message: 'Unlock HD screen share with {premiumProductName}',
-	comment: 'Premium upsell title in video settings.',
-});
-const HIGH_FRAME_RATE_REQUIRES_PREMIUM_DESCRIPTOR = msg({
-	message: 'Frame rates above 30 FPS require {premiumProductName}',
-	comment: 'Video settings note shown when higher frame rates require premium.',
-});
-const SELF_HOSTED_VIDEO_QUALITY_LIMIT_DESCRIPTOR = msg({
-	message: 'This instance currently allows screen sharing up to 720p at 30 FPS.',
-	comment: 'Neutral video settings note shown when higher screen share quality is disabled by instance limits.',
 });
 const SCREEN_SHARE_RESOLUTION_LABELS: Record<Exclude<OfferedScreenShareResolution, 'source'>, string> = {
 	low_480p: '480p',
@@ -170,7 +154,7 @@ export const VideoTab: React.FC<VideoTabProps> = observer(({voiceSettings}) => {
 		mode: streamingMode,
 		storedResolution: screenshareResolution,
 		storedFrameRate: videoFrameRate,
-		entitled: hasHigherQuality,
+		entitled: true,
 		context: liveShareContext ?? 'display',
 	};
 	const screenShareState = resolveUserVideoTabScreenShareState({
@@ -328,35 +312,6 @@ export const VideoTab: React.FC<VideoTabProps> = observer(({voiceSettings}) => {
 					dataFlx="user.video-tab.select.screenshare-resolution-change"
 					data-flx="user.user-video-tab.video-tab.compact-combobox-row.screenshare-resolution-change"
 				/>
-				{!hasHigherQuality && showPremium && (
-					<div className={styles.premiumCard} data-flx="user.video-tab.premium-card">
-						<div className={styles.premiumHeader} data-flx="user.video-tab.premium-header">
-							<AtomIcon
-								weight="fill"
-								size={remFromPx(18)}
-								className={styles.premiumIcon}
-								data-flx="user.video-tab.premium-icon"
-							/>
-							<span className={styles.premiumTitle} data-flx="user.video-tab.premium-title">
-								{i18n._(UNLOCK_HD_SCREEN_SHARE_DESCRIPTOR, {premiumProductName: getPremiumProductName()})}
-							</span>
-						</div>
-						<p className={styles.premiumDescription} data-flx="user.video-tab.premium-description">
-							<Trans>
-								Share your screen in high definition (1080p), quad HD (1440p), or native source resolution, at up to 60
-								FPS.
-							</Trans>
-						</p>
-						<Button
-							variant="secondary"
-							small={true}
-							onClick={() => PremiumModalCommands.open()}
-							data-flx="user.video-tab.button.open"
-						>
-							{i18n._(GET_PREMIUM_DESCRIPTOR, {premiumProductName: getPremiumProductName()})}
-						</Button>
-					</div>
-				)}
 				<CompactComboboxRow<SupportedScreenShareFrameRate>
 					label={<Trans>Frame rate</Trans>}
 					options={frameRateOptions}
@@ -367,22 +322,6 @@ export const VideoTab: React.FC<VideoTabProps> = observer(({voiceSettings}) => {
 					dataFlx="user.video-tab.select.frame-rate-change"
 					data-flx="user.user-video-tab.video-tab.compact-combobox-row.video-frame-rate-change"
 				/>
-				{!hasHigherQuality && showPremium && (
-					<div className={styles.frameRateNote} data-flx="user.video-tab.frame-rate-note">
-						<AtomIcon
-							weight="fill"
-							size={remFromPx(14)}
-							className={styles.frameRateIcon}
-							data-flx="user.video-tab.frame-rate-icon"
-						/>
-						{i18n._(HIGH_FRAME_RATE_REQUIRES_PREMIUM_DESCRIPTOR, {premiumProductName: getPremiumProductName()})}
-					</div>
-				)}
-				{!hasHigherQuality && !showPremium && (
-					<div className={styles.frameRateNote} data-flx="user.video-tab.instance-limit-note">
-						{i18n._(SELF_HOSTED_VIDEO_QUALITY_LIMIT_DESCRIPTOR)}
-					</div>
-				)}
 				{screenShareState.preset !== null && (
 					<div className={styles.frameRateNote} data-flx="user.video-tab.preset-note">
 						{i18n._(SCREEN_SHARE_PRESET_OWNED_DESCRIPTOR, {
