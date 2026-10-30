@@ -9,6 +9,7 @@ use crate::routing::{
 pub(crate) struct CaptureGraph<'a> {
     nodes: &'a HashMap<u32, PropMap>,
     pending: &'a HashSet<u32>,
+    links: &'a HashMap<u32, (u32, u32)>,
 }
 
 fn target(props: &PropMap) -> Option<&str> {
@@ -26,8 +27,16 @@ fn group(props: &PropMap) -> Option<&str> {
 }
 
 impl<'a> CaptureGraph<'a> {
-    pub(crate) fn new(nodes: &'a HashMap<u32, PropMap>, pending: &'a HashSet<u32>) -> Self {
-        Self { nodes, pending }
+    pub(crate) fn new(
+        nodes: &'a HashMap<u32, PropMap>,
+        pending: &'a HashSet<u32>,
+        links: &'a HashMap<u32, (u32, u32)>,
+    ) -> Self {
+        Self {
+            nodes,
+            pending,
+            links,
+        }
     }
 
     fn is_sink_mix(&self, props: &PropMap) -> bool {
@@ -47,12 +56,36 @@ impl<'a> CaptureGraph<'a> {
         })
     }
 
-    fn destinations(&self, props: &PropMap) -> Vec<PropMap> {
-        let mut views = vec![props.clone()];
-        let mut targets = target(props)
-            .map(str::to_owned)
-            .into_iter()
-            .collect::<Vec<_>>();
+    fn targets(&self, id: u32, props: &PropMap, capture_sink: u32) -> Vec<String> {
+        let linked: Vec<_> = self
+            .links
+            .values()
+            .filter(|(source, sink)| {
+                *source == id
+                    && *sink != capture_sink
+                    && self
+                        .nodes
+                        .get(sink)
+                        .and_then(|node| node.get("media.class"))
+                        .map(String::as_str)
+                        == Some("Audio/Sink")
+            })
+            .map(|(_, sink)| sink.to_string())
+            .collect();
+        if linked.is_empty() {
+            target(props).map(str::to_owned).into_iter().collect()
+        } else {
+            linked
+        }
+    }
+
+    fn destinations(&self, id: u32, props: &PropMap, capture_sink: u32) -> Vec<PropMap> {
+        let mut targets = self.targets(id, props, capture_sink);
+        let mut views = if targets.is_empty() {
+            vec![props.clone()]
+        } else {
+            Vec::new()
+        };
         let mut seen = HashSet::new();
         let mut visited_sinks = HashSet::new();
         while let Some(destination) = targets.pop() {
@@ -88,8 +121,9 @@ impl<'a> CaptureGraph<'a> {
                     {
                         continue;
                     }
-                    if let Some(next) = target(output) {
-                        targets.push(next.to_owned());
+                    let next = self.targets(*output_id, output, capture_sink);
+                    if !next.is_empty() {
+                        targets.extend(next);
                     } else {
                         let mut default_view = props.clone();
                         default_view.remove("target.object");
@@ -123,7 +157,7 @@ impl<'a> CaptureGraph<'a> {
         // Capture original application streams, before a virtual sink mixes in call audio.
         // Follow the sink's output destination so selecting physical speakers still includes
         // applications playing through a virtual surround/EQ sink.
-        let destinations = self.destinations(props);
+        let destinations = self.destinations(id, props, sink_global_id);
         if destinations
             .iter()
             .any(|view| matches_any(view, &rule.never_when))

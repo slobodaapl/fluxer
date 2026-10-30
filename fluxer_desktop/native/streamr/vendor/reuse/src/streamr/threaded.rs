@@ -59,14 +59,16 @@ impl Stage for Denoiser {
 
 #[cfg(feature = "vulkan")]
 struct GpuTail {
-    vox: Vox,
+    vox: Option<Vox>,
     reuse: Denoiser,
 }
 #[cfg(feature = "vulkan")]
 impl GpuTail {
-    fn load(root: &Path, enrollment: &[f32], engine: Engine) -> Result<Self> {
+    fn load(root: &Path, enrollment: Option<&[f32]>, engine: Engine) -> Result<Self> {
         Ok(Self {
-            vox: Vox::load(root, enrollment, engine)?,
+            vox: enrollment
+                .map(|sample| Vox::load(root, sample, engine))
+                .transpose()?,
             reuse: Pipeline::load_reuse(root, engine)?,
         })
     }
@@ -74,10 +76,16 @@ impl GpuTail {
 #[cfg(feature = "vulkan")]
 impl Stage for GpuTail {
     fn process(&mut self, input: &[f32]) -> Result<Vec<f32>> {
-        self.reuse.process(&self.vox.process(input)?)
+        match &mut self.vox {
+            Some(vox) => self.reuse.process(&vox.process(input)?),
+            None => self.reuse.process(input),
+        }
     }
     fn flush(&mut self) -> Result<Vec<f32>> {
-        let mut audio = self.reuse.process(&self.vox.flush()?)?;
+        let mut audio = match &mut self.vox {
+            Some(vox) => self.reuse.process(&vox.flush()?)?,
+            None => Vec::new(),
+        };
         audio.extend(self.reuse.flush()?);
         Ok(audio)
     }
@@ -178,19 +186,27 @@ pub struct ThreadedPipeline {
 }
 impl ThreadedPipeline {
     pub fn load_warmed(root: &Path, enrollment: &[f32], engine: Engine) -> Result<Self> {
-        Self::load_internal(root, enrollment, engine, true)
+        Self::load_internal(root, Some(enrollment), engine, true)
     }
     pub fn load(root: &Path, enrollment: &[f32], engine: Engine) -> Result<Self> {
-        Self::load_internal(root, enrollment, engine, false)
+        Self::load_internal(root, Some(enrollment), engine, false)
+    }
+    pub fn load_gamr(root: &Path, engine: Engine) -> Result<Self> {
+        Self::load_internal(root, None, engine, false)
+    }
+    pub fn load_gamr_warmed(root: &Path, engine: Engine) -> Result<Self> {
+        Self::load_internal(root, None, engine, true)
     }
     fn load_internal(
         root: &Path,
-        enrollment: &[f32],
+        enrollment: Option<&[f32]>,
         engine: Engine,
         warm_gpu: bool,
     ) -> Result<Self> {
         let trace = std::env::var_os("STREAMR_TRACE").is_some();
-        let enrollment = Pipeline::enrollment(root, enrollment)?;
+        let enrollment = enrollment
+            .map(|samples| Pipeline::enrollment(root, samples))
+            .transpose()?;
         let front_root = root.to_owned();
         let vox_root = root.to_owned();
         let reuse_root = root.to_owned();
@@ -222,28 +238,34 @@ impl ThreadedPipeline {
                     .push(spawn("streamr-gpu", output_tx.clone(), move || {
                         let loaded = (|| -> Result<_> {
                             if warm_gpu {
-                                let mut warm = GpuTail::load(&vox_root, &enrollment, engine)?;
+                                let mut warm =
+                                    GpuTail::load(&vox_root, enrollment.as_deref(), engine)?;
                                 for _ in 0..50 {
                                     warm.process(&[0.0; 320])?;
                                 }
                                 warm.flush()?;
                             }
-                            GpuTail::load(&vox_root, &enrollment, engine)
+                            GpuTail::load(&vox_root, enrollment.as_deref(), engine)
                         })();
                         let tail = initialized(loaded, ready_tx)?;
                         finish(tail, vox_rx, output_tx, "gpu", trace)
                     })?);
             }
             Engine::Cpu => {
-                let (vox_tx, reuse_rx) = mpsc::sync_channel(2);
-                let vox_ready = ready_tx.clone();
-                result
-                    .workers
-                    .push(spawn("streamr-vox", output_tx.clone(), move || {
-                        let vox =
-                            initialized(Vox::load(&vox_root, &enrollment, engine), vox_ready)?;
-                        forward(vox, vox_rx, vox_tx, "vox", trace)
-                    })?);
+                let reuse_rx = if let Some(enrollment) = enrollment {
+                    let (vox_tx, reuse_rx) = mpsc::sync_channel(2);
+                    let vox_ready = ready_tx.clone();
+                    result
+                        .workers
+                        .push(spawn("streamr-vox", output_tx.clone(), move || {
+                            let vox =
+                                initialized(Vox::load(&vox_root, &enrollment, engine), vox_ready)?;
+                            forward(vox, vox_rx, vox_tx, "vox", trace)
+                        })?);
+                    reuse_rx
+                } else {
+                    vox_rx
+                };
                 result
                     .workers
                     .push(spawn("streamr-reuse", output_tx.clone(), move || {

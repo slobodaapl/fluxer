@@ -35,6 +35,7 @@ const BACKEND_MODEL_NAMES: Readonly<Partial<Record<VoiceNoiseSuppressionBackend,
 	gtcrn: 'GTCRN',
 	deep_filter: 'DeepFilterNet',
 	streamr: 'Streamr',
+	gamr: 'Gamr',
 };
 
 const TRANSLATED_LABELS: Readonly<Partial<Record<VoiceNoiseSuppressionBackend, MessageDescriptor>>> = {

@@ -26,7 +26,7 @@ pub enum Engine {
 
 pub struct Pipeline {
     frontend: Frontend,
-    vox: Vox,
+    vox: Option<Vox>,
     reuse: Denoiser,
     input_count: usize,
     output_count: usize,
@@ -64,8 +64,18 @@ impl Pipeline {
         })
     }
     pub fn load(root: &Path, enrollment_48k: &[f32], engine: Engine) -> Result<Self> {
-        let enrollment = Self::enrollment(root, enrollment_48k)?;
-        let vox = Vox::load(root, &enrollment, engine)?;
+        Self::load_internal(root, Some(enrollment_48k), engine)
+    }
+    pub fn load_gamr(root: &Path, engine: Engine) -> Result<Self> {
+        Self::load_internal(root, None, engine)
+    }
+    fn load_internal(root: &Path, enrollment_48k: Option<&[f32]>, engine: Engine) -> Result<Self> {
+        let vox = enrollment_48k
+            .map(|samples| {
+                Self::enrollment(root, samples)
+                    .and_then(|enrollment| Vox::load(root, &enrollment, engine))
+            })
+            .transpose()?;
         let reuse = Self::load_reuse(root, engine)?;
         Ok(Self {
             frontend: Frontend::load(root)?,
@@ -81,7 +91,10 @@ impl Pipeline {
         ensure!(samples.iter().all(|x| x.is_finite()), "nonfinite input");
         self.input_count += samples.len();
         let input = self.frontend.process(samples)?;
-        let input = self.vox.process(&input)?;
+        let input = match &mut self.vox {
+            Some(vox) => vox.process(&input)?,
+            None => input,
+        };
         let output = self.reuse.process(&input)?;
         self.output_count += output.len();
         Ok(output)
@@ -90,8 +103,14 @@ impl Pipeline {
         ensure!(!self.drained, "pipeline already drained");
         self.drained = true;
         let input = self.frontend.flush()?;
-        let mut input = self.vox.process(&input)?;
-        input.extend(self.vox.flush()?);
+        let input = match &mut self.vox {
+            Some(vox) => {
+                let mut audio = vox.process(&input)?;
+                audio.extend(vox.flush()?);
+                audio
+            }
+            None => input,
+        };
         let mut output = self.reuse.process(&input)?;
         output.extend(self.reuse.flush()?);
         ensure!(

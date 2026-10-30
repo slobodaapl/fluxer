@@ -11,12 +11,16 @@ resolver = "2"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["napi"]
+napi = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
+
 [dependencies]
 async-io = "2.6.0"
 futures-lite = "2.6.1"
-napi = {version = "3.12.6", default-features = false, features = ["dyn-symbols", "napi8"]}
-napi-derive = "3.6.7"
+napi = {version = "3.12.6", default-features = false, features = ["dyn-symbols", "napi8"], optional = true}
+napi-derive = {version = "3.6.7", optional = true}
 zbus = "5.19.0"
 
 [build-dependencies]
-napi-build = "2.4.3"
+napi-build = {version = "2.4.3", optional = true}

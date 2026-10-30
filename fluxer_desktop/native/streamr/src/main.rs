@@ -25,9 +25,15 @@ fn collect(pipeline: &mut ThreadedPipeline, samples: &mut Vec<f32>) -> Result<()
 fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     ensure!(
-        args.len() == 3,
-        "usage: streamr-native MODEL_DIRECTORY cpu|vulkan"
+        (3..=4).contains(&args.len()),
+        "usage: streamr-native MODEL_DIRECTORY cpu|vulkan [streamr|gamr]"
     );
+    let gamr = match args.get(3) {
+        None => false,
+        Some(mode) if mode == "streamr" => false,
+        Some(mode) if mode == "gamr" => true,
+        _ => eyre::bail!("unsupported processing mode"),
+    };
     let root = Path::new(&args[1]);
     let (engine, name) = match args[2].to_str() {
         Some("cpu") => (Engine::Cpu, "cpu"),
@@ -41,13 +47,19 @@ fn run() -> Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let (kind, body) = protocol::read(&mut input, protocol::ENROLL_BYTES)?
-        .ok_or_else(|| eyre::eyre!("missing enrollment"))?;
-    ensure!(
-        kind == 0 && body.len() == protocol::ENROLL_BYTES,
-        "expected three-second 48kHz enrollment"
-    );
-    let enrollment = protocol::samples(&body)?;
-    let mut pipeline = ThreadedPipeline::load_warmed(root, &enrollment, engine)?;
+        .ok_or_else(|| eyre::eyre!("missing initialization frame"))?;
+    ensure!(kind == 0, "expected initialization frame");
+    let mut pipeline = if gamr {
+        ensure!(body.is_empty(), "Gamr initialization takes no enrollment");
+        ThreadedPipeline::load_gamr_warmed(root, engine)?
+    } else {
+        ensure!(
+            body.len() == protocol::ENROLL_BYTES,
+            "expected three-second 48kHz enrollment"
+        );
+        let enrollment = protocol::samples(&body)?;
+        ThreadedPipeline::load_warmed(root, &enrollment, engine)?
+    };
     let mut upsampler = upsampler::Upsampler::load(&root.join("resampler.f64"))?;
     protocol::write(&mut output, 0, name.as_bytes())?;
     while let Some((kind, body)) = protocol::read(&mut input, protocol::INPUT_BYTES)? {
@@ -62,10 +74,10 @@ fn run() -> Result<()> {
         let samples = protocol::samples(&body)?;
         let mut processed = Vec::new();
         collect(&mut pipeline, &mut processed)?;
-        ensure!(
-            pipeline.try_push(&samples)?,
-            "Streamr processing queue cannot keep up"
-        );
+        while !pipeline.try_push(&samples)? {
+            collect(&mut pipeline, &mut processed)?;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         collect(&mut pipeline, &mut processed)?;
         let audio = upsampler.process(&processed);
         ensure!(

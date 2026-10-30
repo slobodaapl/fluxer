@@ -1,0 +1,101 @@
+[package]
+name = "fluxer_desktop_tauri"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[lib]
+name = "fluxer_desktop_tauri_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "fluxer-desktop-tauri"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = {version = "2.7.4", features = []}
+
+[dependencies]
+base64 = "0.23.1"
+brotli-decompressor = "6.2.0"
+bytes = "1.12"
+dunce = "1.0.5"
+fluxer_app_store = {path = "../../fluxer_desktop/native/app-store", default-features = false}
+fluxer_gateway_socket = {path = "../../fluxer_desktop/native/gateway-socket", default-features = false}
+fluxer_platform_info = {path = "../../fluxer_desktop/native/platform-info", default-features = false}
+flate2 = "1.1.10"
+futures-util = {version = "0.3.32", default-features = false, features = ["std"]}
+getrandom = "0.3.4"
+http-body-util = "0.1.5"
+hyper = {version = "1.11", features = ["client", "http1", "http2"]}
+hyper-rustls = {version = "0.27.9", default-features = false, features = ["http1", "http2", "ring", "tls12", "logging"]}
+hyper-util = {version = "0.1.20", features = ["client-legacy", "http1", "http2", "tokio"]}
+percent-encoding = "2.3.2"
+png = "0.18.1"
+rustls = {version = "0.23.40", default-features = false, features = ["ring", "std", "tls12", "logging"]}
+rustls-native-certs = "0.8.4"
+serde = {version = "1.0", features = ["derive"]}
+serde_json = {version = "1.0", features = ["preserve_order"]}
+sha2 = "0.10.9"
+tauri = {version = "2.12.5", features = ["devtools", "tray-icon"]}
+tauri-plugin-opener = "2.7.2"
+tauri-plugin-single-instance = "2.5.4"
+tokio = {version = "1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"]}
+tokio-util = "0.7.19"
+tower-service = "0.3.3"
+tracing = "0.1.44"
+tracing-subscriber = {version = "0.3.20", features = ["env-filter"]}
+url = "2.5.8"
+webpki-roots = "1.0.10"
+zune-jpeg = "0.5.15"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.177"
+
+[target.'cfg(windows)'.dependencies]
+fluxer_win_shell = {path = "../../fluxer_desktop/native/win-shell", default-features = false}
+schannel = "0.1.29"
+windows = {version = "0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications", "Win32_Foundation", "Win32_Security", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Power", "Win32_System_ProcessStatus", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"]}
+webview2-com = "0.39.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+muda = {version = "0.20.0", default-features = false}
+objc2-foundation = "0.3.2"
+objc2-service-management = {version = "0.3.2", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"]}
+objc2-user-notifications = "0.3.2"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+arboard = {version = "3.6.1", default-features = false}
+rfd = {version = "0.17.2", default-features = false, features = ["common-controls-v6"]}
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fluxer_linux_notifications = {path = "../../fluxer_desktop/native/linux-notifications", default-features = false}
+fluxer_linux_portals = {path = "../../fluxer_desktop/native/linux-portals", default-features = false}
+fluxer_system_hunspell = {path = "../../fluxer_desktop/native/system-hunspell", default-features = false}
+gtk = "0.18.2"
+javascriptcore-rs = "=1.1.2"
+# Selects tray-icon's StatusNotifierItem backend over libappindicator, which Tauri enables.
+tray-icon = {version = "0.25.1", default-features = false, features = ["ksni"]}
+webkit2gtk = {version = "=2.0.2", features = ["v2_38"]}
+x11rb = {version = "0.14.0", features = ["screensaver"]}
+zbus = "5.19.0"
+
+[dev-dependencies]
+tauri = {version = "2.12.5", features = ["test"]}
+tempfile = "3.23.0"
+tokio-tungstenite = {version = "0.30.0", default-features = false, features = ["connect", "handshake"]}
+tokio = {version = "1.53.1", features = ["fs", "io-util", "macros", "rt"]}
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+
+# Tauri 2.12.5 with one IPC change; see vendor/tauri/FLUXER_PATCH.md.
+[patch.crates-io]
+tauri = {path = "../vendor/tauri"}

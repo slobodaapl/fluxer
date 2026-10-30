@@ -28,8 +28,9 @@ function harness(t) {
 	globalThis.AudioWorkletNode = AudioWorkletNode;
 	t.after(() => {globalThis.AudioWorkletNode = previous;});
 	const context = {sampleRate: 48000, audioWorklet: {addModule: async () => {}}};
-	const api = {start: async () => 'session', stop: async id => {stopped.push(id);}, push: async (_id, audio) => {pushed.push(audio); return audio;}};
-	return {context, api, stopped, pushed, nodes, failures, controller,
+	const transport = {close() {this.closed = true;}};
+	const api = {connect: async () => transport, start: async () => 'session', stop: async id => {stopped.push(id);}, push: async (_id, audio) => {pushed.push(audio); return audio;}};
+	return {context, api, transport, stopped, pushed, nodes, failures, controller,
 		async start() {const {createNativeVoiceIsolationNode} = await modulePromise;
 			return createNativeVoiceIsolationNode(context, controller.signal, error => failures.push(error), api, 'worklet.js', 'fluxer-streamr', 'Streamr');},
 	};
@@ -42,35 +43,26 @@ test('cancellation while enrollment starts closes the eventual session without c
 	assert.deepEqual(h.stopped, ['late-session']); assert.equal(h.nodes.length, 0);
 });
 
-test('native node serializes queued audio and disposes idempotently', async t => {
-	const h = harness(t), first = deferred(); let calls = 0;
-	h.api.push = async (_id, audio) => {h.pushed.push(audio); return ++calls === 1 ? first.promise : audio;};
-	const result = await h.start(), node = result.node;
-	const a = new Float32Array([1]), b = new Float32Array([2]);
-	node.port.onmessage({data: {type: 'audio', audio: a}});
-	node.port.onmessage({data: {type: 'audio', audio: b}});
-	assert.equal(h.pushed.length, 1);
-	first.resolve(a); await turn();
-	assert.deepEqual(h.pushed, [a, b]);
-	assert.deepEqual(node.messages.filter(m => m.type === 'processed').map(m => m.audio), [a, b]);
-	result.dispose(); result.dispose(); h.controller.abort(); await turn();
-	assert.deepEqual(h.stopped, ['session']); assert.equal(node.closed, true); assert.equal(node.disconnected, true);
+test('native node transfers its direct audio port and disposes idempotently', async t => {
+ const h=harness(t);const {node,dispose}=await h.start();
+ assert.deepEqual(node.messages,[{type:'transport',port:h.transport}]);
+ assert.equal(h.pushed.length,0);
+ dispose();dispose();h.controller.abort();await turn();
+ assert.deepEqual(h.stopped,['session']);assert.equal(node.closed,true);assert.equal(node.disconnected,true);
 });
 
-test('abort suppresses a late audio response and releases the session', async t => {
-	const h = harness(t), response = deferred(); h.api.push = () => response.promise;
-	const {node} = await h.start(); node.port.onmessage({data: {type: 'audio', audio: new Float32Array(960)}});
-	h.controller.abort(); response.resolve(new Float32Array(960)); await turn();
-	assert.equal(node.messages.filter(m => m.type === 'processed').length, 0);
-	assert.deepEqual(h.stopped, ['session']); assert.equal(h.failures.length, 0);
+test('abort while connecting closes a late port and releases the session', async t => {
+ const h=harness(t),connected=deferred();h.api.connect=()=>connected.promise;
+ const start=h.start();await turn();h.controller.abort();connected.resolve(h.transport);
+ await assert.rejects(start,{name:'AbortError'});
+ assert.equal(h.transport.closed,true);assert.deepEqual(h.stopped,['session']);assert.equal(h.nodes.length,0);
 });
 
-test('backend failure closes the node and reports exactly once', async t => {
-	const h = harness(t); h.api.push = async () => {throw new Error('native failed');};
-	const {node, dispose} = await h.start(); node.port.onmessage({data: {type: 'audio', audio: new Float32Array(960)}});
-	await turn(); dispose();
-	assert.equal(h.failures.length, 1); assert.match(h.failures[0].message, /native failed/);
-	assert.deepEqual(h.stopped, ['session']); assert.equal(node.closed, true);
+test('worklet transport failure closes the session and reports exactly once', async t => {
+ const h=harness(t);const {node,dispose}=await h.start();
+ node.port.onmessage({data:{type:'error',message:'native failed'}});dispose();
+ assert.equal(h.failures.length,1);assert.match(h.failures[0].message,/native failed/);
+ assert.deepEqual(h.stopped,['session']);assert.equal(node.closed,true);
 });
 
 test('failed worklet loading can retry in the same context', async t => {

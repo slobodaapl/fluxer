@@ -44,12 +44,18 @@ vi.mock('@app/features/voice/utils/VoiceActivityGate', () => ({
 }));
 
 import availability from '@app/features/voice/utils/noise_suppression/NoiseSuppressionAvailability';
+import {
+	isVoiceNoiseSuppressionBackend,
+	selectUsableNoiseSuppressionBackend,
+} from '@app/features/voice/utils/noise_suppression/NoiseSuppressionBackends';
 import {VoiceInputGraph} from '@app/features/voice/utils/VoiceInputProcessor';
 
 let graph: VoiceInputGraph;
+let requested: 'streamr' | 'gamr';
 let dfn: {node: ReturnType<typeof h.node>; primed: ReturnType<typeof vi.fn>; release: ReturnType<typeof vi.fn>};
 let native: {node: ReturnType<typeof h.node>; dispose: ReturnType<typeof vi.fn>};
 beforeEach(() => {
+	requested = 'streamr';
 	availability.failures.clear();
 	availability.streamrEnrolled = null;
 	availability.streamrRevision = 0;
@@ -68,7 +74,7 @@ beforeEach(() => {
 	});
 	h.gates.mockImplementation(() => h.node());
 	graph = new VoiceInputGraph({createGain: h.node, currentTime: 0} as unknown as AudioContext, 1, () => ({
-		backend: availability.resolveEffectiveBackend('streamr'),
+		backend: availability.resolveEffectiveBackend(requested),
 		inputVolumePercent: 100,
 		gateEnabled: true,
 		gateAuto: false,
@@ -150,4 +156,54 @@ it('a sample changed during startup retires the stale session and starts with th
 	await vi.waitFor(() => expect(stale.dispose).toHaveBeenCalledTimes(1));
 	expect(native.dispose).not.toHaveBeenCalled();
 	expect(availability.getFallback('streamr')).toBeNull();
+});
+
+it('Gamr needs no enrollment and enrollment edits leave its DFN/native graph running', async () => {
+	requested = 'gamr';
+	availability.setStreamrEnrollment(false);
+	await graph.configure();
+	expect(h.start).toHaveBeenCalledTimes(1);
+	expect(h.start.mock.calls[0][3]).toBe('gamr');
+	expect(dfn.primed).toHaveBeenCalledOnce();
+	expect(availability.getFallback('gamr')).toBeNull();
+	availability.setStreamrEnrollment(true, true);
+	await graph.configure();
+	availability.setStreamrEnrollment(false, true);
+	await graph.configure();
+	expect(h.start).toHaveBeenCalledTimes(1);
+	expect(native.dispose).not.toHaveBeenCalled();
+	expect(availability.streamrStarting).toBe(0);
+});
+
+it('switching Gamr to Streamr replaces the chain with the enrolled mode', async () => {
+	requested = 'gamr';
+	await graph.configure();
+	const previous = native;
+	availability.setStreamrEnrollment(true, true);
+	requested = 'streamr';
+	await graph.configure();
+	expect(h.start.mock.calls.map((args) => args[3])).toEqual(['gamr', 'streamr']);
+	await vi.waitFor(() => expect(previous.dispose).toHaveBeenCalledOnce());
+	expect(native.dispose).not.toHaveBeenCalled();
+});
+
+it('Gamr startup failure does not disable Streamr and retries on explicit selection', async () => {
+	requested = 'gamr';
+	h.start.mockRejectedValueOnce(new Error('native failed'));
+	await graph.configure();
+	expect(availability.getFallback('gamr')).toBe('failed');
+	expect(availability.getFallback('streamr')).toBeNull();
+	availability.clearBackendFailure('gamr');
+	await graph.configure();
+	expect(h.start).toHaveBeenCalledTimes(2);
+	expect(availability.getFallback('gamr')).toBeNull();
+});
+
+it('Gamr is a persisted desktop choice with the same audio capability requirements', () => {
+	expect(isVoiceNoiseSuppressionBackend('gamr')).toBe(true);
+	const capabilities = {sampleRate: 48000, wasmSimd: true, audioWorklet: true, nativeStreamr: true};
+	expect(selectUsableNoiseSuppressionBackend('gamr', capabilities)).toBe('gamr');
+	expect(selectUsableNoiseSuppressionBackend('gamr', {...capabilities, nativeStreamr: false})).toBe('standard');
+	expect(selectUsableNoiseSuppressionBackend('gamr', {...capabilities, audioWorklet: false})).toBe('standard');
+	expect(selectUsableNoiseSuppressionBackend('gamr', {...capabilities, sampleRate: 44100})).toBe('standard');
 });

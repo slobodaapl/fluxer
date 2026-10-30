@@ -10,11 +10,15 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod logind;
 
+#[cfg(feature = "napi")]
+pub mod napi_surface;
+
 #[cfg(target_os = "linux")]
-pub use linux::{EvdevHook, is_keyboard_readable};
+pub use linux::{
+    EvdevError, EvdevHook, EventSink, KeyKind, MouseKind, NativeEvent, Result, is_keyboard_readable,
+};
 
 #[cfg(not(target_os = "linux"))]
-#[napi_derive::napi(js_name = "isKeyboardReadable")]
 pub fn is_keyboard_readable() -> bool {
     false
 }

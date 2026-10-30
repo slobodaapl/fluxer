@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[cfg(feature = "napi")]
+pub mod napi_surface;
+
 use std::{
+    fmt,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex, Once, OnceLock,
@@ -10,12 +14,6 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use napi::{
-    Error, Status,
-    bindgen_prelude::{Buffer, Function, Result},
-    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
-};
-use napi_derive::napi;
 use tokio::{
     net::TcpStream,
     sync::{Notify, mpsc},
@@ -63,6 +61,24 @@ const _: () =
 const _: () = assert!(
     GATEWAY_FRAME_MAX_BYTES + COMMAND_QUEUE_ENTRY_OVERHEAD_BYTES <= COMMAND_QUEUE_BYTES_MAX
 );
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GatewaySocketError {
+    InvalidArg(String),
+    Generic(String),
+}
+
+impl fmt::Display for GatewaySocketError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidArg(message) | Self::Generic(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for GatewaySocketError {}
+
+type Result<T> = std::result::Result<T, GatewaySocketError>;
 
 static RUSTLS_PROVIDER_INIT: Once = Once::new();
 static TRANSPORT_RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> =
@@ -175,17 +191,18 @@ fn try_reserve_atomic(counter: &AtomicUsize, amount: usize, maximum: usize) -> b
     }
 }
 
-struct TransportEvent {
-    kind: &'static str,
-    data: Option<String>,
-    binary: Option<Vec<u8>>,
-    code: Option<u16>,
-    reason: Option<String>,
-    was_clean: Option<bool>,
-    message: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayEvent {
+    pub kind: &'static str,
+    pub data: Option<String>,
+    pub binary: Option<Vec<u8>>,
+    pub code: Option<u16>,
+    pub reason: Option<String>,
+    pub was_clean: Option<bool>,
+    pub message: Option<String>,
 }
 
-impl TransportEvent {
+impl GatewayEvent {
     fn kind(kind: &'static str) -> Self {
         Self {
             kind,
@@ -247,9 +264,19 @@ impl TransportEvent {
     }
 }
 
-struct QueuedTransportEvent {
-    event: TransportEvent,
+/// An event that still holds its share of the connection's event-queue budget.
+/// The budget is returned when the host consumes the event via [`Self::release`].
+pub struct QueuedGatewayEvent {
+    event: GatewayEvent,
     reservation: QueueReservation,
+}
+
+impl QueuedGatewayEvent {
+    pub fn release(self) -> GatewayEvent {
+        let Self { event, reservation } = self;
+        drop(reservation);
+        event
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,9 +328,11 @@ struct QueuedTransportCommand {
     reservation: QueueReservation,
 }
 
-trait EventDelivery: Send + Sync {
-    fn deliver(&self, event: QueuedTransportEvent) -> bool;
-    fn deliver_terminal(&self, event: TransportEvent);
+/// Host-side event transport. `deliver` returning false fails delivery: the
+/// connection emits one terminal close (1006) through `deliver_terminal` and stops.
+pub trait EventDelivery: Send + Sync {
+    fn deliver(&self, event: QueuedGatewayEvent) -> bool;
+    fn deliver_terminal(&self, event: GatewayEvent);
 }
 
 struct EventSink {
@@ -314,13 +343,13 @@ struct EventSink {
 }
 
 impl EventSink {
-    async fn emit(&self, event: TransportEvent) -> bool {
+    async fn emit(&self, event: GatewayEvent) -> bool {
         let Some(reservation) = self.reserve_when_ready(event.queue_bytes()).await else {
             return false;
         };
         if self
             .delivery
-            .deliver(QueuedTransportEvent { event, reservation })
+            .deliver(QueuedGatewayEvent { event, reservation })
         {
             return true;
         }
@@ -353,7 +382,7 @@ impl EventSink {
         if self.delivery_failed.swap(true, Ordering::AcqRel) {
             return;
         }
-        self.delivery.deliver_terminal(TransportEvent::close(
+        self.delivery.deliver_terminal(GatewayEvent::close(
             1006,
             CLOSE_REASON_DELIVERY_FAILED,
             false,
@@ -361,19 +390,19 @@ impl EventSink {
     }
 
     async fn emit_message(&self, data: String) -> bool {
-        self.emit(TransportEvent::message(data)).await
+        self.emit(GatewayEvent::message(data)).await
     }
 
     async fn emit_binary(&self, data: Vec<u8>) -> bool {
-        self.emit(TransportEvent::binary(data)).await
+        self.emit(GatewayEvent::binary(data)).await
     }
 
     async fn emit_error(&self, message: impl Into<String>) {
-        self.emit(TransportEvent::error(message.into())).await;
+        self.emit(GatewayEvent::error(message.into())).await;
     }
 
     async fn emit_close(&self, code: u16, reason: &str, was_clean: bool) {
-        self.emit(TransportEvent::close(code, reason, was_clean))
+        self.emit(GatewayEvent::close(code, reason, was_clean))
             .await;
     }
 }
@@ -408,31 +437,26 @@ struct TransportSession {
     dispose_notify: Arc<Notify>,
 }
 
-#[napi(js_name = "NativeGatewayConnection")]
-pub struct NativeGatewayConnection {
+/// Connection handle. Dropping it disposes the connection.
+pub struct GatewayConnection {
     inner: Arc<Inner>,
 }
 
-#[napi]
-impl NativeGatewayConnection {
-    #[napi(js_name = "sendText")]
+impl GatewayConnection {
     pub fn send_text(&self, text: String) -> Result<()> {
         self.send_frame(Message::Text(Utf8Bytes::from(text)))
     }
 
-    #[napi(js_name = "sendBinary")]
-    pub fn send_binary(&self, payload: Buffer) -> Result<()> {
-        self.send_frame(Message::Binary(payload.to_vec().into()))
+    pub fn send_binary(&self, payload: Vec<u8>) -> Result<()> {
+        self.send_frame(Message::Binary(payload.into()))
     }
 
-    #[napi]
     pub fn close(&self, code: u32, reason: String) -> Result<()> {
         let code = validate_close_code(code)?;
         validate_close_reason(&reason)?;
         self.send_command(TransportCommand::Close { code, reason })
     }
 
-    #[napi]
     pub fn dispose(&self) -> Result<()> {
         if self.inner.disposed.swap(true, Ordering::AcqRel) {
             return Ok(());
@@ -446,9 +470,7 @@ impl NativeGatewayConnection {
             .take();
         Ok(())
     }
-}
 
-impl NativeGatewayConnection {
     fn start(
         target: ConnectionTarget,
         mode: TransportMode,
@@ -551,7 +573,7 @@ impl NativeGatewayConnection {
     }
 }
 
-impl Drop for NativeGatewayConnection {
+impl Drop for GatewayConnection {
     fn drop(&mut self) {
         let _ = self.dispose();
     }
@@ -865,7 +887,7 @@ async fn run_connection(session: TransportSession) {
             return;
         }
     };
-    if !sink.emit(TransportEvent::kind(EVENT_KIND_OPEN)).await {
+    if !sink.emit(GatewayEvent::kind(EVENT_KIND_OPEN)).await {
         return;
     }
 
@@ -1076,95 +1098,21 @@ fn validate_close_reason(reason: &str) -> Result<()> {
     Ok(())
 }
 
-fn invalid_arg_error(message: impl Into<String>) -> Error {
-    Error::new(Status::InvalidArg, message.into())
+fn invalid_arg_error(message: impl Into<String>) -> GatewaySocketError {
+    GatewaySocketError::InvalidArg(message.into())
 }
 
-fn generic_error(message: impl Into<String>) -> Error {
-    Error::new(Status::GenericFailure, message.into())
+fn generic_error(message: impl Into<String>) -> GatewaySocketError {
+    GatewaySocketError::Generic(message.into())
 }
 
-#[napi(object, use_nullable = true)]
-pub struct NativeGatewayEvent {
-    pub kind: String,
-    pub data: Option<String>,
-    pub binary: Option<Buffer>,
-    pub code: Option<u16>,
-    pub reason: Option<String>,
-    #[napi(js_name = "wasClean")]
-    pub was_clean: Option<bool>,
-    pub message: Option<String>,
-}
-
-impl From<TransportEvent> for NativeGatewayEvent {
-    fn from(event: TransportEvent) -> Self {
-        Self {
-            kind: event.kind.to_owned(),
-            data: event.data,
-            binary: event.binary.map(Buffer::from),
-            code: event.code,
-            reason: event.reason,
-            was_clean: event.was_clean,
-            message: event.message,
-        }
-    }
-}
-
-#[napi(object, use_nullable = true)]
-pub struct NativeGatewayConnectOptions {
-    pub url: String,
-    pub address: Option<String>,
-    pub mode: String,
-}
-
-type EventThreadsafeFunction = ThreadsafeFunction<
-    QueuedTransportEvent,
-    UnknownReturnValue,
-    NativeGatewayEvent,
-    Status,
-    false,
-    true,
-    0,
->;
-
-type TerminalEventThreadsafeFunction = ThreadsafeFunction<
-    TransportEvent,
-    UnknownReturnValue,
-    NativeGatewayEvent,
-    Status,
-    false,
-    true,
-    0,
->;
-
-struct NapiEventDelivery {
-    regular: EventThreadsafeFunction,
-    terminal: TerminalEventThreadsafeFunction,
-}
-
-impl EventDelivery for NapiEventDelivery {
-    fn deliver(&self, event: QueuedTransportEvent) -> bool {
-        self.regular
-            .call(event, ThreadsafeFunctionCallMode::NonBlocking)
-            == Status::Ok
-    }
-
-    fn deliver_terminal(&self, event: TransportEvent) {
-        let _ = self
-            .terminal
-            .call(event, ThreadsafeFunctionCallMode::NonBlocking);
-    }
-}
-
-#[napi(js_name = "windowsIntermediateStoreRoots")]
-pub fn windows_intermediate_store_roots() -> Vec<Buffer> {
+pub fn windows_intermediate_store_roots() -> Vec<Vec<u8>> {
     intermediate_store_roots()
         .into_iter()
-        .map(|certificate| Buffer::from(certificate.to_vec()))
+        .map(|certificate| certificate.to_vec())
         .collect()
 }
 
-#[napi]
 pub fn warmup() -> Result<()> {
     let runtime = transport_runtime()?;
     if TLS_CLIENT_CONFIG.get().is_none() {
@@ -1173,46 +1121,426 @@ pub fn warmup() -> Result<()> {
     Ok(())
 }
 
-#[napi]
-pub fn connect(
-    options: NativeGatewayConnectOptions,
-    on_event: Function<NativeGatewayEvent, UnknownReturnValue>,
-    on_terminal_event: Function<NativeGatewayEvent, UnknownReturnValue>,
-) -> Result<NativeGatewayConnection> {
-    let mode = TransportMode::parse(&options.mode)?;
-    let target = parse_websocket_connection_target(&options.url, options.address.as_deref())?;
+/// Validates the connect arguments and installs the rustls provider; shared by
+/// [`connect`] and the napi surface, which builds its callbacks in between.
+fn prepare_connect(
+    url: &str,
+    address: Option<&str>,
+    mode: &str,
+) -> Result<(ConnectionTarget, TransportMode)> {
+    let mode = TransportMode::parse(mode)?;
+    let target = parse_websocket_connection_target(url, address)?;
     ensure_rustls_crypto_provider();
-    let regular = on_event
-        .build_threadsafe_function::<QueuedTransportEvent>()
-        .weak::<true>()
-        .callee_handled::<false>()
-        .max_queue_size::<0>()
-        .build_callback(|context| {
-            let QueuedTransportEvent { event, reservation } = context.value;
-            drop(reservation);
-            Ok(NativeGatewayEvent::from(event))
+    Ok((target, mode))
+}
+
+pub fn connect(
+    url: &str,
+    address: Option<&str>,
+    mode: &str,
+    delivery: Arc<dyn EventDelivery>,
+) -> Result<GatewayConnection> {
+    let (target, mode) = prepare_connect(url, address, mode)?;
+    GatewayConnection::start(target, mode, delivery)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+        task::JoinHandle,
+    };
+
+    const WAIT: Duration = Duration::from_secs(5);
+
+    fn invalid_arg(message: &str) -> GatewaySocketError {
+        GatewaySocketError::InvalidArg(message.to_owned())
+    }
+
+    fn target_error(url: &str, address: Option<&str>) -> GatewaySocketError {
+        match parse_websocket_connection_target(url, address) {
+            Ok(_) => panic!("expected {url:?} / {address:?} to be rejected"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn transport_mode_rejects_unknown_values_as_invalid_arg() {
+        assert_eq!(TransportMode::parse("gateway"), Ok(TransportMode::Gateway));
+        assert_eq!(TransportMode::parse("voice"), Ok(TransportMode::Voice));
+        for value in ["", "Gateway", "rtc"] {
+            assert_eq!(
+                TransportMode::parse(value),
+                Err(invalid_arg(&format!(
+                    "unsupported transport mode '{value}', expected 'gateway' or 'voice'"
+                )))
+            );
+        }
+    }
+
+    #[test]
+    fn error_display_is_the_message_only() {
+        assert_eq!(invalid_arg("bad input").to_string(), "bad input");
+        assert_eq!(
+            GatewaySocketError::Generic("gateway socket is disposed".to_owned()).to_string(),
+            "gateway socket is disposed"
+        );
+    }
+
+    #[test]
+    fn close_code_accepts_only_sendable_codes() {
+        for code in [1000, 1003, 1007, 1013, 3000, 3999, 4000, 4999] {
+            assert_eq!(validate_close_code(code), Ok(code as u16), "code {code}");
+        }
+        for code in [
+            0, 999, 1004, 1005, 1006, 1014, 1015, 1016, 2999, 5000, 65_535,
+        ] {
+            assert_eq!(
+                validate_close_code(code),
+                Err(invalid_arg(&format!(
+                    "WebSocket close code {code} is not allowed"
+                ))),
+                "code {code}"
+            );
+        }
+        assert_eq!(
+            validate_close_code(65_536),
+            Err(invalid_arg("WebSocket close code is out of range"))
+        );
+    }
+
+    #[test]
+    fn close_reason_is_limited_to_123_bytes() {
+        assert_eq!(validate_close_reason(""), Ok(()));
+        assert_eq!(validate_close_reason(&"a".repeat(123)), Ok(()));
+        let too_long = invalid_arg("WebSocket close reason exceeds 123 bytes");
+        assert_eq!(
+            validate_close_reason(&"a".repeat(124)),
+            Err(too_long.clone())
+        );
+        // The limit counts UTF-8 bytes: 41 three-byte chars = 123 bytes, one more ASCII = 124.
+        assert_eq!(validate_close_reason(&"€".repeat(41)), Ok(()));
+        assert_eq!(
+            validate_close_reason(&format!("{}a", "€".repeat(41))),
+            Err(too_long)
+        );
+    }
+
+    #[test]
+    fn connection_target_accepts_ws_and_wss() {
+        let plain = parse_websocket_connection_target("ws://127.0.0.1:9000/gateway", None)
+            .expect("plain ws to loopback is accepted");
+        assert_eq!(plain.host, "127.0.0.1");
+        assert_eq!(plain.port, 9000);
+        assert!(!plain.tls);
+        assert_eq!(plain.url, "ws://127.0.0.1:9000/gateway");
+        assert_eq!(plain.pinned_address, None);
+
+        let secure = parse_websocket_connection_target("wss://gateway.example.com/?v=1", None)
+            .expect("wss is accepted");
+        assert_eq!(secure.host, "gateway.example.com");
+        assert_eq!(secure.port, 443);
+        assert!(secure.tls);
+    }
+
+    #[test]
+    fn connection_target_rejects_other_schemes_and_authorities() {
+        for url in [
+            "http://example.com/",
+            "https://example.com/",
+            "file:///tmp/socket",
+        ] {
+            assert_eq!(
+                target_error(url, None),
+                invalid_arg("gateway socket connect URL must use ws or wss"),
+                "{url}"
+            );
+        }
+        for url in [
+            "ws://user@example.com/",
+            "ws://u:p@example.com/",
+            "ws://example.com/#f",
+        ] {
+            assert_eq!(
+                target_error(url, None),
+                invalid_arg("gateway socket connect URL authority is invalid"),
+                "{url}"
+            );
+        }
+        for url in ["", " ws://example.com/", "ws://exa\nmple.com/", "not a url"] {
+            assert_eq!(
+                target_error(url, None),
+                invalid_arg("gateway socket connect URL is invalid"),
+                "{url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn connection_target_url_is_limited_to_endpoint_max_bytes() {
+        let prefix = "wss://example.com/";
+        let at_limit = format!(
+            "{prefix}{}",
+            "a".repeat(ENDPOINT_URL_MAX_BYTES - prefix.len())
+        );
+        assert_eq!(at_limit.len(), 2_048);
+        assert!(parse_websocket_connection_target(&at_limit, None).is_ok());
+        let over_limit = format!("{at_limit}a");
+        assert_eq!(
+            target_error(&over_limit, None),
+            invalid_arg("gateway socket connect URL is invalid")
+        );
+    }
+
+    #[test]
+    fn connection_target_parses_pinned_address() {
+        let url = "wss://gateway.example.com/";
+        for (address, expected) in [
+            ("203.0.113.7", "203.0.113.7".parse::<IpAddr>().unwrap()),
+            ("2001:db8::1", "2001:db8::1".parse::<IpAddr>().unwrap()),
+        ] {
+            let target = parse_websocket_connection_target(url, Some(address)).unwrap();
+            assert_eq!(target.pinned_address, Some(expected));
+            assert_eq!(target.host, "gateway.example.com");
+        }
+        for address in ["gateway.example.com", "203.0.113.256", "[::1]"] {
+            assert_eq!(
+                target_error(url, Some(address)),
+                invalid_arg("gateway socket pinned address must be an IP address"),
+                "{address}"
+            );
+        }
+        let oversize = "1".repeat(PINNED_ADDRESS_MAX_BYTES + 1);
+        for address in ["", " 203.0.113.7", "203.0.113.7\n", oversize.as_str()] {
+            assert_eq!(
+                target_error(url, Some(address)),
+                invalid_arg("gateway socket pinned address is invalid"),
+                "{address:?}"
+            );
+        }
+    }
+
+    struct CollectingDelivery {
+        events: UnboundedSender<GatewayEvent>,
+        terminal: UnboundedSender<GatewayEvent>,
+    }
+
+    impl EventDelivery for CollectingDelivery {
+        fn deliver(&self, event: QueuedGatewayEvent) -> bool {
+            self.events.send(event.release()).is_ok()
+        }
+
+        fn deliver_terminal(&self, event: GatewayEvent) {
+            let _ = self.terminal.send(event);
+        }
+    }
+
+    async fn next_event(events: &mut UnboundedReceiver<GatewayEvent>) -> GatewayEvent {
+        tokio::time::timeout(WAIT, events.recv())
+            .await
+            .expect("timed out waiting for gateway event")
+            .expect("event channel closed")
+    }
+
+    /// Accepts one WebSocket client and runs `serve` on it.
+    async fn local_server<F, Fut>(serve: F) -> (String, JoinHandle<()>)
+    where
+        F: FnOnce(WebSocketStream<TcpStream>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            serve(tokio_tungstenite::accept_async(stream).await.unwrap()).await;
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn connect_validates_mode_before_target() {
+        let (events, _) = unbounded_channel();
+        let (terminal, _) = unbounded_channel();
+        let delivery = Arc::new(CollectingDelivery { events, terminal });
+        let result = connect("http://example.com/", None, "rtc", delivery);
+        assert_eq!(
+            result.err(),
+            Some(invalid_arg(
+                "unsupported transport mode 'rtc', expected 'gateway' or 'voice'"
+            ))
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connection_round_trip_over_local_websocket() {
+        let (url, server) = local_server(|mut socket| async move {
+            while let Some(Ok(message)) = socket.next().await {
+                if message.is_text() || message.is_binary() {
+                    socket.send(message).await.unwrap();
+                }
+            }
         })
-        .map_err(|error| {
-            generic_error(format!(
-                "failed to create gateway socket callback: {}",
-                error.reason
-            ))
-        })?;
-    let terminal = on_terminal_event
-        .build_threadsafe_function::<TransportEvent>()
-        .weak::<true>()
-        .callee_handled::<false>()
-        .max_queue_size::<0>()
-        .build_callback(|context| Ok(NativeGatewayEvent::from(context.value)))
-        .map_err(|error| {
-            generic_error(format!(
-                "failed to create gateway socket terminal callback: {}",
-                error.reason
-            ))
-        })?;
-    NativeGatewayConnection::start(
-        target,
-        mode,
-        Arc::new(NapiEventDelivery { regular, terminal }),
-    )
+        .await;
+        let (events_tx, mut events) = unbounded_channel();
+        let (terminal_tx, mut terminal) = unbounded_channel();
+        let connection = connect(
+            &url,
+            Some("127.0.0.1"),
+            "gateway",
+            Arc::new(CollectingDelivery {
+                events: events_tx,
+                terminal: terminal_tx,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(next_event(&mut events).await.kind, "open");
+
+        connection.send_text("hello".to_owned()).unwrap();
+        let echoed = next_event(&mut events).await;
+        assert_eq!(
+            (echoed.kind, echoed.data.as_deref()),
+            ("message", Some("hello"))
+        );
+
+        connection.send_binary(vec![0, 1, 2, 255]).unwrap();
+        let echoed = next_event(&mut events).await;
+        assert_eq!(
+            (echoed.kind, echoed.binary.as_deref()),
+            ("binary", Some(&[0u8, 1, 2, 255][..]))
+        );
+
+        connection.close(1000, "bye".to_owned()).unwrap();
+        let closed = next_event(&mut events).await;
+        assert_eq!(
+            (
+                closed.kind,
+                closed.code,
+                closed.reason.as_deref(),
+                closed.was_clean
+            ),
+            ("close", Some(1000), Some("bye"), Some(true))
+        );
+
+        tokio::time::timeout(WAIT, server)
+            .await
+            .expect("server did not observe the close")
+            .unwrap();
+
+        connection.dispose().unwrap();
+        connection.dispose().unwrap();
+        let disposed = GatewaySocketError::Generic("gateway socket is disposed".to_owned());
+        assert_eq!(
+            connection.send_text("late".to_owned()),
+            Err(disposed.clone())
+        );
+        assert_eq!(connection.close(1000, String::new()), Err(disposed));
+        assert!(terminal.try_recv().is_err(), "no terminal event expected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversize_send_is_rejected_before_queueing() {
+        let (url, _server) =
+            local_server(
+                |mut socket| async move { while let Some(Ok(_)) = socket.next().await {} },
+            )
+            .await;
+        let (events_tx, mut events) = unbounded_channel();
+        let (terminal_tx, _terminal) = unbounded_channel();
+        let connection = connect(
+            &url,
+            None,
+            "voice",
+            Arc::new(CollectingDelivery {
+                events: events_tx,
+                terminal: terminal_tx,
+            }),
+        )
+        .unwrap();
+        assert_eq!(next_event(&mut events).await.kind, "open");
+        assert_eq!(
+            connection.send_binary(vec![0; VOICE_FRAME_MAX_BYTES + 1]),
+            Err(invalid_arg("gateway socket payload exceeds 262144 bytes"))
+        );
+        connection
+            .send_binary(vec![0; VOICE_FRAME_MAX_BYTES])
+            .unwrap();
+    }
+
+    /// Holds every delivered event (keeping its queue reservation) until `hold` is cleared.
+    struct HoldingDelivery {
+        hold: AtomicBool,
+        held: Mutex<Vec<QueuedGatewayEvent>>,
+        delivered: AtomicUsize,
+        terminal: AtomicBool,
+    }
+
+    impl EventDelivery for HoldingDelivery {
+        fn deliver(&self, event: QueuedGatewayEvent) -> bool {
+            if self.hold.load(Ordering::Acquire) {
+                self.held.lock().unwrap().push(event);
+            } else {
+                event.release();
+            }
+            self.delivered.fetch_add(1, Ordering::AcqRel);
+            true
+        }
+
+        fn deliver_terminal(&self, _event: GatewayEvent) {
+            self.terminal.store(true, Ordering::Release);
+        }
+    }
+
+    async fn wait_for_delivered(delivery: &HoldingDelivery, count: usize) {
+        tokio::time::timeout(WAIT, async {
+            while delivery.delivered.load(Ordering::Acquire) < count {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "expected {count} deliveries, saw {}",
+                delivery.delivered.load(Ordering::Acquire)
+            )
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreleased_events_hold_queue_budget_until_released() {
+        const SENT: usize = EVENT_QUEUE_LIMIT + 8;
+        let (url, _server) = local_server(|mut socket| async move {
+            for index in 0..SENT {
+                socket.send(Message::text(index.to_string())).await.unwrap();
+            }
+            while let Some(Ok(_)) = socket.next().await {}
+        })
+        .await;
+        let delivery = Arc::new(HoldingDelivery {
+            hold: AtomicBool::new(true),
+            held: Mutex::new(Vec::new()),
+            delivered: AtomicUsize::new(0),
+            terminal: AtomicBool::new(false),
+        });
+        let _connection = connect(&url, None, "gateway", delivery.clone()).unwrap();
+
+        // "open" plus the first messages fill the per-connection entry budget.
+        wait_for_delivered(&delivery, EVENT_QUEUE_LIMIT).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            delivery.delivered.load(Ordering::Acquire),
+            EVENT_QUEUE_LIMIT
+        );
+
+        delivery.hold.store(false, Ordering::Release);
+        let held = std::mem::take(&mut *delivery.held.lock().unwrap());
+        let held: Vec<GatewayEvent> = held.into_iter().map(QueuedGatewayEvent::release).collect();
+        assert_eq!(held[0].kind, "open");
+        assert_eq!(held[1].data.as_deref(), Some("0"));
+
+        wait_for_delivered(&delivery, 1 + SENT).await;
+        assert!(!delivery.terminal.load(Ordering::Acquire));
+    }
 }

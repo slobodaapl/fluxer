@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"lib": ["ES2022", "DOM"],
+		"types": ["node"],
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"paths": {
+			"@app/types/*": ["../fluxer_app/src/types/*"],
+			"@fluxer/voice_engine_v2/*": ["../packages/voice_engine_v2/*"],
+			"@fluxer/*": ["../packages/*", "../packages/*/src/index.ts"]
+		}
+	},
+	"include": ["bridge/**/*"],
+	"exclude": ["node_modules", "dist"]
+}

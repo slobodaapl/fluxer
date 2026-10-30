@@ -93,6 +93,7 @@ pub(crate) struct InventorySnapshot {
     pub(crate) pending_node_info: HashSet<u32>,
     pub(crate) clients: HashMap<u32, PropMap>,
     pub(crate) ports: HashMap<u32, PortRecord>,
+    pub(crate) links: HashMap<u32, (u32, u32)>,
 }
 
 impl InventorySnapshot {

@@ -1,0 +1,27 @@
+{
+	"name": "fluxer_desktop_tauri",
+	"version": "0.0.0",
+	"description": "Fluxer desktop shell on Tauri",
+	"license": "AGPL-3.0-or-later",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build:bridge": "node scripts/build-bridge.mjs",
+		"typecheck": "tsc --noEmit",
+		"dev": "pnpm build:bridge && FLUXER_RENDERER_DIR=../fluxer_desktop/dist/renderer cargo run --manifest-path src-tauri/Cargo.toml",
+		"test": "cargo test --manifest-path src-tauri/Cargo.toml"
+	},
+	"dependencies": {
+		"@tauri-apps/api": "2.12.4",
+		"franc-min": "6.2.0"
+	},
+	"devDependencies": {
+		"@fluxer/desktop_ipc": "workspace:*",
+		"@fluxer/voice_engine_v2": "workspace:*",
+		"@simplewebauthn/browser": "14.0.0",
+		"@tauri-apps/cli": "2.12.4",
+		"@types/node": "24.13.5",
+		"esbuild": "catalog:",
+		"typescript": "catalog:ts7"
+	}
+}

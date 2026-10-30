@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
-    ops::Range,
+    ops::{ControlFlow, Range},
     os::{
         fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd},
         unix::fs::OpenOptionsExt,
@@ -18,13 +18,6 @@ use std::{
 };
 
 use evdev::{EventType, KeyCode, SynchronizationCode, raw_stream::RawDevice};
-use napi::{
-    Env, Status,
-    bindgen_prelude::{Function, Object, Result, ToNapiValue},
-    sys,
-    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
-};
-use napi_derive::napi;
 use nix::{
     fcntl::OFlag,
     sys::{
@@ -90,62 +83,23 @@ pub enum MouseKind {
     Up,
 }
 
-impl ToNapiValue for NativeEvent {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, event: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut object = Object::new(&env)?;
-        match event {
-            Self::Key {
-                kind,
-                keycode,
-                key_name,
-                ctrl,
-                alt,
-                shift,
-                meta,
-            } => {
-                object.set(
-                    "type",
-                    match kind {
-                        KeyKind::Down => "keydown",
-                        KeyKind::Up => "keyup",
-                    },
-                )?;
-                object.set("keycode", u32::from(keycode))?;
-                object.set("keyName", key_name)?;
-                object.set("ctrlKey", ctrl)?;
-                object.set("altKey", alt)?;
-                object.set("shiftKey", shift)?;
-                object.set("metaKey", meta)?;
-            }
-            Self::Mouse {
-                kind,
-                button,
-                ctrl,
-                alt,
-                shift,
-                meta,
-            } => {
-                object.set(
-                    "type",
-                    match kind {
-                        MouseKind::Down => "mousedown",
-                        MouseKind::Up => "mouseup",
-                    },
-                )?;
-                object.set("button", u32::from(button))?;
-                object.set("ctrlKey", ctrl)?;
-                object.set("altKey", alt)?;
-                object.set("shiftKey", shift)?;
-                object.set("metaKey", meta)?;
-            }
-        }
-        unsafe { <Object<'_> as ToNapiValue>::to_napi_value(raw_env, object) }
+/// Receives events on the reader thread and must not block. Returning `ControlFlow::Break` stops
+/// event delivery: the reader thread exits and `stop` or `start` may be called again.
+pub type EventSink = Arc<dyn Fn(NativeEvent) -> ControlFlow<()> + Send + Sync>;
+
+/// Failure message from the evdev hook. The napi surface maps it to `Status::GenericFailure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvdevError(String);
+
+impl std::fmt::Display for EvdevError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
-type EventTsfn =
-    Arc<ThreadsafeFunction<NativeEvent, UnknownReturnValue, NativeEvent, Status, false, true>>;
+impl std::error::Error for EvdevError {}
+
+pub type Result<T> = std::result::Result<T, EvdevError>;
 
 struct ExitFd {
     fd: EventFd,
@@ -273,13 +227,13 @@ struct Reader {
     devices: HashMap<RawFd, OpenedDevice>,
     retries: Vec<PermissionRetry>,
     delivering: bool,
-    callback: EventTsfn,
+    callback: EventSink,
     stop: Arc<AtomicBool>,
 }
 
 impl Reader {
     fn new(
-        callback: EventTsfn,
+        callback: EventSink,
         stop: Arc<AtomicBool>,
         exit_fd: Arc<ExitFd>,
     ) -> std::io::Result<Self> {
@@ -757,10 +711,7 @@ impl Reader {
     }
 
     fn dispatch(&self, event: NativeEvent) {
-        let status = self
-            .callback
-            .call(event, ThreadsafeFunctionCallMode::NonBlocking);
-        if status == Status::Closing {
+        if (self.callback)(event).is_break() {
             self.stop.store(true, Ordering::Release);
         }
     }
@@ -849,38 +800,27 @@ impl HookInner {
     }
 }
 
-#[napi]
+/// Passive evdev keyboard and mouse-button listener. `start` blocks while opening devices, so
+/// async callers should use `spawn_blocking`. The sink runs on the reader thread.
 pub struct EvdevHook {
-    callback: EventTsfn,
+    callback: EventSink,
     inner: Mutex<HookInner>,
 }
 
-#[napi]
 impl EvdevHook {
-    #[napi(constructor)]
-    pub fn new(on_event: Function<NativeEvent, UnknownReturnValue>) -> Result<Self> {
-        let callback = Arc::new(
-            on_event
-                .build_threadsafe_function::<NativeEvent>()
-                .weak::<true>()
-                .callee_handled::<false>()
-                .build()
-                .map_err(|err| {
-                    generic_error(format!("failed to build callback: {}", err.reason))
-                })?,
-        );
-        Ok(Self {
-            callback,
+    pub fn new(on_event: impl Fn(NativeEvent) -> ControlFlow<()> + Send + Sync + 'static) -> Self {
+        Self {
+            callback: Arc::new(on_event),
             inner: Mutex::new(HookInner {
                 stop: None,
                 exit_fd: None,
                 thread: None,
                 session_watch: None,
             }),
-        })
+        }
     }
 
-    #[napi]
+    /// Returns `Ok(false)` when no full keyboard is readable.
     pub fn start(&self) -> Result<bool> {
         let mut inner = self
             .inner
@@ -922,7 +862,6 @@ impl EvdevHook {
         Ok(true)
     }
 
-    #[napi]
     pub fn stop(&self) -> Result<()> {
         let mut inner = self
             .inner
@@ -941,7 +880,6 @@ impl Drop for EvdevHook {
     }
 }
 
-#[napi(js_name = "isKeyboardReadable")]
 pub fn is_keyboard_readable() -> bool {
     SeatFilter::detect()
         .event_node_paths()
@@ -949,6 +887,6 @@ pub fn is_keyboard_readable() -> bool {
         .any(|path| open_read_only(path).is_ok_and(|device| device_is_full_keyboard(&device)))
 }
 
-fn generic_error(reason: impl Into<String>) -> napi::Error {
-    napi::Error::new(Status::GenericFailure, reason.into())
+fn generic_error(reason: impl Into<String>) -> EvdevError {
+    EvdevError(reason.into())
 }

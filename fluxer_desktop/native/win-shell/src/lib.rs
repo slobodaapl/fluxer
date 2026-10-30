@@ -1,192 +1,88 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use napi::Task;
-use napi::bindgen_prelude::{AsyncTask, Env, Error, Result, Status};
-use napi_derive::napi;
+#[cfg(feature = "napi")]
+pub mod napi_surface;
 
-#[napi(object)]
-#[derive(Debug)]
-pub struct CreateShortcutOptions {
-    #[napi(js_name = "lnkPath")]
-    pub lnk_path: Option<String>,
-    pub target: Option<String>,
+/// Why a call failed. The napi surface maps `InvalidArg` to `Status::InvalidArg` and `Generic` to
+/// `Status::GenericFailure`, with the message unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellError {
+    InvalidArg(String),
+    Generic(String),
+}
+
+impl std::fmt::Display for ShellError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidArg(message) | Self::Generic(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ShellError {}
+
+pub type Result<T> = std::result::Result<T, ShellError>;
+
+/// A `.lnk` to create. `lnk_path` and `target` must be non-empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShortcutOptions {
+    pub lnk_path: String,
+    pub target: String,
     pub args: Option<String>,
-    #[napi(js_name = "appUserModelId")]
     pub app_user_model_id: Option<String>,
-    #[napi(js_name = "toastActivatorClsid")]
     pub toast_activator_clsid: Option<String>,
-    #[napi(js_name = "iconPath")]
     pub icon_path: Option<String>,
-    #[napi(js_name = "iconIndex")]
-    pub icon_index: Option<i32>,
-    #[napi(js_name = "workingDir")]
+    pub icon_index: i32,
     pub working_dir: Option<String>,
     pub description: Option<String>,
 }
 
-#[napi(object)]
-#[derive(Debug)]
-pub struct SetRunValueOptions {
-    pub name: Option<String>,
-    pub command: Option<String>,
+/// Creates or overwrites a shortcut file. Blocking; initialises COM on the calling thread.
+/// Fails with a generic error on platforms other than Windows.
+pub fn create_shortcut(opts: &ShortcutOptions) -> Result<()> {
+    require_non_empty(&opts.lnk_path, "lnkPath")?;
+    require_non_empty(&opts.target, "target")?;
+    platform::create_shortcut(opts)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ShortcutOptions {
-    lnk_path: String,
-    target: String,
-    args: Option<String>,
-    app_user_model_id: Option<String>,
-    toast_activator_clsid: Option<String>,
-    icon_path: Option<String>,
-    icon_index: i32,
-    working_dir: Option<String>,
-    description: Option<String>,
+/// Sets a string value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+pub fn set_current_user_run_value(name: &str, command: &str) -> Result<()> {
+    require_non_empty(name, "name")?;
+    require_non_empty(command, "command")?;
+    platform::set_current_user_run_value(name, command)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RunValueOptions {
-    name: String,
-    command: String,
+/// Deletes a value from the HKCU Run key. A missing value or key is success.
+pub fn delete_current_user_run_value(name: &str) -> Result<()> {
+    require_non_empty(name, "name")?;
+    platform::delete_current_user_run_value(name)
 }
 
-pub struct CreateShortcutTask {
-    options: ShortcutOptions,
+/// Reads a string value from the HKCU Run key; `None` when it does not exist.
+pub fn get_current_user_run_value(name: &str) -> Result<Option<String>> {
+    require_non_empty(name, "name")?;
+    platform::get_current_user_run_value(name)
 }
 
-pub struct SetRunValueTask {
-    options: RunValueOptions,
-}
-
-pub struct DeleteRunValueTask {
-    name: String,
-}
-
-pub struct GetRunValueTask {
-    name: String,
-}
-
-#[napi(js_name = "createShortcut")]
-pub fn create_shortcut(opts: CreateShortcutOptions) -> Result<AsyncTask<CreateShortcutTask>> {
-    Ok(AsyncTask::new(CreateShortcutTask {
-        options: validate_options(opts)?,
-    }))
-}
-
-#[napi(js_name = "setCurrentUserRunValue")]
-pub fn set_current_user_run_value(opts: SetRunValueOptions) -> Result<AsyncTask<SetRunValueTask>> {
-    Ok(AsyncTask::new(SetRunValueTask {
-        options: validate_run_value_options(opts)?,
-    }))
-}
-
-#[napi(js_name = "deleteCurrentUserRunValue")]
-pub fn delete_current_user_run_value(name: String) -> Result<AsyncTask<DeleteRunValueTask>> {
-    Ok(AsyncTask::new(DeleteRunValueTask {
-        name: require_non_empty(Some(name), "name")?,
-    }))
-}
-
-#[napi(js_name = "getCurrentUserRunValue")]
-pub fn get_current_user_run_value(name: String) -> Result<AsyncTask<GetRunValueTask>> {
-    Ok(AsyncTask::new(GetRunValueTask {
-        name: require_non_empty(Some(name), "name")?,
-    }))
-}
-
+/// One of `not-present`, `busy`, `running-d3d-full-screen`, `presentation-mode`,
+/// `accepts-notifications`, `quiet-time`, `app`, `unknown`.
 #[cfg(target_os = "windows")]
-#[napi(js_name = "getUserNotificationState")]
 pub fn get_user_notification_state() -> Result<String> {
     platform::get_user_notification_state()
 }
 
-impl Task for CreateShortcutTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        platform::create_shortcut(&self.options)
+pub(crate) fn require_non_empty(value: &str, property: &'static str) -> Result<()> {
+    if value.is_empty() {
+        return Err(ShellError::InvalidArg(format!(
+            "{property} is required and must be non-empty"
+        )));
     }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
-}
-
-impl Task for SetRunValueTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        platform::set_current_user_run_value(&self.options.name, &self.options.command)
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
-}
-
-impl Task for DeleteRunValueTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        platform::delete_current_user_run_value(&self.name)
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
-}
-
-impl Task for GetRunValueTask {
-    type Output = Option<String>;
-    type JsValue = Option<String>;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        platform::get_current_user_run_value(&self.name)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-fn validate_options(opts: CreateShortcutOptions) -> Result<ShortcutOptions> {
-    Ok(ShortcutOptions {
-        lnk_path: require_non_empty(opts.lnk_path, "lnkPath")?,
-        target: require_non_empty(opts.target, "target")?,
-        args: opts.args,
-        app_user_model_id: opts.app_user_model_id,
-        toast_activator_clsid: opts.toast_activator_clsid,
-        icon_path: opts.icon_path,
-        icon_index: opts.icon_index.unwrap_or(0),
-        working_dir: opts.working_dir,
-        description: opts.description,
-    })
-}
-
-fn validate_run_value_options(opts: SetRunValueOptions) -> Result<RunValueOptions> {
-    Ok(RunValueOptions {
-        name: require_non_empty(opts.name, "name")?,
-        command: require_non_empty(opts.command, "command")?,
-    })
-}
-
-fn require_non_empty(value: Option<String>, property: &'static str) -> Result<String> {
-    match value {
-        Some(value) if !value.is_empty() => Ok(value),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            format!("{property} is required and must be non-empty"),
-        )),
-    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::ShortcutOptions;
-    use napi::bindgen_prelude::{Error, Result, Status};
+    use super::{Result, ShellError, ShortcutOptions};
     use std::ffi::c_void;
     use std::mem::ManuallyDrop;
     use windows::Win32::Foundation::{
@@ -376,7 +272,7 @@ mod platform {
         }
         String::from_utf16(&buffer[..code_units])
             .map(Some)
-            .map_err(|_| Error::new(Status::GenericFailure, "HKCU Run value is not valid UTF-16"))
+            .map_err(|_| ShellError::Generic("HKCU Run value is not valid UTF-16".to_owned()))
     }
 
     struct RunKey(HKEY);
@@ -523,11 +419,8 @@ mod platform {
         }
     }
 
-    fn hresult_error(label: &'static str, err: windows::core::Error) -> Error {
-        Error::new(
-            Status::GenericFailure,
-            format!("{label} (hr 0x{:x})", err.code().0 as u32),
-        )
+    fn hresult_error(label: &'static str, err: windows::core::Error) -> ShellError {
+        ShellError::Generic(format!("{label} (hr 0x{:x})", err.code().0 as u32))
     }
 
     fn check_win32(status: WIN32_ERROR, label: &'static str) -> Result<()> {
@@ -538,44 +431,36 @@ mod platform {
         }
     }
 
-    fn win32_error(label: &'static str, status: WIN32_ERROR) -> Error {
-        Error::new(
-            Status::GenericFailure,
-            format!("{label} (win32 {})", status.0),
-        )
+    fn win32_error(label: &'static str, status: WIN32_ERROR) -> ShellError {
+        ShellError::Generic(format!("{label} (win32 {})", status.0))
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use super::ShortcutOptions;
-    use napi::bindgen_prelude::{Error, Result, Status};
+    use super::{Result, ShellError, ShortcutOptions};
 
     pub(super) fn create_shortcut(_opts: &ShortcutOptions) -> Result<()> {
-        Err(Error::new(
-            Status::GenericFailure,
-            "win-shell not supported on this platform",
+        Err(ShellError::Generic(
+            "win-shell not supported on this platform".to_owned(),
         ))
     }
 
     pub(super) fn set_current_user_run_value(_name: &str, _command: &str) -> Result<()> {
-        Err(Error::new(
-            Status::GenericFailure,
-            "win-shell not supported on this platform",
+        Err(ShellError::Generic(
+            "win-shell not supported on this platform".to_owned(),
         ))
     }
 
     pub(super) fn delete_current_user_run_value(_name: &str) -> Result<()> {
-        Err(Error::new(
-            Status::GenericFailure,
-            "win-shell not supported on this platform",
+        Err(ShellError::Generic(
+            "win-shell not supported on this platform".to_owned(),
         ))
     }
 
     pub(super) fn get_current_user_run_value(_name: &str) -> Result<Option<String>> {
-        Err(Error::new(
-            Status::GenericFailure,
-            "win-shell not supported on this platform",
+        Err(ShellError::Generic(
+            "win-shell not supported on this platform".to_owned(),
         ))
     }
 }

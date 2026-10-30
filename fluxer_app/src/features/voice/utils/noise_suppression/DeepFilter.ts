@@ -192,7 +192,7 @@ function loadDeepFilterAssets(signal?: AbortSignal): Promise<DeepFilterAssets> {
 function isDeepFilterRequested(): boolean {
 	return (
 		getActiveVoiceProcessingMode(VoiceSettings) !== 'studio' &&
-		['deep_filter', 'streamr'].includes(readRequestedNoiseSuppressionBackend())
+		['deep_filter', 'streamr', 'gamr'].includes(readRequestedNoiseSuppressionBackend())
 	);
 }
 

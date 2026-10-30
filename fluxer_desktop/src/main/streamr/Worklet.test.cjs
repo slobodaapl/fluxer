@@ -17,6 +17,8 @@ function harness() {
 	vm.runInNewContext(source, {Float32Array, AudioWorkletProcessor,
 		registerProcessor(name, type) { assert.equal(name, 'fluxer-streamr'); processor = new type(); },
 	});
+	const transport = {postMessage: (message, transfer) => { assert.ok(!transfer?.length, 'Electron main-process ports require cloned audio buffers'); messages.push(message); }, start() {}, close() {}};
+	processor.port.onmessage({data: {type: 'transport', port: transport}});
 	return {
 		messages,
 		tick(channels = [new Float32Array(128)], activity) {
@@ -24,7 +26,7 @@ function harness() {
 			const active = processor.process([channels, ...(activity ? [[activity]] : [])], [[output]]);
 			return {output, active};
 		},
-		reply(audio) { processor.port.onmessage({data: {type: 'processed', audio}}); },
+		reply(audio) { transport.onmessage({data: {type: 'processed', audio}}); },
 		dispose() { processor.port.onmessage({data: {type: 'dispose'}}); },
 	};
 }
@@ -66,10 +68,10 @@ test('buffered playback preserves samples through ring wrap without repeating or
 
 test('missing native responses report bounded backpressure once', () => {
 	const h = harness();
-	for (let i = 0; i < 100; i++) h.tick();
-	assert.equal(h.messages.filter(x => x.type === 'audio').length, 3);
+	for (let i = 0; i < 220; i++) h.tick();
+	assert.equal(h.messages.filter(x => x.type === 'audio').length, 1);
 	const errors = h.messages.filter(x => x.type === 'error');
-	assert.equal(errors.length, 1); assert.match(errors[0].message, /cannot keep up/);
+	assert.equal(errors.length, 1); assert.match(errors[0].message, /backlog exceeded 500 ms/);
 });
 
 test('playback starvation emits silence and resumes buffered output without replaying stale samples', () => {
@@ -93,7 +95,7 @@ test('playback starvation emits silence and resumes buffered output without repl
 });
 
 for (const [label, samples] of [
-	['nonfinite', new Float32Array([NaN])], ['oversized', new Float32Array(24001)],
+	['nonfinite', new Float32Array([NaN])], ['oversized', new Float32Array(48001)],
 ]) test(`${label} output terminates worklet processing`, () => {
 	const h = harness();
 	for (let i = 0; i < 8; i++) h.tick();
@@ -154,4 +156,22 @@ test('the existing activity detector drives Streamr from the manual voice thresh
  gate.port.onmessage({data: {type: 'config', apply: true, auto: false, manualThresholdRms: 0.3}});
  drive(0.2, 1000); const idle = requests;
  drive(0.2, 1000); assert.equal(requests, idle);
+});
+
+
+test('a 300ms transport stall drains in order without dropping samples or failing', () => {
+ const h = harness(); let requests = 0; const sent = [];
+ for(let quantum=0;quantum<180;quantum++) {
+  h.tick([Float32Array.from({length:128},(_,i)=>(quantum*128+i)/100000)]);
+  if(quantum<112) continue;
+  for(const message of h.messages.splice(0)) {
+   assert.equal(message.type,'audio'); sent.push(...message.audio); requests++;
+   h.reply(new Float32Array(960));
+  }
+ }
+ while(h.messages.length) {
+  const message=h.messages.shift();assert.equal(message.type,'audio');sent.push(...message.audio);requests++;h.reply(new Float32Array(960));
+ }
+ assert.equal(requests,24);
+ assert.deepEqual(sent,Array.from(Float32Array.from({length:23040},(_,i)=>i/100000)));
 });

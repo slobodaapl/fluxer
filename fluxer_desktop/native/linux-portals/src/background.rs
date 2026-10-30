@@ -69,7 +69,7 @@ pub fn request_background(options: RequestOptions) -> Result<RequestResult, Back
 }
 
 #[cfg(target_os = "linux")]
-async fn request_background_async(
+pub async fn request_background_async(
     options: RequestOptions,
 ) -> Result<RequestResult, BackgroundError> {
     let conn = zbus::Connection::session()

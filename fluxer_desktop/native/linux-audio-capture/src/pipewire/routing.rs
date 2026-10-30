@@ -175,11 +175,12 @@ fn resolve_routing_inputs(
 fn build_desired_links(
     nodes: &HashMap<u32, PropMap>,
     pending_node_info: &HashSet<u32>,
+    links: &HashMap<u32, (u32, u32)>,
     ports: &HashMap<u32, super::common::PortRecord>,
     resolved: &RoutingResolved,
     default_sink_target_id: &str,
 ) -> Vec<LinkKey> {
-    let graph = CaptureGraph::new(nodes, pending_node_info);
+    let graph = CaptureGraph::new(nodes, pending_node_info, links);
     let mut desired_links = Vec::new();
     for node_id in nodes.keys() {
         if *node_id == resolved.sink_id {
@@ -235,6 +236,7 @@ pub(crate) fn recompute_routing(
     let nodes = snap.enriched_nodes();
     let pending_node_info = snap.pending_node_info.clone();
     let ports = snap.ports.clone();
+    let links = snap.links.clone();
     drop(snap);
     let default_sink_target_id = default_sink_target_id(&nodes, &resolved.default_sink_name);
 
@@ -250,6 +252,7 @@ pub(crate) fn recompute_routing(
     let desired_links = build_desired_links(
         &nodes,
         &pending_node_info,
+        &links,
         &ports,
         &resolved,
         &default_sink_target_id,
@@ -316,11 +319,12 @@ fn resolve_direct_inputs(
 fn build_direct_desired_links(
     nodes: &HashMap<u32, PropMap>,
     pending_node_info: &HashSet<u32>,
+    links: &HashMap<u32, (u32, u32)>,
     ports: &HashMap<u32, super::common::PortRecord>,
     resolved: &DirectResolved,
     default_sink_target_id: &str,
 ) -> Vec<LinkKey> {
-    let graph = CaptureGraph::new(nodes, pending_node_info);
+    let graph = CaptureGraph::new(nodes, pending_node_info, links);
     let mut desired_links = Vec::new();
     for node_id in nodes.keys() {
         if *node_id == resolved.sink_id {
@@ -371,11 +375,13 @@ pub(crate) fn recompute_direct_links(
     let nodes = snap.enriched_nodes();
     let pending_node_info = snap.pending_node_info.clone();
     let ports = snap.ports.clone();
+    let links = snap.links.clone();
     drop(snap);
     let default_sink_target_id = default_sink_target_id(&nodes, &resolved.default_sink_name);
     let desired_links = build_direct_desired_links(
         &nodes,
         &pending_node_info,
+        &links,
         &ports,
         &resolved,
         &default_sink_target_id,

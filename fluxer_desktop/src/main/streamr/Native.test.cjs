@@ -14,19 +14,19 @@ function frame(kind, body = Buffer.alloc(0)) {
 }
 function harness(t, respond) {
 	const children = [], failures = [];
-	t.mock.method(childProcess, 'spawn', (_executable, [_modelDir, backend]) => {
+	t.mock.method(childProcess, 'spawn', (_executable, [_modelDir, backend, mode]) => {
 		const child = new EventEmitter();
 		child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.killed = false;
 		child.kill = () => { child.killed = true; return true; };
 		child.stdin = new Writable({write(data, _encoding, done) {
-			queueMicrotask(() => respond(child, backend, data)); done();
+			queueMicrotask(() => respond(child, backend, data, mode)); done();
 		}});
 		children.push(child); return child;
 	});
 	const controller = new AbortController();
-	return {children, failures, controller, start: () => createNativeStream({
+	return {children, failures, controller, start: (options = {}) => createNativeStream({
 		executable: '/native', modelDir: '/models', sample: new Float32Array(144000),
-		signal: controller.signal, onFailure: (error) => failures.push(error),
+		signal: controller.signal, onFailure: (error) => failures.push(error), ...options,
 	})};
 }
 
@@ -111,4 +111,19 @@ for (const pipe of ['stdin', 'stdout', 'stderr']) test(`${pipe} error closes the
 	const stream = await h.start();
 	await assert.rejects(stream.push(new Float32Array(960)), /pipe failure/);
 	assert.equal(h.failures.length, 1); assert.equal(h.children[0].killed, true);
+});
+
+
+test('Gamr uses an empty initialization frame and retains its mode during CPU fallback', async t => {
+ const h = harness(t, (child, backend, data, mode) => {
+  assert.equal(mode, 'gamr');
+  assert.equal(data.readUInt32LE(), 0);
+  assert.equal(data.readUInt32LE(4), 0);
+  assert.equal(data.length, 8);
+  child.stdout.write(backend === 'vulkan' ? frame(2, Buffer.from('no GPU')) : frame(0, Buffer.from('cpu')));
+ });
+ const stream = await h.start({mode:'gamr',sample:undefined});
+ t.after(() => stream.close());
+ assert.equal(stream.backend, 'cpu');
+ assert.equal(h.children[0].killed, true);
 });

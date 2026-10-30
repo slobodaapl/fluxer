@@ -59,8 +59,8 @@ class NoiseSuppressionAvailability {
 	}
 
 	isBackendUsable(backend: VoiceNoiseSuppressionBackend): boolean {
-		if (backend === 'streamr' && (this.streamrEnrolled === false || this.failures.get('deep_filter')?.active))
-			return false;
+		if (backend === 'streamr' && this.streamrEnrolled === false) return false;
+		if ((backend === 'streamr' || backend === 'gamr') && this.failures.get('deep_filter')?.active) return false;
 		if (this.failures.get(backend)?.active) return false;
 		const descriptor = getNoiseSuppressionBackendDescriptor(backend);
 		if (descriptor.engine === 'worklet' || descriptor.engine === 'deep_filter' || descriptor.engine === 'streamr') {

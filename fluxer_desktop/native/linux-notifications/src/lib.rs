@@ -2,8 +2,7 @@
 
 use std::{
     collections::HashMap,
-    ffi::c_void,
-    ptr,
+    ops::ControlFlow,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -14,13 +13,6 @@ use std::{
 };
 
 use futures_lite::{FutureExt, StreamExt, future};
-use napi::{
-    Env, JsValue, Status, ValueType,
-    bindgen_prelude::{Array, AsyncTask, Function, Object, Result, Task, ToNapiValue, Unknown},
-    sys,
-    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
-};
-use napi_derive::napi;
 use zbus::{
     MatchRule, MessageStream,
     blocking::{Connection as BlockingConnection, Proxy},
@@ -28,13 +20,15 @@ use zbus::{
     zvariant::Value,
 };
 
+#[cfg(feature = "napi")]
+mod napi_surface;
+
 const NOTIFY_DEST: &str = "org.freedesktop.Notifications";
 const NOTIFY_PATH: &str = "/org/freedesktop/Notifications";
 const NOTIFY_IFACE: &str = "org.freedesktop.Notifications";
 const CALL_TIMEOUT: Duration = Duration::from_millis(5_000);
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const SIGNAL_THREAD_START_TIMEOUT: Duration = Duration::from_secs(5);
-const EVENT_QUEUE_LIMIT: usize = 1024;
 
 const DBUS_SESSION_UNREACHABLE: &str = "DBus session bus unreachable: no $DBUS_SESSION_BUS_ADDRESS and no \
      $XDG_RUNTIME_DIR/bus socket — desktop notifications require a \
@@ -67,27 +61,35 @@ fn has_dbus_session_from(
     false
 }
 
-type EventThreadsafeFunction = Arc<
-    ThreadsafeFunction<
-        NotifyEvent,
-        UnknownReturnValue,
-        NotifyEvent,
-        Status,
-        false,
-        true,
-        EVENT_QUEUE_LIMIT,
-    >,
->;
+/// Why a call failed. The napi surface maps `InvalidArg` to `Status::InvalidArg` and `Generic` to
+/// `Status::GenericFailure`, with the message unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationsError {
+    InvalidArg(String),
+    Generic(String),
+}
+
+impl std::fmt::Display for NotificationsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidArg(message) | Self::Generic(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for NotificationsError {}
+
+pub type Result<T> = std::result::Result<T, NotificationsError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Urgency {
+pub enum Urgency {
     Low,
     Normal,
     Critical,
 }
 
 impl Urgency {
-    fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "low" => Some(Self::Low),
             "normal" => Some(Self::Normal),
@@ -106,30 +108,69 @@ impl Urgency {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NotifyImageData {
-    width: i32,
-    height: i32,
-    rowstride: i32,
-    has_alpha: bool,
-    bits_per_sample: i32,
-    channels: i32,
-    data: Vec<u8>,
+pub struct NotifyImageData {
+    pub width: i32,
+    pub height: i32,
+    pub rowstride: i32,
+    pub has_alpha: bool,
+    pub bits_per_sample: i32,
+    pub channels: i32,
+    pub data: Vec<u8>,
+}
+
+impl NotifyImageData {
+    /// Validates an 8-bit RGB(A) image. A `rowstride` of zero or less means `width * channels`.
+    pub fn new(
+        width: i32,
+        height: i32,
+        mut rowstride: i32,
+        has_alpha: bool,
+        bits_per_sample: i32,
+        channels: i32,
+        data: Vec<u8>,
+    ) -> Result<Self> {
+        if width <= 0 || height <= 0 {
+            return Err(invalid_arg("imageData width and height must be positive"));
+        }
+        if rowstride <= 0 {
+            rowstride = width.saturating_mul(channels);
+        }
+        validate_image_data_shape(
+            width,
+            height,
+            rowstride,
+            has_alpha,
+            bits_per_sample,
+            channels,
+            data.len(),
+        )?;
+
+        Ok(Self {
+            width,
+            height,
+            rowstride,
+            has_alpha,
+            bits_per_sample,
+            channels,
+            data,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NotifyHints {
-    urgency: Option<Urgency>,
-    category: Option<String>,
-    desktop_entry: Option<String>,
-    sound_file: Option<String>,
-    suppress_sound: Option<bool>,
-    transient: Option<bool>,
-    action_icons: Option<bool>,
-    image_data: Option<NotifyImageData>,
+pub struct NotifyHints {
+    pub urgency: Option<Urgency>,
+    pub category: Option<String>,
+    pub desktop_entry: Option<String>,
+    pub sound_file: Option<String>,
+    pub suppress_sound: Option<bool>,
+    pub transient: Option<bool>,
+    pub action_icons: Option<bool>,
+    pub image_data: Option<NotifyImageData>,
 }
 
 impl NotifyHints {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             urgency: None,
             category: None,
@@ -144,21 +185,21 @@ impl NotifyHints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NotifyAction {
-    key: String,
-    label: String,
+pub struct NotifyAction {
+    pub key: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct NotifyArgs {
-    app_name: String,
-    replaces_id: u32,
-    app_icon: String,
-    summary: String,
-    body: String,
-    actions: Vec<NotifyAction>,
-    hints: NotifyHints,
-    expire_timeout_ms: i32,
+pub struct NotifyArgs {
+    pub app_name: String,
+    pub replaces_id: u32,
+    pub app_icon: String,
+    pub summary: String,
+    pub body: String,
+    pub actions: Vec<NotifyAction>,
+    pub hints: NotifyHints,
+    pub expire_timeout_ms: i32,
 }
 
 #[derive(Debug)]
@@ -167,35 +208,53 @@ pub enum NotifyEvent {
     Closed { id: u32, reason: u32 },
 }
 
-impl ToNapiValue for NotifyEvent {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, event: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut object = Object::new(&env)?;
-        match event {
-            Self::ActionInvoked { id, action_key } => {
-                object.set("kind", "actionInvoked")?;
-                object.set("id", id)?;
-                object.set("actionKey", action_key)?;
-            }
-            Self::Closed { id, reason } => {
-                object.set("kind", "closed")?;
-                object.set("id", id)?;
-                object.set("reason", reason)?;
-            }
-        }
-        unsafe { <Object<'_> as ToNapiValue>::to_napi_value(raw_env, object) }
-    }
-}
-
-struct Inner {
+/// Blocking client for `org.freedesktop.Notifications`. Calls block the calling thread for up to
+/// five seconds; signals are delivered from a dedicated thread owned by the client.
+pub struct FreedesktopNotifications {
     method_conn: Mutex<Option<BlockingConnection>>,
     stop_signal_thread: Arc<AtomicBool>,
     signal_thread: Mutex<Option<JoinHandle<()>>>,
-    event_callback: Mutex<Option<EventThreadsafeFunction>>,
 }
 
-impl Inner {
-    fn close(&self) {
+impl FreedesktopNotifications {
+    /// Connects to the session bus and starts the signal thread. `on_event` runs on that thread;
+    /// returning `ControlFlow::Break` stops event delivery.
+    pub fn new(on_event: impl Fn(NotifyEvent) -> ControlFlow<()> + Send + 'static) -> Result<Self> {
+        if !has_dbus_session() {
+            return Err(generic_error(DBUS_SESSION_UNREACHABLE));
+        }
+        let method_conn = open_blocking_connection()
+            .map_err(|err| generic_error(format!("notifications client init failed: {err}")))?;
+        let stop_signal_thread = Arc::new(AtomicBool::new(false));
+        let signal_thread =
+            spawn_signal_thread(on_event, method_conn.clone(), stop_signal_thread.clone())
+                .map_err(|err| generic_error(format!("notifications client init failed: {err}")))?;
+
+        Ok(Self {
+            method_conn: Mutex::new(Some(method_conn)),
+            stop_signal_thread,
+            signal_thread: Mutex::new(Some(signal_thread)),
+        })
+    }
+
+    /// Returns the server-assigned notification id.
+    pub fn notify(&self, args: &NotifyArgs) -> Result<u32> {
+        self.with_connection("Notify failed", |conn| notify(conn, args))
+    }
+
+    pub fn close_notification(&self, id: u32) -> Result<()> {
+        self.with_connection("CloseNotification failed", |conn| {
+            close_notification(conn, id)
+        })
+    }
+
+    pub fn get_server_capabilities(&self) -> Result<Vec<String>> {
+        self.with_connection("GetCapabilities failed", get_capabilities)
+    }
+
+    /// Stops the signal thread and drops the connection. Later calls fail with
+    /// "notifications client closed". Also runs on drop.
+    pub fn close(&self) {
         self.stop_signal_thread.store(true, Ordering::Release);
 
         if let Ok(mut signal_thread) = self.signal_thread.lock()
@@ -208,10 +267,6 @@ impl Inner {
             && let Some(conn) = method_conn.take()
         {
             let _ = conn.close();
-        }
-
-        if let Ok(mut event_callback) = self.event_callback.lock() {
-            let _ = event_callback.take();
         }
     }
 
@@ -227,173 +282,13 @@ impl Inner {
         let conn = guard
             .as_ref()
             .ok_or_else(|| generic_error("notifications client closed"))?;
-        f(conn).map_err(|err| generic_error(format!("{label}: {}", err.reason)))
-    }
-}
-
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.close();
-    }
-}
-
-#[napi]
-pub struct FreedesktopNotifications {
-    inner: Arc<Inner>,
-}
-
-#[napi]
-impl FreedesktopNotifications {
-    #[napi(constructor)]
-    pub fn new(on_event: Function<NotifyEvent, UnknownReturnValue>) -> Result<Self> {
-        let event_callback = Arc::new(
-            on_event
-                .build_threadsafe_function::<NotifyEvent>()
-                .weak::<true>()
-                .callee_handled::<false>()
-                .max_queue_size::<EVENT_QUEUE_LIMIT>()
-                .build()
-                .map_err(|err| {
-                    generic_error(format!(
-                        "failed to create notification callback: {}",
-                        err.reason
-                    ))
-                })?,
-        );
-        if !has_dbus_session() {
-            return Err(generic_error(DBUS_SESSION_UNREACHABLE));
-        }
-        let method_conn = open_blocking_connection()
-            .map_err(|err| generic_error(format!("notifications client init failed: {err}")))?;
-        let stop_signal_thread = Arc::new(AtomicBool::new(false));
-        let signal_thread = spawn_signal_thread(
-            event_callback.clone(),
-            method_conn.clone(),
-            stop_signal_thread.clone(),
-        )
-        .map_err(|err| generic_error(format!("notifications client init failed: {err}")))?;
-
-        Ok(Self {
-            inner: Arc::new(Inner {
-                method_conn: Mutex::new(Some(method_conn)),
-                stop_signal_thread,
-                signal_thread: Mutex::new(Some(signal_thread)),
-                event_callback: Mutex::new(Some(event_callback)),
-            }),
-        })
-    }
-
-    #[napi]
-    pub fn notify(&self, payload: Object) -> Result<AsyncTask<NotifyTask>> {
-        let args = parse_notify_payload(&payload)?;
-        Ok(AsyncTask::new(NotifyTask {
-            inner: self.inner.clone(),
-            args,
-        }))
-    }
-
-    #[napi(js_name = "closeNotification")]
-    pub fn close_notification(&self, id: u32) -> Result<AsyncTask<CloseNotificationTask>> {
-        Ok(AsyncTask::new(CloseNotificationTask {
-            inner: self.inner.clone(),
-            id,
-        }))
-    }
-
-    #[napi(js_name = "getServerCapabilities")]
-    pub fn get_server_capabilities(&self) -> Result<AsyncTask<GetCapabilitiesTask>> {
-        Ok(AsyncTask::new(GetCapabilitiesTask {
-            inner: self.inner.clone(),
-        }))
-    }
-
-    #[napi]
-    pub fn close(&self) -> Result<AsyncTask<CloseTask>> {
-        Ok(AsyncTask::new(CloseTask {
-            inner: self.inner.clone(),
-        }))
+        f(conn).map_err(|err| generic_error(format!("{label}: {err}")))
     }
 }
 
 impl Drop for FreedesktopNotifications {
     fn drop(&mut self) {
-        self.inner.close();
-    }
-}
-
-pub struct NotifyTask {
-    inner: Arc<Inner>,
-    args: NotifyArgs,
-}
-
-impl Task for NotifyTask {
-    type Output = u32;
-    type JsValue = u32;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.inner
-            .with_connection("Notify failed", |conn| notify(conn, &self.args))
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct CloseNotificationTask {
-    inner: Arc<Inner>,
-    id: u32,
-}
-
-impl Task for CloseNotificationTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.inner
-            .with_connection("CloseNotification failed", |conn| {
-                close_notification(conn, self.id)
-            })
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
-}
-
-pub struct GetCapabilitiesTask {
-    inner: Arc<Inner>,
-}
-
-impl Task for GetCapabilitiesTask {
-    type Output = Vec<String>;
-    type JsValue = Vec<String>;
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.inner
-            .with_connection("GetCapabilities failed", get_capabilities)
-    }
-
-    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
-        Ok(output)
-    }
-}
-
-pub struct CloseTask {
-    inner: Arc<Inner>,
-}
-
-impl Task for CloseTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.inner.close();
-        Ok(())
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
+        self.close();
     }
 }
 
@@ -491,7 +386,7 @@ fn build_hints(hints: &NotifyHints) -> HashMap<&'static str, Value<'_>> {
 }
 
 fn spawn_signal_thread(
-    event_callback: EventThreadsafeFunction,
+    on_event: impl Fn(NotifyEvent) -> ControlFlow<()> + Send + 'static,
     method_conn: BlockingConnection,
     stop: Arc<AtomicBool>,
 ) -> std::result::Result<JoinHandle<()>, String> {
@@ -530,12 +425,10 @@ fn spawn_signal_thread(
                 let next_message = stream.next().or(timeout);
                 match future::block_on(next_message) {
                     Some(Ok(message)) => {
-                        if let Some(event) = event_from_signal(&message) {
-                            let status =
-                                event_callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
-                            if status == Status::Closing {
-                                break;
-                            }
+                        if let Some(event) = event_from_signal(&message)
+                            && on_event(event).is_break()
+                        {
+                            break;
                         }
                     }
                     Some(Err(_)) => break,
@@ -578,102 +471,6 @@ fn event_from_signal(message: &zbus::Message) -> Option<NotifyEvent> {
         }
         _ => None,
     }
-}
-
-fn parse_notify_payload(payload: &Object) -> Result<NotifyArgs> {
-    Ok(NotifyArgs {
-        app_name: read_string_or_empty(payload, "appName"),
-        replaces_id: read_optional_u32(payload, "replacesId").unwrap_or(0),
-        app_icon: read_string_or_empty(payload, "appIcon"),
-        summary: read_string_or_empty(payload, "summary"),
-        body: read_string_or_empty(payload, "body"),
-        actions: parse_actions(payload),
-        hints: parse_hints(payload)?,
-        expire_timeout_ms: read_optional_i32(payload, "expireTimeoutMs").unwrap_or(-1),
-    })
-}
-
-fn parse_actions(payload: &Object) -> Vec<NotifyAction> {
-    let Some(actions) = read_array(payload, "actions") else {
-        return Vec::new();
-    };
-
-    let mut out = Vec::with_capacity(actions.len() as usize);
-    for index in 0..actions.len() {
-        let action = actions.get::<Object>(index).ok().flatten();
-        match action {
-            Some(action) => out.push(NotifyAction {
-                key: read_string_or_empty(&action, "key"),
-                label: read_string_or_empty(&action, "label"),
-            }),
-            None => out.push(NotifyAction {
-                key: String::new(),
-                label: String::new(),
-            }),
-        }
-    }
-    out
-}
-
-fn parse_hints(payload: &Object) -> Result<NotifyHints> {
-    let Some(hints_object) = read_object(payload, "hints") else {
-        return Ok(NotifyHints::empty());
-    };
-
-    let mut hints = NotifyHints::empty();
-    if let Some(value) = read_optional_string(&hints_object, "urgency") {
-        hints.urgency = Urgency::parse(&value);
-    }
-    hints.category = read_optional_string(&hints_object, "category");
-    hints.desktop_entry = read_optional_string(&hints_object, "desktopEntry");
-    hints.sound_file = read_optional_string(&hints_object, "soundFile");
-    hints.suppress_sound = read_optional_bool(&hints_object, "suppressSound");
-    hints.transient = read_optional_bool(&hints_object, "transient");
-    hints.action_icons = read_optional_bool(&hints_object, "actionIcons");
-
-    if let Some(image_object) = read_object(&hints_object, "imageData") {
-        hints.image_data = Some(parse_image_data(&image_object)?);
-    }
-
-    Ok(hints)
-}
-
-fn parse_image_data(value: &Object) -> Result<NotifyImageData> {
-    let width = read_optional_i32(value, "width").unwrap_or(0);
-    let height = read_optional_i32(value, "height").unwrap_or(0);
-    let channels = read_optional_i32(value, "channels").unwrap_or(4);
-    let mut rowstride = read_optional_i32(value, "rowstride").unwrap_or(0);
-    let bits_per_sample = read_optional_i32(value, "bitsPerSample").unwrap_or(8);
-    let has_alpha = read_optional_bool(value, "hasAlpha").unwrap_or(true);
-    let data_value = read_unknown(value, "data")
-        .ok_or_else(|| invalid_arg("imageData.data must be a Buffer or Uint8Array"))?;
-    let data = read_image_bytes(data_value)?;
-
-    if width <= 0 || height <= 0 {
-        return Err(invalid_arg("imageData width and height must be positive"));
-    }
-    if rowstride <= 0 {
-        rowstride = width.saturating_mul(channels);
-    }
-    validate_image_data_shape(
-        width,
-        height,
-        rowstride,
-        has_alpha,
-        bits_per_sample,
-        channels,
-        data.len(),
-    )?;
-
-    Ok(NotifyImageData {
-        width,
-        height,
-        rowstride,
-        has_alpha,
-        bits_per_sample,
-        channels,
-        data,
-    })
 }
 
 fn validate_image_data_shape(
@@ -729,124 +526,10 @@ fn validate_image_data_shape(
     Ok(())
 }
 
-fn read_unknown<'a>(object: &Object<'a>, key: &str) -> Option<Unknown<'a>> {
-    object.get::<Unknown>(key).ok().flatten()
+fn generic_error(reason: impl Into<String>) -> NotificationsError {
+    NotificationsError::Generic(reason.into())
 }
 
-fn read_string_or_empty(object: &Object, key: &str) -> String {
-    read_optional_string(object, key).unwrap_or_default()
-}
-
-fn read_optional_string(object: &Object, key: &str) -> Option<String> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::String {
-        return None;
-    }
-    unsafe { value.cast::<String>().ok() }
-}
-
-fn read_optional_u32(object: &Object, key: &str) -> Option<u32> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::Number {
-        return None;
-    }
-    unsafe { value.cast::<u32>().ok() }
-}
-
-fn read_optional_i32(object: &Object, key: &str) -> Option<i32> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::Number {
-        return None;
-    }
-    unsafe { value.cast::<i32>().ok() }
-}
-
-fn read_optional_bool(object: &Object, key: &str) -> Option<bool> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::Boolean {
-        return None;
-    }
-    unsafe { value.cast::<bool>().ok() }
-}
-
-fn read_object<'a>(object: &Object<'a>, key: &str) -> Option<Object<'a>> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::Object {
-        return None;
-    }
-    unsafe { value.cast::<Object>().ok() }
-}
-
-fn read_array<'a>(object: &Object<'a>, key: &str) -> Option<Array<'a>> {
-    let value = read_unknown(object, key)?;
-    if value.get_type().ok()? != ValueType::Object {
-        return None;
-    }
-    unsafe { value.cast::<Array>().ok() }
-}
-
-fn read_image_bytes(value: Unknown) -> Result<Vec<u8>> {
-    let raw = value.raw();
-    let raw_env = value.value().env;
-
-    let mut is_typed_array = false;
-    let typed_status = unsafe { sys::napi_is_typedarray(raw_env, raw, &mut is_typed_array) };
-    if typed_status == sys::Status::napi_ok && is_typed_array {
-        let mut array_type: sys::napi_typedarray_type = 0;
-        let mut len = 0usize;
-        let mut data_ptr: *mut c_void = ptr::null_mut();
-        let mut arraybuffer = ptr::null_mut();
-        let mut byte_offset = 0usize;
-        let status = unsafe {
-            sys::napi_get_typedarray_info(
-                raw_env,
-                raw,
-                &mut array_type,
-                &mut len,
-                &mut data_ptr,
-                &mut arraybuffer,
-                &mut byte_offset,
-            )
-        };
-        if status != sys::Status::napi_ok {
-            return Err(invalid_arg("imageData.data must be a readable typed array"));
-        }
-        if !is_uint8_typed_array(array_type) {
-            return Err(invalid_arg("imageData.data must be a Buffer or Uint8Array"));
-        }
-        return copy_non_empty_bytes(data_ptr.cast(), len);
-    }
-
-    let mut is_buffer = false;
-    let buffer_status = unsafe { sys::napi_is_buffer(raw_env, raw, &mut is_buffer) };
-    if buffer_status == sys::Status::napi_ok && is_buffer {
-        let mut data_ptr: *mut c_void = ptr::null_mut();
-        let mut len = 0usize;
-        let status = unsafe { sys::napi_get_buffer_info(raw_env, raw, &mut data_ptr, &mut len) };
-        if status != sys::Status::napi_ok {
-            return Err(invalid_arg("imageData.data must be a readable Buffer"));
-        }
-        return copy_non_empty_bytes(data_ptr.cast(), len);
-    }
-
-    Err(invalid_arg("imageData.data must be a Buffer or Uint8Array"))
-}
-
-fn is_uint8_typed_array(array_type: sys::napi_typedarray_type) -> bool {
-    array_type == sys::TypedarrayType::uint8_array
-}
-
-fn copy_non_empty_bytes(data_ptr: *const u8, len: usize) -> Result<Vec<u8>> {
-    if data_ptr.is_null() || len == 0 {
-        return Err(invalid_arg("imageData.data must not be empty"));
-    }
-    Ok(unsafe { std::slice::from_raw_parts(data_ptr, len).to_vec() })
-}
-
-fn generic_error(reason: impl Into<String>) -> napi::Error {
-    napi::Error::new(Status::GenericFailure, reason.into())
-}
-
-fn invalid_arg(reason: impl Into<String>) -> napi::Error {
-    napi::Error::new(Status::InvalidArg, reason.into())
+fn invalid_arg(reason: impl Into<String>) -> NotificationsError {
+    NotificationsError::InvalidArg(reason.into())
 }

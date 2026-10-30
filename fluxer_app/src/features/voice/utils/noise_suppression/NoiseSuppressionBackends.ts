@@ -9,6 +9,7 @@ export const VOICE_NOISE_SUPPRESSION_BACKENDS = [
 	'gtcrn',
 	'deep_filter',
 	'streamr',
+	'gamr',
 ] as const;
 
 export type VoiceNoiseSuppressionBackend = (typeof VOICE_NOISE_SUPPRESSION_BACKENDS)[number];
@@ -89,6 +90,15 @@ const DESCRIPTORS: Readonly<Record<VoiceNoiseSuppressionBackend, NoiseSuppressio
 		requiresWasmSimd: false,
 		usesSuppressionStrength: false,
 	},
+	gamr: {
+		id: 'gamr',
+		engine: 'streamr',
+		browserNoiseSuppression: false,
+		preservesInputChannels: false,
+		supportedSampleRates: [48000],
+		requiresWasmSimd: false,
+		usesSuppressionStrength: false,
+	},
 	deep_filter: {
 		id: 'deep_filter',
 		engine: 'deep_filter',
@@ -124,7 +134,7 @@ function getNoiseSuppressionUnsupportedReason(
 	capabilities: NoiseSuppressionRuntimeCapabilities,
 ): NoiseSuppressionUnsupportedReason | null {
 	const descriptor = DESCRIPTORS[backend];
-	if (backend === 'streamr' && !capabilities.nativeStreamr) return 'desktop';
+	if (descriptor.engine === 'streamr' && !capabilities.nativeStreamr) return 'desktop';
 	if (descriptor.engine === 'passthrough' || descriptor.engine === 'constraint') return null;
 	if (!capabilities.audioWorklet) return 'audio_worklet';
 	if (descriptor.requiresWasmSimd && !capabilities.wasmSimd) return 'wasm_simd';

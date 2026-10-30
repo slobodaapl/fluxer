@@ -79,7 +79,7 @@ function resolveVoiceInputConfig(): VoiceInputConfig {
 	};
 }
 
-type SuppressionSlotKey = 'passthrough' | 'streamr' | 'deep_filter' | NoiseSuppressionWorkletBackend;
+type SuppressionSlotKey = 'passthrough' | 'streamr' | 'gamr' | 'deep_filter' | NoiseSuppressionWorkletBackend;
 
 interface SuppressionSlot {
 	readonly key: SuppressionSlotKey;
@@ -245,7 +245,7 @@ export class VoiceInputGraph {
 	private resolveSlotKey(backend: VoiceNoiseSuppressionBackend): SuppressionSlotKey {
 		if (this.channelCount === 2) return 'passthrough';
 		const engine = getNoiseSuppressionBackendDescriptor(backend).engine;
-		if (engine === 'streamr') return 'streamr';
+		if (backend === 'streamr' || backend === 'gamr') return backend;
 		if (engine === 'deep_filter') return 'deep_filter';
 		if (engine === 'worklet') return backend as NoiseSuppressionWorkletBackend;
 		return 'passthrough';
@@ -337,7 +337,7 @@ export class VoiceInputGraph {
 	private async buildSlot(key: SuppressionSlotKey): Promise<SuppressionSlot | null> {
 		if (key === 'passthrough') return this.createPassthroughSlot(0);
 		try {
-			if (key === 'streamr') return await this.buildStreamrSlot();
+			if (key === 'streamr' || key === 'gamr') return await this.buildStreamrSlot(key);
 			return key === 'deep_filter' ? await this.buildDeepFilterSlot() : await this.buildWorkletSlot(key);
 		} catch (error) {
 			if (!this.disposed && !isAbortError(error)) {
@@ -382,15 +382,15 @@ export class VoiceInputGraph {
 		return {key: 'deep_filter', output, dispose};
 	}
 
-	private async buildStreamrSlot(): Promise<SuppressionSlot> {
+	private async buildStreamrSlot(mode: 'streamr' | 'gamr'): Promise<SuppressionSlot> {
 		const signal = this.buildController.signal;
 		const revision = NoiseSuppressionAvailability.streamrRevision;
 		const fail = (error: unknown) => {
-			if (revision !== NoiseSuppressionAvailability.streamrRevision || this.disposed) return;
-			logger.warn('Streamr stopped; using browser noise suppression', {error});
-			NoiseSuppressionAvailability.markBackendFailed('streamr', 'runtime', Date.now());
+			if ((mode === 'streamr' && revision !== NoiseSuppressionAvailability.streamrRevision) || this.disposed) return;
+			logger.warn('Native noise suppression stopped; using browser noise suppression', {backend: mode, error});
+			NoiseSuppressionAvailability.markBackendFailed(mode, 'runtime', Date.now());
 		};
-		NoiseSuppressionAvailability.changeStreamrStarting(1);
+		if (mode === 'streamr') NoiseSuppressionAvailability.changeStreamrStarting(1);
 		let dfn: Awaited<ReturnType<typeof acquireDeepFilterNode>> | undefined;
 		let lease: Awaited<ReturnType<typeof createStreamrNode>> | undefined;
 		let activity: AudioWorkletNode | undefined;
@@ -423,7 +423,7 @@ export class VoiceInputGraph {
 				() => fail(new Error('Voice activity detector stopped')),
 				true,
 			);
-			lease = await createStreamrNode(this.context, signal, fail);
+			lease = await createStreamrNode(this.context, signal, fail, mode);
 			output = this.context.createGain();
 			output.gain.value = 0;
 			dfn.node.connect(activity);
@@ -431,7 +431,7 @@ export class VoiceInputGraph {
 			activity.connect(lease.node, 1, 1);
 			lease.node.connect(output);
 			return {
-				key: 'streamr',
+				key: mode,
 				streamrRevision: revision,
 				output,
 				dispose,
@@ -439,12 +439,12 @@ export class VoiceInputGraph {
 			};
 		} catch (error) {
 			dispose();
-			if (!signal.aborted && revision === NoiseSuppressionAvailability.streamrRevision) {
-				NoiseSuppressionAvailability.markBackendFailed('streamr', 'build', Date.now());
+			if (!signal.aborted && (mode === 'gamr' || revision === NoiseSuppressionAvailability.streamrRevision)) {
+				NoiseSuppressionAvailability.markBackendFailed(mode, 'build', Date.now());
 			}
 			throw error;
 		} finally {
-			NoiseSuppressionAvailability.changeStreamrStarting(-1);
+			if (mode === 'streamr') NoiseSuppressionAvailability.changeStreamrStarting(-1);
 		}
 	}
 

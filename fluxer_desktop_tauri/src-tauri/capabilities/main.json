@@ -1,0 +1,7 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "main",
+	"description": "The main application window. It only reaches app commands; no core plugin surface is exposed to the renderer.",
+	"windows": ["main"],
+	"permissions": []
+}

@@ -4,12 +4,13 @@ export interface NativeStream {
 	push(audio: Float32Array): Promise<Float32Array>;
 	close(error?: Error): void;
 }
-export function createNativeStream(options: {
-	executable: string;
-	modelDir: string;
-	sample: Float32Array;
-	signal: AbortSignal;
-	onFailure(error: Error): void;
-}): Promise<NativeStream>;
+export function createNativeStream(
+	options: {
+		executable: string;
+		modelDir: string;
+		signal: AbortSignal;
+		onFailure(error: Error): void;
+	} & ({mode?: 'streamr'; sample: Float32Array} | {mode: 'gamr'; sample?: never}),
+): Promise<NativeStream>;
 export const INPUT_SAMPLES: 960;
 export const MAX_OUTPUT_SAMPLES: 9600;

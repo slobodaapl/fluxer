@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 interface NativeIsolationAPI {
 	start(): Promise<string>;
-	push(id: string, audio: Float32Array): Promise<Float32Array>;
+	connect(id: string): Promise<MessagePort>;
 	stop(id: string): Promise<void>;
 }
 
@@ -35,20 +35,27 @@ export async function createNativeVoiceIsolationNode(
 		signal.throwIfAborted();
 	}
 	let node: AudioWorkletNode;
+	let transport: MessagePort | undefined;
 	try {
+		transport = await api.connect(id);
+		signal.throwIfAborted();
 		node = new AudioWorkletNode(context, processor, {
-			numberOfInputs: 2, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: 'explicit',
+			numberOfInputs: 2,
+			numberOfOutputs: 1,
+			outputChannelCount: [1],
+			channelCount: 1,
+			channelCountMode: 'explicit',
+			processorOptions: {label},
 		});
 	} catch (error) {
+		transport?.close();
 		await api.stop(id);
 		throw error;
 	}
-	let disposed = false, busy = false;
-	const queue: Array<Float32Array> = [];
+	let disposed = false;
 	const dispose = () => {
 		if (disposed) return;
 		disposed = true;
-		queue.length = 0;
 		signal.removeEventListener('abort', dispose);
 		node.port.onmessage = null;
 		node.onprocessorerror = null;
@@ -62,24 +69,10 @@ export async function createNativeVoiceIsolationNode(
 		dispose();
 		onFailure(error);
 	};
-	const drain = async () => {
-		if (busy || disposed) return;
-		busy = true;
-		try {
-			while (queue.length && !disposed) {
-				const audio = await api.push(id, queue.shift()!);
-				if (!disposed) node.port.postMessage({type: 'processed', audio}, [audio.buffer]);
-			}
-		} catch (error) { fail(error); }
-		finally { busy = false; }
-	};
 	node.port.onmessage = ({data}) => {
-		if (data.type === 'error') { fail(new Error(data.message)); return; }
-		if (data.type !== 'audio' || disposed) return;
-		if (queue.length >= 2) { fail(new Error(`${label} processing queue overflow`)); return; }
-		queue.push(data.audio);
-		void drain();
+		if (data.type === 'error') fail(new Error(data.message));
 	};
+	node.port.postMessage({type: 'transport', port: transport}, [transport]);
 	node.onprocessorerror = () => fail(new Error(`${label} audio worklet failed`));
 	signal.addEventListener('abort', dispose, {once: true});
 	return {node, dispose};

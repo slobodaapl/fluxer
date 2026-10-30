@@ -1,41 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[cfg(feature = "napi")]
+pub mod napi_surface;
 mod probe_helpers;
-
-use napi_derive::napi;
 
 pub const SOURCE_METAL: &str = "metal";
 pub const SOURCE_DXGI: &str = "dxgi";
 pub const SOURCE_LINUX_SYSFS: &str = "linux-sysfs";
 
-#[napi(object)]
+/// One GPU adapter as the platform probe reports it.
 pub struct PlatformGpuDeviceInfo {
     pub active: bool,
-    #[napi(js_name = "vendorId")]
     pub vendor_id: u32,
-    #[napi(js_name = "deviceId")]
     pub device_id: u32,
-    #[napi(js_name = "vendorName")]
     pub vendor_name: Option<String>,
-    #[napi(js_name = "deviceString")]
     pub device_string: Option<String>,
-    #[napi(js_name = "driverVendor")]
     pub driver_vendor: Option<String>,
-    #[napi(js_name = "driverVersion")]
     pub driver_version: Option<String>,
-    #[napi(js_name = "dedicatedVideoMemory")]
     pub dedicated_video_memory: Option<f64>,
-    #[napi(js_name = "sharedSystemMemory")]
     pub shared_system_memory: Option<f64>,
-    #[napi(js_name = "subsystemVendorId")]
     pub subsystem_vendor_id: Option<u32>,
-    #[napi(js_name = "subsystemDeviceId")]
     pub subsystem_device_id: Option<u32>,
-    #[napi(js_name = "registryId")]
     pub registry_id: Option<String>,
-    #[napi(js_name = "adapterLuid")]
     pub adapter_luid: Option<String>,
-    #[napi(js_name = "pciPath")]
     pub pci_path: Option<String>,
     pub integrated: Option<bool>,
     pub removable: Option<bool>,
@@ -43,14 +30,14 @@ pub struct PlatformGpuDeviceInfo {
     pub source: String,
 }
 
-#[napi(object)]
+/// The platform probe result. `source` names the probe; `error` is set when it failed.
 pub struct PlatformGpuInfo {
     pub devices: Vec<PlatformGpuDeviceInfo>,
     pub source: String,
     pub error: Option<String>,
 }
 
-#[napi(js_name = "getGpuInfo")]
+/// Probes the GPUs: Metal on macOS, DXGI on Windows, `/sys/class/drm` on Linux.
 pub fn get_gpu_info() -> PlatformGpuInfo {
     platform::gpu_info()
 }

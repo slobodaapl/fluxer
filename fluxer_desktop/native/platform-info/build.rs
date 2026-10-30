@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 fn main() {
+    #[cfg(feature = "napi")]
     napi_build::setup();
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {

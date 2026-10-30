@@ -8,13 +8,8 @@ mod modifiers;
 #[cfg(target_os = "windows")]
 mod windows_mouse;
 
-use napi::{
-    Env,
-    bindgen_prelude::{Function, Object, Result, ToNapiValue},
-    sys,
-    threadsafe_function::{ThreadsafeFunction, UnknownReturnValue},
-};
-use napi_derive::napi;
+#[cfg(feature = "napi")]
+pub mod napi_surface;
 
 const KEY_NAME_BUF: usize = 32;
 const LLKHF_EXTENDED_FLAG: u32 = 0x01;
@@ -30,7 +25,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::KeyDown => "keydown",
             Self::KeyUp => "keyup",
@@ -59,7 +54,7 @@ pub struct QueuedEvent {
 }
 
 impl QueuedEvent {
-    fn key_name(&self) -> &str {
+    pub fn key_name(&self) -> &str {
         let len = (self.key_name_len as usize).min(KEY_NAME_BUF);
         std::str::from_utf8(&self.key_name_buf[..len]).unwrap_or("")
     }
@@ -177,48 +172,32 @@ pub fn write_key_name_from_hook(
     write_key_name(buf, len_out, vk);
 }
 
-impl ToNapiValue for QueuedEvent {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, event: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut object = Object::new(&env)?;
-        object.set("type", event.kind.as_str())?;
-        object.set("ctrlKey", event.ctrl)?;
-        object.set("altKey", event.alt)?;
-        object.set("shiftKey", event.shift)?;
-        object.set("metaKey", event.meta)?;
-        match event.kind {
-            EventKind::KeyDown | EventKind::KeyUp => {
-                object.set("keycode", event.keycode)?;
-                object.set("keyName", event.key_name())?;
-                object.set("scanCode", event.scan_code)?;
-                object.set("extended", event.extended)?;
-            }
-            EventKind::MouseDown | EventKind::MouseUp => {
-                object.set("button", u32::from(event.button))?;
-                if event.has_xy {
-                    object.set("x", event.x)?;
-                    object.set("y", event.y)?;
-                }
-            }
-        }
-        unsafe { <Object<'_> as ToNapiValue>::to_napi_value(raw_env, object) }
+/// Receives events on the hook thread. It runs inside the low-level hook procedure, so it must
+/// not block: Windows removes a hook whose procedure exceeds the system timeout.
+pub type EventSink = std::sync::Arc<dyn Fn(QueuedEvent) + Send + Sync>;
+
+/// Failure message from the hook. The napi surface maps it to `Status::GenericFailure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputHookError(String);
+
+impl std::fmt::Display for InputHookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
-type EventThreadsafeFunction =
-    ThreadsafeFunction<QueuedEvent, UnknownReturnValue, QueuedEvent, napi::Status, false, true>;
+impl std::error::Error for InputHookError {}
 
 #[cfg(target_os = "windows")]
 mod platform {
     use super::{
-        EventKind, EventThreadsafeFunction, HeldInputs, QueuedEvent, VK_PACKET,
-        write_key_name_from_hook, write_packet_key_name,
+        EventKind, EventSink, HeldInputs, QueuedEvent, VK_PACKET, write_key_name_from_hook,
+        write_packet_key_name,
     };
     use crate::modifiers::{
         Modifiers,
         windows::{from_sampled, with_pressed_key},
     };
-    use napi::threadsafe_function::ThreadsafeFunctionCallMode;
     use std::sync::{
         Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
@@ -245,7 +224,7 @@ mod platform {
     const WM_APP_REINSTALL: u32 = WM_APP + 1;
 
     pub(crate) struct HookHandle {
-        pub(crate) tsfn: EventThreadsafeFunction,
+        pub(crate) sink: EventSink,
         pub(crate) keyboard_hook: Mutex<Option<HHOOK>>,
         pub(crate) mouse_hook: Mutex<Option<HHOOK>>,
         pub(crate) thread_id: AtomicU64,
@@ -333,9 +312,7 @@ mod platform {
     }
 
     fn send(handle: &HookHandle, event: QueuedEvent) {
-        let _ = handle
-            .tsfn
-            .call(event, ThreadsafeFunctionCallMode::NonBlocking);
+        (handle.sink)(event);
     }
 
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -652,9 +629,9 @@ mod platform {
         clear_handle_slot(handle);
     }
 
-    pub(crate) fn new_handle(tsfn: EventThreadsafeFunction) -> Arc<HookHandle> {
+    pub(crate) fn new_handle(sink: EventSink) -> Arc<HookHandle> {
         Arc::new(HookHandle {
-            tsfn,
+            sink,
             keyboard_hook: Mutex::new(None),
             mouse_hook: Mutex::new(None),
             thread_id: AtomicU64::new(0),
@@ -673,15 +650,15 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
-    use super::EventThreadsafeFunction;
+    use super::EventSink;
     use std::sync::Arc;
 
     pub(crate) struct HookHandle {
-        pub(crate) tsfn: EventThreadsafeFunction,
+        pub(crate) sink: EventSink,
     }
 
-    pub(crate) fn new_handle(tsfn: EventThreadsafeFunction) -> Arc<HookHandle> {
-        Arc::new(HookHandle { tsfn })
+    pub(crate) fn new_handle(sink: EventSink) -> Arc<HookHandle> {
+        Arc::new(HookHandle { sink })
     }
 
     pub(crate) fn start(_handle: Arc<HookHandle>) -> Result<(), String> {
@@ -693,42 +670,27 @@ mod platform {
 
 use platform::HookHandle;
 
-#[napi]
+/// Low-level keyboard and mouse hook. Only one `InputHook` can be started per process: the hook
+/// procedures reach their sink through a process-global slot, so `start` on a second instance
+/// fails with "InputHook.start failed: another InputHook is already active" until the first is
+/// stopped or dropped. `start` blocks until the worker thread has installed the hooks, so async
+/// callers should use `spawn_blocking`. The sink runs on the hook thread and must not block.
 pub struct InputHook {
     inner: std::sync::Arc<HookHandle>,
 }
 
-#[napi]
 impl InputHook {
-    #[napi(constructor)]
-    pub fn new(callback: Function<QueuedEvent, UnknownReturnValue>) -> Result<Self> {
-        let tsfn: EventThreadsafeFunction = callback
-            .build_threadsafe_function::<QueuedEvent>()
-            .weak::<true>()
-            .callee_handled::<false>()
-            .build()
-            .map_err(|err| {
-                napi::Error::new(
-                    napi::Status::GenericFailure,
-                    format!("failed to create InputHook callback: {}", err.reason),
-                )
-            })?;
-        Ok(Self {
-            inner: platform::new_handle(tsfn),
-        })
+    pub fn new(on_event: impl Fn(QueuedEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            inner: platform::new_handle(std::sync::Arc::new(on_event)),
+        }
     }
 
-    #[napi]
-    pub fn start(&self) -> Result<()> {
-        platform::start(self.inner.clone()).map_err(|msg| {
-            napi::Error::new(
-                napi::Status::GenericFailure,
-                format!("InputHook.start failed: {msg}"),
-            )
-        })
+    pub fn start(&self) -> Result<(), InputHookError> {
+        platform::start(self.inner.clone())
+            .map_err(|msg| InputHookError(format!("InputHook.start failed: {msg}")))
     }
 
-    #[napi]
     pub fn stop(&self) {
         platform::stop(&self.inner);
     }
@@ -740,7 +702,6 @@ impl Drop for InputHook {
     }
 }
 
-#[napi(js_name = "isAvailable")]
 pub fn is_available() -> bool {
     cfg!(target_os = "windows")
 }

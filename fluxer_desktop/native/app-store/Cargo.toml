@@ -11,12 +11,16 @@ resolver = "2"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["napi"]
+napi = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
+
 [dependencies]
-napi = {version = "3.12.6", default-features = false, features = ["dyn-symbols", "napi8"]}
-napi-derive = "3.6.7"
+napi = {version = "3.12.6", default-features = false, features = ["dyn-symbols", "napi8"], optional = true}
+napi-derive = {version = "3.6.7", optional = true}
 rusqlite = {version = "0.40.1", features = ["bundled"]}
 serde = {version = "1.0", features = ["derive"]}
 serde_json = {version = "1.0", features = ["raw_value"]}
 
 [build-dependencies]
-napi-build = "2.4.3"
+napi-build = {version = "2.4.3", optional = true}

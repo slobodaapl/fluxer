@@ -14,7 +14,7 @@ function packet(kind, body) {
 }
 
 class NativeStream {
-	constructor({executable, modelDir, sample, signal, onFailure}, backend) {
+	constructor({executable, modelDir, sample, signal, onFailure, mode = 'streamr'}, backend) {
 		this.backend = backend;
 		this.closed = false;
 		this.initialized = false;
@@ -26,7 +26,7 @@ class NativeStream {
 		this.ready = new Promise((resolve, reject) => {
 			this.startup = {resolve, reject};
 		});
-		this.child = childProcess.spawn(executable, [modelDir, backend], {
+		this.child = childProcess.spawn(executable, [modelDir, backend, ...(mode === 'gamr' ? ['gamr'] : [])], {
 			stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
 		});
 		this.abort = () => this.close(new Error('Streamr start cancelled'));
@@ -42,7 +42,7 @@ class NativeStream {
 			`Streamr ${backend} exited (${reason ?? code})${this.stderr ? `: ${this.stderr.trim()}` : ''}`,
 		)));
 		if (signal.aborted) this.abort();
-		else this.child.stdin.write(packet(0, Buffer.from(sample.buffer, sample.byteOffset, sample.byteLength)));
+		else this.child.stdin.write(packet(0, mode === 'gamr' ? Buffer.alloc(0) : Buffer.from(sample.buffer, sample.byteOffset, sample.byteLength)));
 	}
 
 	receive(chunk) {

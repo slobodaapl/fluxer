@@ -9,6 +9,7 @@ packages:
   - '!fluxer_app/pkgs/libfluxcore'
   - '!fluxer_app/pkgs/libfluxwebp'
   - fluxer_desktop
+  - fluxer_desktop_tauri
   - fluxer_admin
   - fluxer_docs
 

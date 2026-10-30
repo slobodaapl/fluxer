@@ -3,19 +3,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use napi::{
-    Env, Status, Task,
-    bindgen_prelude::{AsyncTask, Function, Object, Result, ToNapiValue},
-    sys,
-    threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode, UnknownReturnValue},
-};
-use napi_derive::napi;
 use x11rb::connection::{Connection, RequestConnection};
 use x11rb::errors::ReplyError;
 use x11rb::protocol::Event;
@@ -72,7 +66,7 @@ pub enum EventKind {
 }
 
 impl EventKind {
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::KeyDown => "keydown",
             Self::KeyUp => "keyup",
@@ -111,35 +105,23 @@ impl DecodedEvent {
     }
 }
 
-impl ToNapiValue for DecodedEvent {
-    unsafe fn to_napi_value(raw_env: sys::napi_env, event: Self) -> Result<sys::napi_value> {
-        let env = Env::from_raw(raw_env);
-        let mut object = Object::new(&env)?;
-        object.set("type", event.kind.as_str())?;
-        object.set("ctrlKey", event.mods.ctrl)?;
-        object.set("altKey", event.mods.alt)?;
-        object.set("shiftKey", event.mods.shift)?;
-        object.set("metaKey", event.mods.meta)?;
-        match event.kind {
-            EventKind::KeyDown | EventKind::KeyUp => {
-                object.set("keycode", event.keycode)?;
-                object.set("x11Keycode", u32::from(event.x11_keycode))?;
-                object.set("keyName", event.key_name.as_str())?;
-            }
-            EventKind::MouseDown | EventKind::MouseUp => {
-                object.set("button", u32::from(event.button))?;
-                if event.has_xy {
-                    object.set("x", event.x)?;
-                    object.set("y", event.y)?;
-                }
-            }
-        }
-        unsafe { <Object<'_> as ToNapiValue>::to_napi_value(raw_env, object) }
+/// Receives events on the X11 worker thread and must not block. Returning `ControlFlow::Break`
+/// stops event delivery: the active hook is marked dead and a later `start` replaces it.
+pub type EventSink = Arc<dyn Fn(DecodedEvent) -> ControlFlow<()> + Send + Sync>;
+
+/// Failure message from the hook. The napi surface maps it to `Status::GenericFailure`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputHookError(String);
+
+impl std::fmt::Display for InputHookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
-type EventTsfn =
-    Arc<ThreadsafeFunction<DecodedEvent, UnknownReturnValue, DecodedEvent, Status, false, true>>;
+impl std::error::Error for InputHookError {}
+
+pub type Result<T> = std::result::Result<T, InputHookError>;
 
 #[derive(Clone)]
 struct KeysymCache {
@@ -191,20 +173,33 @@ struct Active {
     stop: Arc<AtomicBool>,
 }
 
-struct Inner {
-    callback: EventTsfn,
+/// Passive X11 RECORD listener. The sink runs on the `fluxer-linux-input-hook` worker thread.
+pub struct InputHook {
+    callback: EventSink,
     active: Mutex<Option<Active>>,
     generation: AtomicU64,
 }
 
-impl Inner {
+impl InputHook {
+    pub fn new(on_event: impl Fn(DecodedEvent) -> ControlFlow<()> + Send + Sync + 'static) -> Self {
+        Self {
+            callback: Arc::new(on_event),
+            active: Mutex::new(None),
+            generation: AtomicU64::new(0),
+        }
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<Active>>> {
         self.active
             .lock()
             .map_err(|_| generic_error("InputHook lock poisoned"))
     }
 
-    fn start(&self, generation: u64) -> Result<()> {
+    /// Blocks until RECORD start-of-data, so async callers should use `spawn_blocking`. Succeeds
+    /// without effect when a live hook is already running. A `stop` since `start_ticket` was taken
+    /// makes this fail with "InputHook.start failed: stopped during start".
+    pub fn start_with_ticket(&self, ticket: StartTicket) -> Result<()> {
+        let generation = ticket.0;
         let dead = {
             let mut guard = self.lock()?;
             if guard
@@ -243,81 +238,44 @@ impl Inner {
         Ok(())
     }
 
-    fn stop(&self) -> Result<Option<Active>> {
+    /// Captures the current stop generation; pass it to `start_with_ticket` once the blocking
+    /// start runs elsewhere.
+    pub fn start_ticket(&self) -> StartTicket {
+        StartTicket(self.generation.load(Ordering::Acquire))
+    }
+
+    pub fn start(&self) -> Result<()> {
+        self.start_with_ticket(self.start_ticket())
+    }
+
+    /// Joins the worker thread. Also runs on drop.
+    pub fn stop(&self) -> Result<()> {
+        if let Some(active) = self.take_active()? {
+            tear_down(active);
+        }
+        Ok(())
+    }
+
+    fn take_active(&self) -> Result<Option<Active>> {
         let mut guard = self.lock()?;
         self.generation.fetch_add(1, Ordering::AcqRel);
         Ok(guard.take())
     }
 }
 
-pub struct StartTask {
-    inner: Arc<Inner>,
-    generation: u64,
-}
-
-impl Task for StartTask {
-    type Output = ();
-    type JsValue = ();
-
-    fn compute(&mut self) -> Result<Self::Output> {
-        self.inner.start(self.generation)
-    }
-
-    fn resolve(&mut self, _env: Env, _output: Self::Output) -> Result<Self::JsValue> {
-        Ok(())
-    }
-}
-
-#[napi]
-pub struct InputHook {
-    inner: Arc<Inner>,
-}
-
-#[napi]
-impl InputHook {
-    #[napi(constructor)]
-    pub fn new(callback: Function<DecodedEvent, UnknownReturnValue>) -> Result<Self> {
-        let tsfn = callback
-            .build_threadsafe_function::<DecodedEvent>()
-            .weak::<true>()
-            .callee_handled::<false>()
-            .build()
-            .map_err(|err| generic_error(format!("failed to create TSFN: {}", err.reason)))?;
-        Ok(Self {
-            inner: Arc::new(Inner {
-                callback: Arc::new(tsfn),
-                active: Mutex::new(None),
-                generation: AtomicU64::new(0),
-            }),
-        })
-    }
-
-    #[napi]
-    pub fn start(&self) -> AsyncTask<StartTask> {
-        AsyncTask::new(StartTask {
-            inner: self.inner.clone(),
-            generation: self.inner.generation.load(Ordering::Acquire),
-        })
-    }
-
-    #[napi]
-    pub fn stop(&self) -> Result<()> {
-        if let Some(active) = self.inner.stop()? {
-            tear_down(active);
-        }
-        Ok(())
-    }
-}
+/// Stop generation observed by `InputHook::start_ticket`.
+#[derive(Debug, Clone, Copy)]
+pub struct StartTicket(u64);
 
 impl Drop for InputHook {
     fn drop(&mut self) {
-        if let Ok(Some(active)) = self.inner.stop() {
+        if let Ok(Some(active)) = self.take_active() {
             tear_down(active);
         }
     }
 }
 
-fn start_record(callback: EventTsfn) -> Result<Active> {
+fn start_record(callback: EventSink) -> Result<Active> {
     if !detect_display_server().supports_global_xrecord() {
         return Err(generic_error(
             "InputHook.start failed: WaylandUnsupported — global input \
@@ -448,7 +406,7 @@ struct Worker {
     ctrl_conn: Arc<RustConnection>,
     record_ctx: record::Context,
     keysyms: KeysymCache,
-    callback: EventTsfn,
+    callback: EventSink,
     stop: Arc<AtomicBool>,
     ready: Option<SyncSender<std::result::Result<(), String>>>,
     held: HeldInputs,
@@ -639,9 +597,8 @@ fn decode_event(evt: &XKeyButtonProto, keysyms: &KeysymCache) -> Option<DecodedE
     }
 }
 
-fn dispatch(callback: &EventTsfn, stop: &Arc<AtomicBool>, event: DecodedEvent) {
-    let status = callback.call(event, ThreadsafeFunctionCallMode::NonBlocking);
-    if status == Status::Closing {
+fn dispatch(callback: &EventSink, stop: &Arc<AtomicBool>, event: DecodedEvent) {
+    if callback(event).is_break() {
         stop.store(true, Ordering::Release);
     }
 }
@@ -669,7 +626,6 @@ fn tear_down(mut active: Active) {
     }
 }
 
-#[napi(js_name = "isAvailable")]
 pub fn is_available() -> bool {
     if !detect_display_server().supports_global_xrecord() {
         return false;
@@ -677,8 +633,8 @@ pub fn is_available() -> bool {
     x11rb::connect(None).is_ok()
 }
 
-fn generic_error(reason: impl Into<String>) -> napi::Error {
-    napi::Error::new(Status::GenericFailure, reason.into())
+fn generic_error(reason: impl Into<String>) -> InputHookError {
+    InputHookError(reason.into())
 }
 
 #[allow(dead_code)]
