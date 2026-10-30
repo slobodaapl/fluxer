@@ -205,6 +205,28 @@ fn handle_global_added_metadata(
     }
 }
 
+fn record_link(
+    obj: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>,
+    inventory: &Arc<Mutex<InventorySnapshot>>,
+) -> bool {
+    let props = collect_props(obj.props);
+    let endpoints = props
+        .get("link.output.node")
+        .and_then(|id| id.parse::<u32>().ok())
+        .zip(
+            props
+                .get("link.input.node")
+                .and_then(|id| id.parse::<u32>().ok()),
+        );
+    let Some(endpoints) = endpoints else {
+        return false;
+    };
+    let Ok(mut snapshot) = inventory.lock() else {
+        return false;
+    };
+    snapshot.links.insert(obj.id, endpoints) != Some(endpoints)
+}
+
 pub(crate) fn handle_global_added(
     obj: &pw::registry::GlobalObject<&pw::spa::utils::dict::DictRef>,
     ctx: GlobalAddedContext<'_>,
@@ -214,6 +236,17 @@ pub(crate) fn handle_global_added(
         ObjectType::Node => handle_global_added_node(obj, &ctx),
         ObjectType::Port => handle_global_added_port(obj, &ctx),
         ObjectType::Metadata => handle_global_added_metadata(obj, &ctx),
+        ObjectType::Link if record_link(obj, ctx.inventory) => {
+            recompute_routing(
+                ctx.inventory,
+                ctx.state,
+                ctx.core,
+                ctx.owned_links,
+                ctx.owned_link_snapshot,
+                ctx.metadata_watchers,
+                ctx.sink_node_name,
+            );
+        }
         _ => {}
     }
 }
@@ -229,6 +262,7 @@ pub(crate) fn handle_global_removed(
         snap.pending_node_info.remove(&id);
         changed |= snap.clients.remove(&id).is_some();
         changed |= snap.ports.remove(&id).is_some();
+        changed |= snap.links.remove(&id).is_some();
     }
     let mut st = state.borrow_mut();
     let removed_sink = st.sink_global_id == id;
@@ -361,6 +395,7 @@ pub(crate) fn handle_direct_global_added(
         ObjectType::Node => direct_added_node(obj, &args),
         ObjectType::Port => direct_added_port(obj, &args),
         ObjectType::Metadata => direct_added_metadata(obj, &args, on_default_change),
+        ObjectType::Link => record_link(obj, args.inventory),
         _ => false,
     }
 }
@@ -377,6 +412,7 @@ pub(crate) fn handle_direct_global_removed(
         snap.pending_node_info.remove(&id);
         changed |= snap.clients.remove(&id).is_some();
         changed |= snap.ports.remove(&id).is_some();
+        changed |= snap.links.remove(&id).is_some();
     }
     {
         let mut st = state.borrow_mut();

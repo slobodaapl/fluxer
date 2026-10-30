@@ -67,13 +67,72 @@ fn system_rule() -> RoutingRule {
     }
 }
 
+#[test]
+fn device_capture_follows_live_links_without_target_properties() {
+    let mut nodes = surround_graph();
+    nodes.get_mut(&400).unwrap().remove("target.object");
+    nodes.get_mut(&312).unwrap().remove("target.object");
+    let mut links = HashMap::from([(1, (400, 57)), (2, (312, 57)), (3, (58, 167))]);
+    let pending = HashSet::new();
+    let mut identity = SelfIdentity::default();
+    identity.add_display_name("Fluxer");
+    let mut rule = RoutingRule {
+        include_when: vec![props(&[("fluxer.target.objects", "headset")])],
+        ..Default::default()
+    };
+    let graph = CaptureGraph::new(&nodes, &pending, &links);
+    assert!(graph.should_route(400, &rule, "", "", 999, &identity));
+    assert!(!graph.should_route(312, &rule, "", "", 999, &identity));
+    assert!(!graph.should_route(58, &rule, "", "", 999, &identity));
+    rule.never_when
+        .push(props(&[("fluxer.target.objects", "virtual.arctis")]));
+    assert!(!graph.should_route(400, &rule, "", "", 999, &identity));
+    rule.never_when.clear();
+    links.remove(&1);
+    assert!(
+        !CaptureGraph::new(&nodes, &pending, &links)
+            .should_route(400, &rule, "", "", 999, &identity)
+    );
+    links.insert(4, (400, 167));
+    assert!(
+        CaptureGraph::new(&nodes, &pending, &links)
+            .should_route(400, &rule, "", "", 999, &identity)
+    );
+}
+
+#[test]
+fn live_destination_overrides_stale_target_and_ignores_capture_links() {
+    let mut nodes = surround_graph();
+    nodes.insert(
+        999,
+        props(&[("media.class", "Audio/Sink"), ("node.name", "capture")]),
+    );
+    nodes.insert(
+        700,
+        props(&[("media.class", "Audio/Sink"), ("node.name", "other")]),
+    );
+    let pending = HashSet::new();
+    let identity = SelfIdentity::default();
+    let mut links = HashMap::from([(1, (400, 700)), (2, (400, 999))]);
+    let rule = system_rule();
+    let graph = CaptureGraph::new(&nodes, &pending, &links);
+    assert!(!graph.should_route(400, &rule, "headset", "10167", 999, &identity));
+    assert!(graph.should_route(400, &rule, "other", "700", 999, &identity));
+    links.remove(&1);
+    assert!(
+        CaptureGraph::new(&nodes, &pending, &links)
+            .should_route(400, &rule, "headset", "10167", 999, &identity)
+    );
+}
+
 fn selected(
     nodes: &HashMap<u32, PropMap>,
     pending: &HashSet<u32>,
     rule: &RoutingRule,
     sink: &str,
 ) -> Vec<u32> {
-    let graph = CaptureGraph::new(nodes, pending);
+    let links = HashMap::new();
+    let graph = CaptureGraph::new(nodes, pending, &links);
     let mut identity = SelfIdentity::default();
     identity.add_display_name("Fluxer");
     let mut sources = nodes

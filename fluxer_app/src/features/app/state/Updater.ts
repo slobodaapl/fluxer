@@ -249,6 +249,7 @@ class Updater {
 		if (this.isNative) {
 			await this.bootstrapNative();
 			await this.bootstrapDesktopUpdate();
+			return;
 		}
 		this.startBackgroundChecks();
 		void this.checkForUpdates(false);
