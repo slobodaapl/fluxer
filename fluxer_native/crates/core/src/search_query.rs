@@ -4,7 +4,7 @@
 use crate::{ChannelType, ClientState, Snowflake};
 use chrono::{
     DateTime, Datelike, Days, Duration, FixedOffset, Local, Months, NaiveDate, NaiveDateTime,
-    TimeZone, Timelike,
+    TimeZone,
 };
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -82,6 +82,7 @@ pub fn parse_search_query_with_options(
         now: Local::now().fixed_offset(),
         local_zone: true,
         week_start: system_week_start(),
+        named_zone: None,
     };
     parse_at(query, state, options, &clock)
 }
@@ -554,10 +555,11 @@ fn parse_at(
                         values.next().unwrap_or_default(),
                     );
                     if let (Some(lower), Some(upper)) = (clock.period(a), clock.period(b)) {
-                        params.insert("min_id".into(), snowflake_at(lower.0).into());
-                        params.insert("max_id".into(), snowflake_at(upper.1).into());
+                        params.insert("min_id".into(), snowflake_at(lower.start).into());
+                        params.insert("max_id".into(), snowflake_at(upper.end).into());
                     }
-                } else if let Some((start, end)) = clock.period(value) {
+                } else if let Some(period) = clock.period(value) {
+                    let (start, end) = (period.start, period.end);
                     if key != "before" {
                         params.insert(
                             "min_id".into(),
@@ -567,10 +569,8 @@ fn parse_at(
                     if key != "after" {
                         let end = if key == "before" {
                             start
-                        } else if end > start {
-                            end
                         } else {
-                            clock.next_day(start).unwrap_or(end)
+                            period.during_end
                         };
                         params.insert("max_id".into(), snowflake_at(end).into());
                     }
@@ -602,40 +602,111 @@ fn snowflake_at(date: DateTime<FixedOffset>) -> String {
     ((date.timestamp_millis().saturating_sub(EPOCH).max(0) as u128) << 22).to_string()
 }
 
+#[derive(Clone, Copy)]
+enum DateZone {
+    Local,
+    Fixed(FixedOffset),
+    Named(chrono_tz::Tz),
+}
+struct SearchDatePeriod {
+    start: DateTime<FixedOffset>,
+    end: DateTime<FixedOffset>,
+    during_end: DateTime<FixedOffset>,
+}
 struct Clock {
     now: DateTime<FixedOffset>,
     local_zone: bool,
     week_start: u32,
+    named_zone: Option<chrono_tz::Tz>,
+}
+fn local_datetime<T: TimeZone>(
+    zone: &T,
+    date: NaiveDateTime,
+    guess: FixedOffset,
+) -> Option<DateTime<FixedOffset>> {
+    use chrono::{LocalResult, Offset};
+    match zone.from_local_datetime(&date) {
+        LocalResult::Single(value) => Some(value.fixed_offset()),
+        LocalResult::Ambiguous(a, b) => {
+            // Luxon fixOffset starts with the zone's offset at Settings.now.
+            // An overlap therefore selects the matching current-offset branch.
+            if b.offset().fix() == guess {
+                Some(b.fixed_offset())
+            } else {
+                Some(a.fixed_offset())
+            }
+        }
+        LocalResult::None => {
+            // Luxon moves nonexistent spring-forward wall times across the gap
+            // using the smaller surrounding offset; it does not reject the date.
+            let before = zone
+                .offset_from_utc_datetime(&date.checked_sub_signed(Duration::days(1))?)
+                .fix();
+            let after = zone
+                .offset_from_utc_datetime(&date.checked_add_signed(Duration::days(1))?)
+                .fix();
+            let offset = before.local_minus_utc().min(after.local_minus_utc());
+            let utc = date.checked_sub_signed(Duration::seconds(offset as i64))?;
+            Some(zone.from_utc_datetime(&utc).fixed_offset())
+        }
+    }
+}
+impl DateZone {
+    fn at(self, date: NaiveDateTime, now: DateTime<FixedOffset>) -> Option<DateTime<FixedOffset>> {
+        use chrono::Offset;
+        match self {
+            Self::Fixed(zone) => zone.from_local_datetime(&date).single(),
+            Self::Local => local_datetime(
+                &Local,
+                date,
+                Local.offset_from_utc_datetime(&now.naive_utc()).fix(),
+            ),
+            Self::Named(zone) => local_datetime(
+                &zone,
+                date,
+                zone.offset_from_utc_datetime(&now.naive_utc()).fix(),
+            ),
+        }
+    }
+    fn instant(self, utc: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
+        match self {
+            Self::Fixed(zone) => utc.with_timezone(&zone),
+            Self::Local => utc.with_timezone(&Local).fixed_offset(),
+            Self::Named(zone) => utc.with_timezone(&zone).fixed_offset(),
+        }
+    }
+    fn day(self, instant: DateTime<FixedOffset>) -> Option<SearchDatePeriod> {
+        let date = instant.date_naive();
+        let start = self.at(date.and_hms_opt(0, 0, 0)?, instant)?;
+        let end = self.at(date.succ_opt()?.and_hms_opt(0, 0, 0)?, instant)?;
+        Some(SearchDatePeriod {
+            start,
+            end,
+            during_end: end,
+        })
+    }
+    fn point(self, instant: DateTime<FixedOffset>) -> Option<SearchDatePeriod> {
+        Some(SearchDatePeriod {
+            start: instant,
+            end: instant,
+            during_end: self.day(instant)?.end,
+        })
+    }
 }
 impl Clock {
+    fn zone(&self) -> DateZone {
+        self.named_zone.map(DateZone::Named).unwrap_or_else(|| {
+            if self.local_zone {
+                DateZone::Local
+            } else {
+                DateZone::Fixed(*self.now.offset())
+            }
+        })
+    }
     fn at(&self, date: NaiveDateTime) -> Option<DateTime<FixedOffset>> {
-        if self.local_zone {
-            Local
-                .from_local_datetime(&date)
-                .earliest()
-                .map(|v| v.fixed_offset())
-        } else {
-            self.now.offset().from_local_datetime(&date).single()
-        }
+        self.zone().at(date, self.now)
     }
-    fn day(&self, date: NaiveDate) -> Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> {
-        Some((
-            self.at(date.and_hms_opt(0, 0, 0)?)?,
-            self.at(date.succ_opt()?.and_hms_opt(0, 0, 0)?)?,
-        ))
-    }
-    fn next_day(&self, instant: DateTime<FixedOffset>) -> Option<DateTime<FixedOffset>> {
-        // Explicit-offset dates retain their own zone in Luxon.
-        let date = instant.date_naive().succ_opt()?.and_hms_opt(0, 0, 0)?;
-        if self.local_zone
-            && Local.offset_from_utc_datetime(&instant.naive_utc()) == *instant.offset()
-        {
-            self.at(date)
-        } else {
-            instant.offset().from_local_datetime(&date).single()
-        }
-    }
-    fn period(&self, input: &str) -> Option<(DateTime<FixedOffset>, DateTime<FixedOffset>)> {
+    fn period(&self, input: &str) -> Option<SearchDatePeriod> {
         const MONTHS: [&str; 12] = [
             "january",
             "february",
@@ -661,17 +732,21 @@ impl Clock {
         ];
         let input = js_trim(input);
         let word = input.to_lowercase();
-        let today = self.now.date_naive();
+        let zone = self.zone();
+        let today = zone.instant(self.now).date_naive();
         let whole = |start: NaiveDate, end: NaiveDate| {
-            Some((
-                self.at(start.and_hms_opt(0, 0, 0)?)?,
-                self.at(end.and_hms_opt(0, 0, 0)?)?,
-            ))
+            let start = self.at(start.and_hms_opt(0, 0, 0)?)?;
+            let end = self.at(end.and_hms_opt(0, 0, 0)?)?;
+            Some(SearchDatePeriod {
+                start,
+                end,
+                during_end: end,
+            })
         };
         match word.as_str() {
-            "now" => return Some((self.now, self.now)),
-            "today" => return self.day(today),
-            "yesterday" => return self.day(today.pred_opt()?),
+            "now" => return zone.point(zone.instant(self.now)),
+            "today" => return zone.day(zone.instant(self.now)),
+            "yesterday" => return whole(today.pred_opt()?, today),
             "week" => {
                 let delta = (today.weekday().number_from_monday() + 7 - self.week_start) % 7;
                 let start = today.checked_sub_days(Days::new(delta as u64))?;
@@ -682,23 +757,23 @@ impl Clock {
                 return whole(start, start.checked_add_months(Months::new(1))?);
             }
             "year" => {
-                let start = NaiveDate::from_ymd_opt(today.year(), 1, 1)?;
-                return whole(start, NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)?);
+                return whole(
+                    NaiveDate::from_ymd_opt(today.year(), 1, 1)?,
+                    NaiveDate::from_ymd_opt(today.year() + 1, 1, 1)?,
+                );
             }
             _ => {}
         }
-        if let Some(month) = MONTHS.iter().position(|value| *value == word) {
+        if let Some(month) = MONTHS.iter().position(|v| *v == word) {
             let start = NaiveDate::from_ymd_opt(today.year(), month as u32 + 1, 1)?;
             return whole(start, start.checked_add_months(Months::new(1))?);
         }
-        if let Some(day) = WEEKDAYS.iter().position(|value| *value == word) {
+        if let Some(day) = WEEKDAYS.iter().position(|v| *v == word) {
             let delta = (today.weekday().number_from_monday() + 7 - self.week_start) % 7;
-            let start = today.checked_sub_days(Days::new(delta as u64))?;
-            return self.day(
-                start.checked_add_days(Days::new(
-                    (day as u32 + 1 + 7 - self.week_start) as u64 % 7,
-                ))?,
-            );
+            let start = today
+                .checked_sub_days(Days::new(delta as u64))?
+                .checked_add_days(Days::new((day as u32 + 1 + 7 - self.week_start) as u64 % 7))?;
+            return whole(start, start.succ_opt()?);
         }
         if word.len() == 4 && word.bytes().all(|b| b.is_ascii_digit()) {
             let year = word.parse::<i32>().ok()?;
@@ -709,67 +784,234 @@ impl Clock {
                 );
             }
         }
-        let normalized = input.replacen('_', "T", 1).replacen(' ', "T", 1);
-        let explicit = normalized.split_once('T').is_some_and(|(_, time)| {
-            !time.is_empty()
-                && (time.contains(':') || [2, 4, 6].contains(&time.trim_end_matches('Z').len()))
-        });
-        let instant = DateTime::parse_from_rfc3339(&normalized)
-            .ok()
-            .or_else(|| {
-                [
-                    "%Y-%m-%dT%H:%M:%S%.f%:z",
-                    "%Y-%m-%dT%H:%M%:z",
-                    "%Y-%m-%dT%H%:z",
-                    "%Y%m%dT%H%M%S%:z",
-                    "%Y%m%dT%H%M%:z",
-                ]
-                .iter()
-                .find_map(|format| DateTime::parse_from_str(&normalized, format).ok())
-            })
-            .or_else(|| {
-                [
-                    "%Y-%m-%dT%H:%M:%S%.f",
-                    "%Y-%m-%dT%H:%M",
-                    "%Y-%m-%dT%H",
-                    "%Y%m%dT%H%M%S",
-                    "%Y%m%dT%H%M",
-                    "%Y%m%dT%H%M%SZ",
-                    "%Y%m%dT%H%MZ",
-                ]
-                .iter()
-                .find_map(|format| NaiveDateTime::parse_from_str(&normalized, format).ok())
-                .and_then(|date| self.at(date))
-            })
-            .or_else(|| {
-                ["%Y-%m-%d", "%Y%m%d", "%m/%d/%Y", "%b %d %Y", "%B %d %Y"]
-                    .iter()
-                    .find_map(|format| NaiveDate::parse_from_str(input, format).ok())
-                    .and_then(|date| self.at(date.and_hms_opt(0, 0, 0)?))
-            })
-            .or_else(|| {
-                let parts = input.split('-').collect::<Vec<_>>();
-                if parts.len() == 2 && parts[0].len() == 4 {
-                    self.at(NaiveDate::from_ymd_opt(
-                        parts[0].parse().ok()?,
-                        parts[1].parse().ok()?,
-                        1,
-                    )?
-                    .and_hms_opt(0, 0, 0)?)
-                } else {
-                    None
-                }
-            })?;
-        if explicit {
-            return Some((instant, instant));
+        let (instant, zone) = self.parse_instant(input)?;
+        if explicit_clock_time(input) {
+            zone.point(instant)
+        } else {
+            zone.day(instant)
         }
-        let start = instant
-            .with_hour(0)?
-            .with_minute(0)?
-            .with_second(0)?
-            .with_nanosecond(0)?;
-        Some((start, self.next_day(start)?))
     }
+    fn parse_instant(&self, input: &str) -> Option<(DateTime<FixedOffset>, DateZone)> {
+        let normalized = input.replacen('_', "T", 1).replacen(' ', "T", 1);
+        parse_iso(&normalized, self)
+            .or_else(|| parse_js_date_fallback(input, self).map(|instant| (instant, self.zone())))
+    }
+}
+// Exact source EXPLICIT_CLOCK_TIME_RE; timezone colons and a trailing Z must
+// not accidentally turn hour-only or dashed compact clocks into point periods.
+fn explicit_clock_time(input: &str) -> bool {
+    let chars = input.as_bytes();
+    for i in 0..chars.len() {
+        if matches!(chars[i], b'T' | b'_' | b' ') {
+            let tail = &chars[i + 1..];
+            let digits = tail.iter().take_while(|b| b.is_ascii_digit()).count();
+            if (1..=2).contains(&digits)
+                && tail.get(digits) == Some(&b':')
+                && tail.get(digits + 1).is_some_and(u8::is_ascii_digit)
+                && tail.get(digits + 2).is_some_and(u8::is_ascii_digit)
+            {
+                return true;
+            }
+            if digits == tail.len() && ((1..=2).contains(&digits) || (4..=6).contains(&digits)) {
+                return true;
+            }
+        }
+        if chars[i] == b'T'
+            && i >= 8
+            && chars[i - 8..i].iter().all(u8::is_ascii_digit)
+            && chars
+                .get(i + 1..i + 5)
+                .is_some_and(|v| v.iter().all(u8::is_ascii_digit))
+        {
+            return true;
+        }
+    }
+    false
+}
+fn named_zone(value: &str) -> Option<chrono_tz::Tz> {
+    value.parse().ok().or_else(|| {
+        chrono_tz::TZ_VARIANTS
+            .iter()
+            .find(|zone| zone.name().eq_ignore_ascii_case(value))
+            .copied()
+    })
+}
+fn iso_date(value: &str) -> Option<NaiveDate> {
+    use chrono::Weekday;
+    if let Some((year, week)) = value.split_once("-W").or_else(|| value.split_once('W')) {
+        if year.len() != 4 {
+            return None;
+        }
+        let (week, day) = if let Some((week, day)) = week.split_once('-') {
+            (week, day)
+        } else if week.len() == 3 {
+            (&week[..2], &week[2..])
+        } else {
+            (week, "1")
+        };
+        let day = match day.parse::<u8>().ok()? {
+            1 => Weekday::Mon,
+            2 => Weekday::Tue,
+            3 => Weekday::Wed,
+            4 => Weekday::Thu,
+            5 => Weekday::Fri,
+            6 => Weekday::Sat,
+            7 => Weekday::Sun,
+            _ => return None,
+        };
+        return NaiveDate::from_isoywd_opt(year.parse().ok()?, week.parse().ok()?, day);
+    }
+    let compact = value.replace('-', "");
+    if !compact.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match compact.len() {
+        4 => NaiveDate::from_ymd_opt(compact.parse().ok()?, 1, 1),
+        6 => NaiveDate::from_ymd_opt(compact[..4].parse().ok()?, compact[4..].parse().ok()?, 1),
+        7 => NaiveDate::from_yo_opt(compact[..4].parse().ok()?, compact[4..].parse().ok()?),
+        8 => NaiveDate::from_ymd_opt(
+            compact[..4].parse().ok()?,
+            compact[4..6].parse().ok()?,
+            compact[6..].parse().ok()?,
+        ),
+        _ => None,
+    }
+}
+fn parse_iso(input: &str, clock: &Clock) -> Option<(DateTime<FixedOffset>, DateZone)> {
+    let mut text = input;
+    let mut zone = clock.zone();
+    let mut has_named = false;
+    if text.ends_with(']') {
+        let start = text.rfind('[')?;
+        zone = DateZone::Named(named_zone(&text[start + 1..text.len() - 1])?);
+        has_named = true;
+        text = &text[..start];
+    }
+    let (date, time) = if let Some((date, time)) = text.split_once(['T', 't']) {
+        (Some(date), Some(time))
+    } else if text.contains(':') {
+        (None, Some(text))
+    } else {
+        (Some(text), None)
+    };
+    let mut time = time.unwrap_or("");
+    if time.ends_with(['Z', 'z']) {
+        if !has_named {
+            zone = DateZone::Fixed(FixedOffset::east_opt(0)?);
+        }
+        time = &time[..time.len() - 1];
+    } else if let Some(index) = time.rfind(['+', '-']) {
+        let offset = &time[index + 1..];
+        let compact = offset.replace(':', "");
+        if ![2, 4].contains(&compact.len()) || !compact.bytes().all(|v| v.is_ascii_digit()) {
+            return None;
+        }
+        let hours = compact[..2].parse::<i32>().ok()?;
+        let minutes = if compact.len() == 4 {
+            compact[2..].parse::<i32>().ok()?
+        } else {
+            0
+        };
+        if minutes > 59 {
+            return None;
+        }
+        let sign = if time.as_bytes()[index] == b'-' {
+            -1
+        } else {
+            1
+        };
+        if !has_named {
+            zone = DateZone::Fixed(FixedOffset::east_opt(sign * (hours * 3600 + minutes * 60))?);
+        }
+        time = &time[..index];
+    }
+    let mut date = if let Some(date) = date {
+        iso_date(date)?
+    } else {
+        zone.instant(clock.now).date_naive()
+    };
+    let (integer, fraction) = time.split_once(['.', ',']).unwrap_or((time, ""));
+    let compact = integer.replace(':', "");
+    if ![0, 2, 4, 6].contains(&compact.len())
+        || !compact.bytes().all(|b| b.is_ascii_digit())
+        || !fraction.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let part = |start, end| compact.get(start..end).unwrap_or("0").parse::<u32>().ok();
+    let mut hour = part(0, 2)?;
+    let minute = part(2, 4)?;
+    let second = part(4, 6)?;
+    let millis = if fraction.is_empty() {
+        0
+    } else {
+        format!("{:0<3}", &fraction[..fraction.len().min(3)])
+            .parse::<u32>()
+            .ok()?
+    };
+    if !fraction.is_empty() && compact.len() != 6 {
+        return None;
+    }
+    if hour == 24 && minute == 0 && second == 0 && millis == 0 {
+        date = date.succ_opt()?;
+        hour = 0;
+    }
+    let instant = zone.at(
+        date.and_hms_milli_opt(hour, minute, second, millis)?,
+        clock.now,
+    )?;
+    Some((instant, zone))
+}
+fn parse_js_date_fallback(input: &str, clock: &Clock) -> Option<DateTime<FixedOffset>> {
+    // Source's final new Date(input) is implementation-defined beyond ISO.
+    // These formats and date-overflow cases are checked against its actual V8.
+    let zone = clock.zone();
+    // Actual V8 Date accepts ASCII-quoted legacy dates as local wall dates,
+    // including the parser's quoted filter values. Curly quotes are not accepted.
+    let quoted = (input.starts_with('"') && input.ends_with('"'))
+        || (input.starts_with('\'') && input.ends_with('\''));
+    let input = if quoted && input.len() >= 2 {
+        &input[1..input.len() - 1]
+    } else {
+        input
+    };
+    let raw = input
+        .strip_suffix('Z')
+        .or_else(|| input.strip_suffix('z'))
+        .unwrap_or(input);
+    let dash = raw.split('-').collect::<Vec<_>>();
+    if dash.len() == 3 && dash[0].len() == 4 && dash[1].len() == 2 && dash[2].len() == 2 {
+        let year = dash[0].parse().ok()?;
+        let month = dash[1].parse().ok()?;
+        let day = dash[2].parse::<u64>().ok()?;
+        if !(1..=31).contains(&day) {
+            return None;
+        }
+        let date = NaiveDate::from_ymd_opt(year, month, 1)?.checked_add_days(Days::new(day - 1))?;
+        if quoted {
+            return zone.at(date.and_hms_opt(0, 0, 0)?, clock.now);
+        }
+        // ECMAScript date-only ISO is UTC; fromJSDate projects into local zone.
+        let instant = FixedOffset::east_opt(0)?
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+            .single()?;
+        return Some(zone.instant(instant));
+    }
+    [
+        "%m/%d/%Y",
+        "%Y/%m/%d",
+        "%b-%d-%Y",
+        "%B-%d-%Y",
+        "%d-%b-%Y",
+        "%d-%B-%Y",
+        "%b %d %Y",
+        "%B %d %Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+    ]
+    .iter()
+    .find_map(|format| NaiveDate::parse_from_str(input, format).ok())
+    .and_then(|date| zone.at(date.and_hms_opt(0, 0, 0)?, clock.now))
 }
 fn system_week_start() -> u32 {
     // Luxon localeWeekStart uses the host Intl locale, not account UI language.
@@ -820,6 +1062,7 @@ mod tests {
             now: DateTime::parse_from_rfc3339("2026-11-12T16:20:30Z").unwrap(),
             local_zone: false,
             week_start: 7,
+            named_zone: None,
         }
     }
     #[test]
@@ -908,6 +1151,56 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn date_params_match_executed_source_luxon_fixtures() {
+        let data: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/search_query_dates.json"))
+                .unwrap();
+        let state = fixture_state();
+        let mut failures = Vec::new();
+        for fixture in data["fixtures"].as_array().unwrap() {
+            let zone: chrono_tz::Tz = fixture["zone"].as_str().unwrap().parse().unwrap();
+            let now = DateTime::parse_from_rfc3339(fixture["now"].as_str().unwrap())
+                .unwrap()
+                .with_timezone(&zone)
+                .fixed_offset();
+            let clock = Clock {
+                now,
+                local_zone: false,
+                named_zone: Some(zone),
+                week_start: if fixture["locale"] == "en-US" { 7 } else { 1 },
+            };
+            let parsed = parse_at(
+                fixture["query"].as_str().unwrap(),
+                &state,
+                &SearchParseOptions::default(),
+                &clock,
+            );
+            if parsed.params != fixture["params"] {
+                failures.push(format!(
+                    "{} {} {} {}: actual={} expected={}",
+                    fixture["now"],
+                    fixture["zone"],
+                    fixture["locale"],
+                    fixture["query"],
+                    parsed.params,
+                    fixture["params"]
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} date fixture mismatches:\n{}",
+            failures.len(),
+            failures
+                .iter()
+                .take(30)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
     #[test]
     fn hint_resolution_preserves_explicit_chosen_ids_and_repeated_values() {
         let options = SearchParseOptions {

@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import {stripTypeScriptTypes} from 'node:module';
+import {stripTypeScriptTypes,createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -74,3 +74,54 @@ const out=path.join(root,'fluxer_native/crates/core/tests/fixtures/search_query.
 fs.mkdirSync(path.dirname(out),{recursive:true});
 fs.writeFileSync(out,JSON.stringify({source:sourcePath,fixtures},null,2)+'\n');
 console.log(`Wrote ${fixtures.length} source-executed query fixtures.`);
+
+// Dates deliberately execute the pinned Luxon implementation rather than a
+// mock of its parsing/calendar behavior. Supply its verified CJS artifact.
+if (process.argv.includes('--dates')) {
+  const index=process.argv.indexOf('--dates');
+  const packagePath=process.argv[index+1] || process.env.FLUXER_LUXON_FIXTURE_MODULE;
+  if (!packagePath) throw new Error('--dates requires a pinned Luxon CJS path');
+  const {DateTime,Settings,VERSION}=createRequire(import.meta.url)(path.resolve(packagePath));
+  if (VERSION!=='3.7.2') throw new Error(`Expected pinned Luxon3.7.2, got ${VERSION}`);
+  context.DateTime=DateTime;
+  const dateQueries=[
+    'before:today','after:today','during:today','during:yesterday','during:now',
+    'during:week','during:month','during:year','during:monday','during:sunday',
+    'during:january','during:november','during:2010','during:2014','during:2015',
+    'during:2026','during:2027','during:2030','during:9999','during:0001',
+    'during:2026-11','during:202611','during:2026-11-12','during:20261112',
+    'during:2026-316','during:2026316','during:2026-W46-4','during:2026W464',
+    'during:2026-W46','during:2026W46','during:2026-11-12T14','during:2026-11-12T14Z',
+    'during:2026-11-12T1430','during:2026-11-12T1430Z','during:20261112T1430Z',
+    'during:2026-11-12T14:30','during:2026-11-12T14:30Z','during:2026-11-12t14:30z',
+    'during:2026-11-12_14:30','during:2026-11-12T14+02','during:2026-11-12T14+02:00',
+    'during:2026-11-12T14:30+02','during:2026-11-12T14:30+0200','during:2026-11-12T14:30+02:00',
+    'during:2026-11-12T14:30:12.123456','during:2026-11-12T14:30:12,123',
+    'during:2026-11-12T24:00','during:2026-11-12T24:00:01','during:14:30',
+    'during:2026-11-12T14:30[America/Chicago]', 'during:2026-11-12T14:30[Europe/Berlin]',
+    'during:2026-03-08T02:30','during:2026-11-01T01:30',
+    'during:2026-03-08','during:2026-11-01',
+    'during:2026-03-08T01:30-06:00','during:2026-11-01T01:30-05:00',
+    'during:2026-11-12..2026-11-14','before:today..now','after:yesterday..today',
+    'last:0ms','last:1ms','last:2s','last:3m','last:2h','last:2d','last:2w','last:2H',
+    'before:not-a-date','during:2026-13-01','during:2026-11-32','during:2026-02-30',
+    'during:11/12/2026','during:Nov-12-2026','during:12-Nov-2026','during:2026/11/12',
+    'during:2026-11-12T25:00','during:2026-11-12Z',
+    'before:2026-11-12T14:30Z','after:2026-11-12T14:30Z',
+    'during:"2026-11-12"','during:2026-11-12 before:2026-11-14',
+  ];
+  const dateFixtures=[];
+  for (const now of ['2026-11-12T16:20:30Z','2026-07-12T16:20:30Z','2026-03-08T16:20:30Z','2026-11-01T16:20:30Z']) {
+    Settings.now=()=>Date.parse(now);
+    for (const zone of ['UTC','America/Chicago']) for (const locale of ['en-US','en-GB']) {
+      process.env.TZ=zone;Settings.defaultZone=zone;Settings.defaultLocale=locale;
+      for (const query of dateQueries) {
+        const params=context.parseFixture(query,{},{});
+        dateFixtures.push({now,zone,locale,query,params});
+      }
+    }
+  }
+  const dateOut=path.join(root,'fluxer_native/crates/core/tests/fixtures/search_query_dates.json');
+  fs.writeFileSync(dateOut,JSON.stringify({source:sourcePath,luxon_version:VERSION,fixtures:dateFixtures},null,2)+'\n');
+  console.log(`Wrote ${dateFixtures.length} source-executed date fixtures.`);
+}
