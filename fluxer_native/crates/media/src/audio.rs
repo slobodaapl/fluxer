@@ -109,12 +109,14 @@ impl InputProcessor {
 
 pub(crate) struct MixerTrack {
     pub identity: String,
+    stream_audio: bool,
     samples: VecDeque<[f32; 2]>,
 }
 #[derive(Default)]
 pub(crate) struct PlaybackMixer {
     pub tracks: HashMap<String, MixerTrack>,
     pub participants: HashMap<String, ParticipantAudioSettings>,
+    pub streams: HashMap<String, ParticipantAudioSettings>,
     pub master_gain: f32,
     pub deafened: bool,
     pub peak: f32,
@@ -136,9 +138,16 @@ impl PlaybackMixer {
             id,
             MixerTrack {
                 identity,
+                stream_audio: false,
                 samples: VecDeque::new(),
             },
         );
+    }
+    pub fn add_stream_track(&mut self, id: String, identity: String) {
+        self.add_track(id.clone(), identity);
+        if let Some(track) = self.tracks.get_mut(&id) {
+            track.stream_audio = true;
+        }
     }
     pub fn push(&mut self, id: &str, samples: &[i16], channels: u32) {
         let Some(track) = self.tracks.get_mut(id) else {
@@ -162,8 +171,14 @@ impl PlaybackMixer {
         let mut out = [0.0; 2];
         for track in self.tracks.values_mut() {
             let sample = track.samples.pop_front().unwrap_or([0.0; 2]);
-            let settings = self
-                .participants
+            // ParticipantVolume.ts uses independent StreamAudioPrefs for a
+            // screenshare; muting its audio must leave the speaker's mic alone.
+            let preferences = if track.stream_audio {
+                &self.streams
+            } else {
+                &self.participants
+            };
+            let settings = preferences
                 .get(&track.identity)
                 .copied()
                 .unwrap_or_default();
@@ -222,6 +237,72 @@ impl PlaybackMixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stream_audio_volume_and_mute_are_independent_of_the_same_users_microphone() {
+        let mut mixer = PlaybackMixer::new();
+        mixer.add_track("mic".into(), "alex".into());
+        mixer.add_stream_track("screen".into(), "alex".into());
+        mixer.push("mic", &[8192; 40], 2);
+        mixer.push("screen", &[8192; 40], 2);
+        mixer.participants.insert(
+            "alex".into(),
+            ParticipantAudioSettings {
+                gain: 0.5,
+                muted: true,
+            },
+        );
+        assert_eq!(
+            mixer.next_stereo(),
+            [0.25; 2],
+            "local voice mute leaves stream audio intact"
+        );
+        mixer.streams.insert(
+            "alex".into(),
+            ParticipantAudioSettings {
+                gain: 0.25,
+                muted: false,
+            },
+        );
+        assert_eq!(mixer.next_stereo(), [0.0625; 2]);
+        mixer.streams.get_mut("alex").unwrap().muted = true;
+        mixer.participants.get_mut("alex").unwrap().muted = false;
+        assert_eq!(
+            mixer.next_stereo(),
+            [0.125; 2],
+            "stream mute leaves the microphone audible"
+        );
+        mixer.master_gain = 0.5;
+        assert_eq!(mixer.next_stereo(), [0.0625; 2]);
+        mixer.deafened = true;
+        assert_eq!(mixer.next_stereo(), [0.; 2]);
+    }
+
+    #[test]
+    fn stream_preferences_survive_track_republish_and_feed_the_echo_reference() {
+        let mut mixer = PlaybackMixer::new();
+        mixer.streams.insert(
+            "alex".into(),
+            ParticipantAudioSettings {
+                gain: 0.5,
+                muted: false,
+            },
+        );
+        mixer.add_stream_track("old".into(), "alex".into());
+        mixer.tracks.remove("old");
+        mixer.add_stream_track("new".into(), "alex".into());
+        mixer.push("new", &vec![16_384; 960], 2);
+        for _ in 0..481 {
+            mixer.render_stereo(48_000);
+        }
+        let reference = mixer.take_render_reference();
+        assert_eq!(reference.len(), 1);
+        assert!(
+            reference[0]
+                .iter()
+                .all(|sample| (8191..=8192).contains(sample))
+        );
+    }
+
     #[test]
     fn echo_reference_follows_participant_and_output_gains() {
         let mut mixer = PlaybackMixer::new();
