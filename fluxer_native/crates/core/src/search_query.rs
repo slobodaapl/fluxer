@@ -87,6 +87,38 @@ pub fn parse_search_query_with_options(
     parse_at(query, state, options, &clock)
 }
 
+/// ChannelSearchResults rebuilds query date filters for each indexing poll.
+/// Refresh only those bounds: identity resolution and the caller's scope,
+/// ordering, context and pagination remain owned by the original request.
+/// An empty domain state avoids copying any account or message-history cache.
+pub fn refresh_search_time_bounds(query: &str, params: &mut Value) {
+    let clock = Clock {
+        now: Local::now().fixed_offset(),
+        local_zone: true,
+        week_start: system_week_start(),
+        named_zone: None,
+    };
+    refresh_search_time_bounds_at(query, params, &clock);
+}
+fn refresh_search_time_bounds_at(query: &str, params: &mut Value, clock: &Clock) {
+    let parsed = parse_at(
+        query,
+        &ClientState::default(),
+        &SearchParseOptions::default(),
+        clock,
+    );
+    let Some(params) = params.as_object_mut() else {
+        return;
+    };
+    for key in ["min_id", "max_id"] {
+        if let Some(value) = parsed.params.get(key) {
+            params.insert(key.into(), value.clone());
+        } else {
+            params.remove(key);
+        }
+    }
+}
+
 struct Token {
     key: String,
     value: String,
@@ -1272,6 +1304,98 @@ mod tests {
     }
     fn at(date: &str) -> String {
         snowflake_at(DateTime::parse_from_rfc3339(date).unwrap())
+    }
+    #[test]
+    fn indexing_poll_refreshes_relative_bounds_and_preserves_resolved_request_parameters() {
+        let query = "from:alice#0001 in:general last:2h before:now scope:all_guilds has:image";
+        let options = SearchParseOptions {
+            guild_id: Some(10.into()),
+            ..Default::default()
+        };
+        let mut params = parse_at(query, &fixture_state(), &options, &clock()).params;
+        params["channel_ids"] = params["channel_id"].clone();
+        params["context_channel_id"] = "200".into();
+        params["context_guild_id"] = "10".into();
+        params["scope"] = "open_dms".into();
+        params["sort_by"] = "relevance".into();
+        params["sort_order"] = "desc".into();
+        params["page"] = 7.into();
+        params["hits_per_page"] = 25.into();
+        assert_eq!(params["min_id"], at("2026-11-12T14:20:30Z"));
+        assert_eq!(params["max_id"], at("2026-11-12T16:20:30Z"));
+        let mut unchanged = params.clone();
+        for key in ["min_id", "max_id"] {
+            unchanged.as_object_mut().unwrap().remove(key);
+        }
+        let later = Clock {
+            now: DateTime::parse_from_rfc3339("2026-11-12T16:21:15Z").unwrap(),
+            ..clock()
+        };
+        refresh_search_time_bounds_at(query, &mut params, &later);
+        assert_eq!(params["min_id"], at("2026-11-12T14:21:15Z"));
+        assert_eq!(params["max_id"], at("2026-11-12T16:21:15Z"));
+        for key in ["min_id", "max_id"] {
+            params.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(
+            params, unchanged,
+            "polling must not re-resolve cached users/channels or override scope/context/sort/page"
+        );
+    }
+    #[test]
+    fn indexing_poll_recomputes_relative_calendar_periods_after_midnight() {
+        let before = Clock {
+            now: DateTime::parse_from_rfc3339("2026-11-12T23:59:59Z").unwrap(),
+            ..clock()
+        };
+        let after = Clock {
+            now: DateTime::parse_from_rfc3339("2026-11-13T00:00:01Z").unwrap(),
+            ..clock()
+        };
+        let mut params = parse_at(
+            "during:today",
+            &ClientState::default(),
+            &SearchParseOptions::default(),
+            &before,
+        )
+        .params;
+        assert_eq!(
+            params,
+            json!({"min_id":at("2026-11-12T00:00:00Z"),"max_id":at("2026-11-13T00:00:00Z")})
+        );
+        refresh_search_time_bounds_at("during:today", &mut params, &after);
+        assert_eq!(
+            params,
+            json!({"min_id":at("2026-11-13T00:00:00Z"),"max_id":at("2026-11-14T00:00:00Z")})
+        );
+    }
+    #[test]
+    fn indexing_poll_preserves_explicit_id_and_date_filter_token_precedence() {
+        let later = Clock {
+            now: DateTime::parse_from_rfc3339("2026-11-12T16:21:15Z").unwrap(),
+            ..clock()
+        };
+        for (query, expected) in [
+            (
+                "afterid:123 last:2h beforeid:456 before:now",
+                json!({"min_id":at("2026-11-12T14:21:15Z"),"max_id":at("2026-11-12T16:21:15Z")}),
+            ),
+            (
+                "last:2h afterid:123 before:now beforeid:456",
+                json!({"min_id":"123","max_id":"456"}),
+            ),
+            ("after:not-a-date beforeid:456", json!({"max_id":"456"})),
+        ] {
+            let mut params = parse_at(
+                query,
+                &ClientState::default(),
+                &SearchParseOptions::default(),
+                &clock(),
+            )
+            .params;
+            refresh_search_time_bounds_at(query, &mut params, &later);
+            assert_eq!(params, expected, "{query}");
+        }
     }
     #[test]
     fn date_filters_preserve_source_boundaries_epoch_and_local_periods() {
