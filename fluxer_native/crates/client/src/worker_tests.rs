@@ -1672,20 +1672,26 @@ async fn actual_text_workflow(login_mode: u8) {
         .await
         .unwrap();
     worker
-            .command(Command::SendMessage {
-                content: "fail".into(),
-                reply_to: None,
-                mention_author: false,
-            })
-            .await
-            .unwrap();
+        .command(Command::SendMessage {
+            content: "fail".into(),
+            reply_to: None,
+            mention_author: false,
+        })
+        .await
+        .unwrap();
     finish_attachment_send(&mut worker, 100.into()).await;
     assert_eq!(
         worker.state.drafts.get(&100.into()).map(String::as_str),
         Some("fail")
     );
     let events = events.try_iter().collect::<Vec<_>>();
-    assert_eq!(events.iter().filter(|event| matches!(event, Event::MessageSent { .. })).count(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::MessageSent { .. }))
+            .count(),
+        1
+    );
     assert!(events.iter().any(|event| matches!(event, Event::MessageOperationFailed { channel_id, content, error } if *channel_id==Snowflake(100) && content=="fail" && error.contains("403"))));
     assert!(
         worker.media.is_none(),
@@ -2010,20 +2016,26 @@ async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_dr
         .await
         .unwrap();
     worker
-            .command(Command::SendMessage {
-                content: "failed reply".into(),
-                reply_to: Some(200.into()),
-                mention_author: true
-            })
-            .await
-            .unwrap();
+        .command(Command::SendMessage {
+            content: "failed reply".into(),
+            reply_to: Some(200.into()),
+            mention_author: true,
+        })
+        .await
+        .unwrap();
     finish_attachment_send(&mut worker, 11.into()).await;
     assert_eq!(
         worker.state.drafts.get(&11.into()).map(String::as_str),
         Some("failed reply")
     );
-    let events=events.try_iter().collect::<Vec<_>>();
-    assert_eq!(events.iter().filter(|event|matches!(event,Event::MessageSent{..})).count(),1);
+    let events = events.try_iter().collect::<Vec<_>>();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::MessageSent { .. }))
+            .count(),
+        1
+    );
     assert!(events.iter().any(|event|matches!(event,Event::MessageOperationFailed{channel_id,content,error} if *channel_id==Snowflake(11) && content=="failed reply" && error.contains("403"))));
     assert!(worker.media.is_none());
     timeout(Duration::from_secs(5), server)
