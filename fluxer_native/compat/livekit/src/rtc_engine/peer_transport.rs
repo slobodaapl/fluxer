@@ -14,6 +14,7 @@
 
 use std::{
     fmt::{Debug, Formatter},
+    collections::HashSet,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
@@ -54,6 +55,9 @@ pub struct PeerTransport {
     peer_connection: PeerConnection,
     on_offer_handler: Mutex<Option<OnOfferCreated>>,
     inner: Arc<AsyncMutex<TransportInner>>,
+    stereo_track_ids: Mutex<HashSet<String>>,
+    offered_stereo_mids: Mutex<HashSet<String>>,
+    remote_stereo_mids: Mutex<HashSet<String>>,
 
     /// Counts entries into `Connected`; see [`Self::note_connection_state`].
     connected_generation: AtomicU32,
@@ -78,6 +82,9 @@ impl PeerTransport {
             signal_target,
             peer_connection,
             on_offer_handler: Mutex::new(None),
+            stereo_track_ids: Mutex::new(HashSet::new()),
+            offered_stereo_mids: Mutex::new(HashSet::new()),
+            remote_stereo_mids: Mutex::new(HashSet::new()),
             inner: Arc::new(AsyncMutex::new(TransportInner {
                 pending_candidates: Vec::default(),
                 renegotiate: false,
@@ -92,6 +99,24 @@ impl PeerTransport {
             connected_generation: AtomicU32::new(0),
             disconnect_generation: AtomicU32::new(0),
         }
+    }
+
+    pub fn set_audio_stereo_track(&self, cid: &str, stereo: bool) {
+        if stereo {
+            self.stereo_track_ids.lock().insert(cid.to_owned());
+        } else {
+            self.stereo_track_ids.lock().remove(cid);
+        }
+        self.offered_stereo_mids.lock().clear();
+    }
+
+    fn stereo_mids(&self) -> HashSet<String> {
+        let tracks = self.stereo_track_ids.lock();
+        let mut mids: HashSet<String> = self.peer_connection.transceivers().into_iter()
+            .filter(|transceiver| transceiver.sender().track().is_some_and(|track| tracks.contains(&track.id())))
+            .filter_map(|transceiver| transceiver.mid()).collect();
+        mids.extend(self.offered_stereo_mids.lock().iter().cloned());
+        mids
     }
 
     pub fn is_connected(&self) -> bool {
@@ -158,8 +183,15 @@ impl PeerTransport {
 
     pub async fn set_remote_description(
         &self,
-        remote_description: SessionDescription,
+        mut remote_description: SessionDescription,
     ) -> EngineResult<()> {
+        if remote_description.sdp_type() == SdpType::Offer {
+            *self.remote_stereo_mids.lock() = super::opus_stereo::remote_stereo_mids(&remote_description.to_string());
+        } else if remote_description.sdp_type() == SdpType::Answer {
+            let munged = super::opus_stereo::munge_selected(&remote_description.to_string(), &self.stereo_mids(), &HashSet::new());
+            remote_description = SessionDescription::parse(&munged, remote_description.sdp_type())
+                .map_err(|_| super::EngineError::Internal("Unable to prepare Opus stereo SDP".into()))?;
+        }
         let mut inner = self.inner.lock().await;
 
         if let Some(pending_offer) = inner.pending_initial_offer.take() {
@@ -208,6 +240,9 @@ impl PeerTransport {
     ) -> EngineResult<SessionDescription> {
         self.set_remote_description(offer).await?;
         let answer = self.peer_connection().create_answer(options).await?;
+        let munged = super::opus_stereo::munge_selected(&answer.to_string(), &self.remote_stereo_mids.lock(), &HashSet::new());
+        let answer = SessionDescription::parse(&munged, answer.sdp_type())
+            .map_err(|_| super::EngineError::Internal("Unable to prepare Opus stereo SDP".into()))?;
         self.peer_connection().set_local_description(answer.clone()).await?;
 
         Ok(answer)
@@ -557,6 +592,15 @@ impl PeerTransport {
             }
         }
 
+        // Bundled JS PCTransport selects stereo audio by sender CID before MID
+        // assignment, and by transceiver MID for the publisher's remote answer.
+        let stereo_sdp = super::opus_stereo::munge_selected(&sdp, &self.stereo_mids(), &self.stereo_track_ids.lock());
+        if stereo_sdp != sdp {
+            offer = SessionDescription::parse(&stereo_sdp, offer.sdp_type())
+                .map_err(|_| super::EngineError::Internal("Unable to prepare Opus stereo SDP".into()))?;
+            sdp = stereo_sdp;
+        }
+
         // Apply x-google-start-bitrate for all video codecs to improve initial quality.
         //
         // The same value goes on every video codec, and only on the first offer that carries
@@ -608,6 +652,7 @@ impl PeerTransport {
         }
 
         self.peer_connection.set_local_description(offer.clone()).await?;
+        *self.offered_stereo_mids.lock() = super::opus_stereo::remote_stereo_mids(&sdp);
 
         // Only consume the one-shot hint once the offer carrying it is accepted locally.
         if applied_start_bitrate {

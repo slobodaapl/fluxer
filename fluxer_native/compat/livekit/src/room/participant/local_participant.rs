@@ -118,6 +118,19 @@ impl Debug for LocalParticipant {
     }
 }
 
+// The bundled JS client intentionally sends the legacy stereo wire field
+// alongside TF_STEREO; retain both for matching server behavior.
+#[allow(deprecated)]
+fn apply_audio_publish_features(req: &mut proto::AddTrackRequest, options: &TrackPublishOptions) {
+    req.stereo = options.force_stereo;
+    if options.force_stereo {
+        req.audio_features.push(proto::AudioTrackFeature::TfStereo as i32);
+    }
+    if !options.dtx {
+        req.audio_features.push(proto::AudioTrackFeature::TfNoDtx as i32);
+    }
+}
+
 impl LocalParticipant {
     pub(crate) fn new(
         rtc_engine: Arc<RtcEngine>,
@@ -423,6 +436,10 @@ impl LocalParticipant {
             stream: options.stream.clone(),
             ..Default::default()
         };
+
+        if track.kind() == TrackKind::Audio {
+            apply_audio_publish_features(&mut req, &options);
+        }
 
         if options.preconnect_buffer {
             req.audio_features.push(proto::AudioTrackFeature::TfPreconnectBuffer as i32);
@@ -1249,5 +1266,33 @@ mod tests {
         };
 
         assert!(!needs_video_sender_transformer(&options, false));
+    }
+}
+
+#[cfg(test)]
+#[allow(deprecated)]
+mod fluxer_audio_signaling_tests {
+    use super::*;
+    #[test]
+    fn forced_stereo_sets_exact_addtrack_and_audio_features_without_affecting_mono() {
+        let mut req = proto::AddTrackRequest::default();
+        let mut options = TrackPublishOptions::default();
+        apply_audio_publish_features(&mut req, &options);
+        assert!(!req.stereo);
+        assert!(!req
+            .audio_features
+            .contains(&(proto::AudioTrackFeature::TfStereo as i32)));
+        options.force_stereo = true;
+        options.dtx = false;
+        let mut req = proto::AddTrackRequest::default();
+        apply_audio_publish_features(&mut req, &options);
+        assert!(req.stereo);
+        assert_eq!(
+            req.audio_features,
+            vec![
+                proto::AudioTrackFeature::TfStereo as i32,
+                proto::AudioTrackFeature::TfNoDtx as i32
+            ]
+        );
     }
 }
