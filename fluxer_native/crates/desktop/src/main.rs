@@ -12,6 +12,7 @@ mod input;
 mod message_actions;
 mod message_demo;
 mod message_grouping;
+mod message_markup;
 mod rich_message;
 mod search_browser;
 mod stream_view;
