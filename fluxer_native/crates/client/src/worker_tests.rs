@@ -429,7 +429,7 @@ fn watch_frame(identity: &str, generation: u64) -> VideoFrame {
         watch_generation: generation,
         width: 1,
         height: 1,
-        rgba: Arc::new(vec![0, 0, 0, 255]),
+        bgra: Arc::new(vec![0, 0, 0, 255]),
     }
 }
 

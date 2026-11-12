@@ -215,13 +215,38 @@ impl Controller {
             .map_err(|_| "Client worker stopped".into())
     }
 
-    pub fn try_recv(&self) -> Option<Event> {
+    /// Poll control/state events independently from the live video producer.
+    /// A UI should drain a bounded number, then call `drain_frames` once per
+    /// presentation tick. Repeated `try_recv` while converting video can keep
+    /// consuming newly produced frames without yielding back to user input.
+    pub fn try_recv_control(&self) -> Option<Event> {
         if let Ok(event) = self.events.try_recv() {
             if let Event::WatchedStreams(watched) = &event
                 && let Ok(mut frames) = self.frames.lock()
             {
                 frames.retain(|_, frame| watched.contains(&frame.participant));
             }
+            return Some(event);
+        }
+        None
+    }
+
+    /// Atomically take the latest frame for each track. Frames arriving during
+    /// conversion/rendering remain in the next tick's snapshot. In particular,
+    /// a continuously replenished track cannot extend the current UI tick.
+    pub fn drain_frames(&self) -> Vec<VideoFrame> {
+        let snapshot = self
+            .frames
+            .lock()
+            .map(|mut frames| std::mem::take(&mut *frames))
+            .unwrap_or_default();
+        snapshot.into_values().collect()
+    }
+
+    /// Compatibility polling for consumers which do not convert/render video.
+    /// Presentation loops should use `try_recv_control` plus `drain_frames`.
+    pub fn try_recv(&self) -> Option<Event> {
+        if let Some(event) = self.try_recv_control() {
             return Some(event);
         }
         self.frames
@@ -260,7 +285,7 @@ mod controller_tests {
                 watch_generation: 1,
                 width: 1,
                 height: 1,
-                rgba: Arc::new(vec![0, 0, 0, 255]),
+                bgra: Arc::new(vec![0, 0, 0, 255]),
             },
         )])));
         let controller = Controller {
@@ -275,6 +300,134 @@ mod controller_tests {
         );
         assert!(frames.lock().unwrap().is_empty());
         assert!(controller.try_recv().is_none());
+    }
+
+    #[test]
+    fn sustained_producer_cannot_extend_a_frame_snapshot_or_starve_stop_controls() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let (commands, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events_tx, events) = mpsc::channel();
+        let frames = Arc::new(Mutex::new(BTreeMap::new()));
+        let controller = Controller {
+            commands,
+            events,
+            frames: frames.clone(),
+            shutdown: None,
+        };
+        let producing = Arc::new(AtomicBool::new(true));
+        let produced = Arc::new(AtomicUsize::new(0));
+        let pending_input = Arc::new(AtomicBool::new(false));
+        let thread_frames = frames.clone();
+        let thread_producing = producing.clone();
+        let thread_produced = produced.clone();
+        let thread_pending_input = pending_input.clone();
+        // Synthetic full-HD pixels are allocated once: this tests orchestration
+        // with an actual concurrent source, not codec or GPU throughput.
+        let pixels = Arc::new(vec![0; 1920 * 1080 * 4]);
+        let producer = thread::spawn(move || {
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(2) {
+                if started.elapsed() >= Duration::from_millis(250) {
+                    // Like a pending window input event, this cannot execute a
+                    // UI handler until the current presentation tick returns.
+                    thread_pending_input.store(true, Ordering::Release);
+                }
+                if let Ok(mut frames) = thread_frames.lock()
+                    && thread_producing.load(Ordering::Acquire)
+                {
+                    for track in ["a", "b"] {
+                        frames.insert(
+                            track.into(),
+                            VideoFrame {
+                                track_id: track.into(),
+                                participant: "user_1_stream".into(),
+                                watch_generation: 1,
+                                width: 1920,
+                                height: 1080,
+                                bgra: pixels.clone(),
+                            },
+                        );
+                        thread_produced.fetch_add(1, Ordering::Relaxed);
+                    }
+                    assert!(
+                        frames.len() <= 2,
+                        "producer frame storage remains bounded by tracks"
+                    );
+                }
+                if !thread_producing.load(Ordering::Acquire) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        let mut rendered = 0;
+        let mut saw_stop = false;
+        let mut max_batch = 0;
+        let mut frames_after_pending_input = 0;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && !saw_stop {
+            if pending_input.load(Ordering::Acquire) {
+                producing.store(false, Ordering::Release);
+                events_tx.send(Event::WatchedStreams(Vec::new())).unwrap();
+            }
+            // The desktop uses a fixed control budget, then exactly one frame
+            // snapshot. Video arrival cannot replenish this control loop.
+            for _ in 0..16 {
+                match controller.try_recv_control() {
+                    Some(Event::WatchedStreams(streams)) if streams.is_empty() => {
+                        saw_stop = true;
+                        break;
+                    }
+                    Some(Event::Video(_)) => panic!("video leaked into the control event queue"),
+                    Some(_) => (),
+                    None => break,
+                }
+            }
+            let snapshot = controller.drain_frames();
+            max_batch = max_batch.max(snapshot.len());
+            assert!(snapshot.len() <= 2);
+            if saw_stop {
+                assert!(
+                    snapshot.is_empty(),
+                    "stop clears queued pixels before rendering another batch"
+                );
+                break;
+            }
+            if snapshot.is_empty() {
+                thread::sleep(Duration::from_millis(2));
+            }
+            for _ in snapshot {
+                // Model a conversion/render slower than this source's frame
+                // interval. The old repeated try_recv loop could convert 128
+                // replenished frames here before returning to input handling.
+                if pending_input.load(Ordering::Acquire) {
+                    frames_after_pending_input += 1;
+                }
+                thread::sleep(Duration::from_millis(40));
+                rendered += 1;
+            }
+        }
+        producing.store(false, Ordering::Release);
+        producer.join().unwrap();
+        assert!(
+            saw_stop,
+            "sustained video must not prevent stop control delivery"
+        );
+        assert_eq!(max_batch, 2);
+        assert!(
+            frames_after_pending_input <= 2,
+            "a pending Stop input waits at most the already-taken frame batch"
+        );
+        assert!(
+            produced.load(Ordering::Relaxed) > rendered,
+            "source replenished frames throughout slow rendering"
+        );
+        println!(
+            "sustained source: {} frames produced, {rendered} rendered, max {max_batch} frames per presentation tick",
+            produced.load(Ordering::Relaxed)
+        );
     }
 
     #[test]
