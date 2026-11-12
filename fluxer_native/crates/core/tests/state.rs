@@ -238,3 +238,166 @@ fn typing_expires_at_deadline() {
     state.expire_typing(20_000);
     assert!(state.typing.is_empty());
 }
+
+#[test]
+fn actual_ready_user_reference_shape_hydrates_before_typed_deserialization() {
+    let mut state = ClientState::default();
+    let raw = serde_json::from_str(include_str!("fixtures/ready_user_refs.json")).unwrap();
+    state.apply_gateway("READY", raw).unwrap();
+    assert_eq!(state.guilds[&1.into()].name, "Reference Community");
+    assert!(state.guilds[&2.into()].unavailable);
+    assert_eq!(
+        state.members[&(1.into(), 100.into())].user.display_name(),
+        "Private Self"
+    );
+    assert_eq!(state.members[&(1.into(), 101.into())].user.username, "alex");
+    assert_eq!(
+        state.users[&100.into()].extra["email"],
+        "fixture@example.test"
+    );
+    assert_eq!(
+        state.users[&100.into()].global_name.as_deref(),
+        Some("Private Self")
+    );
+    assert_eq!(state.channels[&40.into()].display_name(), "Alex");
+    assert_eq!(state.channels[&41.into()].display_name(), "Alex, River");
+    assert_eq!(
+        state.relationships[&101.into()]
+            .user
+            .as_ref()
+            .unwrap()
+            .username,
+        "alex"
+    );
+    assert_eq!(state.presences[&101.into()].status, PresenceStatus::Online);
+    assert_eq!(
+        state.voice_states[&(101.into(), "connection-a".into())].channel_id,
+        Some(14.into())
+    );
+    assert!(
+        state
+            .permissions_for(11.into(), 100.into())
+            .contains(Permissions::SEND_MESSAGES)
+    );
+}
+
+#[test]
+fn unresolved_ready_reference_is_atomic_and_does_not_fabricate_username() {
+    let mut state = ClientState::demo();
+    let mut raw: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/ready_user_refs.json")).unwrap();
+    raw["guilds"][0]["members"][0]["user"]["id"] = json!("999");
+    assert!(state.apply_gateway("READY", raw).is_err());
+    assert_eq!(state.guilds[&1.into()].name, "Fluxer Community");
+    assert!(!state.users.contains_key(&999.into()));
+}
+
+#[test]
+fn offline_presence_accepts_cached_id_only_user_and_matches_desktop_status_normalization() {
+    let mut state = ClientState::demo();
+    state.apply_gateway("PRESENCE_UPDATE", json!({"user":{"id":"101"}, "status":"offline", "mobile":false, "afk":false, "custom_status":null})).unwrap();
+    assert_eq!(state.presences[&101.into()].status, PresenceStatus::Offline);
+    assert_eq!(state.presences[&101.into()].user.display_name(), "Alex");
+    state
+        .apply_gateway(
+            "PRESENCE_UPDATE",
+            json!({"user":{"id":"101"}, "status":null}),
+        )
+        .unwrap();
+    assert_eq!(state.presences[&101.into()].status, PresenceStatus::Offline);
+}
+
+#[test]
+fn debounced_reaction_add_many_matches_single_adds_and_ordinary_remove() {
+    let mut state = ClientState::demo();
+    let mut reference = state.clone();
+    let reactions = json!([
+        {"user_id":"100","emoji":{"id":null,"name":"🔥"}},
+        {"user_id":"101","emoji":{"id":null,"name":"🔥"}},
+        {"user_id":"102","emoji":{"id":"500","name":"custom"},"member":{"user":{"id":"102"},"roles":[]}}
+    ]);
+    state
+        .apply_gateway(
+            "MESSAGE_REACTION_ADD_MANY",
+            json!({"guild_id":"1","channel_id":"11","message_id":"1000","reactions":reactions}),
+        )
+        .unwrap();
+    for reaction in reactions.as_array().unwrap() {
+        let mut single = reaction.clone();
+        single["channel_id"] = json!("11");
+        single["message_id"] = json!("1000");
+        single["guild_id"] = json!("1");
+        reference
+            .apply_gateway("MESSAGE_REACTION_ADD", single)
+            .unwrap();
+    }
+    assert_eq!(
+        state.messages[&11.into()][&1000.into()].reactions,
+        reference.messages[&11.into()][&1000.into()].reactions
+    );
+    let fire = state.messages[&11.into()][&1000.into()]
+        .reactions
+        .iter()
+        .find(|r| r.emoji.name == "🔥")
+        .unwrap();
+    assert_eq!(fire.count, 2);
+    assert!(fire.me);
+    state.apply_gateway("MESSAGE_REACTION_REMOVE", json!({"user_id":"100","channel_id":"11","message_id":"1000","emoji":{"id":null,"name":"🔥"}})).unwrap();
+    let fire = state.messages[&11.into()][&1000.into()]
+        .reactions
+        .iter()
+        .find(|r| r.emoji.name == "🔥")
+        .unwrap();
+    assert_eq!(fire.count, 1);
+    assert!(!fire.me);
+}
+
+#[test]
+fn malformed_reaction_batch_does_not_partially_apply() {
+    let mut state = ClientState::demo();
+    let before = state.messages[&11.into()][&1000.into()].reactions.clone();
+    assert!(
+        state
+            .apply_gateway(
+                "MESSAGE_REACTION_ADD_MANY",
+                json!({"channel_id":"11","message_id":"1000","reactions":[
+                    {"user_id":"101","emoji":{"name":"🔥"}}, {"user_id":102,"emoji":{"name":"🔥"}}
+                ]})
+            )
+            .is_err()
+    );
+    assert_eq!(state.messages[&11.into()][&1000.into()].reactions, before);
+}
+
+#[test]
+fn guild_sync_bulk_channel_and_role_updates_merge_existing_rows() {
+    let mut state = ClientState::demo();
+    state.apply_gateway("GUILD_SYNC", json!({"id":"1","properties":{"name":"Synced","owner_id":"101"},"channels":[{"id":"50","name":"synced-channel","type":0}],"members":[{"user":{"id":"100"},"roles":[]}],"roles":[{"id":"1","name":"@everyone","permissions":"3072"}]})).unwrap();
+    assert_eq!(state.guilds[&1.into()].name, "Synced");
+    assert_eq!(state.channels[&50.into()].guild_id, Some(1.into()));
+    state.apply_gateway("CHANNEL_UPDATE_BULK", json!({"channels":[{"id":"11","type":0,"position":20},{"id":"50","type":0,"topic":"changed"}]})).unwrap();
+    assert_eq!(state.channels[&11.into()].position, 20);
+    assert_eq!(state.channels[&11.into()].name, "general");
+    assert_eq!(state.channels[&50.into()].topic.as_deref(), Some("changed"));
+    state.apply_gateway("GUILD_ROLE_UPDATE_BULK", json!({"guild_id":"1","roles":[{"id":"1","name":"@everyone","permissions":"1024"},{"id":"55","name":"role","permissions":"2048"}]})).unwrap();
+    assert_eq!(state.guilds[&1.into()].roles.len(), 2);
+    assert!(
+        !state
+            .permissions_for(11.into(), 100.into())
+            .contains(Permissions::SEND_MESSAGES)
+    );
+}
+
+#[test]
+fn new_voice_member_hydrates_from_exact_dispatch_member_field() {
+    let mut state = ClientState::demo();
+    state.apply_gateway("VOICE_STATE_UPDATE", json!({"user_id":"500","guild_id":"1","channel_id":"14","connection_id":"fresh-connection","member":{"user":{"id":"500","username":"fresh"},"roles":[]}})).unwrap();
+    assert_eq!(state.users[&500.into()].username, "fresh");
+    assert!(state.members.contains_key(&(1.into(), 500.into())));
+    state.apply_gateway("VOICE_STATE_UPDATE", json!({"user_id":"500","guild_id":"1","channel_id":null,"connection_id":"fresh-connection"})).unwrap();
+    assert!(
+        !state
+            .voice_states
+            .contains_key(&(500.into(), "fresh-connection".into()))
+    );
+}

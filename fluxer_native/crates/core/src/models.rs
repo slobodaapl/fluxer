@@ -306,7 +306,7 @@ pub struct Message {
     pub mentions: Vec<User>,
     #[serde(default)]
     pub mention_roles: Vec<Snowflake>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub attachments: Vec<Attachment>,
     #[serde(default, deserialize_with = "null_default")]
     pub reactions: Vec<Reaction>,
@@ -342,7 +342,7 @@ pub struct ReadState {
     #[serde(default)]
     pub mention_count: u32,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PresenceStatus {
     Online,
@@ -351,6 +351,18 @@ pub enum PresenceStatus {
     Invisible,
     #[default]
     Offline,
+}
+impl<'de> Deserialize<'de> for PresenceStatus {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        // StatusConstants.ts:22-23 normalizes null/unknown statuses to offline.
+        Ok(match Value::deserialize(d)?.as_str() {
+            Some("online") => Self::Online,
+            Some("idle") => Self::Idle,
+            Some("dnd") => Self::Dnd,
+            Some("invisible") => Self::Invisible,
+            _ => Self::Offline,
+        })
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Presence {

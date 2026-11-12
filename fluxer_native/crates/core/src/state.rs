@@ -45,6 +45,19 @@ pub struct ClientState {
     local_message_counter: u64,
 }
 impl ClientState {
+    fn cache_user(&mut self, user: User) {
+        if let Some(me) = self.current_user.as_ref().filter(|me| me.id == user.id) {
+            self.users.insert(me.id, me.clone());
+        } else {
+            self.users.insert(user.id, user);
+        }
+    }
+    fn hydrate_member_if_missing(&mut self, guild: Snowflake, member: Member) {
+        if !self.members.contains_key(&(guild, member.user.id)) {
+            self.cache_user(member.user.clone());
+            self.members.insert((guild, member.user.id), member);
+        }
+    }
     pub fn channel_messages(
         &self,
         channel: Snowflake,
@@ -143,9 +156,9 @@ impl ClientState {
         }
     }
     pub fn insert_message(&mut self, message: Message) {
-        self.users.insert(message.author.id, message.author.clone());
+        self.cache_user(message.author.clone());
         for user in &message.mentions {
-            self.users.insert(user.id, user.clone());
+            self.cache_user(user.clone());
         }
         let channel_id = message.channel_id;
         let id = message.id;
@@ -178,7 +191,7 @@ impl ClientState {
     /// Merge REST history without counting historical mentions as notifications.
     pub fn load_history(&mut self, channel_id: Snowflake, messages: Vec<Message>) {
         for message in messages.into_iter().filter(|m| m.channel_id == channel_id) {
-            self.users.insert(message.author.id, message.author.clone());
+            self.cache_user(message.author.clone());
             self.messages
                 .entry(channel_id)
                 .or_default()
@@ -255,7 +268,7 @@ impl ClientState {
             self.channels.insert(channel.id, channel);
         }
         for member in std::mem::take(&mut guild.members) {
-            self.users.insert(member.user.id, member.user.clone());
+            self.cache_user(member.user.clone());
             self.members.insert((guild.id, member.user.id), member);
         }
         for mut state in std::mem::take(&mut guild.voice_states) {
@@ -305,6 +318,28 @@ impl ClientState {
         event: &str,
         mut data: Value,
     ) -> Result<ApplyOutcome, StateError> {
+        // Gateway READY deliberately deduplicates member users into `users`.
+        // See session_ready_collect.erl:198-226 and GuildMember.ts:40-44.
+        // Resolve real cached users before decoding strict REST-shaped models;
+        // unresolved references remain errors rather than fabricated profiles.
+        if event == "READY" {
+            let self_user: User = decode(event, data.get("user").cloned().unwrap_or(Value::Null))?;
+            let mut users = BTreeMap::new();
+            if let Some(values) = data.get("users").and_then(Value::as_array) {
+                for value in values {
+                    let user: User = decode(event, value.clone())?;
+                    users.insert(user.id, user);
+                }
+            }
+            users.insert(self_user.id, self_user.clone());
+            hydrate_wire_users(&mut data, &users, Some(self_user.id));
+        } else {
+            hydrate_wire_users(
+                &mut data,
+                &self.users,
+                self.current_user.as_ref().map(|u| u.id),
+            );
+        }
         match event {
             "READY" => {
                 #[derive(Deserialize)]
@@ -347,7 +382,9 @@ impl ClientState {
                 };
                 next.users.insert(ready.user.id, ready.user);
                 for user in ready.users {
-                    next.users.insert(user.id, user);
+                    if next.current_user.as_ref().is_none_or(|me| me.id != user.id) {
+                        next.users.insert(user.id, user);
+                    }
                 }
                 for guild in ready.guilds {
                     next.insert_guild(guild);
@@ -358,7 +395,10 @@ impl ClientState {
                 for read in ready.read_states {
                     next.read_states.insert(read.id, read);
                 }
-                for relationship in ready.relationships {
+                for mut relationship in ready.relationships {
+                    if relationship.user.is_none() {
+                        relationship.user = next.users.get(&relationship.id).cloned();
+                    }
                     next.relationships.insert(relationship.id, relationship);
                 }
                 for presence in ready.presences {
@@ -408,8 +448,15 @@ impl ClientState {
                     message_id: Snowflake,
                     user_id: Snowflake,
                     emoji: Emoji,
+                    #[serde(default)]
+                    guild_id: Option<Snowflake>,
+                    #[serde(default)]
+                    member: Option<Member>,
                 }
                 let change: ReactionEvent = decode(event, data)?;
+                if let Some((guild, member)) = change.guild_id.zip(change.member) {
+                    self.hydrate_member_if_missing(guild, member);
+                }
                 let me = self
                     .current_user
                     .as_ref()
@@ -446,6 +493,43 @@ impl ClientState {
                     if reaction.count == 0 {
                         message.reactions.remove(index);
                     }
+                }
+            }
+            "MESSAGE_REACTION_ADD_MANY" => {
+                // session_dispatch_voice.erl:161-189 groups only additions.
+                // Removes remain ordinary events or cancel an unflushed add.
+                #[derive(Deserialize, Serialize)]
+                struct Entry {
+                    user_id: Snowflake,
+                    emoji: Emoji,
+                    #[serde(default, skip_serializing_if = "Option::is_none")]
+                    member: Option<Member>,
+                }
+                #[derive(Deserialize)]
+                struct Batch {
+                    channel_id: Snowflake,
+                    message_id: Snowflake,
+                    #[serde(default)]
+                    guild_id: Option<Snowflake>,
+                    reactions: Vec<Entry>,
+                }
+                let batch: Batch = decode(event, data)?;
+                for reaction in batch.reactions {
+                    let mut single =
+                        serde_json::to_value(reaction).expect("reaction serialization cannot fail");
+                    let fields = single.as_object_mut().expect("reaction is an object");
+                    fields.insert(
+                        "channel_id".into(),
+                        serde_json::to_value(batch.channel_id).unwrap(),
+                    );
+                    fields.insert(
+                        "message_id".into(),
+                        serde_json::to_value(batch.message_id).unwrap(),
+                    );
+                    if let Some(guild) = batch.guild_id {
+                        fields.insert("guild_id".into(), serde_json::to_value(guild).unwrap());
+                    }
+                    self.apply_gateway("MESSAGE_REACTION_ADD", single)?;
                 }
             }
             "MESSAGE_REACTION_REMOVE_ALL" => {
@@ -491,11 +575,31 @@ impl ClientState {
                 let channel: Channel = patch(event, channel, data)?;
                 self.channels.insert(channel.id, channel);
             }
+            "CHANNEL_UPDATE_BULK" => {
+                // ChannelUpdateBulk.ts merges partial channel rows by ID.
+                #[derive(Deserialize)]
+                struct Bulk {
+                    channels: Vec<Value>,
+                }
+                let bulk: Bulk = decode(event, data)?;
+                let mut channels = Vec::with_capacity(bulk.channels.len());
+                for update in bulk.channels {
+                    let target: Id = decode(event, update.clone())?;
+                    let channel: Channel = match self.channels.get(&target.id) {
+                        Some(channel) => patch(event, channel, update)?,
+                        None => decode(event, update)?,
+                    };
+                    channels.push(channel);
+                }
+                for channel in channels {
+                    self.channels.insert(channel.id, channel);
+                }
+            }
             "CHANNEL_DELETE" | "THREAD_DELETE" => {
                 let target: Id = decode(event, data)?;
                 self.remove_channel(target.id);
             }
-            "GUILD_CREATE" => {
+            "GUILD_CREATE" | "GUILD_SYNC" => {
                 let guild: Guild = decode(event, normalize_guild(data))?;
                 self.insert_guild(guild);
             }
@@ -558,7 +662,7 @@ impl ClientState {
                     } else {
                         decode(event, data)?
                     };
-                self.users.insert(member.user.id, member.user.clone());
+                self.cache_user(member.user.clone());
                 self.members
                     .insert((target.guild_id, member.user.id), member);
             }
@@ -599,10 +703,24 @@ impl ClientState {
                     }
                 }
             }
+            "GUILD_ROLE_UPDATE_BULK" => {
+                #[derive(Deserialize)]
+                struct Bulk {
+                    guild_id: Snowflake,
+                    roles: Vec<Role>,
+                }
+                let bulk: Bulk = decode(event, data)?;
+                if let Some(guild) = self.guilds.get_mut(&bulk.guild_id) {
+                    for role in bulk.roles {
+                        guild.roles.retain(|existing| existing.id != role.id);
+                        guild.roles.push(role);
+                    }
+                }
+            }
             "RELATIONSHIP_ADD" | "RELATIONSHIP_UPDATE" => {
                 let relationship: Relationship = decode(event, data)?;
                 if let Some(user) = &relationship.user {
-                    self.users.insert(user.id, user.clone());
+                    self.cache_user(user.clone());
                 }
                 self.relationships.insert(relationship.id, relationship);
             }
@@ -639,6 +757,13 @@ impl ClientState {
                 } else {
                     return Ok(ApplyOutcome::Ignored);
                 };
+                if let Some((guild, member)) = voice
+                    .guild_id
+                    .zip(voice.extra.get("member").filter(|m| !m.is_null()))
+                {
+                    let member: Member = decode(event, member.clone())?;
+                    self.hydrate_member_if_missing(guild, member);
+                }
                 self.insert_voice_state(voice);
             }
             "TYPING_START" => {
@@ -692,6 +817,60 @@ fn decode<T: DeserializeOwned>(event: &str, data: Value) -> Result<T, StateError
         event: event.to_owned(),
         source,
     })
+}
+/// Resolve only user-bearing wire fields; IDs themselves remain untouched. This
+/// mirrors the desktop user cache rather than inventing a missing username.
+fn hydrate_wire_users(
+    data: &mut Value,
+    users: &BTreeMap<Snowflake, User>,
+    self_id: Option<Snowflake>,
+) {
+    fn hydrate(user: &mut Value, users: &BTreeMap<Snowflake, User>, self_id: Option<Snowflake>) {
+        let Some(id) = user
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<Snowflake>().ok())
+        else {
+            return;
+        };
+        let Some(cached) = users.get(&id) else {
+            return;
+        };
+        let mut merged = serde_json::to_value(cached).expect("user serialization cannot fail");
+        // Public-only self references must not replace private account data.
+        if self_id != Some(id)
+            && let (Some(base), Some(update)) = (merged.as_object_mut(), user.as_object())
+        {
+            for (key, value) in update {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+        *user = merged;
+    }
+    match data {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                match key.as_str() {
+                    "user" | "author" => hydrate(value, users, self_id),
+                    "users" | "recipients" | "mentions" => {
+                        if let Some(values) = value.as_array_mut() {
+                            for user in values {
+                                hydrate(user, users, self_id);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                hydrate_wire_users(value, users, self_id);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                hydrate_wire_users(value, users, self_id);
+            }
+        }
+        _ => {}
+    }
 }
 /// Gateway guilds wrap display properties while REST guilds are flat.
 fn normalize_guild(mut data: Value) -> Value {
