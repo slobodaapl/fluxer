@@ -327,6 +327,7 @@ impl Worker {
         };
         let demo = self.navigation.demo_archive.clone();
         let context_channels = self.state.channels.clone();
+        let poll_query = snapshot.query.clone();
         let task = tokio::spawn(async move {
             let mut polls = 0u32;
             loop {
@@ -385,6 +386,7 @@ impl Worker {
                 let delay = Duration::from_secs_f64((1.5 * 1.25f64.powf(polls as f64)).min(5.));
                 tokio::time::sleep(delay).await;
                 polls = polls.saturating_add(1);
+                fluxer_core::refresh_search_time_bounds(&poll_query, &mut params);
                 params["page"] = 1.into();
             }
         });
