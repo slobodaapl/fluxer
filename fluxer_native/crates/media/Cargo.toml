@@ -1,0 +1,12 @@
+[package]
+name = "fluxer-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+livekit = { version = "=0.10.1", features = ["rustls-tls-native-roots", "glib-main-loop"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+futures-util = "0.3"
+thiserror.workspace = true
+serde.workspace = true

@@ -1,0 +1,397 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "ce3f41562",
+  "goal": "Complete existing Fluxer desktop client parity",
+  "mvp": [
+    "M1",
+    "M2"
+  ],
+  "features": [
+    {
+      "id": "accessibility",
+      "source": "fluxer_app/src/features/accessibility",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Keyboard navigation, focus, screen reader semantics, reduced motion, contrast, scaling, text selection."
+    },
+    {
+      "id": "account_engine",
+      "source": "fluxer_app/src/features/account_engine",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Multi-account ownership, isolation, persisted inventories, switching and session lifecycle."
+    },
+    {
+      "id": "app",
+      "source": "fluxer_app/src/features/app",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Native app shell, layouts, dialogs, launch lifecycle, instance capabilities and product flags."
+    },
+    {
+      "id": "auth",
+      "source": "fluxer_app/src/features/auth",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Login, registration, unclaimed accounts, recovery, MFA, passkeys, SSO, verification and sudo."
+    },
+    {
+      "id": "channel",
+      "source": "fluxer_app/src/features/channel",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings."
+    },
+    {
+      "id": "code_highlighting",
+      "source": "fluxer_app/src/features/code_highlighting",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Language-aware code blocks, inline code, copy and supported language coverage."
+    },
+    {
+      "id": "connection",
+      "source": "fluxer_app/src/features/connection",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Linked external accounts, verification, authorize/deauthorize and callback handling."
+    },
+    {
+      "id": "devtools",
+      "source": "fluxer_app/src/features/devtools",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Developer tools, diagnostics and embed/component debugging."
+    },
+    {
+      "id": "discovery",
+      "source": "fluxer_app/src/features/discovery",
+      "milestone": "M4",
+      "status": "pending",
+      "acceptance": "Explore, filters, previews, join, visitor behavior and community listing management."
+    },
+    {
+      "id": "emoji",
+      "source": "fluxer_app/src/features/emoji",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Unicode/custom emoji, aliases, animated emoji, skin tone and emoji rendering."
+    },
+    {
+      "id": "experiment",
+      "source": "fluxer_app/src/features/experiment",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Existing feature gates, experiment assignments and operator capabilities."
+    },
+    {
+      "id": "expressions",
+      "source": "fluxer_app/src/features/expressions",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "GIFs, stickers, custom emoji, saved media, favorites, expression assets and entitlements."
+    },
+    {
+      "id": "forum",
+      "source": "fluxer_app/src/features/forum",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation."
+    },
+    {
+      "id": "gateway",
+      "source": "fluxer_app/src/features/gateway",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Identify, ready, heartbeat, resume/reconnect, dispatch reduction, lazy subscriptions and snapshots."
+    },
+    {
+      "id": "gift",
+      "source": "fluxer_app/src/features/gift",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Gift redemption, purchase handoff and gift code lifecycle."
+    },
+    {
+      "id": "guild",
+      "source": "fluxer_app/src/features/guild",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Community list and channel loading; M4 adds CRUD, roles, bans, audit log and integrations."
+    },
+    {
+      "id": "i18n",
+      "source": "fluxer_app/src/features/i18n",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Existing locale catalog coverage, pluralization, formatting, RTL and localized native menus."
+    },
+    {
+      "id": "inbox",
+      "source": "fluxer_app/src/features/inbox",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Mentions, unreads, saved/pinned items, navigation and read state synchronization."
+    },
+    {
+      "id": "input",
+      "source": "fluxer_app/src/features/input",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Native editing, IME, clipboard, selection, multiline input, shortcuts and composition."
+    },
+    {
+      "id": "invite",
+      "source": "fluxer_app/src/features/invite",
+      "milestone": "M4",
+      "status": "pending",
+      "acceptance": "Resolve/preview/accept/create/revoke invites, vanity links, guest/login continuation."
+    },
+    {
+      "id": "lexical",
+      "source": "fluxer_app/src/features/lexical",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Equivalent rich composer behavior, selections, mention/autocomplete, paste and undo."
+    },
+    {
+      "id": "member",
+      "source": "fluxer_app/src/features/member",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Members and roles for current communities; M4 adds management, search, chunking and hierarchy."
+    },
+    {
+      "id": "messaging",
+      "source": "fluxer_app/src/features/messaging",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "History, send/edit/delete/reply/reactions, live updates, attachments and delivery errors; rich rendering M3."
+    },
+    {
+      "id": "moderation",
+      "source": "fluxer_app/src/features/moderation",
+      "milestone": "M4",
+      "status": "pending",
+      "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows."
+    },
+    {
+      "id": "navigation",
+      "source": "fluxer_app/src/features/navigation",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Routes, back/forward, quick switcher, channel/message jump and deep-link targets."
+    },
+    {
+      "id": "notification",
+      "source": "fluxer_app/src/features/notification",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Mention/unread/sound policy, channel/guild overrides, desktop notification delivery and navigation."
+    },
+    {
+      "id": "permissions",
+      "source": "fluxer_app/src/features/permissions",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Owner/admin, role hierarchy, everyone/role/member overwrites, implicit permissions and live invalidation."
+    },
+    {
+      "id": "platform",
+      "source": "fluxer_app/src/features/platform",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Native OS ports, persistence, network/runtime policy, storage and platform capability boundaries."
+    },
+    {
+      "id": "premium",
+      "source": "fluxer_app/src/features/premium",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Plutonium entitlements, subscription lifecycle, checkout returns, billing and Operator Pass."
+    },
+    {
+      "id": "presence",
+      "source": "fluxer_app/src/features/presence",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Online/idle/DND/invisible, custom status, presence updates and suppression rules."
+    },
+    {
+      "id": "read_state",
+      "source": "fluxer_app/src/features/read_state",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Channel read acknowledgments, mention counts, unread jumps and synchronization."
+    },
+    {
+      "id": "relationship",
+      "source": "fluxer_app/src/features/relationship",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Friends, pending requests, add/remove, block/unblock and DM restrictions."
+    },
+    {
+      "id": "search",
+      "source": "fluxer_app/src/features/search",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher."
+    },
+    {
+      "id": "slowmode",
+      "source": "fluxer_app/src/features/slowmode",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Server-enforced slowmode countdown and permissions-aware send availability."
+    },
+    {
+      "id": "streamer_mode",
+      "source": "fluxer_app/src/features/streamer_mode",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Sensitive-info hiding, notification suppression, automatic process detection and shortcuts."
+    },
+    {
+      "id": "terms",
+      "source": "fluxer_app/src/features/terms",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Terms/privacy acceptance, version gates and updated-terms continuation."
+    },
+    {
+      "id": "theme",
+      "source": "fluxer_app/src/features/theme",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Native base palette, appearance and font/scale preferences; theme links and sharing M5."
+    },
+    {
+      "id": "theme_settings",
+      "source": "fluxer_app/src/features/theme_settings",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Theme import/export, colors, fonts, local file watching and supported custom style semantics."
+    },
+    {
+      "id": "threads",
+      "source": "fluxer_app/src/features/threads",
+      "milestone": "M3",
+      "status": "pending",
+      "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels."
+    },
+    {
+      "id": "trusted_domain",
+      "source": "fluxer_app/src/features/trusted_domain",
+      "milestone": "M4",
+      "status": "pending",
+      "acceptance": "External link confirmation, trusted-domain list and deceptive link handling."
+    },
+    {
+      "id": "typing",
+      "source": "fluxer_app/src/features/typing",
+      "milestone": "M1",
+      "status": "pending",
+      "acceptance": "Typing send throttling, incoming expiry and participant display."
+    },
+    {
+      "id": "ui",
+      "source": "fluxer_app/src/features/ui",
+      "milestone": "M0",
+      "status": "pending",
+      "acceptance": "Reusable native widgets, dialogs, menus, lists, tooltips and keyboard focus."
+    },
+    {
+      "id": "updater",
+      "source": "fluxer_app/src/features/updater",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Distribution/channel policy, signed updates, download/progress/restart and rollback."
+    },
+    {
+      "id": "user",
+      "source": "fluxer_app/src/features/user",
+      "milestone": "M5",
+      "status": "pending",
+      "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications."
+    },
+    {
+      "id": "voice",
+      "source": "fluxer_app/src/features/voice",
+      "milestone": "M2",
+      "status": "pending",
+      "acceptance": "Native calls, microphone/playout, device/gain/DSP/PTT, screen/video/audio share, encryption and reconnect."
+    },
+    {
+      "id": "webhook",
+      "source": "fluxer_app/src/features/webhook",
+      "milestone": "M4",
+      "status": "pending",
+      "acceptance": "Create/edit/delete webhooks, secrets, channel destinations and integration views."
+    },
+    {
+      "id": "window",
+      "source": "fluxer_app/src/features/window",
+      "milestone": "M6",
+      "status": "pending",
+      "acceptance": "Window state, fullscreen, popouts, geometry and native lifecycle."
+    }
+  ],
+  "native_addons": [
+    "fluxer_desktop/native/app-store",
+    "fluxer_desktop/native/gateway-socket",
+    "fluxer_desktop/native/hardware-encoder",
+    "fluxer_desktop/native/linux-audio-capture",
+    "fluxer_desktop/native/linux-evdev",
+    "fluxer_desktop/native/linux-input-hook",
+    "fluxer_desktop/native/linux-notifications",
+    "fluxer_desktop/native/linux-portals",
+    "fluxer_desktop/native/mac-app-audio",
+    "fluxer_desktop/native/mac-clipboard",
+    "fluxer_desktop/native/mac-screen-capture",
+    "fluxer_desktop/native/mac-sysctl",
+    "fluxer_desktop/native/mac-tcc",
+    "fluxer_desktop/native/macos-input-hook",
+    "fluxer_desktop/native/platform-info",
+    "fluxer_desktop/native/rt-thread",
+    "fluxer_desktop/native/sample-pool",
+    "fluxer_desktop/native/streamr",
+    "fluxer_desktop/native/system-hunspell",
+    "fluxer_desktop/native/webauthn",
+    "fluxer_desktop/native/win-clipboard",
+    "fluxer_desktop/native/win-game-capture",
+    "fluxer_desktop/native/win-process-loopback",
+    "fluxer_desktop/native/win-shell",
+    "fluxer_desktop/native/windows-input-hook"
+  ],
+  "user_settings_source": "fluxer_app/src/features/user/components/settings_utils/SettingsConstants.tsx",
+  "user_settings_tabs": [
+    "accessibility",
+    "account_security",
+    "advanced_settings",
+    "appearance",
+    "applications",
+    "authorized_apps",
+    "blocked_users",
+    "chat_settings",
+    "component_gallery",
+    "desktop_settings",
+    "devices",
+    "embed_debugger",
+    "gift_inventory",
+    "keybinds",
+    "language",
+    "linked_accounts",
+    "my_profile",
+    "notifications",
+    "plutonium",
+    "privacy_safety",
+    "themes",
+    "voice_video"
+  ],
+  "settings_registries": [
+    "fluxer_app/src/features/user/components/settings_utils/SettingsSectionRegistry.ts",
+    "fluxer_app/src/features/user/components/settings_utils/GuildSettingsConstants.ts",
+    "fluxer_app/src/features/user/components/settings_utils/ChannelSettingsConstants.ts"
+  ]
+}

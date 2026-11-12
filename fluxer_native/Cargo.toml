@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/protocol", "crates/desktop"]
+members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media"]
 resolver = "2"
 
 [workspace.package]
@@ -13,4 +13,5 @@ serde_json = "1"
 thiserror = "2"
 fluxer-core = { path = "crates/core" }
 fluxer-protocol = { path = "crates/protocol" }
+fluxer-media = { path = "crates/media" }
 
