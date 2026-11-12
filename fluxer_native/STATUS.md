@@ -7,17 +7,17 @@ not individual types or controls.
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
-| Core state | 29 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
-| HTTP/gateway | 44 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
+| Core state | 34 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
+| HTTP/gateway | 62 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 43 input/emoji/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, uploads, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 49 input/emoji/attachment/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 45 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 58 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-228 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+270 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -99,7 +99,7 @@ draft recovery, and forwarding via the keyboard destination picker. A loopback
 HTTP fixture verifies actual reply/forward request bodies and failed-reply draft
 retention without capture. Another fixture serves and decodes a PNG through the
 image worker. Live authenticated rich-chat interoperability remains unverified.
-Full markdown/custom emoji rendering, uploads, native audio/video playback,
+Full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback,
 cross-message selection, selection autoscroll and selectable embed text remain
 open; the parity ledger stays partial.
 
@@ -208,6 +208,36 @@ of keyword matches. Clearing search restores the selected category, and incoming
 custom-emoji availability changes refresh the open catalog without invalidating it
 for unrelated voice/state updates. Tests cover search/tone/custom wire values,
 source sprite indices and dimensions, crop colors and bounded image ownership.
+
+The attachment composer now stages files per channel through the native file
+picker, external file drops and image clipboard paste. Compact cards show bounded
+image previews, sizes, spoilers, upload progress, removal, cancellation and retry.
+Preparation/decoding uses four background slots; streaming HTTP does not block
+gateway/media processing. Attachment-only sends and replies share the existing
+message request builder. Failed or cancelled requests retain files and drafts;
+completion preserves text, reply changes and files added after Send. Account reset
+fences pending results and releases private clipboard temporary files.
+
+Upload requests follow AttachmentUploadPlan, ChunkedAttachmentUploader and
+MessageQueue: one background plan per staging batch, independent file cancellation,
+four concurrent multipart parts, source retry/fallback boundaries, completion and
+credential-free storage PUTs. Instance limits, account traits and guild features
+resolve the local size/count policy. Synced protobuf privacy preferences determine
+whether preupload is permitted, including the original account-age default. Partial
+gateway settings updates retain omitted fields. Changed disk files fail before
+upload; retries retain the original nonce for an unchanged message.
+
+Twelve loopback upload fixtures verify bytes, authenticated API headers, storage
+credential isolation, batch plans, concurrency, retries, cancellation and fallback.
+Three public-controller fixtures verify failed-send retention, channel responsiveness
+during held requests, attachment-only sending, new-draft/file preservation and
+changed-file rejection. Ten worker/preparation regressions cover privacy, account
+reset, cancellation, limits, previews and temporary-file cleanup. Wayland offline
+checks visually verified compact cards, native picker opening, generated-file
+preparation, actual image paste and spoiler preview hiding. The --demo-attachments
+fixture uses the real staging worker without uploading or restoring an account.
+Authenticated two-client upload acceptance and remaining platform checks are open;
+these fixtures do not claim full messaging parity.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

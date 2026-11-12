@@ -358,9 +358,20 @@ async fn feature_disabled_sends_streamed_multipart_with_raw_metadata() {
     assert!(body.contains("name=\"files[0]\"; filename=\"fixture.bin\""));
     assert!(body.contains("Content-Type: application/test-fixture"));
     assert!(body.contains("fallback-data-unique"));
-    assert!(body.contains(
-        "\"attachments\":[{\"filename\":\"fixture.bin\",\"id\":\"0\",\"title\":\"fixture.bin\"}]"
-    ));
+    let payload = body
+        .split("name=\"payload_json\"")
+        .nth(1)
+        .unwrap()
+        .split_once("\r\n\r\n")
+        .unwrap()
+        .1
+        .split("\r\n")
+        .next()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(payload).unwrap(),
+        json!({"content":"fallback","nonce":"42","attachments":[{"filename":"fixture.bin","id":"0","title":"fixture.bin"}]})
+    );
     assert!(!body.contains("upload_filename"));
     api.none().await;
 }

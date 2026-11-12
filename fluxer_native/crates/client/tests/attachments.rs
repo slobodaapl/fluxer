@@ -16,6 +16,7 @@ use tokio::{
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 const BYTES: &[u8] = b"generated attachment bytes\0\xff\n";
+type RecordedRequests = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
 #[derive(Default)]
 struct Seen {
@@ -68,7 +69,7 @@ impl Seen {
 
 struct Fixture {
     origin: String,
-    requests: Arc<Mutex<Vec<(String, Vec<u8>)>>>,
+    requests: RecordedRequests,
     messages: Arc<Mutex<Vec<Value>>>,
     held: Arc<Notify>,
     release: Arc<Notify>,

@@ -961,9 +961,7 @@ mod attachment_preferences_tests {
         state
             .apply_gateway(
                 "READY",
-                serde_json::json!({
-            "session_id":"fresh-session","user":{"id":"1","username":"fixture"}
-                }),
+                serde_json::json!({"session_id":"fresh-session","user":{"id":"1","username":"fixture"}}),
             )
             .unwrap();
         assert!(

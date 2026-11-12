@@ -925,7 +925,7 @@ async fn put_file(
     content_type: &str,
     bytes: Arc<dyn Fn(u64) + Send + Sync>,
     cancel: &UploadCancellation,
-) -> std::result::Result<(), PutFailure> {
+) -> std::result::Result<(), Box<PutFailure>> {
     let length = range.end - range.start;
     let request = async {
         let url = storage_url(url)?;
@@ -947,11 +947,11 @@ async fn put_file(
         Ok(response) => response,
         Err(error) => {
             let transient = matches!(&error,Error::Http(e) if !e.is_builder());
-            return Err(PutFailure {
+            return Err(Box::new(PutFailure {
                 error,
                 transient,
                 retry_after: None,
-            });
+            }));
         }
     };
     let status = response.status().as_u16();
@@ -963,9 +963,9 @@ async fn put_file(
     while body.len() < 64 * 1024 {
         let chunk = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(PutFailure {
+            _ = cancel.cancelled() => return Err(Box::new(PutFailure {
                 error: Error::UploadCancelled, transient: false, retry_after: None,
-            }),
+            })),
             chunk = response.chunk() => chunk,
         };
         match chunk {
@@ -977,11 +977,11 @@ async fn put_file(
         }
     }
     let json = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
-    Err(PutFailure {
+    Err(Box::new(PutFailure {
         error: Error::StorageUpload { status },
         transient: matches!(status, 408 | 425 | 429 | 500..=599),
         retry_after: retry_hint(&json, &headers),
-    })
+    }))
 }
 fn retry_hint(body: &Value, headers: &header::HeaderMap) -> Option<Duration> {
     fn positive(v: Option<f64>) -> Option<f64> {
