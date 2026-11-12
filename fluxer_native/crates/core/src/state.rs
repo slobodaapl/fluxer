@@ -925,3 +925,50 @@ fn patch<T: Serialize + DeserializeOwned>(
     merge(&mut value, update);
     decode(event, value)
 }
+
+#[cfg(test)]
+mod attachment_preferences_tests {
+    use super::*;
+
+    #[test]
+    fn ready_and_partial_user_settings_updates_preserve_privacy_until_authoritative_replacement() {
+        // GatewayReady + UserSettingsUpdate.ts delegate the entire settings
+        // object to UserSettings.updateUserSettings; omitted fields persist.
+        let mut state = ClientState::default();
+        state
+            .apply_gateway(
+                "READY",
+                serde_json::json!({
+                    "session_id":"fixture","user":{"id":"1","username":"fixture"},
+                    "user_settings":{"locale":"en-US","synced_preferences":"ggUCGAE="}
+                }),
+            )
+            .unwrap();
+        assert_eq!(crate::preupload_override(&state.user_settings), Some(true));
+        state
+            .apply_gateway("USER_SETTINGS_UPDATE", serde_json::json!({"locale":"de"}))
+            .unwrap();
+        assert_eq!(state.user_settings["locale"], "de");
+        assert_eq!(crate::preupload_override(&state.user_settings), Some(true));
+        state
+            .apply_gateway(
+                "USER_SETTINGS_UPDATE",
+                serde_json::json!({"synced_preferences":"ggUCGAA="}),
+            )
+            .unwrap();
+        assert_eq!(state.user_settings["locale"], "de");
+        assert_eq!(crate::preupload_override(&state.user_settings), Some(false));
+        state
+            .apply_gateway(
+                "READY",
+                serde_json::json!({
+            "session_id":"fresh-session","user":{"id":"1","username":"fixture"}
+                }),
+            )
+            .unwrap();
+        assert!(
+            state.user_settings.is_null(),
+            "fresh READY settings replace the earlier settings snapshot"
+        );
+    }
+}
