@@ -56,6 +56,14 @@ impl Dropdown {
         self.selected.as_deref()
     }
 
+    /// Reflect resolved server state without emitting a user-selection event.
+    pub fn set_selected(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.selected.as_deref() != Some(id) {
+            self.selected = Some(id.to_owned());
+            cx.notify();
+        }
+    }
+
     pub fn focus(&self, window: &mut Window, _: &mut Context<Self>) {
         window.focus(&self.focus);
     }

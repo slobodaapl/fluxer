@@ -7,6 +7,7 @@ mod emoji_picker;
 mod emoji_sprites;
 mod input;
 mod rich_message;
+mod search_browser;
 mod stream_view;
 mod video_perf;
 
@@ -25,6 +26,7 @@ use fluxer_media::{
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
+use search_browser::{BrowserTab, SearchUi};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -38,6 +40,7 @@ actions!(
         Submit,
         Quit,
         OpenSettings,
+        OpenSearch,
         StopWatching,
         PickerLeft,
         PickerRight,
@@ -61,7 +64,6 @@ enum Pane {
     Call,
     Settings,
     Screens,
-    Search,
 }
 
 struct IpAuthorization {
@@ -253,6 +255,7 @@ struct Fluxer {
     identifier: Entity<TextInput>,
     password: Entity<TextInput>,
     search: Entity<TextInput>,
+    search_ui: SearchUi,
     mfa: Entity<TextInput>,
     mfa_ticket: Option<String>,
     ip_authorization: Option<IpAuthorization>,
@@ -352,7 +355,8 @@ impl Fluxer {
             instance,
             identifier: cx.new(|cx| TextInput::new("Email or login", cx)),
             password,
-            search: cx.new(|cx| TextInput::new("Search loaded messages…", cx)),
+            search: cx.new(|cx| TextInput::new("Search messages…", cx)),
+            search_ui: SearchUi::new(window, cx),
             mfa: cx.new(|cx| TextInput::new("Authentication code", cx)),
             mfa_ticket: None,
             ip_authorization: None,
@@ -468,6 +472,14 @@ impl Fluxer {
             cx.subscribe(dropdown, |_, _, _: &Selected, cx| cx.notify())
                 .detach();
         }
+        cx.subscribe(&view.search_ui.scope, |this, _, _: &Selected, cx| {
+            this.change_search_scope(cx)
+        })
+        .detach();
+        cx.subscribe(&view.search_ui.sort, |this, _, _: &Selected, cx| {
+            this.change_search_sort(cx)
+        })
+        .detach();
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
         cx.observe(&view.emoji_search, |this, _, cx| {
             this.refresh_emoji_results(cx);
@@ -651,6 +663,7 @@ impl Fluxer {
                             self.session_context_loaded = false;
                             self.replies.clear();
                             self.message_text.clear();
+                            self.clear_browser();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;
@@ -678,9 +691,15 @@ impl Fluxer {
                             .next_back()
                             .map(|message| message.id)
                     });
-                    if (old != self.state.selected_channel
-                        || was_empty
-                        || (near_bottom && previous_latest != latest))
+                    if self.search_ui.pending_center.is_none()
+                        && self
+                            .search_ui
+                            .histories
+                            .get(&self.state.selected_channel.unwrap_or_default())
+                            .is_none_or(|history| history.latest)
+                        && (old != self.state.selected_channel
+                            || was_empty
+                            || (near_bottom && previous_latest != latest))
                         && self.state.selected_channel.is_some_and(|channel| {
                             self.state.channel_messages(channel).next().is_some()
                         })
@@ -694,6 +713,7 @@ impl Fluxer {
                     if self.demo && std::env::args().any(|arg| arg == "--demo-attachments") {
                         self.install_attachment_fixture(cx);
                     }
+                    self.maybe_demo_search(None, cx);
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
@@ -727,6 +747,7 @@ impl Fluxer {
                 Event::Demo(demo) => {
                     self.demo = demo;
                     if demo {
+                        self.maybe_demo_search(None, cx);
                         if std::env::args().any(|arg| arg == "--demo-attachments") {
                             self.install_attachment_fixture(cx);
                         }
@@ -933,7 +954,13 @@ impl Fluxer {
                                 .update(cx, |input, cx| input.set(String::new(), cx));
                             self.editing = None;
                         }
-                        if self.state.selected_channel == Some(channel_id) {
+                        if self.state.selected_channel == Some(channel_id)
+                            && self
+                                .search_ui
+                                .histories
+                                .get(&channel_id)
+                                .is_none_or(|history| history.latest)
+                        {
                             self.timeline.scroll_to_bottom();
                         }
                     }
@@ -973,6 +1000,34 @@ impl Fluxer {
                     self.clear_attachments(cx);
                     self.pending_messages.clear();
                     self.pending_replies.clear();
+                }
+                Event::MessageAckResult {
+                    channel_id,
+                    message_id,
+                    error,
+                } => self.on_message_ack(channel_id, message_id, error),
+                Event::Search(snapshot) => self.on_search_snapshot(snapshot, cx),
+                Event::Pins(snapshot) => self.on_pins_snapshot(snapshot, cx),
+                Event::History(snapshot) => self.on_history_snapshot(snapshot, cx),
+                Event::PinMutation {
+                    channel_id,
+                    message_id,
+                    pinned,
+                    pending,
+                    error,
+                } => {
+                    if pending {
+                        self.search_ui.mutations.insert((channel_id, message_id));
+                    } else {
+                        self.search_ui.mutations.remove(&(channel_id, message_id));
+                    }
+                    if let Some(error) = error {
+                        self.search_ui.mutation_error = Some(error.clone());
+                        self.error = Some(error);
+                    } else if !pending {
+                        self.search_ui.mutation_error = None;
+                        self.confirmed_pin(channel_id, message_id, pinned);
+                    }
                 }
                 Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
@@ -1072,7 +1127,17 @@ impl Fluxer {
         }
     }
 
-    fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+    fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_ui.confirm.is_some() {
+            self.confirm_pin(cx);
+            return;
+        }
+        if self.search_ui.open == Some(BrowserTab::Search)
+            && self.search.focus_handle(cx).is_focused(window)
+        {
+            self.run_search(0, cx);
+            return;
+        }
         if self.session_restoring {
             return;
         }
@@ -1169,8 +1234,11 @@ impl Fluxer {
     }
 
     fn select(&mut self, id: Snowflake, cx: &mut Context<Self>) {
+        self.reset_ack_context(id);
+        self.search_ui.return_to_latest_on_select(id);
         if self.state.selected_channel == Some(id) {
             self.pane = Pane::Chat;
+            cx.notify();
             return;
         }
         self.cancel_edit(cx);
@@ -2123,9 +2191,7 @@ impl Fluxer {
             .map(|c| format!("{} {}", if c.kind.is_voice() { "◉" } else { "#" }, c.name))
             .unwrap_or("Choose a channel".into());
         let selected = self.state.selected_channel;
-        let messages = selected
-            .map(|id| self.state.channel_messages(id).cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
+        let messages = self.visible_messages();
         let visible: BTreeSet<_> = messages.iter().map(|message| message.id).collect();
         self.message_text.retain(|id, _| visible.contains(id));
         for message in &messages {
@@ -2163,11 +2229,9 @@ impl Fluxer {
                     .border_color(rgb(PANEL))
                     .child(heading(title))
                     .child(
-                        button("search", "Search").on_click(cx.listener(|this, _, _, cx| {
-                            this.pane = Pane::Search;
-                            cx.notify();
-                        })),
-                    ),
+                        button("search", "Search").on_click(cx.listener(|this, _, window, cx| this.open_search(window,cx))),
+                    )
+                    .child(button("open-pins","Pins").on_click(cx.listener(|this,_,_,cx|this.open_pins(cx))))
             )
             .when(
                 self.pane == Pane::Chat && self.viewer.focused.is_some(),
@@ -2244,6 +2308,7 @@ impl Fluxer {
                         .child("CHANNEL CHAT"),
                 )
             })
+            .child(self.history_banner(cx))
             .child(
                 div()
                     .id("timeline")
@@ -2255,18 +2320,13 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_4()
-                    .when(self.state.selected_channel.is_some() && !self.demo, |v| {
-                        v.child(button("older-messages", "Load older messages").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.command(Command::LoadOlderMessages, cx)
-                            }),
-                        ))
-                    })
                     .when(messages.is_empty(), |v| {
                         v.child(muted("This conversation is ready. Send the first message."))
                     })
                     .children(messages.into_iter().map(|message| {
                         let id = message.id;
+                        let pin_message=message.clone();
+                        let pin_pending=self.search_ui.mutations.contains(&(message.channel_id,message.id));
                         let content = message.content.clone();
                         let copy_content = chat_helpers::display_text(&message);
                         let has_text = !copy_content.is_empty();
@@ -2277,6 +2337,9 @@ impl Fluxer {
                             .is_some_and(|u| u.id == message.author.id);
                         div()
                             .id(("message", id.0))
+                            .relative()
+                            .when(self.search_ui.highlight==Some((message.channel_id,message.id)),|view|view.bg(rgb(0x37304f)).border_l_2().border_color(rgb(ACCENT)).pl_2())
+                            .child(self.visible_message_marker(&message,cx))
                             .w_full()
                             .min_w_0()
                             .flex_shrink_0()
@@ -2343,6 +2406,7 @@ impl Fluxer {
                                                     },
                                                 )),
                                             )
+                                            .when(self.can_pin_message(&message),|view|view.child(button(("pin-message",id.0),if pin_pending{"Updating…"}else if message.pinned{"Unpin"}else{"Pin"}).when(pin_pending,|view|view.opacity(0.5)).on_click(cx.listener(move|this,event:&ClickEvent,window,cx|{if !pin_pending{this.request_pin(pin_message.clone(),!pin_message.pinned,event.modifiers().shift,window,cx);}}))))
                                             .child(button(("reply", id.0), "Reply").on_click(
                                                 cx.listener(move |this, _, window, cx| {
                                                     if let Some(message) = this
@@ -3117,48 +3181,6 @@ impl Fluxer {
         // The first captured frame, rather than this request, marks sharing active.
         self.pane = Pane::Chat;
     }
-
-    fn search(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.search.read(cx).content.to_lowercase();
-        let results = self
-            .state
-            .messages
-            .values()
-            .flat_map(|m| m.values())
-            .filter(|m| !query.is_empty() && m.content.to_lowercase().contains(&query))
-            .take(100)
-            .collect::<Vec<_>>();
-        div()
-            .id("search-results")
-            .flex_1()
-            .h_full()
-            .min_w_0()
-            .overflow_y_scroll()
-            .p_6()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(heading("Search loaded messages"))
-            .child(self.search.clone())
-            .child(muted(
-                "Search currently loaded history. Server-wide search is pending.",
-            ))
-            .children(results.into_iter().map(|message| {
-                let id = message.channel_id;
-                button(
-                    ("result", message.id.0),
-                    format!("{}: {}", message.author.display_name(), message.content),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx)))
-            }))
-            .child(button("close-search", "Back to chat").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.pane = Pane::Chat;
-                    cx.notify();
-                },
-            )))
-            .into_any_element()
-    }
 }
 
 impl Render for Fluxer {
@@ -3179,11 +3201,23 @@ impl Render for Fluxer {
             self.login_view(cx)
         } else {
             let body = match self.pane {
-                Pane::Chat => self.chat(cx),
+                Pane::Chat => {
+                    let chat = self.chat(cx);
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .min_h_0()
+                        .flex()
+                        .child(chat)
+                        .when(self.search_ui.open.is_some(), |view| {
+                            view.child(self.browser_pane(window, cx))
+                        })
+                        .into_any_element()
+                }
                 Pane::Call => self.call_view(window, cx),
                 Pane::Settings => self.settings(cx),
                 Pane::Screens => self.screens(cx),
-                Pane::Search => self.search(cx),
             };
             div()
                 .flex()
@@ -3191,7 +3225,14 @@ impl Render for Fluxer {
                 .min_h_0()
                 .when(
                     !(self.pane == Pane::Call && (self.viewer.expanded || window.is_fullscreen())),
-                    |view| view.child(self.rail(cx)).child(self.channels(cx)),
+                    |view| {
+                        view.child(self.rail(cx)).when(
+                            !(self.pane == Pane::Chat
+                                && self.search_ui.open.is_some()
+                                && window.viewport_size().width < px(1100.)),
+                            |view| view.child(self.channels(cx)),
+                        )
+                    },
                 )
                 .child(body)
                 .into_any_element()
@@ -3205,6 +3246,7 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none(){this.open_search(window,cx);}}))
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.pane = Pane::Settings;
@@ -3212,6 +3254,12 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if this.search_ui.confirm.is_some() && (event.keystroke.key=="enter" || event.keystroke.key=="escape") {
+                    if event.keystroke.key=="enter" {this.confirm_pin(cx);}else{this.search_ui.confirm=None;this.composer.focus_handle(cx).focus(window);cx.notify();}
+                    cx.stop_propagation();return;
+                }
+                if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
+
                 if event.keystroke.key == "escape" && (this.emoji_target.is_some() || this.forwarding.is_some()) {
                     this.emoji_target=None;
                     if !this.forward_pending { this.forwarding=None; }
@@ -3242,7 +3290,9 @@ impl Render for Fluxer {
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
-            .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)));
+            .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
+            .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
+        self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());
         rendered
     }
@@ -3252,8 +3302,12 @@ fn main() {
     let demo_stream =
         std::env::args().any(|v| v == "--demo-stream" || v == "--demo-stream-animated");
     let demo = demo_stream
-        || std::env::args()
-            .any(|v| v == "--demo" || v == "--demo-emoji" || v == "--demo-attachments");
+        || std::env::args().any(|v| {
+            v == "--demo"
+                || v == "--demo-emoji"
+                || v == "--demo-attachments"
+                || v == "--demo-search"
+        });
     Application::new()
         .with_http_client(rich_message::http_client())
         .run(move |cx: &mut App| {
@@ -3268,6 +3322,8 @@ fn main() {
                 KeyBinding::new("escape", PickerDismiss, Some("ChatPicker")),
                 KeyBinding::new("ctrl-q", Quit, None),
                 KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("ctrl-f", OpenSearch, None),
+                KeyBinding::new("cmd-f", OpenSearch, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),
                 KeyBinding::new("cmd-,", OpenSettings, None),
             ]);
