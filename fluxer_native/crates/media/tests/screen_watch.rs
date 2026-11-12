@@ -59,14 +59,19 @@ async fn no_video(events: &mut mpsc::Receiver<MediaEvent>) {
     );
 }
 async fn full_video_queue(events: &mpsc::Receiver<MediaEvent>) {
-    timeout(Duration::from_secs(4), async {
+    let filled = timeout(Duration::from_secs(4), async {
         let mut poll = tokio::time::interval(Duration::from_millis(10));
         while events.capacity() != 0 {
             poll.tick().await;
         }
     })
-    .await
-    .expect("fixture fills media queue with real decoded video");
+    .await;
+    assert!(
+        filled.is_ok(),
+        "animated30fps fixture must fill media queue: {} of {} slots occupied",
+        events.max_capacity() - events.capacity(),
+        events.max_capacity()
+    );
 }
 async fn publish(
     room: &Room,
@@ -92,6 +97,12 @@ async fn publish(
             LocalTrack::Video(track),
             TrackPublishOptions {
                 source: TrackSource::Screenshare,
+                // SDK screen presets can default to 5fps. Backpressure needs
+                // sustained decoded frames, not a mostly static screen preset.
+                video_encoding: Some(livekit::options::VideoEncoding {
+                    max_bitrate: 2_000_000,
+                    max_framerate: 30.0,
+                }),
                 ..Default::default()
             },
         )
@@ -108,13 +119,19 @@ async fn publish(
             let mut buffer = I420Buffer::new(320, 180);
             let (y, u, v) = buffer.data_mut();
             if source_green.load(Ordering::Acquire) {
-                y.fill(145);
+                y.fill(145 + (tick % 8) as u8);
                 u.fill(54);
                 v.fill(34);
             } else {
-                y.fill(82);
+                y.fill(82 + (tick % 8) as u8);
                 u.fill(90);
                 v.fill(240);
+            }
+            // Keep the majority red/green for freshness assertions while a
+            // moving 48px patch and luma modulation defeat static-frame elision.
+            let left = (tick as usize * 7) % (320 - 48);
+            for row in 0..48 {
+                y[row * 320 + left..row * 320 + left + 48].fill(210);
             }
             sending.capture_frame(&VideoFrame {
                 rotation: VideoRotation::VideoRotation0,
