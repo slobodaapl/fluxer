@@ -63,10 +63,10 @@ impl Instance {
     }
 
     pub fn from_document(served_by: &Url, document: Value) -> Result<Self> {
-        if let Some(codename) = document.get("codename").and_then(Value::as_str) {
-            if codename != "tungsten" {
-                return Err(Error::UnsupportedGeneration(codename.into()));
-            }
+        if let Some(codename) = document.get("codename").and_then(Value::as_str)
+            && codename != "tungsten"
+        {
+            return Err(Error::UnsupportedGeneration(codename.into()));
         }
         let endpoints = document
             .get("endpoints")

@@ -135,14 +135,12 @@ impl Client {
             .http
             .request(method, url)
             .header(header::ACCEPT, "application/json");
-        if authenticated {
-            if let Some(token) = &self.token {
-                let mut authorization = header::HeaderValue::from_str(token.expose_secret())
-                    .map_err(|_| Error::InvalidAuthResponse)?;
-                authorization.set_sensitive(true);
-                // Fluxer uses the raw session token, not an OAuth Bearer prefix.
-                request = request.header(header::AUTHORIZATION, authorization);
-            }
+        if authenticated && let Some(token) = &self.token {
+            let mut authorization = header::HeaderValue::from_str(token.expose_secret())
+                .map_err(|_| Error::InvalidAuthResponse)?;
+            authorization.set_sensitive(true);
+            // Fluxer uses the raw session token, not an OAuth Bearer prefix.
+            request = request.header(header::AUTHORIZATION, authorization);
         }
         if let Some(body) = body {
             request = request.json(body);
