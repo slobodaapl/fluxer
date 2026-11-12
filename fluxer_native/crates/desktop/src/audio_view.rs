@@ -4,8 +4,9 @@ use crate::controls::{Icon, icon, icon_button, quiet_button, slider, toggle};
 
 impl Fluxer {
     pub(super) fn voice_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let connected = self.state.voice.channel_id.is_some();
-        let active = connected || self.voice_connecting;
+        let joined = self.state.voice.channel_id.is_some();
+        let connected = joined && !self.voice_connecting;
+        let active = joined || self.voice_connecting;
         let can_share = self
             .state
             .voice
@@ -16,24 +17,39 @@ impl Fluxer {
                     .permissions_for(channel, user.id)
                     .contains(fluxer_core::Permissions::STREAM)
             });
+        let name = self
+            .state
+            .current_user
+            .as_ref()
+            .map(|user| user.display_name().to_owned())
+            .unwrap_or_else(|| "Your account".into());
+        let user_id = self
+            .state
+            .current_user
+            .as_ref()
+            .map(|user| user.id)
+            .unwrap_or_default();
+        let tooltip: SharedString = name.clone().into();
         div()
             .w_full()
             .flex()
             .flex_col()
             .gap_2()
-            .px_3()
+            .px_2()
             .py_2()
             .when(active, |view| {
                 view.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .child(div().size(px(6.)).rounded_full().bg(rgb(if connected {
-                            0x6bc99d
-                        } else {
-                            0xd4b76b
-                        })))
+                        .gap_1()
+                        .child(
+                            div()
+                                .size(px(6.))
+                                .mr_1()
+                                .rounded_full()
+                                .bg(rgb(if connected { 0x6bc99d } else { 0xd4b76b })),
+                        )
                         .child(
                             div()
                                 .flex_1()
@@ -42,18 +58,19 @@ impl Fluxer {
                                 .flex_col()
                                 .child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(px(11.))
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(rgb(if connected { 0x6bc99d } else { TEXT }))
-                                        .child(if connected {
-                                            "Voice connected"
+                                        .text_ellipsis()
+                                        .child(if self.voice_connecting {
+                                            self.voice_status.clone()
                                         } else {
-                                            "Connecting…"
+                                            "Voice connected".into()
                                         }),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(px(10.))
                                         .text_color(rgb(MUTED))
                                         .text_ellipsis()
                                         .child(
@@ -61,15 +78,44 @@ impl Fluxer {
                                                 .voice
                                                 .channel_id
                                                 .map(|id| self.channel_name(id))
-                                                .unwrap_or_else(|| self.voice_status.clone()),
+                                                .unwrap_or_else(|| "Voice connection".into()),
                                         ),
                                 ),
                         )
+                        .when((connected && can_share) || self.sharing, |view| {
+                            view.child(
+                                icon_button(
+                                    "share",
+                                    if self.sharing {
+                                        Icon::Stop
+                                    } else {
+                                        Icon::ScreenShare
+                                    },
+                                    if self.sharing {
+                                        "Stop sharing your screen"
+                                    } else {
+                                        "Share your screen"
+                                    },
+                                )
+                                .when(self.sharing, |view| view.text_color(rgb(0x6bc99d)))
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        if this.sharing {
+                                            this.command(Command::StopShare, cx);
+                                        } else {
+                                            this.pane = Pane::Screens;
+                                            this.command(Command::RefreshScreenSources, cx);
+                                            this.command(Command::RefreshAudioApplications, cx);
+                                        }
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             icon_button(
                                 "leave",
                                 Icon::PhoneOff,
-                                if connected {
+                                if joined {
                                     "Disconnect from voice"
                                 } else {
                                     "Cancel voice connection"
@@ -82,89 +128,6 @@ impl Fluxer {
                         ),
                 )
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        icon_button(
-                            "mute",
-                            if self.state.voice.muted {
-                                Icon::MicOff
-                            } else {
-                                Icon::Mic
-                            },
-                            if self.state.voice.muted {
-                                "Unmute microphone"
-                            } else {
-                                "Mute microphone"
-                            },
-                        )
-                        .when(self.state.voice.muted, |view| {
-                            view.text_color(rgb(0xe79a9e))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.command(Command::SetMute(!this.state.voice.muted), cx)
-                        })),
-                    )
-                    .child(
-                        icon_button(
-                            "deaf",
-                            if self.state.voice.deafened {
-                                Icon::Deafen
-                            } else {
-                                Icon::Headphones
-                            },
-                            if self.state.voice.deafened {
-                                "Undeafen"
-                            } else {
-                                "Deafen"
-                            },
-                        )
-                        .when(self.state.voice.deafened, |view| {
-                            view.text_color(rgb(0xe79a9e))
-                        })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.command(Command::SetDeaf(!this.state.voice.deafened), cx)
-                        })),
-                    )
-                    .child(
-                        icon_button("voice-settings", Icon::Settings, "Voice and audio settings")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.pane = Pane::Settings;
-                                this.command(Command::RefreshDevices, cx);
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .when(connected && (can_share || self.sharing), |view| {
-                        view.child(
-                            icon_button(
-                                "share",
-                                if self.sharing {
-                                    Icon::Stop
-                                } else {
-                                    Icon::ScreenShare
-                                },
-                                if self.sharing {
-                                    "Stop sharing your screen"
-                                } else {
-                                    "Share your screen"
-                                },
-                            )
-                            .when(self.sharing, |view| view.text_color(rgb(0x6bc99d)))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.sharing {
-                                    this.command(Command::StopShare, cx);
-                                } else {
-                                    this.pane = Pane::Screens;
-                                    this.command(Command::RefreshScreenSources, cx);
-                                    this.command(Command::RefreshAudioApplications, cx);
-                                }
-                            })),
-                        )
-                    }),
-            )
             .when(self.sharing, |view| {
                 view.child(
                     div()
@@ -216,6 +179,85 @@ impl Fluxer {
                         }),
                 )
             })
+            .child(
+                div()
+                    .h(px(36.))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .id("voice-account-identity")
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .tooltip(move |_, cx| {
+                                cx.new(|_| AccountTooltip(tooltip.clone())).into()
+                            })
+                            .child(voice_avatar(&name, user_id, false, 24.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(name),
+                            ),
+                    )
+                    .child(
+                        icon_button(
+                            "mute",
+                            if self.state.voice.muted {
+                                Icon::MicOff
+                            } else {
+                                Icon::Mic
+                            },
+                            if self.state.voice.muted {
+                                "Unmute microphone"
+                            } else {
+                                "Mute microphone"
+                            },
+                        )
+                        .when(self.state.voice.muted, |view| {
+                            view.text_color(rgb(0xe79a9e))
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.command(Command::SetMute(!this.state.voice.muted), cx)
+                        })),
+                    )
+                    .child(
+                        icon_button(
+                            "deaf",
+                            if self.state.voice.deafened {
+                                Icon::Deafen
+                            } else {
+                                Icon::Headphones
+                            },
+                            if self.state.voice.deafened {
+                                "Undeafen"
+                            } else {
+                                "Deafen"
+                            },
+                        )
+                        .when(self.state.voice.deafened, |view| {
+                            view.text_color(rgb(0xe79a9e))
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.command(Command::SetDeaf(!this.state.voice.deafened), cx)
+                        })),
+                    )
+                    .child(
+                        icon_button("voice-settings", Icon::Settings, "Voice and audio settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pane = Pane::Settings;
+                                this.command(Command::RefreshDevices, cx);
+                            })),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -454,6 +496,7 @@ impl Fluxer {
                         this.command(Command::SetDsp(this.dsp.clone()),cx);
                     })))
                 })))
+                .child(audio_description("Sliders: arrow keys fine-tune; Home and End set the limits."))
                 .child(audio_section("Account").child(div().flex().items_center().gap_3()
                     .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(rgb(MUTED)).text_ellipsis().child(self.state.current_user.as_ref().map(|user|user.display_name().to_owned()).unwrap_or_else(||"Offline preview".into())))
                     .child(quiet_button("settings-sign-out","Sign out").on_click(cx.listener(|this,_,_,cx|this.logout(cx)))))))
@@ -682,4 +725,18 @@ fn audio_meter(level: f32) -> Div {
                 .w(relative(level.clamp(0., 1.)))
                 .bg(rgb(0x6bc99d)),
         )
+}
+
+struct AccountTooltip(SharedString);
+impl Render for AccountTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(RAIL))
+            .text_color(rgb(TEXT))
+            .text_size(px(12.))
+            .child(self.0.clone())
+    }
 }
