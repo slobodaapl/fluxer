@@ -798,6 +798,233 @@
     {
       "now": "2026-11-12T16:20:30Z",
       "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -1587,6 +1814,233 @@
         "max_id": "1570951397376000000",
         "min_id": "1570226621644800000"
       }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-11-12T16:20:30Z",
@@ -2384,6 +2838,233 @@
     {
       "now": "2026-11-12T16:20:30Z",
       "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -3173,6 +3854,233 @@
         "max_id": "1571041994342400000",
         "min_id": "1570317218611200000"
       }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-07-12T16:20:30Z",
@@ -3970,6 +4878,233 @@
     {
       "now": "2026-07-12T16:20:30Z",
       "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -4759,6 +5894,233 @@
         "max_id": "1570951397376000000",
         "min_id": "1570226621644800000"
       }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-07-12T16:20:30Z",
@@ -5556,6 +6918,233 @@
     {
       "now": "2026-07-12T16:20:30Z",
       "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -6345,6 +7934,233 @@
         "max_id": "1571041994342400000",
         "min_id": "1570317218611200000"
       }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-07-12T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-03-08T16:20:30Z",
@@ -7142,6 +8958,233 @@
     {
       "now": "2026-03-08T16:20:30Z",
       "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -7931,6 +9974,233 @@
         "max_id": "1570951397376000000",
         "min_id": "1570226621644800000"
       }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-03-08T16:20:30Z",
@@ -8728,6 +10998,233 @@
     {
       "now": "2026-03-08T16:20:30Z",
       "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -9517,6 +12014,233 @@
         "max_id": "1571041994342400000",
         "min_id": "1570317218611200000"
       }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-03-08T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-11-01T16:20:30Z",
@@ -10314,6 +13038,233 @@
     {
       "now": "2026-11-01T16:20:30Z",
       "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -11103,6 +14054,233 @@
         "max_id": "1570951397376000000",
         "min_id": "1570226621644800000"
       }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890439283507200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456436831846400000",
+        "min_id": "1456074443980800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456799219712000000",
+        "min_id": "1456436831846400000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615009468416000000",
+        "min_id": "4614647080550400000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "UTC",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
     },
     {
       "now": "2026-11-01T16:20:30Z",
@@ -11900,6 +15078,233 @@
     {
       "now": "2026-11-01T16:20:30Z",
       "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-US",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
       "locale": "en-GB",
       "query": "before:today",
       "params": {
@@ -12689,6 +16094,289 @@
         "max_id": "1571041994342400000",
         "min_id": "1570317218611200000"
       }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1:430",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30:00.",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:30+02:",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026--11-12T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-W4-4T14:30",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T14:3000",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-11-12T1430:00",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02",
+      "params": {
+        "max_id": "1056890892268339200000",
+        "min_id": "1056890529880473600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+010000-01-02T14:30Z",
+      "params": {
+        "max_id": "1056890801671372800000",
+        "min_id": "1056890658226176000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:-000001-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+000000-01-02",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:+999999-01-02",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 GMT\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Thu, 12 Nov 2026 14:30:00 +0200\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570415365324800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"November 12, 2026 14:30\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 14:30:00\"",
+      "params": {}
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"Nov 12 2026 2:30 PM\"",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570536161280000000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1",
+      "params": {
+        "max_id": "1456527428812800000",
+        "min_id": "1456165040947200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:2026-1-2",
+      "params": {
+        "max_id": "1456889816678400000",
+        "min_id": "1456527428812800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/49",
+      "params": {
+        "max_id": "4615100065382400000",
+        "min_id": "4614737677516800000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:11/12/50",
+      "params": {
+        "max_id": "0",
+        "min_id": "0"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:12-Nov-26",
+      "params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      }
+    },
+    {
+      "now": "2026-11-01T16:20:30Z",
+      "zone": "America/Chicago",
+      "locale": "en-GB",
+      "query": "during:\"0026-01-02\"",
+      "params": {}
+    }
+  ],
+  "legacy_fallback_residuals": [
+    {
+      "zone": "UTC",
+      "query": "during:11-12-2026",
+      "source_params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
+    },
+    {
+      "zone": "UTC",
+      "query": "during:2026.11.12",
+      "source_params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570226621644800000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
+    },
+    {
+      "zone": "UTC",
+      "query": "during:\"Nov 12 2026 14:30 GMT\"",
+      "source_params": {
+        "max_id": "1570589009510400000",
+        "min_id": "1570445564313600000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
+    },
+    {
+      "zone": "America/Chicago",
+      "query": "during:11-12-2026",
+      "source_params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
+    },
+    {
+      "zone": "America/Chicago",
+      "query": "during:2026.11.12",
+      "source_params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570317218611200000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
+    },
+    {
+      "zone": "America/Chicago",
+      "query": "during:\"Nov 12 2026 14:30 GMT\"",
+      "source_params": {
+        "max_id": "1570679606476800000",
+        "min_id": "1570445564313600000"
+      },
+      "note": "Documented residual; not counted as an asserted native golden."
     }
   ]
 }

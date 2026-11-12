@@ -110,6 +110,18 @@ if (process.argv.includes('--dates')) {
     'during:2026-11-12T25:00','during:2026-11-12Z',
     'before:2026-11-12T14:30Z','after:2026-11-12T14:30Z',
     'during:"2026-11-12"','during:2026-11-12 before:2026-11-14',
+    'during:2026-11-12T','during:2026-11-12T14:30:','during:2026-11-12T1:430',
+    'during:2026-11-12T14:30:00.','during:2026-11-12T14:30+02:',
+    'during:2026--11-12T14:30','during:2026-W4-4T14:30',
+    'during:2026-11-12T14:3000','during:2026-11-12T1430:00',
+    'during:+010000-01-02','during:+010000-01-02T14:30Z','during:-000001-01-02',
+    'during:+000000-01-02','during:+999999-01-02',
+    'during:"Thu, 12 Nov 2026 14:30:00 GMT"',
+    'during:"Thu, 12 Nov 2026 14:30:00 +0200"',
+    'during:"November 12, 2026 14:30"','during:"Nov 12 2026 14:30:00"',
+    'during:"Nov 12 2026 2:30 PM"','during:2026-1','during:2026-1-2',
+    'during:11/12/26','during:11/12/49','during:11/12/50','during:12-Nov-26','during:"0026-01-02"',
+
   ];
   const dateFixtures=[];
   for (const now of ['2026-11-12T16:20:30Z','2026-07-12T16:20:30Z','2026-03-08T16:20:30Z','2026-11-01T16:20:30Z']) {
@@ -122,8 +134,16 @@ if (process.argv.includes('--dates')) {
       }
     }
   }
+  Settings.now=()=>Date.parse('2026-11-12T16:20:30Z');
+  const legacyFallbackResiduals=[];
+  for(const zone of ['UTC','America/Chicago']) {
+    process.env.TZ=zone;Settings.defaultZone=zone;Settings.defaultLocale='en-US';
+    for(const query of ['during:11-12-2026','during:2026.11.12','during:"Nov 12 2026 14:30 GMT"']) {
+      legacyFallbackResiduals.push({zone,query,source_params:context.parseFixture(query,{},{}),note:'Documented residual; not counted as an asserted native golden.'});
+    }
+  }
   const dateOut=path.join(root,'fluxer_native/crates/core/tests/fixtures/search_query_dates.json');
-  fs.writeFileSync(dateOut,JSON.stringify({source:sourcePath,luxon_version:VERSION,fixtures:dateFixtures},null,2)+'\n');
+  fs.writeFileSync(dateOut,JSON.stringify({source:sourcePath,luxon_version:VERSION,fixtures:dateFixtures,legacy_fallback_residuals:legacyFallbackResiduals},null,2)+'\n');
   console.log(`Wrote ${dateFixtures.length} source-executed date fixtures.`);
 }
 
