@@ -5,9 +5,11 @@
 mod audio;
 mod microphone;
 mod playback;
+mod publish;
 mod screen;
 
 pub use audio::{AudioMixSettings, InputMode, ParticipantAudioSettings};
+pub use publish::resolve_voice_channel_bitrate;
 
 use futures_util::StreamExt;
 use livekit::webrtc::{
@@ -127,6 +129,7 @@ pub struct MediaEngine {
     audio: PlatformAudio,
     room: Option<Room>,
     microphone: Option<LocalAudioTrack>,
+    microphone_publish: publish::MicrophonePublishSettings,
     muted: bool,
     deafened: bool,
     state: Arc<Mutex<RuntimeState>>,
@@ -160,6 +163,7 @@ impl MediaEngine {
             audio,
             room: None,
             microphone: None,
+            microphone_publish: publish::MicrophonePublishSettings::default(),
             muted: false,
             deafened: false,
             state: Arc::new(Mutex::new(RuntimeState {
@@ -240,6 +244,28 @@ impl MediaEngine {
             .map_err(|e| MediaError::Audio(e.to_string()))
     }
 
+    /// Set the next call's microphone publishing policy. Resolve guild caps
+    /// with resolve_voice_channel_bitrate first. Stereo capture is opt-in and
+    /// requires at least 64 kbps, matching sendsStereoMicrophone.
+    ///
+    /// LiveKit Rust 0.10.1 does not expose forceStereo SDP/AddTrack signaling;
+    /// this controls the real PCM source channels without claiming that missing
+    /// signaling option. Configuration while a call is active is rejected.
+    pub fn configure_microphone_publish(
+        &mut self,
+        channel_bitrate: Option<f64>,
+        stereo_capture: bool,
+    ) -> Result<()> {
+        if self.room.is_some() {
+            return Err(MediaError::InvalidSetting(
+                "configure microphone publication before joining the call",
+            ));
+        }
+        self.microphone_publish =
+            publish::MicrophonePublishSettings::new(channel_bitrate, stereo_capture);
+        Ok(())
+    }
+
     pub async fn connect(
         &mut self,
         endpoint: &str,
@@ -268,14 +294,11 @@ impl MediaEngine {
             if key.is_empty() {
                 return Err(MediaError::InvalidSetting("empty E2EE key"));
             }
-            use livekit::e2ee::{
-                E2eeOptions, EncryptionType,
-                key_provider::{KeyProvider, KeyProviderOptions},
-            };
+            use livekit::e2ee::{E2eeOptions, EncryptionType, key_provider::KeyProvider};
             options.encryption = Some(E2eeOptions {
                 encryption_type: EncryptionType::Gcm,
                 key_provider: KeyProvider::with_shared_key(
-                    KeyProviderOptions::default(),
+                    publish::e2ee_key_provider_options(),
                     key.as_bytes().to_vec(),
                 ),
             });
@@ -306,6 +329,7 @@ impl MediaEngine {
             self.input_controls.clone(),
             self.mixer.clone(),
             tx.clone(),
+            self.microphone_publish.channels(),
         );
         if self.muted || self.deafened {
             mic.mute();
@@ -315,10 +339,7 @@ impl MediaEngine {
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(mic.clone()),
-                TrackPublishOptions {
-                    source: TrackSource::Microphone,
-                    ..Default::default()
-                },
+                self.microphone_publish.options(),
             )
             .await
         {
@@ -659,6 +680,7 @@ impl MediaEngine {
             self.input_controls.clone(),
             self.mixer.clone(),
             tx,
+            self.microphone_publish.channels(),
         );
         if let Err(error) = self.audio.start_recording() {
             drop(capture);
@@ -735,14 +757,7 @@ impl MediaEngine {
         );
         let publication = room
             .local_participant()
-            .publish_track(
-                LocalTrack::Audio(track),
-                TrackPublishOptions {
-                    source: TrackSource::ScreenshareAudio,
-                    dtx: false,
-                    ..Default::default()
-                },
-            )
+            .publish_track(LocalTrack::Audio(track), publish::screen_audio_options())
             .await
             .map_err(|e| MediaError::Audio(e.to_string()))?;
         self.shared_audio_publication = Some(publication.sid());
