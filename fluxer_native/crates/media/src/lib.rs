@@ -740,13 +740,8 @@ impl MediaEngine {
                         track: RemoteTrack::Video(track),
                         ..
                     } => {
-                        let id = track.sid().to_string();
-                        if let Ok(mut tasks) = video_tasks.lock()
-                            && let Some(task) = tasks.remove(&id)
-                        {
-                            task.abort();
-                        }
-                        Some(MediaEvent::VideoEnded { track_id: id })
+                        end_video_renderer(&track.sid().to_string(), &video_tasks, &mixer);
+                        None
                     }
                     _ => None,
                 };
@@ -1197,7 +1192,12 @@ fn apply_subscription_actions(
 ) {
     for action in &plan.actions {
         let publication = &action.publication;
-        if !action.decision.enabled && publication.is_subscribed() {
+        // ScreenShareSubscriptionManager.unsubscribePublication only removes
+        // subscription demand. Disabling first leaves sticky SFU TrackSettings:
+        // Rust SDK set_enabled(true) cannot clear them before a track exists,
+        // and a new enabled track makes its later enable call a no-op.
+        // Only disable media that remains subscribed (watched/deafened audio).
+        if action.decision.subscribe && !action.decision.enabled && publication.is_subscribed() {
             publication.set_enabled(false);
         }
         if action.force || publication.is_desired() != action.decision.subscribe {
@@ -1215,12 +1215,32 @@ fn apply_subscription_actions(
             {
                 task.abort();
             }
-            if let Ok(mut tasks) = video_tasks.lock()
-                && let Some(task) = tasks.remove(&sid)
-            {
-                task.abort();
-            }
+            end_video_renderer(&sid, video_tasks, mixer);
         }
+    }
+}
+
+/// Local renderer lifetime ends immediately when watch intent ends. Do not
+/// wait for SFU/SDK unsubscribe notification before releasing the displayed
+/// frame; late SDK notifications see no renderer and cannot emit duplicates.
+fn end_video_renderer(
+    sid: &str,
+    tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    mixer: &Arc<Mutex<audio::PlaybackMixer>>,
+) {
+    let task = tasks.lock().ok().and_then(|mut tasks| tasks.remove(sid));
+    let Some(task) = task else { return };
+    task.abort();
+    let sender = mixer.lock().ok().and_then(|mixer| mixer.events.clone());
+    let Some(sender) = sender else { return };
+    let event = MediaEvent::VideoEnded {
+        track_id: sid.into(),
+    };
+    if let Err(mpsc::error::TrySendError::Full(event)) = sender.try_send(event) {
+        // Lifecycle events must survive a channel temporarily filled by video.
+        tokio::spawn(async move {
+            let _ = sender.send(event).await;
+        });
     }
 }
 
@@ -1275,5 +1295,45 @@ mod audio_tests {
         assert_eq!(float_to_pcm(0.5, 2.0), i16::MAX);
         assert_eq!(float_to_pcm(-2.0, 2.0), -i16::MAX);
         assert_eq!(float_to_pcm(f32::NAN, 1.0), 0);
+    }
+}
+
+#[cfg(test)]
+mod video_lifecycle_tests {
+    use super::*;
+    #[tokio::test]
+    async fn local_unwatch_aborts_renderer_and_ends_frame_once_without_sdk_event() {
+        let (sender, mut events) = mpsc::channel(4);
+        let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
+        mixer.lock().unwrap().events = Some(sender);
+        let task = tokio::spawn(std::future::pending());
+        let abort = task.abort_handle();
+        let tasks = Arc::new(Mutex::new(HashMap::from([("screen-sid".into(), task)])));
+        end_video_renderer("screen-sid", &tasks, &mixer);
+        assert!(tasks.lock().unwrap().is_empty());
+        assert!(
+            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id}) if track_id=="screen-sid")
+        );
+        end_video_renderer("screen-sid", &tasks, &mixer);
+        assert!(
+            events.try_recv().is_err(),
+            "late SDK unsubscribe cannot duplicate local frame end"
+        );
+        tokio::task::yield_now().await;
+        assert!(abort.is_finished());
+    }
+    #[tokio::test]
+    async fn video_end_survives_full_frame_channel() {
+        let (sender, mut events) = mpsc::channel(1);
+        sender.send(MediaEvent::Speakers(vec![])).await.unwrap();
+        let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
+        mixer.lock().unwrap().events = Some(sender);
+        let task = tokio::spawn(std::future::pending());
+        let tasks = Arc::new(Mutex::new(HashMap::from([("screen-sid".into(), task)])));
+        end_video_renderer("screen-sid", &tasks, &mixer);
+        assert!(matches!(events.recv().await, Some(MediaEvent::Speakers(_))));
+        assert!(
+            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id}) if track_id=="screen-sid")
+        );
     }
 }
