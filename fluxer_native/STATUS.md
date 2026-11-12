@@ -11,13 +11,13 @@ not individual types or controls.
 | HTTP/gateway | 43 tests: source-backed discovery/Origin/headers/IP/browser handoff, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 7 multiline/Unicode/IME tests pass | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
-| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 33 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
+| GPUI | Executable builds/links; Wayland demo visually verified; 13 input/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
+| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 36 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 33 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 36 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-169 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+181 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -70,7 +70,8 @@ sign-in, voice join/leave/mute/deafen, gateway-backed participant rows beneath
 voice channels and a participant pane above voice-channel chat with state badges
 and exact-identity speaking indicators,
 audio device/DSP/gain/PTT/VAD/participant controls, microphone test/meters, incoming
-video with explicit Watch/Stop controls, and display/window plus
+video with a focused stage, stream/member filmstrip, optional chat, fullscreen,
+independent stream audio controls and immediate Stop Watching, and display/window plus
 system/application audio sharing. Screen selection
 includes frame-rate and resolution choices. Live behavior remains subject to the
 acceptance checks above; a button or transport test does not establish parity.
@@ -102,6 +103,26 @@ rewatch with changed source pixels, replacement publication and pending watch
 before metadata. These fixtures use synthetic video and an isolated output,
 without microphone or screen capture. Production interoperability remains an
 acceptance gate.
+
+The screen viewer follows the existing Fluxer focus layout: the selected stream
+fills the available stage with aspect-preserving fit, secondary streams and members
+sit in a compact filmstrip, and chat is optional. Expand hides navigation and
+fullscreen uses the whole window; Escape exits fullscreen/expanded mode without
+leaving voice. Stop Watching clears local pixels and intent immediately, separately
+from Leave Voice. Per-stream gain/mute controls operate independently of the same
+participant's microphone; master gain and deafen still apply to both.
+
+Watch generations fence queued frames/end events across stop/rewatch, including
+reuse of the same track SID. Lifecycle events outrank coalesced video, and local
+video/audio detach before SDK signaling. Voice reconnection preserves viewer intent
+and focus while releasing old pixels. Actual plain/E2EE fixtures filled the event
+queue, verified immediate local stop (under 1 ms in these local runs), rejected late
+frames, and resumed fresh pixels on rewatch. This measures local teardown, not a
+remote network latency guarantee. Decoded LiveKit-to-PipeWire tests additionally
+verified mixed voice/share audio, independent mute/gain, stop-watch silence and sink
+switching. The offline `--demo-stream` fixture exercises the viewer without account
+access, calls, capture or network media. Authenticated real-client acceptance is
+still required.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

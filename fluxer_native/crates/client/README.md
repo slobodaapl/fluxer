@@ -35,7 +35,12 @@ when the user changes local controls. Mixer gains, device selection, DSP, PTT,
 VAD, individual participant controls, microphone meters, screen sharing, and
 system/application audio route to the media engine.
 
-Video frames are coalesced per track before delivery to the UI. Dropping the
+Video frames are coalesced per track before delivery to the UI. Stopping a watch
+evicts cached pixels and acknowledges local intent before SDK/network work.
+Lifecycle events are drained before coalesced frames. Watch generations reject
+frames and end events queued before a stop/rewatch, even for a reused track SID.
+Transport replacement preserves watch intent while releasing old pixels.
+`SetStreamAudio` changes share-audio gain/mute independently of participant voice. Dropping the
 controller cancels its worker even during a network request, causing native
 media handles to stop capture. Other presentation events are ordered through a
 standard channel and should be drained on each UI polling tick.

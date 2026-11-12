@@ -4,7 +4,8 @@
 Creates two UUID-scoped null sinks without changing defaults or moving existing
 streams. Records only their synthetic monitor signals in memory. The direct
 SpeakerOutput probe verifies A -> B -> stopped; --media uses the encoded-media
-pipeline test with A -> gain -> mute -> B -> stopped handshakes.
+pipeline test with voice gain/mute, mixed voice/share audio, independent stream
+mute/gain, stop-watch silence, sink switching and final teardown handshakes.
 """
 import argparse
 import array
@@ -283,7 +284,7 @@ def main():
         reader.start()
         pid = None
         baseline_rms = None
-        phases = ("A", "GAIN", "MUTE", "B", "STOPPED") if args.media else ("A", "B", "STOPPED")
+        phases = ("A", "GAIN", "MUTE", "STREAM", "STREAM_MUTED", "STREAM_GAIN", "STREAM_STOPPED", "B", "STOPPED") if args.media else ("A", "B", "STOPPED")
         for phase in phases:
             pid = await_phase(process, lines, phase, pid)
             target = set() if phase == "STOPPED" else {observed[1] if phase == "B" else observed[0]}
@@ -294,17 +295,22 @@ def main():
             audible_deadline = time.monotonic() + 8
             while True:
                 a, b = measure_pair(monitors)
-                if phase != "A" or a >= 0.01 or time.monotonic() >= audible_deadline:
+                warming_up = phase == "A" and a < 0.01 or phase == "STREAM" and a < (baseline_rms or 0.) * 1.8
+                if not warming_up or time.monotonic() >= audible_deadline:
                     break
                 if b > 0.0001:
                     raise RuntimeError("Baseline audio reached the unselected sink")
             print(f"Virtual output phase {phase}: A RMS={a:.6f}, B RMS={b:.6f}", flush=True)
-            if phase in ("MUTE", "STOPPED"):
+            if phase in ("MUTE", "STREAM_STOPPED", "STOPPED"):
                 if max(a, b) > 0.0001:
                     raise RuntimeError(f"Output was not silent during {phase}")
             elif phase == "GAIN":
                 if baseline_rms is None or not 0.14 <= a / baseline_rms <= 0.4 or b > 0.0001:
                     raise RuntimeError("Output gain did not scale actual selected-sink PCM")
+            elif phase in ("STREAM", "STREAM_MUTED", "STREAM_GAIN"):
+                bounds = {"STREAM": (1.8, 2.6), "STREAM_MUTED": (0.8, 1.2), "STREAM_GAIN": (0.35, 0.65)}[phase]
+                if baseline_rms is None or not bounds[0] <= a / baseline_rms <= bounds[1] or b > 0.0001:
+                    raise RuntimeError(f"Independent stream/voice audio control failed during {phase}")
             else:
                 active, inactive = (b, a) if phase == "B" else (a, b)
                 if active < 0.01 or inactive > 0.0001:

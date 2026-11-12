@@ -114,11 +114,33 @@ impl<T> Viewer<T> {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
+
+    pub fn transport_reset(&mut self) {
+        self.frames.clear();
+        self.errors.clear();
+        self.ended.clear();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_replacement_keeps_focus_and_intent_but_releases_old_pixels() {
+        let mut viewer = Viewer::default();
+        viewer.watch("alice".into());
+        viewer.receive("alice".into(), frame("old-room", 1));
+        viewer.chat_open = true;
+        viewer.transport_reset();
+        assert_eq!(viewer.focused.as_deref(), Some("alice"));
+        assert!(viewer.desired.contains("alice"));
+        assert!(viewer.frames.is_empty());
+        assert!(viewer.chat_open);
+        assert!(viewer.receive("alice".into(), frame("new-room", 2)));
+        viewer.stop("alice");
+        viewer.transport_reset();
+        assert!(!viewer.receive("alice".into(), frame("old-room", 3)));
+    }
     fn frame(track: &str, image: u8) -> StreamFrame<u8> {
         StreamFrame {
             track_id: track.into(),

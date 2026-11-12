@@ -25,7 +25,9 @@ Audio controls process actual samples:
   make that tap work. Native tests observe final track PCM, rather than treating
   successful publication/device initialization as evidence of capture.
 - Remote streams feed a bounded 48 kHz stereo mixer. Master output gain,
-  per-participant gain/local mute, and deafen affect speaker samples. Native
+  per-participant microphone gain/local mute, per-stream share-audio gain/local
+  mute, and deafen affect speaker samples. Microphone and share controls are
+  independent, including when both tracks belong to the same participant. Native
   direct speaker playout is disabled to prevent double playback. Linux uses a
   dedicated PipeWire output stream at 48 kHz stereo f32. The picker lists logical
   sinks such as GoXLR Chat/Game/Music rather than their shared ALSA card; explicit
@@ -81,12 +83,14 @@ LiveKit/virtual-microphone tests exercise physical capture through publication
 and reception without sending personal microphone audio to an external server.
 The output runner creates two isolated sinks and checks both monitor PCM and
 actual graph links. Its media mode decodes synthetic LiveKit audio through the
-real mixer/output, verifies gain and participant mute, switches sinks during the
-call, and checks teardown silence. No default devices or other application
+real mixer/output, verifies voice gain/mute, mixed voice/share audio, independent
+stream mute/gain and stop-watch silence, switches sinks during the call, and checks teardown silence. No default devices or other application
 routes are changed; all temporary sinks are removed after the run.
 The screen-watch mode exercises the actual MediaEngine with synthetic video,
 an isolated output and a muted microphone. Both plain and encrypted calls verify
-explicit watch, local renderer release, fresh pixels after rewatch, republish and
-watch intent before publication metadata. Wayland/macOS source discovery returns
+explicit watch, local renderer release with a full event queue, rejection of late
+frames/end events across same-SID rewatch, fresh pixels after rewatch, republish and
+watch intent before publication metadata. Local audio/video detach before SDK
+unsubscribe work; watch generations fence renderers from prior watch sessions. Wayland/macOS source discovery returns
 an inert system-picker descriptor; only the explicit picker button starts
 capture/consent. X11/Windows retain enumerated native source selection.

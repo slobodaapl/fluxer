@@ -84,8 +84,12 @@ impl Fluxer {
             .get(&identity)
             .copied()
             .unwrap_or_default();
-        let narrow =
-            window.viewport_size().width < px(if self.viewer.expanded { 1000. } else { 1260. });
+        let narrow = window.viewport_size().width
+            < px(if self.viewer.expanded || window.is_fullscreen() {
+                1000.
+            } else {
+                1260.
+            });
         let short = window.viewport_size().height < px(700.);
         let mut streams = self.available_streams.clone();
         streams.extend(self.viewer.desired.iter().cloned());
@@ -135,7 +139,7 @@ impl Fluxer {
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
+                            .min_w(px(200.))
                             .flex()
                             .items_center()
                             .gap_2()
@@ -240,17 +244,17 @@ impl Fluxer {
                                     .id("focused-stream-stage")
                                     .relative()
                                     .flex_1()
-                                    .min_h(px(120.))
+                                    .min_h(px(if short { 80. } else { 120. }))
                                     .min_w_0()
                                     .bg(rgb(0x050506))
                                     .overflow_hidden()
                                     .when_some(frame, |view, frame| {
                                         view.child(
-                                            div().absolute().inset_0().child(
-                                                img(frame.image.clone())
-                                                    .size_full()
-                                                    .object_fit(ObjectFit::Contain),
-                                            ),
+                                            img(frame.image.clone())
+                                                .absolute()
+                                                .inset_0()
+                                                .size_full()
+                                                .object_fit(ObjectFit::Contain),
                                         )
                                     })
                                     .when(frame.is_none(), |view| {
@@ -559,6 +563,7 @@ impl Fluxer {
 fn fixture_frame(index: usize, generation: u64) -> StreamFrame<Arc<RenderImage>> {
     let (width, height) = if index == 0 { (1600, 900) } else { (900, 1600) };
     let buffer = image::RgbaImage::from_fn(width, height, |x, y| {
+        let edge = x < 4 || y < 4 || x + 4 >= width || y + 4 >= height;
         let panel = x < width / 5 || y < height / 12;
         let grid = x % 160 < 2 || y % 90 < 2;
         let stripe = y > height / 4
@@ -566,7 +571,9 @@ fn fixture_frame(index: usize, generation: u64) -> StreamFrame<Arc<RenderImage>>
             && (y / 20).is_multiple_of(3)
             && x > width / 3
             && x < width * 4 / 5;
-        image::Rgba(if panel {
+        image::Rgba(if edge {
+            [235, 235, 235, 255]
+        } else if panel {
             [42, 35, 58, 255]
         } else if stripe {
             [165, 128, 91, 255]

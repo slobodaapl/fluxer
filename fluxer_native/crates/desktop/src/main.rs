@@ -440,9 +440,6 @@ impl Fluxer {
             }
         })
         .detach();
-        if demo_stream {
-            view.install_stream_fixture();
-        }
         view
     }
 
@@ -530,6 +527,9 @@ impl Fluxer {
                         self.session_restoring = false;
                         self.session_restore_failed = false;
                         self.session_context_loaded = false;
+                        if self.demo_stream {
+                            self.install_stream_fixture();
+                        }
                     }
                 }
                 Event::MfaRequired { ticket, .. } => {
@@ -663,6 +663,7 @@ impl Fluxer {
                         }
                         VoiceStatus::Reconnecting => {
                             self.active_speakers.clear();
+                            self.viewer.transport_reset();
                             "Reconnecting voice…".into()
                         }
                     }
@@ -745,6 +746,14 @@ impl Fluxer {
                         if self.pane == Pane::Call {
                             self.pane = Pane::Chat;
                         }
+                        self.participants.clear();
+                        self.available_streams.clear();
+                        self.shared_audio = false;
+                    }
+                    MediaEvent::Reconnecting => {
+                        self.active_speakers.clear();
+                        self.sharing = false;
+                        self.viewer.transport_reset();
                         self.participants.clear();
                         self.available_streams.clear();
                         self.shared_audio = false;
@@ -1606,12 +1615,15 @@ impl Fluxer {
         div()
             .flex_1()
             .min_w_0()
+            .min_h_0()
             .h_full()
             .flex()
             .flex_col()
+            .when(self.pane == Pane::Call, |view| view.overflow_hidden())
             .child(
                 div()
-                    .h(px(60.))
+                    .h(px(if self.pane == Pane::Call { 38. } else { 60. }))
+                    .flex_shrink_0()
                     .px_5()
                     .flex()
                     .items_center()
@@ -1833,7 +1845,12 @@ impl Fluxer {
             )
             .child(
                 div()
-                    .p_4()
+                    .p(if self.pane == Pane::Call {
+                        px(8.)
+                    } else {
+                        px(16.)
+                    })
+                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1861,9 +1878,11 @@ impl Fluxer {
                                 )),
                             ),
                     )
-                    .child(muted(
-                        "Enter to send · Shift+Enter for a new line · paste multiline text",
-                    )),
+                    .when(self.pane != Pane::Call, |view| {
+                        view.child(muted(
+                            "Enter to send · Shift+Enter for a new line · paste multiline text",
+                        ))
+                    }),
             )
             .into_any_element()
     }
@@ -2424,9 +2443,10 @@ impl Render for Fluxer {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .when(!(self.pane == Pane::Call && self.viewer.expanded), |view| {
-                    view.child(self.rail(cx)).child(self.channels(cx))
-                })
+                .when(
+                    !(self.pane == Pane::Call && (self.viewer.expanded || window.is_fullscreen())),
+                    |view| view.child(self.rail(cx)).child(self.channels(cx)),
+                )
                 .child(body)
                 .into_any_element()
         };

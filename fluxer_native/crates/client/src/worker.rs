@@ -1583,10 +1583,13 @@ impl Worker {
         let deafened = self.state.voice.deafened || self.server_deafened;
         self.media_events = None;
         self.state.voice.disconnect();
-        // The UI clears its media projection during this transport replacement.
-        // Republish gateway availability after joining the replacement room.
+        // Replace transport handles while preserving explicit watch intent and
+        // the focused viewer. Republish gateway availability after reconnect.
         self.available_streams.clear();
-        self.emit(Event::Media(MediaEvent::Disconnected));
+        if let Ok(mut frames) = self.frames.lock() {
+            frames.clear();
+        }
+        self.emit(Event::Media(MediaEvent::Reconnecting));
         self.emit(Event::VoiceStatus(VoiceStatus::Connecting {
             channel_id: channel,
         }));

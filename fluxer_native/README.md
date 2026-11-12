@@ -14,6 +14,8 @@ Cargo workspace; its lockfile does not change the server workspace's resolution.
 ```sh
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
+# Offline landscape/portrait screen viewer, synthetic participants, no capture:
+cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream
 ```
 
 Normal launch restores the saved account on Linux using the OS Secret Service.

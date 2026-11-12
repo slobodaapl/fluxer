@@ -23,7 +23,7 @@ use std::{
 };
 use tokio::time::timeout;
 
-type TestResult = Result<(), Box<dyn Error + Send + Sync>>;
+type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 const DEADLINE: Duration = Duration::from_secs(20);
 
 fn phase(name: &str) -> TestResult {
@@ -40,6 +40,67 @@ fn phase(name: &str) -> TestResult {
         return Err("output monitor did not acknowledge the phase".into());
     }
     Ok(())
+}
+
+async fn start_tone(
+    publisher: &Room,
+    name: &str,
+    kind: TrackSource,
+    frequency: f64,
+    amplitude: f64,
+) -> TestResult<tokio::task::JoinHandle<()>> {
+    let source = NativeAudioSource::new(
+        AudioSourceOptions {
+            echo_cancellation: false,
+            noise_suppression: false,
+            auto_gain_control: false,
+        },
+        48_000,
+        1,
+        0,
+    );
+    let track = LocalAudioTrack::create_audio_track(name, RtcAudioSource::Native(source.clone()));
+    publisher
+        .local_participant()
+        .publish_track(
+            LocalTrack::Audio(track),
+            TrackPublishOptions {
+                source: kind,
+                audio_encoding: Some(AudioEncoding {
+                    max_bitrate: 64_000,
+                }),
+                dtx: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok(tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(Duration::from_millis(10));
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut offset = 0_u64;
+        loop {
+            ticks.tick().await;
+            let pcm = (0..480)
+                .map(|n| {
+                    (((offset + n) as f64 * std::f64::consts::TAU * frequency / 48_000.).sin()
+                        * (32767. * amplitude)) as i16
+                })
+                .collect();
+            if source
+                .capture_frame(&AudioFrame {
+                    data: Cow::Owned(pcm),
+                    sample_rate: 48_000,
+                    num_channels: 1,
+                    samples_per_channel: 480,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+            offset += 480;
+        }
+    }))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -79,61 +140,15 @@ async fn output_pipeline() -> TestResult {
         Room::connect(&endpoint, &publisher_token, options),
     )
     .await??;
-    let source = NativeAudioSource::new(
-        AudioSourceOptions {
-            echo_cancellation: false,
-            noise_suppression: false,
-            auto_gain_control: false,
-        },
-        48_000,
-        1,
-        0,
-    );
-    let track = LocalAudioTrack::create_audio_track(
-        "synthetic output tone",
-        RtcAudioSource::Native(source.clone()),
-    );
-    publisher
-        .local_participant()
-        .publish_track(
-            LocalTrack::Audio(track),
-            TrackPublishOptions {
-                source: TrackSource::Microphone,
-                audio_encoding: Some(AudioEncoding {
-                    max_bitrate: 64_000,
-                }),
-                dtx: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let sender = tokio::spawn(async move {
-        let mut ticks = tokio::time::interval(Duration::from_millis(10));
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        let mut offset = 0_u64;
-        loop {
-            ticks.tick().await;
-            let pcm = (0..480)
-                .map(|n| {
-                    (((offset + n) as f64 * std::f64::consts::TAU * 440. / 48_000.).sin()
-                        * (32767. * 0.2)) as i16
-                })
-                .collect();
-            if source
-                .capture_frame(&AudioFrame {
-                    data: Cow::Owned(pcm),
-                    sample_rate: 48_000,
-                    num_channels: 1,
-                    samples_per_channel: 480,
-                })
-                .await
-                .is_err()
-            {
-                break;
-            }
-            offset += 480;
-        }
-    });
+    let sender = start_tone(
+        &publisher,
+        "synthetic microphone",
+        TrackSource::Microphone,
+        440.,
+        0.2,
+    )
+    .await?;
+    let mut stream_sender = None;
     let failed = Arc::new(AtomicBool::new(false));
     let mut monitor = None;
     let result: TestResult = async {
@@ -161,6 +176,44 @@ async fn output_pipeline() -> TestResult {
             },
         )?;
         phase("MUTE")?;
+        stream_sender = Some(
+            start_tone(
+                &publisher,
+                "synthetic screen audio",
+                TrackSource::ScreenshareAudio,
+                880.,
+                0.4,
+            )
+            .await?,
+        );
+        media.set_watched_participants(vec!["publisher".into()])?;
+        media.set_participant_audio("publisher", ParticipantAudioSettings::default())?;
+        phase("STREAM")?;
+        media.set_stream_audio(
+            "publisher",
+            ParticipantAudioSettings {
+                gain: 1.,
+                muted: true,
+            },
+        )?;
+        phase("STREAM_MUTED")?;
+        media.set_participant_audio(
+            "publisher",
+            ParticipantAudioSettings {
+                gain: 1.,
+                muted: true,
+            },
+        )?;
+        media.set_stream_audio(
+            "publisher",
+            ParticipantAudioSettings {
+                gain: 0.25,
+                muted: false,
+            },
+        )?;
+        phase("STREAM_GAIN")?;
+        media.set_watched_participants(vec![])?;
+        phase("STREAM_STOPPED")?;
         media.set_participant_audio("publisher", ParticipantAudioSettings::default())?;
         media.set_output_device(&b)?;
         phase("B")?;
@@ -173,6 +226,9 @@ async fn output_pipeline() -> TestResult {
     }
     .await;
     sender.abort();
+    if let Some(sender) = stream_sender {
+        sender.abort();
+    }
     if let Some(monitor) = monitor {
         monitor.abort();
     }
