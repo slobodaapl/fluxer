@@ -58,6 +58,7 @@ cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example aud
 # Explicit local microphone level readings (no network publication):
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example audio_probe -- --meter
 python3 fluxer_native/scripts/test_media_loopback.py --audio-lifecycle
+python3 fluxer_native/scripts/test_microphone_capture.py
 ```
 
 Unit tests cover actual SDK track PCM for input gain/PTT, arbitrary callback

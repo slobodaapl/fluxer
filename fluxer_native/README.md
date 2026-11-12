@@ -62,6 +62,18 @@ media. The test server command is documented in that script. This validates
 transport separately from OS permissions and hardware; it does not replace
 two-account Fluxer call and screen-sharing acceptance tests.
 
+With that local server running, Linux can also test the complete physical-input
+API through DSP/controls, publication and remote PCM decoding:
+
+```sh
+python3 fluxer_native/scripts/test_microphone_capture.py
+```
+
+This creates an isolated virtual microphone fed by a generated tone, checks the
+meter plus decoded gain/PTT/mute behavior, then removes its temporary audio
+modules. It leaves default devices and existing application routes unchanged.
+The Rust test refuses default/hardware input IDs and non-loopback servers.
+
 ## Compatibility notes
 
 The client retains existing Fluxer HTTP, gateway, and LiveKit services. Native
