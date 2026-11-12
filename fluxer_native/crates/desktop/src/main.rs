@@ -3,6 +3,7 @@ mod call_view;
 mod dropdown;
 mod input;
 mod stream_view;
+mod video_perf;
 
 use call_view::{StreamFrame, Viewer};
 use dropdown::{Dropdown, Selected};
@@ -20,8 +21,9 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use video_perf::{AnimatedFixture, VideoStats};
 
-actions!(fluxer, [Submit, Quit, OpenSettings]);
+actions!(fluxer, [Submit, Quit, OpenSettings, StopWatching]);
 
 const BG: u32 = 0x1d1b26;
 const PANEL: u32 = 0x252330;
@@ -230,6 +232,8 @@ struct Fluxer {
     viewer: Viewer<Arc<RenderImage>>,
     demo_stream: bool,
     fixture_generation: u64,
+    video_stats: VideoStats,
+    animation: Option<AnimatedFixture>,
     stream_audio: BTreeMap<String, ParticipantAudioSettings>,
     mixer: AudioMixSettings,
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
@@ -333,6 +337,8 @@ impl Fluxer {
             viewer: Viewer::default(),
             demo_stream,
             fixture_generation: 1,
+            video_stats: VideoStats::new(),
+            animation: None,
             stream_audio: BTreeMap::new(),
             mixer: AudioMixSettings::default(),
             participants: BTreeMap::new(),
@@ -432,14 +438,24 @@ impl Fluxer {
             view.session_restore_failed = !demo;
         }
         cx.spawn(async move |entity, cx| {
+            let mut cadence = Duration::from_millis(33);
             loop {
-                Timer::after(Duration::from_millis(33)).await;
-                if entity.update(cx, |view, cx| view.poll(cx)).is_err() {
-                    break;
+                Timer::after(cadence).await;
+                match entity.update(cx, |view, cx| {
+                    view.poll(cx);
+                    !view.viewer.desired.is_empty()
+                }) {
+                    Ok(true) => cadence = Duration::from_millis(16),
+                    Ok(false) => cadence = Duration::from_millis(100),
+                    Err(_) => break,
                 }
             }
         })
         .detach();
+        if demo_stream && std::env::args().any(|arg| arg == "--demo-stream-animated") {
+            view.animation = Some(AnimatedFixture::new());
+            view.schedule_perf_stop(window, cx);
+        }
         view
     }
 
@@ -454,10 +470,64 @@ impl Fluxer {
         cx.notify();
     }
 
+    fn retire_image(&self, image: Arc<RenderImage>, cx: &mut Context<Self>) {
+        let stats = self.video_stats.clone();
+        cx.defer(move |cx| {
+            stats.image_evicted(image.id.0);
+            cx.drop_image(image, None);
+        });
+    }
+    fn retire_stream_image(&self, identity: &str, cx: &mut Context<Self>) {
+        if let Some(frame) = self.viewer.frames.get(identity) {
+            self.retire_image(frame.image.clone(), cx);
+        }
+    }
+    fn clear_viewer(&mut self, cx: &mut Context<Self>) {
+        for frame in self.viewer.frames.values() {
+            self.retire_image(frame.image.clone(), cx);
+        }
+        self.viewer.clear();
+    }
+    fn reset_viewer_transport(&mut self, cx: &mut Context<Self>) {
+        for frame in self.viewer.frames.values() {
+            self.retire_image(frame.image.clone(), cx);
+        }
+        self.viewer.transport_reset();
+    }
+    fn display_video(&mut self, frame: fluxer_media::VideoFrame, cx: &mut Context<Self>) {
+        if !self
+            .viewer
+            .accepts(&frame.participant, frame.watch_generation)
+        {
+            return;
+        }
+        if let Some(buffer) = image::RgbaImage::from_raw(
+            frame.width,
+            frame.height,
+            Arc::try_unwrap(frame.bgra).unwrap_or_else(|shared| shared.as_ref().clone()),
+        ) {
+            let image = RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]);
+            self.retire_stream_image(&frame.participant, cx);
+            self.video_stats.accepted();
+            self.video_stats.image_added(image.id.0);
+            self.viewer.receive(
+                frame.participant,
+                StreamFrame {
+                    track_id: frame.track_id,
+                    watch_generation: frame.watch_generation,
+                    width: frame.width,
+                    height: frame.height,
+                    image: Arc::new(image),
+                },
+            );
+        }
+    }
+
     fn poll(&mut self, cx: &mut Context<Self>) {
+        let poll_started = std::time::Instant::now();
         let mut changed = false;
         for _ in 0..128 {
-            let Some(event) = self.controller.as_ref().and_then(|c| c.try_recv()) else {
+            let Some(event) = self.controller.as_ref().and_then(|c| c.try_recv_control()) else {
                 break;
             };
             changed = true;
@@ -529,6 +599,10 @@ impl Fluxer {
                         self.session_context_loaded = false;
                         if self.demo_stream {
                             self.install_stream_fixture();
+                            if self.animation.is_some() {
+                                self.retire_stream_image("preview-1", cx);
+                                self.viewer.stop("preview-1");
+                            }
                         }
                     }
                 }
@@ -644,7 +718,7 @@ impl Fluxer {
                 Event::VoiceStatus(status) => {
                     self.voice_status = match status {
                         VoiceStatus::Disconnected => {
-                            self.viewer.clear();
+                            self.clear_viewer(cx);
                             if self.pane == Pane::Call {
                                 self.pane = Pane::Chat;
                             }
@@ -663,7 +737,7 @@ impl Fluxer {
                         }
                         VoiceStatus::Reconnecting => {
                             self.active_speakers.clear();
-                            self.viewer.transport_reset();
+                            self.reset_viewer_transport(cx);
                             "Reconnecting voice…".into()
                         }
                     }
@@ -698,37 +772,7 @@ impl Fluxer {
                     }
                     self.timeline.scroll_to_bottom();
                 }
-                Event::Video(frame) => {
-                    if !self
-                        .viewer
-                        .accepts(&frame.participant, frame.watch_generation)
-                    {
-                        continue;
-                    }
-                    if let Some(buffer) = image::RgbaImage::from_raw(
-                        frame.width,
-                        frame.height,
-                        frame.rgba.as_ref().clone(),
-                    ) {
-                        // GPUI's image renderer consumes BGRA pixels.
-                        let mut buffer = buffer;
-                        for p in buffer.pixels_mut() {
-                            p.0.swap(0, 2);
-                        }
-                        let image =
-                            RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]);
-                        self.viewer.receive(
-                            frame.participant,
-                            StreamFrame {
-                                track_id: frame.track_id,
-                                watch_generation: frame.watch_generation,
-                                width: frame.width,
-                                height: frame.height,
-                                image: Arc::new(image),
-                            },
-                        );
-                    }
-                }
+                Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
                     MediaEvent::ScreenShareStarted => self.sharing = true,
                     MediaEvent::ScreenShareStopped => self.sharing = false,
@@ -737,12 +781,17 @@ impl Fluxer {
                         watch_generation,
                         ..
                     } => {
+                        for frame in self.viewer.frames.values().filter(|frame| {
+                            frame.track_id == track_id && frame.watch_generation == watch_generation
+                        }) {
+                            self.retire_image(frame.image.clone(), cx);
+                        }
                         self.viewer.end_track(&track_id, watch_generation);
                     }
                     MediaEvent::Disconnected => {
                         self.active_speakers.clear();
                         self.sharing = false;
-                        self.viewer.clear();
+                        self.clear_viewer(cx);
                         if self.pane == Pane::Call {
                             self.pane = Pane::Chat;
                         }
@@ -753,7 +802,7 @@ impl Fluxer {
                     MediaEvent::Reconnecting => {
                         self.active_speakers.clear();
                         self.sharing = false;
-                        self.viewer.transport_reset();
+                        self.reset_viewer_transport(cx);
                         self.participants.clear();
                         self.available_streams.clear();
                         self.shared_audio = false;
@@ -774,6 +823,7 @@ impl Fluxer {
                             self.available_streams.insert(identity);
                         } else {
                             self.available_streams.remove(&identity);
+                            self.retire_stream_image(&identity, cx);
                             self.viewer.unavailable(&identity);
                         }
                     }
@@ -791,6 +841,25 @@ impl Fluxer {
                 },
             }
         }
+        let frames = self
+            .controller
+            .as_ref()
+            .map(Controller::drain_frames)
+            .unwrap_or_default();
+        for frame in frames {
+            self.display_video(frame, cx);
+            changed = true;
+        }
+        if let Some(frame) = self
+            .animation
+            .as_ref()
+            .and_then(|animation| animation.take_frame())
+        {
+            self.display_video(frame, cx);
+            changed = true;
+        }
+        self.video_stats
+            .poll(poll_started.elapsed(), self.viewer.frames.len());
         let countdown = self
             .ip_authorization
             .as_ref()
@@ -1313,7 +1382,7 @@ impl Fluxer {
                             this.mfa_ticket = None;
                             this.pending_message = None;
                             this.editing = None;
-                            this.viewer.clear();
+                            this.clear_viewer(cx);
                         })),
                     ),
             )
@@ -2427,6 +2496,16 @@ impl Fluxer {
 
 impl Render for Fluxer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let render_started = std::time::Instant::now();
+        self.video_stats.rendered(
+            window,
+            self.pane == Pane::Call
+                && self
+                    .viewer
+                    .focused
+                    .as_ref()
+                    .is_some_and(|identity| self.viewer.frames.contains_key(identity)),
+        );
         let content = if self.session_restoring {
             self.restoring_view(cx)
         } else if self.state.current_user.is_none() {
@@ -2450,9 +2529,10 @@ impl Render for Fluxer {
                 .child(body)
                 .into_any_element()
         };
-        div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Inter").text_size(px(14.))
+        let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Inter").text_size(px(14.))
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.pane = Pane::Settings;
                 this.command(Command::RefreshDevices, cx);
@@ -2480,12 +2560,15 @@ impl Render for Fluxer {
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
-            .child(content)
+            .child(content);
+        self.video_stats.render_built(render_started.elapsed());
+        rendered
     }
 }
 
 fn main() {
-    let demo_stream = std::env::args().any(|v| v == "--demo-stream");
+    let demo_stream =
+        std::env::args().any(|v| v == "--demo-stream" || v == "--demo-stream-animated");
     let demo = demo_stream || std::env::args().any(|v| v == "--demo");
     Application::new().run(move |cx: &mut App| {
         input::init(cx);
