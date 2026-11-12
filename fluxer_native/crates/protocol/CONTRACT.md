@@ -85,6 +85,21 @@ falls back to a multipart message. The controller may call it only when the
 user's preupload preference and instance feature both permit it. Background
 failure is retried through the full send path rather than silently posting.
 
+The split staged-batch API mirrors `MessageQueue.tsx:487–576`:
+`plan_attachments()` sends one shared planning POST and returns opaque
+`PlannedAttachment` handles in the original file order, resolving response IDs
+rather than response-array positions. The handles redact storage URLs from Debug
+and are bound to the original instance, channel and file snapshot. Missing IDs
+remain per-file errors, so a malformed sibling response cannot silently cancel
+another valid transfer. `upload_planned_attachment()` independently performs
+one file's PUTs and, when needed, its own singleton multipart completion. It
+never posts a message or falls back. The controller may run these per-file
+transfers concurrently. Each uses its own cancellation token; the shared
+planning token is cancelled only when its last staged member is removed, as in
+`TextareaAttachmentUploadCancellation.ts`. That membership bookkeeping belongs
+to the controller. Textarea per-file progress reports retry resets directly;
+the full-message outer progress retains the source's monotonic per-file maximum.
+
 Existing source uses stable `CloudAttachment.id` values during staging and
 zero-based decimal index IDs for a final message. When reusing completed staged
 uploads, the controller remaps IDs and merges only `upload_filename`,
