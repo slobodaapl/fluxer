@@ -248,7 +248,7 @@ impl Render for Dropdown {
                                         div()
                                             .id("menu")
                                             .w(bounds.size.width)
-                                            .max_h(px(240.))
+                                            .max_h(px(288.))
                                             .overflow_y_scroll()
                                             .track_scroll(&self.scroll)
                                             .occlude()
