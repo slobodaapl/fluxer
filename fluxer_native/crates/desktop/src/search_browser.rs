@@ -806,6 +806,7 @@ impl Fluxer {
             .when(!text.is_empty(), |view| {
                 view.child(
                     div()
+                        .id(("browse-text", message.id.0))
                         .w_full()
                         .min_w_0()
                         .max_w_full()
@@ -817,6 +818,7 @@ impl Fluxer {
             })
             .child(
                 div()
+                    .id(("browse-media", message.id.0))
                     .max_h(px(180.))
                     .overflow_hidden()
                     .on_click(|_, _, cx| cx.stop_propagation())
@@ -835,7 +837,7 @@ impl Fluxer {
                     .gap_1()
                     .child(
                         icon_button(("browse-jump", message.id.0), Icon::Jump, "Jump to message")
-                            .opacity(0.)
+                            .opacity(0.55)
                             .group_hover("message-preview", |style| style.opacity(1.))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
@@ -844,7 +846,7 @@ impl Fluxer {
                     )
                     .child(
                         icon_button(("browse-more", message.id.0), Icon::More, "Message actions")
-                            .opacity(0.)
+                            .opacity(0.55)
                             .group_hover("message-preview", |style| style.opacity(1.))
                             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                                 cx.stop_propagation();
