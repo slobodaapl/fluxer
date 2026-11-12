@@ -776,6 +776,11 @@ impl Worker {
             .and_then(|read| read.last_message_id)
             .is_some_and(|read| read >= id)
         {
+            self.emit(Event::MessageAckResult {
+                channel_id: channel,
+                message_id: id,
+                error: None,
+            });
             return Ok(());
         }
         let token = self.navigation.token();
@@ -1353,6 +1358,11 @@ impl Worker {
                     return;
                 }
                 self.navigation.acks.remove(&channel);
+                self.emit(Event::MessageAckResult {
+                    channel_id: channel,
+                    message_id: id,
+                    error: result.as_ref().err().cloned(),
+                });
                 match result {
                     Ok(()) => {
                         let read = self.state.read_states.entry(channel).or_insert(
@@ -1489,3 +1499,7 @@ fn demo_history(messages: &[Message], request: HistoryRequest) -> Vec<Message> {
     selected.sort_by_key(|message| std::cmp::Reverse(message.id));
     selected
 }
+
+#[cfg(test)]
+#[path = "worker_navigation_tests.rs"]
+mod tests;
