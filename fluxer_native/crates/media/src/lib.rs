@@ -143,17 +143,15 @@ struct SharedAudioLifecycle {
     events: Option<mpsc::Sender<MediaEvent>>,
 }
 fn shared_audio_stopped(events: &Option<mpsc::Sender<MediaEvent>>) {
-    if let Some(sender) = events {
-        if let Err(mpsc::error::TrySendError::Full(event)) =
+    if let Some(sender) = events
+        && let Err(mpsc::error::TrySendError::Full(event)) =
             sender.try_send(MediaEvent::SharedAudioStopped)
-        {
-            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                let sender = sender.clone();
-                runtime.spawn(async move {
-                    let _ = sender.send(event).await;
-                });
-            }
-        }
+        && let Ok(runtime) = tokio::runtime::Handle::try_current()
+    {
+        let sender = sender.clone();
+        runtime.spawn(async move {
+            let _ = sender.send(event).await;
+        });
     }
 }
 impl Drop for SharedAudioLifecycle {
@@ -1178,8 +1176,16 @@ impl MediaEngine {
                 };
                 if frame.sample_rate != 48_000
                     || frame.channels != 2
-                    || frame.samples.len() % 2 != 0
+                    || !frame.samples.len().is_multiple_of(2)
                 {
+                    if let Some(tx) = &events {
+                        let _ = tx.try_send(MediaEvent::Error(
+                            "Shared audio capture returned unsupported PCM format".into(),
+                        ));
+                    }
+                    break;
+                }
+                if frame.samples.is_empty() {
                     continue;
                 }
                 let controls = settings.lock().map(|s| *s).unwrap_or(SharedAudioSettings {
@@ -1555,6 +1561,51 @@ mod video_lifecycle_tests {
         assert!(matches!(events.recv().await, Some(MediaEvent::Speakers(_))));
         assert!(
             matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id,..}) if track_id=="screen-sid")
+        );
+    }
+}
+
+#[cfg(test)]
+mod shared_audio_lifecycle_tests {
+    use super::*;
+    #[tokio::test]
+    async fn unexpected_capture_exit_stops_state_before_notifying_controller() {
+        let (sender, mut events) = mpsc::channel(4);
+        let running = Arc::new(AtomicBool::new(true));
+        let lifecycle = SharedAudioLifecycle {
+            running: running.clone(),
+            events: Some(sender),
+        };
+        drop(lifecycle);
+        assert!(!running.load(Ordering::Acquire));
+        assert!(matches!(
+            events.recv().await,
+            Some(MediaEvent::SharedAudioStopped)
+        ));
+    }
+    #[tokio::test]
+    async fn old_capture_exit_cannot_stop_replacement_or_duplicate_explicit_stop() {
+        let (sender, mut events) = mpsc::channel(4);
+        let old = Arc::new(AtomicBool::new(true));
+        let current = Arc::new(AtomicBool::new(true));
+        drop(SharedAudioLifecycle {
+            running: old.clone(),
+            events: Some(sender.clone()),
+        });
+        assert!(!old.load(Ordering::Acquire));
+        assert!(current.load(Ordering::Acquire));
+        assert!(matches!(
+            events.recv().await,
+            Some(MediaEvent::SharedAudioStopped)
+        ));
+        current.store(false, Ordering::Release);
+        drop(SharedAudioLifecycle {
+            running: current,
+            events: Some(sender),
+        });
+        assert!(
+            events.try_recv().is_err(),
+            "explicit stop owns its single notification"
         );
     }
 }

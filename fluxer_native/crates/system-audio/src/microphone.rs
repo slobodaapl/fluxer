@@ -121,55 +121,107 @@ impl MicrophoneInput {
 }
 
 pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
+    use crate::pipewire::common::{InventorySnapshot, collect_props};
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
     };
+    struct WatchedNode {
+        _listener: pw::node::NodeListener,
+        _node: pw::node::Node,
+    }
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
     let core = context.connect_rc(None)?;
     let registry = core.get_registry_rc()?;
-    let inventory = Rc::new(RefCell::new(Vec::new()));
+    let inventory = Rc::new(RefCell::new(InventorySnapshot::default()));
+    let nodes = Rc::new(RefCell::new(Vec::<WatchedNode>::new()));
     let globals = inventory.clone();
+    let bind_registry = registry.clone();
+    let watches = nodes.clone();
     let _registry = registry
         .add_listener_local()
         .global(move |global| {
+            if global.type_ == pw::types::ObjectType::Client {
+                globals
+                    .borrow_mut()
+                    .clients
+                    .insert(global.id, collect_props(global.props));
+                return;
+            }
             if global.type_ != pw::types::ObjectType::Node {
                 return;
             }
-            let Some(props) = global.props else {
-                return;
-            };
+            let Some(props) = global.props else { return };
             if !matches!(
                 props.get("media.class"),
-                Some("Audio/Source" | "Audio/Source/Virtual" | "Audio/Sink" | "Audio/Sink/Virtual")
+                Some(
+                    "Audio/Source"
+                        | "Audio/Source/Virtual"
+                        | "Audio/Sink"
+                        | "Audio/Sink/Virtual"
+                        | "Stream/Output/Audio"
+                )
             ) {
                 return;
             }
-            globals.borrow_mut().push(
-                ["node.name", "node.description", "node.nick", "media.class"]
-                    .into_iter()
-                    .filter_map(|name| {
-                        props
-                            .get(name)
-                            .map(|value| (name.to_owned(), value.to_owned()))
+            globals
+                .borrow_mut()
+                .nodes
+                .insert(global.id, collect_props(Some(props)));
+            // Stream globals can omit process identity. Bind the complete NodeInfo
+            // properties, then enrich from Client identity like the shared engine.
+            if let Ok(node) = bind_registry.bind::<pw::node::Node, _>(global) {
+                let info_inventory = globals.clone();
+                let id = global.id;
+                let listener = node
+                    .add_listener_local()
+                    .info(move |info| {
+                        if info.change_mask().contains(pw::node::NodeChangeMask::PROPS)
+                            && let Some(props) = info.props()
+                        {
+                            info_inventory
+                                .borrow_mut()
+                                .nodes
+                                .entry(id)
+                                .or_default()
+                                .extend(collect_props(Some(props)));
+                        }
                     })
-                    .collect(),
-            );
+                    .register();
+                watches.borrow_mut().push(WatchedNode {
+                    _listener: listener,
+                    _node: node,
+                });
+            }
         })
         .register();
-    // A registry snapshot is not available until the server's sync barrier.
-    // Waiting for that event also represents a valid empty device inventory.
-    let pending = core.sync(0)?;
+    // First barrier drains registry globals; second drains NodeInfo replies for
+    // binds created while processing those globals. Startup-ready alone is not
+    // a complete application inventory.
+    let pending = Rc::new(Cell::new(core.sync(0)?));
+    let sequence = pending.clone();
+    let enriched = Rc::new(Cell::new(false));
+    let phase = enriched.clone();
     let done = Rc::new(Cell::new(false));
-    let completed = done.clone();
+    let complete = done.clone();
     let quit = mainloop.clone();
+    let sync_core = core.clone();
     let _core = core
         .add_listener_local()
-        .done(move |id, sequence| {
-            if id == pw::core::PW_ID_CORE && sequence == pending {
-                completed.set(true);
+        .done(move |id, observed| {
+            if id != pw::core::PW_ID_CORE || observed != sequence.get() {
+                return;
+            }
+            if !phase.replace(true) {
+                if let Ok(next) = sync_core.sync(0) {
+                    sequence.set(next);
+                } else {
+                    quit.quit();
+                }
+            } else {
+                complete.set(true);
                 quit.quit();
             }
         })
@@ -184,7 +236,7 @@ pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw
     if !done.get() {
         return Err(pw::Error::CreationFailed);
     }
-    let snapshot = std::mem::take(&mut *inventory.borrow_mut());
+    let snapshot = inventory.borrow().enriched_node_values();
     Ok(snapshot)
 }
 

@@ -394,6 +394,7 @@ mod tests {
         });
         let mut session = ScreenSession {
             stop,
+            has_frame: Arc::new(AtomicBool::new(false)),
             thread: worker.thread().clone(),
         };
         assert!(!session.is_stopped());
