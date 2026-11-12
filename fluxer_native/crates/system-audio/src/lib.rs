@@ -5,6 +5,11 @@
 #![allow(dead_code)]
 
 #[cfg(target_os = "linux")]
+mod microphone;
+#[cfg(target_os = "linux")]
+pub use microphone::{InputDevice, MicrophoneInput};
+
+#[cfg(target_os = "linux")]
 #[rustfmt::skip]
 #[path = "../../../../fluxer_desktop/native/linux-audio-capture/src/audio_contract.rs"]
 mod audio_contract;
@@ -43,7 +48,7 @@ pub enum Selection {
     System,
     Application { process_id: String },
 }
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
     #[error("System audio capture is unavailable on this platform")]
     Unsupported,
@@ -51,6 +56,10 @@ pub enum Error {
     Unavailable,
     #[error("Invalid application audio source")]
     InvalidSource,
+    #[error("Unknown microphone; refresh the input device list")]
+    UnknownInput,
+    #[error("Microphone capture requires 48 kHz mono or stereo audio")]
+    InvalidInputFormat,
 }
 pub struct PcmFrame {
     pub samples: Vec<f32>,

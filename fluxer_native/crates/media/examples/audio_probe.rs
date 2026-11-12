@@ -4,9 +4,23 @@
 use fluxer_media::{MediaEngine, MediaEvent};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut meter = false;
+    let mut input = None;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--meter" => meter = true,
+            "--input" => input = Some(args.next().ok_or("--input requires a device ID")?),
+            _ => return Err(format!("Unknown option: {arg}").into()),
+        }
+    }
     let mut media = MediaEngine::new()?;
     println!("Devices: {:?}", media.devices());
-    if std::env::args().any(|arg| arg == "--meter") {
+    if let Some(input) = input {
+        media.set_input_device(&input)?;
+        println!("Selected input: {input}");
+    }
+    if meter {
         let mut events = media.start_microphone_test()?;
         let meter = tokio::time::sleep(std::time::Duration::from_secs(5));
         tokio::pin!(meter);
