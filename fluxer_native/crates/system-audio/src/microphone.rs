@@ -2,7 +2,7 @@
 //! Device-source capture through PipeWire's input Stream API. This is separate
 //! from the playback-routing engine: selecting a microphone never moves apps
 //! or captures a sink/monitor mix implicitly.
-use crate::{Error, PcmFrame, pipewire_bridge::PipeWireBridge};
+use crate::{Error, PcmFrame};
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use std::{
@@ -35,10 +35,9 @@ pub struct MicrophoneInput {
 
 impl MicrophoneInput {
     pub fn devices() -> Result<Vec<InputDevice>, Error> {
-        let inventory = PipeWireBridge::open()
-            .ok_or(Error::Unavailable)?
-            .inventory();
-        Ok(input_devices(inventory))
+        enumerate_inputs()
+            .map(input_devices)
+            .map_err(|_| Error::Unavailable)
     }
 
     pub fn start(id: Option<&str>, channels: u32) -> Result<Self, Error> {
@@ -119,6 +118,74 @@ impl MicrophoneInput {
             let _ = worker.join();
         }
     }
+}
+
+fn enumerate_inputs() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+    pw::init();
+    let mainloop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(&mainloop, None)?;
+    let core = context.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
+    let inventory = Rc::new(RefCell::new(Vec::new()));
+    let globals = inventory.clone();
+    let _registry = registry
+        .add_listener_local()
+        .global(move |global| {
+            if global.type_ != pw::types::ObjectType::Node {
+                return;
+            }
+            let Some(props) = global.props else {
+                return;
+            };
+            if !matches!(
+                props.get("media.class"),
+                Some("Audio/Source" | "Audio/Source/Virtual")
+            ) {
+                return;
+            }
+            globals.borrow_mut().push(
+                ["node.name", "node.description", "node.nick", "media.class"]
+                    .into_iter()
+                    .filter_map(|name| {
+                        props
+                            .get(name)
+                            .map(|value| (name.to_owned(), value.to_owned()))
+                    })
+                    .collect(),
+            );
+        })
+        .register();
+    // A registry snapshot is not available until the server's sync barrier.
+    // Waiting for that event also represents a valid empty device inventory.
+    let pending = core.sync(0)?;
+    let done = Rc::new(Cell::new(false));
+    let completed = done.clone();
+    let quit = mainloop.clone();
+    let _core = core
+        .add_listener_local()
+        .done(move |id, sequence| {
+            if id == pw::core::PW_ID_CORE && sequence == pending {
+                completed.set(true);
+                quit.quit();
+            }
+        })
+        .register();
+    let quit = mainloop.clone();
+    let timer = mainloop.loop_().add_timer(move |_| quit.quit());
+    timer
+        .update_timer(Some(Duration::from_secs(3)), None)
+        .into_result()
+        .map_err(|_| pw::Error::CreationFailed)?;
+    mainloop.run();
+    if !done.get() {
+        return Err(pw::Error::CreationFailed);
+    }
+    let snapshot = std::mem::take(&mut *inventory.borrow_mut());
+    Ok(snapshot)
 }
 
 impl Drop for MicrophoneInput {
