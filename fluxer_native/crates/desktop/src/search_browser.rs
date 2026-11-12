@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     controls::{Icon, icon_button, quiet_button},
-    message_actions::{MessageMenuContext, message_time},
+    message_actions::{ConfirmationChoice, ConfirmationKeys, MessageMenuContext, message_time},
 };
 use fluxer_client::{
     HistorySnapshot, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort, SearchStatus,
@@ -33,6 +33,11 @@ pub(super) struct SearchUi {
     pin_ids: Vec<Snowflake>,
     text: BTreeMap<(Snowflake, Snowflake), Entity<TextInput>>,
     pub confirm: Option<PinConfirmation>,
+    pin_cancel_focus: FocusHandle,
+    pin_confirm_focus: FocusHandle,
+    pin_dialog_focus: FocusHandle,
+    pin_previous_focus: Option<FocusHandle>,
+    pin_keys: ConfirmationKeys,
     pub mutations: BTreeSet<(Snowflake, Snowflake)>,
     pub mutation_error: Option<String>,
     pub local_error: Option<String>,
@@ -91,6 +96,11 @@ impl SearchUi {
             pin_ids: Vec::new(),
             text: BTreeMap::new(),
             confirm: None,
+            pin_cancel_focus: cx.focus_handle().tab_stop(true),
+            pin_confirm_focus: cx.focus_handle().tab_stop(true),
+            pin_dialog_focus: cx.focus_handle(),
+            pin_previous_focus: None,
+            pin_keys: ConfirmationKeys::default(),
             mutations: BTreeSet::new(),
             mutation_error: None,
             local_error: None,
@@ -187,6 +197,8 @@ impl Fluxer {
         self.search_ui.results_list.reset(0);
         self.search_ui.pins_list.reset(0);
         self.search_ui.confirm = None;
+        self.search_ui.pin_keys.clear();
+        self.search_ui.pin_previous_focus = None;
         self.search_ui.mutations.clear();
         self.search_ui.mutation_error = None;
         self.search_ui.local_error = None;
@@ -517,21 +529,23 @@ impl Fluxer {
                                 },
                             ))
                             .when(history.has_newer, |view| {
-                                view.child(button("history-newer", "Load newer").py_1().on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.command(
-                                            Command::LoadNewerMessages {
-                                                channel_id: channel,
-                                            },
-                                            cx,
-                                        )
-                                    }),
-                                ))
+                                view.child(
+                                    quiet_button("history-newer", "Load newer").py_1().on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.command(
+                                                Command::LoadNewerMessages {
+                                                    channel_id: channel,
+                                                },
+                                                cx,
+                                            )
+                                        }),
+                                    ),
+                                )
                             })
                             .child(
-                                button("history-latest", "Return to latest")
+                                quiet_button("history-latest", "Return to latest")
                                     .py_1()
-                                    .bg(rgb(0x6750b3))
+                                    .text_color(rgb(ACCENT))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.search_ui.returning_latest.insert(channel);
                                         this.search_ui.pending_center = None;
@@ -559,18 +573,19 @@ impl Fluxer {
             )
             .when(history.is_none_or(|history| history.has_older), |view| {
                 view.child(
-                    button("history-older", "Load older messages")
-                        .mx_4()
-                        .my_1()
-                        .py_1()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.command(
-                                Command::LoadOlderMessages {
-                                    channel_id: channel,
-                                },
-                                cx,
-                            )
-                        })),
+                    div().flex().justify_center().child(
+                        quiet_button("history-older", "Load older messages")
+                            .my_1()
+                            .py_1()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.command(
+                                    Command::LoadOlderMessages {
+                                        channel_id: channel,
+                                    },
+                                    cx,
+                                )
+                            })),
+                    ),
                 )
             })
             .into_any_element()
@@ -1165,10 +1180,32 @@ impl Fluxer {
                 cx,
             );
         } else {
+            if self.search_ui.confirm.is_none() {
+                self.search_ui.pin_previous_focus = window.focused(cx);
+            }
+            self.search_ui.pin_keys.clear();
             self.search_ui.confirm = Some(PinConfirmation { message, pinned });
-            self.focus.focus(window);
+            self.search_ui.pin_cancel_focus.focus(window);
             cx.notify();
         }
+    }
+    pub(super) fn dismiss_pin_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_ui.confirm.take().is_some() {
+            self.restore_pin_focus(window, cx);
+            cx.notify();
+        }
+    }
+    fn restore_pin_focus(&mut self, window: &mut Window, cx: &Context<Self>) {
+        self.search_ui.pin_keys.clear();
+        if let Some(previous) = self.search_ui.pin_previous_focus.take() {
+            previous.focus(window);
+        } else {
+            self.composer.focus_handle(cx).focus(window);
+        }
+    }
+    fn accept_pin_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_pin(cx);
+        self.restore_pin_focus(window, cx);
     }
     pub(super) fn confirm_pin(&mut self, cx: &mut Context<Self>) {
         if let Some(confirm) = self.search_ui.confirm.take() {
@@ -1190,11 +1227,64 @@ impl Fluxer {
             .absolute()
             .inset_0()
             .bg(rgba(0x00000099))
+            .occlude()
             .flex()
             .items_center()
             .justify_center()
             .child(
                 div()
+                    .id("pin-confirm-dialog")
+                    .track_focus(&self.search_ui.pin_dialog_focus)
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "escape" => this.dismiss_pin_confirmation(window, cx),
+                            "tab" => {
+                                this.search_ui.pin_keys.clear();
+                                if this.search_ui.pin_cancel_focus.is_focused(window) {
+                                    this.search_ui.pin_confirm_focus.focus(window);
+                                } else {
+                                    this.search_ui.pin_cancel_focus.focus(window);
+                                }
+                            }
+                            "enter" | "space" if !event.keystroke.modifiers.modified() => {
+                                let choice = if this.search_ui.pin_confirm_focus.is_focused(window)
+                                {
+                                    Some(ConfirmationChoice::Confirm)
+                                } else if this.search_ui.pin_cancel_focus.is_focused(window) {
+                                    Some(ConfirmationChoice::Cancel)
+                                } else {
+                                    None
+                                };
+                                if let Some(choice) = choice {
+                                    this.search_ui.pin_keys.press(choice, event.is_held);
+                                } else {
+                                    this.search_ui.pin_keys.clear();
+                                }
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            let choice = this.search_ui.pin_keys.release();
+                            if !event.keystroke.modifiers.modified() {
+                                match choice {
+                                    Some(ConfirmationChoice::Cancel) => {
+                                        this.dismiss_pin_confirmation(window, cx)
+                                    }
+                                    Some(ConfirmationChoice::Confirm) => {
+                                        this.accept_pin_confirmation(window, cx)
+                                    }
+                                    None => {}
+                                }
+                            }
+                            // Opening a menu/dialog can deliver its previous key-up
+                            // to the newly focused Cancel button. Consume unarmed
+                            // releases before GPUI synthesizes a keyboard click.
+                            cx.stop_propagation();
+                        }
+                    }))
                     .w(px(420.))
                     .p_5()
                     .occlude()
@@ -1234,12 +1324,13 @@ impl Fluxer {
                             .flex()
                             .justify_end()
                             .gap_2()
-                            .child(button("cancel-pin", "Cancel").on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    this.search_ui.confirm = None;
-                                    cx.notify();
-                                },
-                            )))
+                            .child(
+                                button("cancel-pin", "Cancel")
+                                    .track_focus(&self.search_ui.pin_cancel_focus)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.dismiss_pin_confirmation(window, cx)
+                                    })),
+                            )
                             .child(
                                 button(
                                     "confirm-pin",
@@ -1249,8 +1340,11 @@ impl Fluxer {
                                         "Unpin message"
                                     },
                                 )
+                                .track_focus(&self.search_ui.pin_confirm_focus)
                                 .bg(rgb(0x7255c8))
-                                .on_click(cx.listener(|this, _, _, cx| this.confirm_pin(cx))),
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.accept_pin_confirmation(window, cx),
+                                )),
                             ),
                     ),
             )
