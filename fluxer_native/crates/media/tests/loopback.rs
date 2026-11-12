@@ -82,8 +82,8 @@ async fn exchanges_synthetic_audio_and_screen_video() {
                 RoomEvent::TrackSubscriptionFailed { error, .. } => panic!("subscription: {error}"),
                 _ => {}
             }
-            if a.is_some() && v.is_some() {
-                break (a.unwrap(), v.unwrap());
+            if let (Some(audio), Some(video)) = (&a, &v) {
+                break (audio.clone(), video.clone());
             }
         }
     })

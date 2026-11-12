@@ -20,9 +20,12 @@ Audio controls process actual samples:
   the mixer linearly resamples to its default hardware rate and converts to
   f32/i16/u16. It supports mono/stereo output; extra surround channels are silent.
 - Device enumeration can be refreshed. Input selection uses WebRTC's native
-  device switch; output selection atomically replaces the CPAL stream after the
+  stop/set/start sequence and only resumes recording for an unmuted call or an
+  explicit local microphone test. Output selection atomically replaces the CPAL stream after the
   replacement opens successfully. A stale device identifier fails rather than
   silently choosing another device. Output stream failures produce media errors.
+  The explicit System Default output choice permits recovery after unplugging
+  a selected speaker without silently rerouting an ongoing call.
 - Microphone test reports levels for local capture only and never publishes,
   records to disk, or plays audio back. It cannot run concurrently with a call.
 

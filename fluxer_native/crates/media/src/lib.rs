@@ -203,17 +203,23 @@ impl MediaEngine {
             .recording_devices()
             .find(|d| d.id.as_str() == id)
             .ok_or(MediaError::UnknownDevice("input"))?;
-        self.audio
-            .switch_recording_device(&device.id)
-            .map_err(|e| MediaError::Audio(e.to_string()))?;
         let testing = self
             .input_controls
             .lock()
             .map(|c| c.testing)
             .unwrap_or(false);
-        if !testing && (self.muted || self.deafened || self.room.is_none()) {
+        // switch_recording_device restarts any initialized ADM even after mute.
+        // Explicit stop/set/start avoids briefly recording in muted/settings-only
+        // flows and leaves the device stopped if selecting a replacement fails.
+        self.audio
+            .stop_recording()
+            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        self.audio
+            .set_recording_device(&device.id)
+            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        if testing || (!self.muted && !self.deafened && self.is_connected()) {
             self.audio
-                .stop_recording()
+                .start_recording()
                 .map_err(|e| MediaError::Audio(e.to_string()))?;
         }
         Ok(())
@@ -283,6 +289,7 @@ impl MediaEngine {
             .pc_factory()
             .set_adm_playout_enabled(false);
         if let Err(error) = self.output.start() {
+            self.output.stop();
             let _ = room.close().await;
             return Err(error);
         }
@@ -328,6 +335,9 @@ impl MediaEngine {
         };
         if let Err(error) = recording {
             drop(capture);
+            mic.mute();
+            mic.disable();
+            let _ = self.audio.stop_recording();
             self.output.stop();
             let _ = room.close().await;
             return Err(MediaError::Audio(error.to_string()));
@@ -348,7 +358,11 @@ impl MediaEngine {
         let audio_tasks = self.audio_tasks.clone();
         let _ = tx.try_send(MediaEvent::Connected);
         self.room_task = Some(tokio::spawn(async move {
-            while let Some(event) = room_events.recv().await {
+            loop {
+                let event = tokio::select! {
+                    _ = tx.closed() => break,
+                    event = room_events.recv() => match event { Some(event) => event, None => break },
+                };
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -415,10 +429,10 @@ impl MediaEngine {
                             }
                             stream.close();
                         });
-                        if let Ok(mut tasks) = audio_tasks.lock() {
-                            if let Some(old) = tasks.insert(id, task) {
-                                old.abort();
-                            }
+                        if let Ok(mut tasks) = audio_tasks.lock()
+                            && let Some(old) = tasks.insert(id, task)
+                        {
+                            old.abort();
                         }
                         if let Ok(mut s) = state.lock() {
                             s.remotes.insert(track.sid().to_string(), track);
@@ -430,10 +444,10 @@ impl MediaEngine {
                         ..
                     } => {
                         let id = track.sid().to_string();
-                        if let Ok(mut tasks) = audio_tasks.lock() {
-                            if let Some(task) = tasks.remove(&id) {
-                                task.abort();
-                            }
+                        if let Ok(mut tasks) = audio_tasks.lock()
+                            && let Some(task) = tasks.remove(&id)
+                        {
+                            task.abort();
                         }
                         if let Ok(mut m) = mixer.lock() {
                             m.tracks.remove(&id);
@@ -480,10 +494,10 @@ impl MediaEngine {
                             }
                             stream.close();
                         });
-                        if let Ok(mut tasks) = video_tasks.lock() {
-                            if let Some(old) = tasks.insert(id, task) {
-                                old.abort();
-                            }
+                        if let Ok(mut tasks) = video_tasks.lock()
+                            && let Some(old) = tasks.insert(id, task)
+                        {
+                            old.abort();
                         }
                         None
                     }
@@ -492,19 +506,40 @@ impl MediaEngine {
                         ..
                     } => {
                         let id = track.sid().to_string();
-                        if let Ok(mut tasks) = video_tasks.lock() {
-                            if let Some(task) = tasks.remove(&id) {
-                                task.abort();
-                            }
+                        if let Ok(mut tasks) = video_tasks.lock()
+                            && let Some(task) = tasks.remove(&id)
+                        {
+                            task.abort();
                         }
                         Some(MediaEvent::VideoEnded { track_id: id })
                     }
                     _ => None,
                 };
-                if let Some(event) = outgoing {
-                    if tx.send(event).await.is_err() {
-                        break;
-                    }
+                if let Some(event) = outgoing
+                    && tx.send(event).await.is_err()
+                {
+                    break;
+                }
+            }
+            // Losing the consumer or the room event stream also stops capture,
+            // even if the controller cannot deliver an explicit disconnect.
+            stop.store(true, Ordering::Release);
+            if let Some(mic) = &microphone {
+                mic.mute();
+                mic.disable();
+            }
+            let _ = audio.stop_recording();
+            if let Ok(mut m) = mixer.lock() {
+                m.clear();
+            }
+            if let Ok(mut tasks) = audio_tasks.lock() {
+                for (_, task) in tasks.drain() {
+                    task.abort();
+                }
+            }
+            if let Ok(mut tasks) = video_tasks.lock() {
+                for (_, task) in tasks.drain() {
+                    task.abort();
                 }
             }
         }));
@@ -631,10 +666,14 @@ impl MediaEngine {
         Ok(())
     }
     pub fn is_connected(&self) -> bool {
-        self.room.is_some()
+        self.room
+            .as_ref()
+            .is_some_and(|room| room.connection_state() != ConnectionState::Disconnected)
     }
     pub fn is_sharing(&self) -> bool {
-        self.screen.is_some()
+        self.screen
+            .as_ref()
+            .is_some_and(|screen| !screen.is_stopped())
     }
     pub fn shared_audio_available() -> bool {
         fluxer_system_audio::SystemAudio::available()
@@ -743,6 +782,7 @@ impl MediaEngine {
     pub async fn stop_shared_audio(&mut self) -> Result<()> {
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
+            let _ = task.await;
         }
         if let (Some(room), Some(sid)) = (&self.room, self.shared_audio_publication.take()) {
             room.local_participant()
@@ -794,20 +834,25 @@ impl MediaEngine {
         }
     }
     pub async fn stop_screen_share(&mut self) -> Result<()> {
-        self.stop_shared_audio().await?;
+        // Stop hardware first even when either network unpublish fails.
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
-        if let (Some(room), Some(sid)) = (&self.room, self.screen_publication.take()) {
-            room.local_participant()
-                .unpublish_track(&sid)
-                .await
-                .map_err(|e| MediaError::Screen(e.to_string()))?;
-        }
+        let audio_result = self.stop_shared_audio().await;
+        let video_result =
+            if let (Some(room), Some(sid)) = (&self.room, self.screen_publication.take()) {
+                room.local_participant()
+                    .unpublish_track(&sid)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| MediaError::Screen(e.to_string()))
+            } else {
+                Ok(())
+            };
         if let Some(tx) = &self.events {
             let _ = tx.try_send(MediaEvent::ScreenShareStopped);
         }
-        Ok(())
+        audio_result.and(video_result)
     }
     pub async fn disconnect(&mut self) -> Result<()> {
         // Release capture before network operations, including failed teardown.
@@ -834,6 +879,7 @@ impl MediaEngine {
         self.shared_audio_publication = None;
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
+            let _ = task.await;
         }
         if let Some(mic) = self.microphone.take() {
             mic.mute();
