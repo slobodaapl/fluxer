@@ -60,10 +60,35 @@ struct OpenMenu {
     anchor: Point<Pixels>,
     selected: usize,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConfirmationChoice {
+    Cancel,
+    Confirm,
+}
+#[derive(Default)]
+pub(super) struct ConfirmationKeys {
+    armed: Option<ConfirmationChoice>,
+}
+impl ConfirmationKeys {
+    pub fn press(&mut self, choice: ConfirmationChoice, is_held: bool) {
+        if !is_held {
+            self.armed = Some(choice);
+        }
+    }
+    pub fn release(&mut self) -> Option<ConfirmationChoice> {
+        self.armed.take()
+    }
+    pub fn clear(&mut self) {
+        self.armed = None;
+    }
+}
 pub(super) struct MessageActions {
     menu: Option<OpenMenu>,
     deleting: Option<Message>,
     focus: FocusHandle,
+    delete_cancel_focus: FocusHandle,
+    delete_confirm_focus: FocusHandle,
+    delete_key_target: ConfirmationKeys,
     previous_focus: Option<FocusHandle>,
     pub row_focus: BTreeMap<Snowflake, FocusHandle>,
     pub row_order: Vec<Snowflake>,
@@ -75,6 +100,9 @@ impl MessageActions {
             menu: None,
             deleting: None,
             focus: cx.focus_handle(),
+            delete_cancel_focus: cx.focus_handle().tab_stop(true),
+            delete_confirm_focus: cx.focus_handle().tab_stop(true),
+            delete_key_target: ConfirmationKeys::default(),
             previous_focus: None,
             row_focus: BTreeMap::new(),
             row_order: Vec::new(),
@@ -91,6 +119,7 @@ impl MessageActions {
         self.menu = None;
         self.deleting = None;
         self.previous_focus = None;
+        self.delete_key_target.clear();
         self.row_focus.clear();
         self.row_order.clear();
         self.row_bounds.borrow_mut().clear();
@@ -241,6 +270,7 @@ impl Fluxer {
     pub(super) fn dismiss_message_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.message_actions.menu = None;
         self.message_actions.deleting = None;
+        self.message_actions.delete_key_target.clear();
         if let Some(focus) = self.message_actions.previous_focus.take() {
             focus.focus(window);
         }
@@ -318,6 +348,11 @@ impl Fluxer {
                 self.focus.focus(window);
             }
             MessageAction::Pin => {
+                // Let the pin confirmation capture the originating row/control,
+                // rather than this menu's soon-to-be-unmounted focus handle.
+                if let Some(focus) = self.message_actions.previous_focus.take() {
+                    focus.focus(window);
+                }
                 self.request_pin(message.clone(), !message.pinned, shift, window, cx)
             }
             MessageAction::Edit => {
@@ -340,7 +375,8 @@ impl Fluxer {
                     self.dismiss_message_actions(window, cx);
                 } else {
                     self.message_actions.deleting = Some(message);
-                    self.message_actions.focus.focus(window);
+                    self.message_actions.delete_key_target.clear();
+                    self.message_actions.delete_cancel_focus.focus(window);
                 }
             }
         }
@@ -447,15 +483,56 @@ impl Fluxer {
                         .border_1()
                         .border_color(rgb(0x4c4458))
                         .shadow_lg()
-                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                            match event.keystroke.key.as_str() {
-                                "escape" => this.dismiss_message_actions(window, cx),
-                                "enter" => {
-                                    this.confirm_message_delete(window, cx);
+                        .capture_key_down(cx.listener(
+                            move |this, event: &KeyDownEvent, window, cx| {
+                                match event.keystroke.key.as_str() {
+                                    "escape" => this.dismiss_message_actions(window, cx),
+                                    "tab" => {
+                                        this.message_actions.delete_key_target.clear();
+                                        if this
+                                            .message_actions
+                                            .delete_cancel_focus
+                                            .is_focused(window)
+                                        {
+                                            this.message_actions.delete_confirm_focus.focus(window);
+                                        } else {
+                                            this.message_actions.delete_cancel_focus.focus(window);
+                                        }
+                                    }
+                                    "enter" | "space" if !event.keystroke.modifiers.modified() => {
+                                        this.message_actions.delete_key_target.press(
+                                            if this
+                                                .message_actions
+                                                .delete_confirm_focus
+                                                .is_focused(window)
+                                            {
+                                                ConfirmationChoice::Confirm
+                                            } else {
+                                                ConfirmationChoice::Cancel
+                                            },
+                                            event.is_held,
+                                        );
+                                    }
+                                    _ => return,
                                 }
-                                _ => return,
+                                cx.stop_propagation();
+                            },
+                        ))
+                        .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                match this.message_actions.delete_key_target.release() {
+                                    Some(ConfirmationChoice::Cancel) => {
+                                        this.dismiss_message_actions(window, cx)
+                                    }
+                                    Some(ConfirmationChoice::Confirm) => {
+                                        this.confirm_message_delete(window, cx)
+                                    }
+                                    None => {}
+                                }
+                                // The release that opened the dialog is unarmed. It must
+                                // not reach GPUI's focusable-button key-up click handler.
+                                cx.stop_propagation();
                             }
-                            cx.stop_propagation();
                         }))
                         .child(heading("Delete message?"))
                         .child(
@@ -481,13 +558,16 @@ impl Fluxer {
                                 .flex()
                                 .justify_end()
                                 .gap_2()
-                                .child(quiet_button("cancel-message-delete", "Cancel").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.dismiss_message_actions(window, cx)
-                                    }),
-                                ))
+                                .child(
+                                    quiet_button("cancel-message-delete", "Cancel")
+                                        .track_focus(&self.message_actions.delete_cancel_focus)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.dismiss_message_actions(window, cx)
+                                        })),
+                                )
                                 .child(
                                     quiet_button("confirm-message-delete", "Delete")
+                                        .track_focus(&self.message_actions.delete_confirm_focus)
                                         .bg(rgb(0xa43c4b))
                                         .text_color(rgb(0xffffff))
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -675,7 +755,10 @@ pub(super) fn message_time(timestamp: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{adjacent_row_index, deletable_message_type, menu_origin, menu_selection};
+    use super::{
+        ConfirmationChoice, ConfirmationKeys, adjacent_row_index, deletable_message_type,
+        menu_origin, menu_selection,
+    };
     use gpui::{point, px, size};
     #[test]
     fn menu_keyboard_wraps_and_handles_empty() {
@@ -708,5 +791,31 @@ mod tests {
         assert_eq!(adjacent_row_index(2, 4, false), 1);
         assert_eq!(adjacent_row_index(1, 4, true), 2);
         assert_eq!(adjacent_row_index(0, 0, true), 0);
+    }
+    #[test]
+    fn confirmation_requires_its_own_press_and_preserves_cancel_choice() {
+        let mut keys = ConfirmationKeys::default();
+        assert_eq!(
+            keys.release(),
+            None,
+            "opening menu key release must not activate a modal button"
+        );
+        keys.press(ConfirmationChoice::Cancel, false);
+        keys.press(ConfirmationChoice::Confirm, true);
+        assert_eq!(
+            keys.release(),
+            Some(ConfirmationChoice::Cancel),
+            "a held key cannot rearm the destructive choice"
+        );
+        assert_eq!(keys.release(), None);
+        keys.press(ConfirmationChoice::Confirm, false);
+        keys.clear();
+        assert_eq!(
+            keys.release(),
+            None,
+            "changing focus by Tab cancels pending activation"
+        );
+        keys.press(ConfirmationChoice::Confirm, false);
+        assert_eq!(keys.release(), Some(ConfirmationChoice::Confirm));
     }
 }
