@@ -55,6 +55,22 @@ impl Default for ScreenShareOptions {
     }
 }
 impl ScreenShareOptions {
+    /// Match ScreenShareOptions.ts: one full-rate layer, not the SDK's default
+    /// screenshare simulcast fallback whose low layer runs at three FPS.
+    pub fn publish_options(&self) -> livekit::options::TrackPublishOptions {
+        livekit::options::TrackPublishOptions {
+            source: livekit::prelude::TrackSource::Screenshare,
+            video_encoding: Some(livekit::options::VideoEncoding {
+                max_bitrate: self.max_bitrate,
+                max_framerate: self.fps as f64,
+            }),
+            simulcast: false,
+            degradation_preference: Some(
+                livekit::webrtc::rtp_parameters::DegradationPreference::MaintainFramerate,
+            ),
+            ..Default::default()
+        }
+    }
     pub fn validate(&self) -> Result<()> {
         if !(1..=60).contains(&self.fps) {
             return Err(MediaError::InvalidSetting("screen frame rate must be 1–60"));
