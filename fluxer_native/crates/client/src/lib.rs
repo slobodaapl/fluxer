@@ -80,6 +80,10 @@ pub enum Command {
         identity: String,
         settings: ParticipantAudioSettings,
     },
+    SetStreamAudio {
+        identity: String,
+        settings: ParticipantAudioSettings,
+    },
     WatchStream {
         identity: String,
         watch: bool,
@@ -212,13 +216,19 @@ impl Controller {
     }
 
     pub fn try_recv(&self) -> Option<Event> {
-        self.events.try_recv().ok().or_else(|| {
-            self.frames
-                .lock()
-                .ok()?
-                .pop_first()
-                .map(|(_, frame)| Event::Video(frame))
-        })
+        if let Ok(event) = self.events.try_recv() {
+            if let Event::WatchedStreams(watched) = &event
+                && let Ok(mut frames) = self.frames.lock()
+            {
+                frames.retain(|_, frame| watched.contains(&frame.participant));
+            }
+            return Some(event);
+        }
+        self.frames
+            .lock()
+            .ok()?
+            .pop_first()
+            .map(|(_, frame)| Event::Video(frame))
     }
 }
 
@@ -237,6 +247,35 @@ impl Drop for Controller {
 mod controller_tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn lifecycle_event_precedes_pixels_and_stop_evicts_coalesced_frames() {
+        let (commands, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events_tx, events) = mpsc::channel();
+        let frames = Arc::new(Mutex::new(BTreeMap::from([(
+            "sid".into(),
+            VideoFrame {
+                track_id: "sid".into(),
+                participant: "user_1_stream".into(),
+                watch_generation: 1,
+                width: 1,
+                height: 1,
+                rgba: Arc::new(vec![0, 0, 0, 255]),
+            },
+        )])));
+        let controller = Controller {
+            commands,
+            events,
+            frames: frames.clone(),
+            shutdown: None,
+        };
+        events_tx.send(Event::WatchedStreams(Vec::new())).unwrap();
+        assert!(
+            matches!(controller.try_recv(),Some(Event::WatchedStreams(streams)) if streams.is_empty())
+        );
+        assert!(frames.lock().unwrap().is_empty());
+        assert!(controller.try_recv().is_none());
+    }
 
     #[test]
     fn public_controller_demo_roundtrip_delivers_populated_state() {
