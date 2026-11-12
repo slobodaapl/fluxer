@@ -2082,6 +2082,7 @@ dependencies = [
  "fluxer-core",
  "fluxer-media",
  "fluxer-protocol",
+ "fluxer-session",
  "futures-util",
  "serde_json",
  "tokio",
@@ -2144,6 +2145,20 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "fluxer-session"
+version = "0.1.0"
+dependencies = [
+ "fluxer-core",
+ "fluxer-protocol",
+ "oo7",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

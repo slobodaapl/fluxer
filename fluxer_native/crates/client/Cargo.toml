@@ -8,6 +8,7 @@ license.workspace = true
 fluxer-core.workspace = true
 fluxer-protocol.workspace = true
 fluxer-media.workspace = true
+fluxer-session = { path = "../session" }
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 

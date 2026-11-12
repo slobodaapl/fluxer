@@ -664,11 +664,17 @@ async fn actual_browser_handoff_code_and_poll_bootstrap_without_exposing_secrets
     actual_text_workflow(3).await;
 }
 
+#[tokio::test]
+async fn actual_saved_session_cold_restore_identifies_without_user_validation_or_resume() {
+    actual_text_workflow(4).await;
+}
+
 #[allow(clippy::result_large_err)] // tungstenite's required handshake callback return type
 async fn actual_text_workflow(login_mode: u8) {
     let password_login = matches!(login_mode, 1 | 2);
     let ip_authorization = login_mode == 2;
     let browser_login = login_mode == 3;
+    let restoring = login_mode == 4;
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", http.local_addr().unwrap());
@@ -713,6 +719,9 @@ async fn actual_text_workflow(login_mode: u8) {
         assert_eq!(identify["op"], 2);
         assert_eq!(identify["d"]["properties"]["locale"], "de");
         assert_eq!(identify["d"]["flags"], 14);
+        if restoring {
+            assert_eq!(identify["d"]["initial_guild_id"], "10");
+        }
         socket.send(compressed(json!({"op":0,"t":"READY","s":1,"d":{"session_id":"session","user":ws_user,"guilds":[ws_guild]}}),&mut encoder)).await.unwrap();
         loop {
             tokio::select! {
@@ -830,7 +839,7 @@ async fn actual_text_workflow(login_mode: u8) {
                 }
                 ("GET", "/api/v1/users/@me") => {
                     assert!(
-                        !password_login && !browser_login,
+                        login_mode == 0,
                         "fresh desktop login trusts auth response then READY"
                     );
                     (200, user.clone())
@@ -873,13 +882,35 @@ async fn actual_text_workflow(login_mode: u8) {
             let _ = socket.shutdown().await;
         }
     });
-    let (mut worker, events) = worker();
+    let store = Arc::new(fluxer_session::MemorySessionStore::default());
+    if restoring {
+        // A serialized record from a previous process, with no gateway snapshot
+        // or cursor. Refresh uses discovery without forwarding this token.
+        let instance = Instance::discover(&origin).await.unwrap();
+        store
+            .save(SavedSession {
+                instance,
+                token: SessionToken::new("secret").unwrap(),
+                user_id: 1.into(),
+                user: None,
+                locale: "de".into(),
+                selected_guild: Some(10.into()),
+                selected_channel: Some(100.into()),
+                valid: true,
+            })
+            .await
+            .unwrap();
+    }
+    let (worker, events) = worker();
+    let mut worker = worker.with_session_store(store.clone());
     worker
         .command(Command::SetLocale("de".into()))
         .await
         .unwrap();
     worker
-        .command(if browser_login {
+        .command(if restoring {
+            Command::RestoreSession
+        } else if browser_login {
             Command::BrowserLogin {
                 instance: origin,
                 identifier: "alice@example.com".into(),
@@ -898,6 +929,16 @@ async fn actual_text_workflow(login_mode: u8) {
         })
         .await
         .unwrap();
+    if restoring {
+        let saved = timeout(
+            Duration::from_secs(5),
+            restore_result(&mut worker.restore_task),
+        )
+        .await
+        .unwrap();
+        worker.restore_task = None;
+        worker.finish_restore(saved).await.unwrap();
+    }
     if browser_login {
         assert!(worker.pending_browser.is_some());
         assert!(worker.state.current_user.is_none());
@@ -1062,7 +1103,207 @@ async fn actual_text_workflow(login_mode: u8) {
         worker.media.is_none(),
         "text workflow must never initialize physical audio"
     );
+    let saved = store
+        .load()
+        .await
+        .unwrap()
+        .expect("every completed login is persisted");
+    assert_eq!(saved.user_id, Snowflake(1));
+    assert_eq!(saved.token.expose_secret(), "secret");
+    assert_eq!(saved.selected_guild, Some(10.into()));
+    assert_eq!(saved.selected_channel, Some(100.into()));
     worker.reset().await;
+    assert!(
+        store.load().await.unwrap().is_some(),
+        "quitting/resetting must not log out"
+    );
     http_server.abort();
     websocket.abort();
+}
+
+fn stored_worker_session() -> SavedSession {
+    SavedSession {
+        instance: Instance::from_endpoints(
+            "https://saved.example/api",
+            "wss://saved.example/gateway",
+        )
+        .unwrap(),
+        token: SessionToken::new("saved-test-secret").unwrap(),
+        user_id: 1.into(),
+        user: Some(json!({"id":"1","username":"alice"})),
+        locale: "en-US".into(),
+        selected_guild: None,
+        selected_channel: None,
+        valid: true,
+    }
+}
+
+#[tokio::test]
+async fn reset_demo_and_transient_gateway_errors_preserve_saved_credentials() {
+    let store = Arc::new(fluxer_session::MemorySessionStore::default());
+    store.save(stored_worker_session()).await.unwrap();
+    let (worker, _) = worker();
+    let mut worker = worker.with_session_store(store.clone());
+    worker.saved_session = store.load().await.unwrap();
+    worker
+        .gateway(GatewayEvent::Error("temporary connection failure".into()))
+        .await
+        .unwrap();
+    worker.gateway(GatewayEvent::Disconnected).await.unwrap();
+    assert!(store.load().await.unwrap().unwrap().valid);
+    worker.reset().await;
+    assert!(store.load().await.unwrap().unwrap().valid);
+    worker.command(Command::Demo).await.unwrap();
+    worker.command(Command::Logout).await.unwrap();
+    assert!(
+        store.load().await.unwrap().is_some(),
+        "offline demo logout must not erase a real saved account"
+    );
+}
+
+#[tokio::test]
+async fn definitive_gateway_auth_failure_retains_invalid_record_without_auto_login() {
+    let store = Arc::new(fluxer_session::MemorySessionStore::default());
+    store.save(stored_worker_session()).await.unwrap();
+    let (original, _) = worker();
+    let mut original = original.with_session_store(store.clone());
+    original.saved_session = store.load().await.unwrap();
+    original
+        .gateway(GatewayEvent::AuthenticationFailed)
+        .await
+        .unwrap();
+    assert!(original.state.current_user.is_none());
+    assert!(!store.load().await.unwrap().unwrap().valid);
+    let (next, events) = worker();
+    let mut next = next.with_session_store(store.clone());
+    next.command(Command::RestoreSession).await.unwrap();
+    let restored = timeout(
+        Duration::from_secs(2),
+        restore_result(&mut next.restore_task),
+    )
+    .await
+    .unwrap();
+    next.restore_task = None;
+    next.finish_restore(restored).await.unwrap();
+    assert!(
+        next.gateway_task.is_none(),
+        "invalid saved records must not open a gateway connection"
+    );
+    assert!(next.media.is_none());
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::Status(message) if message.contains("expired")))
+    );
+}
+
+#[tokio::test]
+async fn explicit_logout_clears_saved_credentials_even_when_server_notification_fails() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        assert!(request.starts_with("POST /api/v1/auth/logout HTTP/1.1"));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: saved-test-secret")
+        );
+        socket.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+    });
+    let store = Arc::new(fluxer_session::MemorySessionStore::default());
+    let mut saved = stored_worker_session();
+    saved.instance =
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap();
+    store.save(saved.clone()).await.unwrap();
+    let (worker, events) = worker();
+    let mut worker = worker.with_session_store(store.clone());
+    worker.client = Some(
+        Client::new(saved.instance.clone())
+            .unwrap()
+            .with_token(saved.token.clone()),
+    );
+    worker.saved_session = Some(saved);
+    worker.command(Command::Logout).await.unwrap();
+    assert!(store.load().await.unwrap().is_none());
+    assert!(worker.client.is_none());
+    assert!(worker.state.current_user.is_none());
+    assert!(events.try_iter().any(
+        |event| matches!(event,Event::Error(message) if message.contains("Signed out locally"))
+    ));
+    server.await.unwrap();
+}
+
+struct LockedSessionVault;
+impl SessionStore for LockedSessionVault {
+    fn load(&self) -> fluxer_session::StoreFuture<'_, Option<SavedSession>> {
+        Box::pin(async { Err(fluxer_session::StoreError::Unavailable) })
+    }
+    fn save(&self, _: SavedSession) -> fluxer_session::StoreFuture<'_, ()> {
+        Box::pin(async { Err(fluxer_session::StoreError::Unavailable) })
+    }
+    fn clear(&self) -> fluxer_session::StoreFuture<'_, ()> {
+        Box::pin(async { Err(fluxer_session::StoreError::Unavailable) })
+    }
+}
+
+#[tokio::test]
+async fn failed_durable_logout_does_not_falsely_report_account_signed_out() {
+    let (worker, _) = worker();
+    let mut worker = worker.with_session_store(Arc::new(LockedSessionVault));
+    worker.saved_session = Some(stored_worker_session());
+    worker.state.current_user =
+        Some(serde_json::from_value(json!({"id":"1","username":"alice"})).unwrap());
+    assert!(worker.command(Command::Logout).await.is_err());
+    assert!(worker.state.current_user.is_some());
+    assert!(worker.saved_session.is_some());
+}
+
+struct PendingSessionVault;
+impl SessionStore for PendingSessionVault {
+    fn load(&self) -> fluxer_session::StoreFuture<'_, Option<SavedSession>> {
+        Box::pin(pending())
+    }
+    fn save(&self, _: SavedSession) -> fluxer_session::StoreFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+    fn clear(&self) -> fluxer_session::StoreFuture<'_, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test]
+async fn cancelled_restore_cannot_later_replace_a_new_account_or_open_capture() {
+    let (worker, _) = worker();
+    let mut worker = worker.with_session_store(Arc::new(PendingSessionVault));
+    worker.command(Command::RestoreSession).await.unwrap();
+    let pending = worker.restore_task.as_ref().unwrap().abort_handle();
+    worker.command(Command::CancelLogin).await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(pending.is_finished());
+    assert!(worker.restore_task.is_none());
+    assert!(worker.gateway_task.is_none());
+    assert!(worker.media.is_none());
+    assert!(worker.state.current_user.is_none());
+}
+
+#[tokio::test]
+async fn wrong_account_ready_invalidates_saved_session_without_adopting_foreign_state() {
+    let store = Arc::new(fluxer_session::MemorySessionStore::default());
+    store.save(stored_worker_session()).await.unwrap();
+    let (worker, _) = worker();
+    let mut worker = worker.with_session_store(store.clone());
+    worker.saved_session = store.load().await.unwrap();
+    worker.expected_user_id = Some(1.into());
+    assert!(worker.gateway(GatewayEvent::Dispatch {
+        name: "READY".into(),
+        data: json!({"session_id":"wrong-account","user":{"id":"2","username":"other"},"guilds":[]}),
+        sequence: Some(1),
+    }).await.is_err());
+    let retained = store.load().await.unwrap().unwrap();
+    assert_eq!(retained.user_id, Snowflake(1));
+    assert!(!retained.valid);
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.media.is_none());
 }

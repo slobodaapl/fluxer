@@ -15,6 +15,7 @@ use std::{
 };
 
 pub enum Command {
+    RestoreSession,
     Login {
         instance: String,
         identifier: String,
@@ -104,6 +105,12 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    SessionRestoring(bool),
+    SessionRestoreFailed,
+    SessionContext {
+        instance: String,
+        selected_guild: Option<Snowflake>,
+    },
     State(Box<ClientState>),
     MessageSent {
         channel_id: Snowflake,
@@ -161,6 +168,11 @@ pub struct Controller {
 
 impl Controller {
     pub fn spawn() -> Result<Self, String> {
+        Self::spawn_with_store(Arc::new(fluxer_session::OsSessionStore::default()))
+    }
+
+    /// Inject isolated persistence for tests or an alternate OS vault backend.
+    pub fn spawn_with_store(store: Arc<dyn fluxer_session::SessionStore>) -> Result<Self, String> {
         let (commands, rx) = tokio::sync::mpsc::unbounded_channel();
         let (tx, events) = mpsc::channel();
         let frames = Arc::new(Mutex::new(BTreeMap::new()));
@@ -175,7 +187,7 @@ impl Controller {
                 {
                     Ok(runtime) => runtime.block_on(async move {
                         tokio::select! {
-                            _ = worker::Worker::new(tx,worker_frames).run(rx) => {},
+                            _ = worker::Worker::new(tx,worker_frames).with_session_store(store).run(rx) => {},
                             _ = shutdown_rx => {},
                         }
                     }),
@@ -228,7 +240,9 @@ mod controller_tests {
 
     #[test]
     fn public_controller_demo_roundtrip_delivers_populated_state() {
-        let controller = Controller::spawn().expect("spawn client worker");
+        let controller =
+            Controller::spawn_with_store(Arc::new(fluxer_session::MemorySessionStore::default()))
+                .expect("spawn client worker");
         controller.send(Command::Demo).expect("send demo command");
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut saw_demo = false;

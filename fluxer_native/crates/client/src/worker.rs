@@ -6,6 +6,7 @@ use fluxer_protocol::{
     GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome, SessionToken,
     VoiceServerUpdate, VoiceStateUpdate,
 };
+use fluxer_session::{SavedSession, SessionStore};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -117,6 +118,11 @@ impl VoiceTarget {
 }
 
 pub(crate) struct Worker {
+    session_store: Option<Arc<dyn SessionStore>>,
+    saved_session: Option<SavedSession>,
+    restore_task: Option<JoinHandle<Result<Option<SavedSession>>>>,
+    restore_channel: Option<Snowflake>,
+    restoring_gateway: bool,
     state: ClientState,
     client: Option<Client>,
     pending_mfa: Option<Client>,
@@ -154,6 +160,11 @@ impl Worker {
         frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     ) -> Self {
         Self {
+            session_store: None,
+            saved_session: None,
+            restore_task: None,
+            restore_channel: None,
+            restoring_gateway: false,
             state: ClientState::default(),
             client: None,
             pending_mfa: None,
@@ -184,6 +195,112 @@ impl Worker {
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
         }
+    }
+    pub(crate) fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(store);
+        self
+    }
+
+    fn begin_restore(&mut self) {
+        if self.demo || self.client.is_some() || self.restore_task.is_some() {
+            return;
+        }
+        let Some(store) = self.session_store.clone() else {
+            return;
+        };
+        self.emit(Event::SessionRestoring(true));
+        self.emit(Event::Status("Restoring your saved session…".into()));
+        // Keep vault and discovery I/O cancellable by a new login/demo/cancel.
+        // Neither operation sends the stored token to any endpoint.
+        self.restore_task = Some(tokio::spawn(async move {
+            let saved = tokio::time::timeout(Duration::from_secs(15), store.load())
+                .await
+                .map_err(|_| "Session restore timed out waiting for the keyring")?
+                .map_err(|_| "Could not read your saved session; unlock the keyring and retry")?;
+            let Some(mut saved) = saved else {
+                return Ok(None);
+            };
+            if saved.valid {
+                saved.instance = saved.instance.refresh_saved().await.map_err(|_| {
+                    "Could not safely restore this instance; your saved session has been retained".to_owned()
+                })?;
+            }
+            Ok(Some(saved))
+        }));
+    }
+
+    async fn finish_restore(&mut self, result: Result<Option<SavedSession>>) -> Result<()> {
+        let Some(saved) = result? else {
+            self.emit(Event::Status("Sign in to your Fluxer instance".into()));
+            return Ok(());
+        };
+        self.emit(Event::SessionContext {
+            instance: saved.instance.api.to_string(),
+            selected_guild: saved.selected_guild,
+        });
+        if !saved.valid {
+            self.emit(Event::Status(
+                "Your saved session expired; sign in again".into(),
+            ));
+            return Ok(());
+        }
+        self.locale = saved.locale.clone();
+        self.state.settings.locale = self.locale.clone();
+        self.selected_guild = saved.selected_guild;
+        self.restore_channel = saved.selected_channel;
+        self.restoring_gateway = true;
+        let client = Client::new(saved.instance.clone())
+            .map_err(error)?
+            .with_auth_locale(self.locale.clone())
+            .map_err(error)?
+            .with_token(saved.token.clone());
+        // AuthSessionRestorer's cold path does not GET /users/@me or RESUME
+        // without cached state. Bind the stored identity and request full READY.
+        self.authenticate(
+            client,
+            saved.token,
+            Some(saved.user_id.to_string()),
+            saved.user,
+        )
+        .await
+    }
+
+    async fn persist_active_session(&self) -> Result<()> {
+        let (Some(store), Some(session)) = (&self.session_store, &self.saved_session) else {
+            return Ok(());
+        };
+        tokio::time::timeout(Duration::from_secs(15), store.save(session.clone()))
+            .await
+            .map_err(|_| "Your session could not be saved: the keyring timed out")?
+            .map_err(|_| "Your session could not be saved. Unlock your keyring; this sign-in will otherwise be lost on restart".to_owned())
+    }
+
+    async fn persist_selection(&mut self) {
+        if self.demo {
+            return;
+        }
+        if let Some(session) = &mut self.saved_session {
+            session.locale = self.locale.clone();
+            session.selected_guild = self.selected_guild;
+            session.selected_channel = self.state.selected_channel.or(self.restore_channel);
+            if let Some(user) = &self.state.current_user {
+                session.user = serde_json::to_value(user).ok();
+            }
+        }
+        if let Err(message) = self.persist_active_session().await {
+            self.emit(Event::Error(message));
+        }
+    }
+
+    async fn invalidate_saved_session(&mut self) {
+        if let Some(session) = &mut self.saved_session {
+            session.valid = false;
+        }
+        if let Err(message) = self.persist_active_session().await {
+            self.emit(Event::Error(message));
+        }
+        self.reset().await;
+        self.snapshot();
     }
     fn emit(&self, event: Event) {
         let _ = self.events.send(event);
@@ -225,6 +342,7 @@ impl Worker {
                 ),
                 BeginBrowserPoll,
                 BrowserPoll(Box<BrowserPollResult>),
+                Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
                 command = commands.recv() => Incoming::Command(command),
@@ -235,14 +353,32 @@ impl Worker {
                 result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
                 _ = voice_timeout(self.pending_browser.as_ref().and_then(|pending|pending.next_poll))=>Incoming::BeginBrowserPoll,
                 result=browser_poll_result(&mut self.browser_poll_task)=>Incoming::BrowserPoll(Box::new(result)),
+                result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
                 Incoming::Command(Some(command)) => self.command(command).await,
+                Incoming::Restore(result) => {
+                    self.restore_task = None;
+                    let restored = self.finish_restore(*result).await;
+                    if restored.is_err() {
+                        self.restoring_gateway = false;
+                        self.emit(Event::SessionRestoreFailed);
+                    }
+                    if !self.restoring_gateway {
+                        self.emit(Event::SessionRestoring(false));
+                    }
+                    restored
+                }
                 Incoming::Gateway(Some(event)) => self.gateway(event).await,
                 Incoming::Gateway(None) => {
                     self.gateway_events = None;
                     self.gateway_ready = false;
+                    if self.restoring_gateway {
+                        self.restoring_gateway = false;
+                        self.emit(Event::SessionRestoring(false));
+                        self.emit(Event::SessionRestoreFailed);
+                    }
                     self.leave_voice(false).await
                 }
                 Incoming::Media(Some(event)) => self.media_event(event).await,
@@ -295,6 +431,13 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        if let Some(task) = self.restore_task.take() {
+            task.abort();
+        }
+        self.emit(Event::SessionRestoring(false));
+        self.saved_session = None;
+        self.restore_channel = None;
+        self.restoring_gateway = false;
         let _ = self.leave_voice(true).await;
         if let Some(tx) = self.gateway_commands.take() {
             let _ = tx.try_send(GatewayCommand::Close);
@@ -327,6 +470,7 @@ impl Worker {
 
     async fn command(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::RestoreSession => self.begin_restore(),
             Command::Login {
                 instance,
                 identifier,
@@ -494,12 +638,29 @@ impl Worker {
                 self.emit(Event::Status("Sign in to your Fluxer instance".into()));
             }
             Command::Logout => {
+                // AuthSessionLifecycle.logout clears durable local credentials
+                // before best-effort server notification. A failed clear must
+                // not falsely report logout and restore the account next boot.
+                if !self.demo
+                    && let Some(store) = &self.session_store
+                {
+                    tokio::time::timeout(Duration::from_secs(15), store.clear())
+                            .await
+                            .map_err(|_| "Could not clear the saved session: keyring timed out")?
+                            .map_err(|_| "Could not clear the saved session; unlock your keyring and retry signing out")?;
+                }
                 let client = self.client.clone();
                 self.reset().await;
                 self.emit(Event::Demo(false));
                 self.snapshot();
                 if let Some(client) = client {
-                    client.logout().await.map_err(error)?;
+                    let result =
+                        tokio::time::timeout(Duration::from_secs(5), client.logout()).await;
+                    if !matches!(result, Ok(Ok(()))) {
+                        self.emit(Event::Error(
+                            "Signed out locally; the server could not be notified".into(),
+                        ));
+                    }
                 }
                 self.emit(Event::Status("Signed out".into()));
             }
@@ -530,12 +691,14 @@ impl Worker {
                 }
                 self.locale = locale.clone();
                 self.state.settings.locale = locale;
+                self.persist_selection().await;
                 self.snapshot();
             }
             Command::SelectGuild { guild_id } => {
                 self.selected_guild = Some(guild_id);
                 if !self.demo {
                     self.sync_selected_guild().await?;
+                    self.persist_selection().await;
                 }
                 self.snapshot();
             }
@@ -1003,7 +1166,31 @@ impl Worker {
             self.state.current_user = Some(user.clone());
             self.state.users.insert(user.id, user);
         }
+        let identity = self
+            .expected_user_id
+            .ok_or("Authentication omitted the account identity")?;
+        self.saved_session = Some(SavedSession {
+            instance: client.instance().clone(),
+            token: token.clone(),
+            user_id: identity,
+            user: self
+                .state
+                .current_user
+                .as_ref()
+                .and_then(|user| serde_json::to_value(user).ok()),
+            locale: self.locale.clone(),
+            selected_guild: self.selected_guild,
+            selected_channel: self.state.selected_channel.or(self.restore_channel),
+            valid: true,
+        });
+        if let Err(message) = self.persist_active_session().await {
+            self.emit(Event::Error(message));
+        }
         self.client = Some(client.clone());
+        self.emit(Event::SessionContext {
+            instance: client.instance().api.to_string(),
+            selected_guild: self.selected_guild,
+        });
         self.snapshot();
         let gateway = Gateway::new(client.instance().gateway.clone(), token)
             // PooledGatewayConnection.ts:474 uses DEFAULT_API_VERSION (1).
@@ -1057,6 +1244,8 @@ impl Worker {
             }
         }
         self.state.select_channel(channel);
+        self.restore_channel = None;
+        self.persist_selection().await;
         self.snapshot();
         Ok(())
     }
@@ -1154,9 +1343,23 @@ impl Worker {
                 self.gateway_ready = true;
                 self.emit(Event::Status("Connected".into()));
                 self.sync_selected_guild().await?;
+                if let Some(channel) = self.restore_channel.take() {
+                    self.select_channel(channel).await?;
+                }
             }
             GatewayEvent::Error(message) => self.emit(Event::Error(message)),
+            GatewayEvent::AuthenticationFailed => {
+                self.invalidate_saved_session().await;
+                self.emit(Event::Status(
+                    "Your saved session expired; sign in again".into(),
+                ));
+            }
             GatewayEvent::Disconnected => {
+                if self.restoring_gateway {
+                    self.restoring_gateway = false;
+                    self.emit(Event::SessionRestoring(false));
+                    self.emit(Event::SessionRestoreFailed);
+                }
                 self.gateway_ready = false;
                 self.synced_guilds.clear();
                 self.leave_voice(false).await?;
@@ -1175,8 +1378,7 @@ impl Worker {
                             != Some(expected.to_string().as_str())
                     })
                 {
-                    self.reset().await;
-                    self.snapshot();
+                    self.invalidate_saved_session().await;
                     return Err("Gateway READY user differs from the authenticated account".into());
                 }
                 if sequence
@@ -1218,6 +1420,27 @@ impl Worker {
                             // listed guild. Subscribe to that same selection.
                             self.selected_guild = self.state.guilds.keys().next().copied();
                         }
+                        self.emit(Event::SessionContext {
+                            instance: self
+                                .client
+                                .as_ref()
+                                .map(|client| client.instance().api.to_string())
+                                .unwrap_or_default(),
+                            selected_guild: self.selected_guild,
+                        });
+                        if let Some(channel) = self.restore_channel.take()
+                            && self
+                                .state
+                                .channels
+                                .get(&channel)
+                                .is_some_and(|channel| channel.kind.is_message_channel())
+                        {
+                            self.state.select_channel(channel);
+                            // Load history through the normal selected-channel
+                            // path once Identify/READY has completed.
+                            self.restore_channel = Some(channel);
+                        }
+                        self.persist_selection().await;
                     }
                     if name == "GUILD_SYNC"
                         && let (Some(guild), Some(session)) = (
@@ -1294,6 +1517,10 @@ impl Worker {
                         }
                     }
                     self.snapshot();
+                    if name == "READY" && self.restoring_gateway {
+                        self.restoring_gateway = false;
+                        self.emit(Event::SessionRestoring(false));
+                    }
                 }
                 if let Some(sequence) = sequence {
                     self.last_sequence = Some(sequence);
@@ -1523,6 +1750,16 @@ impl Worker {
 async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> Option<T> {
     match receiver {
         Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+async fn restore_result(
+    task: &mut Option<JoinHandle<Result<Option<SavedSession>>>>,
+) -> Result<Option<SavedSession>> {
+    match task {
+        Some(task) => task
+            .await
+            .map_err(|_| "Session restore task stopped".to_owned())?,
         None => pending().await,
     }
 }
