@@ -575,6 +575,23 @@ impl MediaEngine {
                         }
                         Some(MediaEvent::Disconnected)
                     }
+                    // VoiceRoomEventBinder.ts reports requested screen-track
+                    // failures instead of leaving a watch intent silently idle.
+                    RoomEvent::TrackSubscriptionFailed {
+                        participant,
+                        error,
+                        track_sid,
+                    } => {
+                        let desired = subscriptions
+                            .lock()
+                            .is_ok_and(|registry| registry.desired_track(&track_sid.to_string()));
+                        desired.then(|| {
+                            MediaEvent::Error(format!(
+                                "Unable to subscribe to media from {}: {error}",
+                                participant.identity()
+                            ))
+                        })
+                    }
                     RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Audio(track),
                         participant,
