@@ -4,10 +4,12 @@ mod audio_view;
 mod call_view;
 mod chat_helpers;
 mod chat_view;
+mod controls;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
 mod input;
+mod message_actions;
 mod rich_message;
 mod search_browser;
 mod stream_view;
@@ -28,6 +30,7 @@ use fluxer_media::{
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
+use message_actions::MessageActions;
 use search_browser::{BrowserTab, SearchUi};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -237,6 +240,7 @@ struct Fluxer {
     pane: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
+    message_actions: MessageActions,
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
@@ -266,6 +270,7 @@ struct Fluxer {
     error: Option<String>,
     status: String,
     voice_status: String,
+    voice_connecting: bool,
     input_picker: Entity<Dropdown>,
     output_picker: Entity<Dropdown>,
     mode_picker: Entity<Dropdown>,
@@ -330,6 +335,7 @@ impl Fluxer {
                 input.attachment_paste = true;
                 input
             }),
+            message_actions: MessageActions::new(cx),
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
@@ -371,6 +377,7 @@ impl Fluxer {
                 "Sign in to your Fluxer instance".into()
             },
             voice_status: "Disconnected".into(),
+            voice_connecting: false,
             input_picker: picker("Input device", &[], Some("input:default"), window, cx),
             output_picker: picker("Output device", &[], Some("output:default"), window, cx),
             mode_picker: picker(
@@ -666,6 +673,7 @@ impl Fluxer {
                             self.replies.clear();
                             self.message_text.clear();
                             self.clear_browser();
+                            self.message_actions.reset();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;
@@ -878,6 +886,10 @@ impl Fluxer {
                     self.sources = sources;
                 }
                 Event::VoiceStatus(status) => {
+                    self.voice_connecting = matches!(
+                        status,
+                        VoiceStatus::Connecting { .. } | VoiceStatus::Reconnecting
+                    );
                     self.voice_status = match status {
                         VoiceStatus::Disconnected => {
                             self.clear_viewer(cx);
@@ -1130,6 +1142,9 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.message_actions.is_open() {
+            return;
+        }
         if self.search_ui.confirm.is_some() {
             self.confirm_pin(cx);
             return;
@@ -1466,7 +1481,7 @@ impl Fluxer {
             .py_3()
             .gap_3()
             .child(
-                button("home", "F")
+                controls::icon_button("home", controls::Icon::Home, "Direct messages")
                     .size(px(44.))
                     .bg(rgb(ACCENT))
                     .text_size(px(24.))
@@ -1480,6 +1495,14 @@ impl Fluxer {
                 let label = guild.name.chars().take(2).collect::<String>();
                 button(("guild", id.0), label)
                     .size(px(44.))
+                    .p_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .focusable()
+                    .border_1()
+                    .border_color(transparent_black())
+                    .focus(|style| style.border_color(rgb(ACCENT)))
                     .when(self.selected_guild == Some(id), |v| v.bg(rgb(0x6650bd)))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_guild = Some(id);
@@ -1487,13 +1510,22 @@ impl Fluxer {
                     }))
             }))
             .child(div().flex_1())
-            .child(
-                button("settings", "⚙").on_click(cx.listener(|this, _, _, cx| {
-                    this.pane = Pane::Settings;
-                    this.command(Command::RefreshDevices, cx);
-                })),
-            )
             .into_any_element()
+    }
+
+    fn logout(&mut self, cx: &mut Context<Self>) {
+        self.command(Command::Logout, cx);
+        self.selected_guild = None;
+        self.session_context_loaded = false;
+        self.session_restore_failed = false;
+        self.session_restoring = false;
+        self.mfa_ticket = None;
+        self.pending_messages.clear();
+        self.pending_replies.clear();
+        self.clear_attachments(cx);
+        self.message_actions.reset();
+        self.editing = None;
+        self.clear_viewer(cx);
     }
 
     fn channels(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1657,38 +1689,36 @@ impl Fluxer {
             .child(self.voice_bar(cx))
             .child(
                 div()
-                    .p_3()
+                    .h(px(52.))
+                    .px_3()
                     .bg(rgb(0x201e2a))
                     .flex()
-                    .flex_col()
+                    .items_center()
                     .gap_2()
-                    .child(
-                        self.state
-                            .current_user
-                            .as_ref()
-                            .map(|u| u.display_name().to_string())
-                            .unwrap_or_default(),
-                    )
-                    .child(muted(if self.demo {
-                        "Offline demo · no calls"
-                    } else {
-                        "Connected account"
-                    }))
-                    .child(
-                        button("logout", "Sign out").on_click(cx.listener(|this, _, _, cx| {
-                            this.command(Command::Logout, cx);
-                            this.selected_guild = None;
-                            this.session_context_loaded = false;
-                            this.session_restore_failed = false;
-                            this.session_restoring = false;
-                            this.mfa_ticket = None;
-                            this.pending_messages.clear();
-                            this.pending_replies.clear();
-                            this.clear_attachments(cx);
-                            this.editing = None;
-                            this.clear_viewer(cx);
-                        })),
-                    ),
+                    .when_some(self.state.current_user.as_ref(), |view, user| {
+                        view.child(voice_avatar(user.display_name(), user.id, false, 28.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_ellipsis()
+                                            .child(user.display_name().to_string()),
+                                    )
+                                    .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(
+                                        if self.demo {
+                                            "Offline demo"
+                                        } else {
+                                            "Connected"
+                                        },
+                                    )),
+                            )
+                    }),
             )
             .into_any_element()
     }
@@ -1931,7 +1961,7 @@ impl Render for Fluxer {
         } else {
             let body = match self.pane {
                 Pane::Chat => {
-                    let chat = self.chat(cx);
+                    let chat = self.chat(window, cx);
                     div()
                         .flex_1()
                         .min_w_0()
@@ -1983,6 +2013,7 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
                 if this.search_ui.confirm.is_some() && (event.keystroke.key=="enter" || event.keystroke.key=="escape") {
                     if event.keystroke.key=="enter" {this.confirm_pin(cx);}else{this.search_ui.confirm=None;this.composer.focus_handle(cx).focus(window);cx.notify();}
                     cx.stop_propagation();return;
@@ -2017,8 +2048,9 @@ impl Render for Fluxer {
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
-            .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
+            .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
+            .child(self.message_action_overlay(window,cx))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
         self.schedule_history_center(window, cx);
@@ -2038,6 +2070,7 @@ fn main() {
                 || v == "--demo-search"
         });
     Application::new()
+        .with_assets(controls::Assets)
         .with_http_client(rich_message::http_client())
         .run(move |cx: &mut App| {
             input::init(cx);
