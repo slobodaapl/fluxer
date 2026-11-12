@@ -298,6 +298,30 @@ fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 mod tests {
     use super::*;
     #[test]
+    fn production_screen_policy_has_one_selected_rate_layer_at_real_display_sizes() {
+        let settings = ScreenShareOptions {
+            fps: 30,
+            max_width: 1920,
+            max_height: 1080,
+            ..Default::default()
+        };
+        let options = settings.publish_options();
+        assert!(!options.simulcast);
+        assert_eq!(
+            options.degradation_preference,
+            Some(livekit::webrtc::rtp_parameters::DegradationPreference::MaintainFramerate)
+        );
+        for (width, height) in [(1280, 720), (1920, 1080)] {
+            let encodings = livekit::options::compute_video_encodings(width, height, &options);
+            assert_eq!(
+                encodings.len(),
+                1,
+                "never negotiate the SDK's3fps low screenshare layer"
+            );
+            assert_eq!(encodings[0].max_framerate, Some(30.0));
+        }
+    }
+    #[test]
     fn source_policy_uses_inert_system_picker_on_wayland_and_macos_only() {
         assert!(system_picker_only("linux", Some("wayland"), None));
         assert!(system_picker_only("linux", None, Some("wayland-1")));
