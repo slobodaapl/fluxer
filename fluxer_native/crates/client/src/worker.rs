@@ -1,6 +1,6 @@
 use crate::{Command, Event, VoiceStatus};
 use fluxer_core::{ChannelType, ClientState, Emoji, Message, Permissions, Snowflake, User};
-use fluxer_media::{MediaEngine, MediaEvent, VideoFrame};
+use fluxer_media::{MediaEngine, MediaEvent, MediaEvents, VideoFrame};
 use fluxer_protocol::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus, Gateway,
     GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome, SessionToken,
@@ -138,7 +138,7 @@ pub(crate) struct Worker {
     gateway_ready: bool,
     last_sequence: Option<u64>,
     media: Option<MediaEngine>,
-    media_events: Option<async_mpsc::Receiver<MediaEvent>>,
+    media_events: Option<MediaEvents>,
     voice_target: Option<VoiceTarget>,
     pending_voice_server: Option<VoiceServerUpdate>,
     voice_credentials: Option<VoiceServerUpdate>,
@@ -351,7 +351,7 @@ impl Worker {
             let incoming = tokio::select! {
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
-                event = receive_optional(&mut self.media_events) => Incoming::Media(event),
+                event = receive_media(&mut self.media_events) => Incoming::Media(event),
                 _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
                 _ = voice_timeout(self.pending_ip.as_ref().and_then(|pending|pending.next_poll)) => Incoming::BeginIpPoll,
                 result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
@@ -934,7 +934,8 @@ impl Worker {
                 if self.voice_target.is_some() {
                     return Err("Leave voice before testing the microphone".into());
                 }
-                self.media_events = Some(self.media()?.start_microphone_test().map_err(error)?);
+                self.media_events =
+                    Some(self.media()?.start_microphone_test().map_err(error)?.into());
             }
             Command::StopMicrophoneTest => {
                 if self.voice_target.is_none() {
@@ -1872,6 +1873,12 @@ impl Worker {
 }
 
 async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> Option<T> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+async fn receive_media(receiver: &mut Option<MediaEvents>) -> Option<MediaEvent> {
     match receiver {
         Some(receiver) => receiver.recv().await,
         None => pending().await,
