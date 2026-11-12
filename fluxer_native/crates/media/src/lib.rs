@@ -10,18 +10,20 @@ mod playback;
 mod publish;
 mod screen;
 mod subscriptions;
+mod video_events;
+pub use video_events::MediaEvents;
 
 pub use audio::{AudioMixSettings, InputMode, ParticipantAudioSettings};
 pub use publish::resolve_voice_channel_bitrate;
 
 use futures_util::StreamExt;
+use livekit::prelude::*;
 use livekit::webrtc::{
     audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
     peer_connection_factory::native::PeerConnectionFactoryExt,
     video_frame::VideoFormatType,
     video_stream::native::NativeVideoStream,
 };
-use livekit::{options::TrackPublishOptions, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -81,7 +83,7 @@ impl Default for AudioSettings {
     }
 }
 
-/// RGBA pixels. The receiving UI should retain only the latest frame per track.
+/// BGRA pixels, directly consumable by GPUI without per-pixel swizzling. The receiving UI should retain only the latest frame per track.
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
     pub track_id: String,
@@ -89,7 +91,7 @@ pub struct VideoFrame {
     pub watch_generation: u64,
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<Vec<u8>>,
+    pub bgra: Arc<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +171,7 @@ pub struct MediaEngine {
     screen: Option<screen::ScreenSession>,
     screen_publication: Option<TrackSid>,
     video_tasks: Arc<Mutex<HashMap<String, VideoRenderer>>>,
+    video_frames: Arc<video_events::VideoMailbox>,
     stop: Arc<AtomicBool>,
     shared_audio_task: Option<JoinHandle<()>>,
     shared_audio_publication: Option<TrackSid>,
@@ -186,6 +189,8 @@ impl MediaEngine {
         pipewire_runtime::ensure()?;
         let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
         let output = playback::PlaybackOutput::new(mixer.clone());
+        let subscriptions = Arc::new(Mutex::new(subscriptions::Registry::default()));
+        let video_frames = Arc::new(video_events::VideoMailbox::new(subscriptions.clone()));
         Ok(Self {
             input_device: Mutex::new(None),
             room: None,
@@ -202,6 +207,7 @@ impl MediaEngine {
             screen: None,
             screen_publication: None,
             video_tasks: Arc::new(Mutex::new(HashMap::new())),
+            video_frames,
             stop: Arc::new(AtomicBool::new(false)),
             shared_audio_task: None,
             shared_audio_publication: None,
@@ -211,7 +217,7 @@ impl MediaEngine {
             input_controls: Arc::new(Mutex::new(microphone::InputRuntime::default())),
             input_capture: None,
             audio_tasks: Arc::new(Mutex::new(HashMap::new())),
-            subscriptions: Arc::new(Mutex::new(subscriptions::Registry::default())),
+            subscriptions,
         })
     }
 
@@ -275,11 +281,7 @@ impl MediaEngine {
         Ok(())
     }
 
-    pub async fn connect(
-        &mut self,
-        endpoint: &str,
-        token: &str,
-    ) -> Result<mpsc::Receiver<MediaEvent>> {
+    pub async fn connect(&mut self, endpoint: &str, token: &str) -> Result<MediaEvents> {
         self.connect_encrypted(endpoint, token, None).await
     }
 
@@ -290,8 +292,9 @@ impl MediaEngine {
         endpoint: &str,
         token: &str,
         shared_key: Option<&str>,
-    ) -> Result<mpsc::Receiver<MediaEvent>> {
+    ) -> Result<MediaEvents> {
         self.disconnect().await?;
+        self.video_frames = Arc::new(video_events::VideoMailbox::new(self.subscriptions.clone()));
         if !(endpoint.starts_with("wss://") || endpoint.starts_with("ws://")) || token.is_empty() {
             return Err(MediaError::InvalidSetting(
                 "missing voice endpoint or token",
@@ -381,6 +384,7 @@ impl MediaEngine {
         let state = self.state.clone();
         let stop = self.stop.clone();
         let video_tasks = self.video_tasks.clone();
+        let video_frames = self.video_frames.clone();
         let capture_control = self
             .input_capture
             .as_ref()
@@ -415,6 +419,7 @@ impl MediaEngine {
                                     &mixer,
                                     &audio_tasks,
                                     &video_tasks,
+                                    &video_frames,
                                 );
                                 for (identity, available) in plan.availability {
                                     if tx
@@ -448,7 +453,13 @@ impl MediaEngine {
                             .ok()
                             .map(|mut registry| registry.observe_participant(p.clone()));
                         if let Some(plan) = plan {
-                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            apply_subscription_actions(
+                                &plan,
+                                &mixer,
+                                &audio_tasks,
+                                &video_tasks,
+                                &video_frames,
+                            );
                             for (identity, available) in plan.availability {
                                 if tx
                                     .send(MediaEvent::ScreenStreamAvailable {
@@ -472,7 +483,13 @@ impl MediaEngine {
                             registry.remove_participant(&p.identity().to_string())
                         });
                         if let Some(plan) = plan {
-                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            apply_subscription_actions(
+                                &plan,
+                                &mixer,
+                                &audio_tasks,
+                                &video_tasks,
+                                &video_frames,
+                            );
                             for (identity, available) in plan.availability {
                                 if tx
                                     .send(MediaEvent::ScreenStreamAvailable {
@@ -498,7 +515,13 @@ impl MediaEngine {
                             registry.observe_publication(participant, publication)
                         });
                         if let Some(plan) = plan {
-                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            apply_subscription_actions(
+                                &plan,
+                                &mixer,
+                                &audio_tasks,
+                                &video_tasks,
+                                &video_frames,
+                            );
                             for (identity, available) in plan.availability {
                                 if tx
                                     .send(MediaEvent::ScreenStreamAvailable {
@@ -519,7 +542,13 @@ impl MediaEngine {
                             registry.remove_publication(&publication.sid().to_string())
                         });
                         if let Some(plan) = plan {
-                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            apply_subscription_actions(
+                                &plan,
+                                &mixer,
+                                &audio_tasks,
+                                &video_tasks,
+                                &video_frames,
+                            );
                             for (identity, available) in plan.availability {
                                 if tx
                                     .send(MediaEvent::ScreenStreamAvailable {
@@ -545,7 +574,13 @@ impl MediaEngine {
                             .ok()
                             .map(|mut registry| registry.reconcile());
                         if let Some(plan) = plan {
-                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            apply_subscription_actions(
+                                &plan,
+                                &mixer,
+                                &audio_tasks,
+                                &video_tasks,
+                                &video_frames,
+                            );
                             for (identity, available) in plan.availability {
                                 if tx
                                     .send(MediaEvent::ScreenStreamAvailable {
@@ -563,6 +598,7 @@ impl MediaEngine {
                     }
                     RoomEvent::Disconnected { .. } => {
                         stop.store(true, Ordering::Release);
+                        video_frames.clear();
                         if let Some(mic) = &microphone {
                             mic.mute();
                             mic.disable();
@@ -736,10 +772,13 @@ impl MediaEngine {
                             continue;
                         }
                         publication.set_enabled(desired.enabled);
+                        if publication.simulcasted() {
+                            publication.set_video_quality(livekit::track::VideoQuality::High);
+                        }
                         let id = track.sid().to_string();
                         let identity = participant.identity().to_string();
                         let mut stream = NativeVideoStream::new(track.rtc_track());
-                        let sender = tx.clone();
+                        let frame_mailbox = video_frames.clone();
                         let frame_id = id.clone();
                         let track_subscriptions = subscriptions.clone();
                         let renderer_identity = identity.clone();
@@ -755,24 +794,24 @@ impl MediaEngine {
                                 if w == 0 || h == 0 || w > 8192 || h > 8192 {
                                     continue;
                                 }
-                                let mut rgba = vec![0; w as usize * h as usize * 4];
+                                let mut bgra = vec![0; w as usize * h as usize * 4];
                                 frame.buffer.to_argb(
-                                    VideoFormatType::ABGR,
-                                    &mut rgba,
+                                    VideoFormatType::ARGB,
+                                    &mut bgra,
                                     w * 4,
                                     w as i32,
                                     h as i32,
                                 );
                                 // Bounded channel: drop frames when UI is slow rather
                                 // than accumulating unbounded video latency/memory.
-                                let _ = sender.try_send(MediaEvent::Video(VideoFrame {
+                                frame_mailbox.publish(VideoFrame {
                                     track_id: frame_id.clone(),
                                     participant: identity.clone(),
                                     watch_generation,
                                     width: w,
                                     height: h,
-                                    rgba: Arc::new(rgba),
-                                }));
+                                    bgra: Arc::new(bgra),
+                                });
                             }
                             stream.close();
                         });
@@ -794,7 +833,12 @@ impl MediaEngine {
                         track: RemoteTrack::Video(track),
                         ..
                     } => {
-                        end_video_renderer(&track.sid().to_string(), &video_tasks, &mixer);
+                        end_video_renderer(
+                            &track.sid().to_string(),
+                            &video_tasks,
+                            &mixer,
+                            &video_frames,
+                        );
                         None
                     }
                     _ => None,
@@ -808,6 +852,7 @@ impl MediaEngine {
             // Losing the consumer or the room event stream also stops capture,
             // even if the controller cannot deliver an explicit disconnect.
             stop.store(true, Ordering::Release);
+            video_frames.clear();
             if let Some(mic) = &microphone {
                 mic.mute();
                 mic.disable();
@@ -829,7 +874,7 @@ impl MediaEngine {
                 }
             }
         }));
-        Ok(rx)
+        Ok(MediaEvents::new(rx, self.video_frames.clone()))
     }
 
     pub fn set_muted(&mut self, muted: bool) -> Result<()> {
@@ -846,7 +891,13 @@ impl MediaEngine {
                 .map_err(|_| MediaError::Audio("Subscription registry unavailable".into()))?;
             registry.replace_watched(identities)
         };
-        apply_subscription_actions(&plan, &self.mixer, &self.audio_tasks, &self.video_tasks);
+        apply_subscription_actions(
+            &plan,
+            &self.mixer,
+            &self.audio_tasks,
+            &self.video_tasks,
+            &self.video_frames,
+        );
         Ok(())
     }
     /// Frames from an earlier watch of the same publication carry an older
@@ -867,7 +918,13 @@ impl MediaEngine {
             registry.policy.deafened = deafened;
             registry.plan()
         };
-        apply_subscription_actions(&plan, &self.mixer, &self.audio_tasks, &self.video_tasks);
+        apply_subscription_actions(
+            &plan,
+            &self.mixer,
+            &self.audio_tasks,
+            &self.video_tasks,
+            &self.video_frames,
+        );
         if let Ok(mut state) = self.state.lock() {
             state.deafened = deafened;
         }
@@ -1145,17 +1202,7 @@ impl MediaEngine {
         );
         let publication = room
             .local_participant()
-            .publish_track(
-                LocalTrack::Video(track),
-                TrackPublishOptions {
-                    source: TrackSource::Screenshare,
-                    video_encoding: Some(livekit::options::VideoEncoding {
-                        max_bitrate: options.max_bitrate,
-                        max_framerate: options.fps as f64,
-                    }),
-                    ..Default::default()
-                },
-            )
+            .publish_track(LocalTrack::Video(track), options.publish_options())
             .await
             .map_err(|e| MediaError::Screen(e.to_string()))?;
         self.screen_publication = Some(publication.sid());
@@ -1198,6 +1245,7 @@ impl MediaEngine {
             registry.clear_publications();
         }
         self.stop.store(true, Ordering::Release);
+        self.video_frames.clear();
         if let Ok(mut controls) = self.input_controls.lock() {
             controls.blocked = true;
         }
@@ -1265,6 +1313,7 @@ fn apply_subscription_actions(
     mixer: &Arc<Mutex<audio::PlaybackMixer>>,
     audio_tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     video_tasks: &Arc<Mutex<HashMap<String, VideoRenderer>>>,
+    video_frames: &Arc<video_events::VideoMailbox>,
 ) {
     // Physical local playback/render demand ends before SDK callbacks can
     // synchronously tear down decryptors or wait on native RTC threads.
@@ -1282,7 +1331,7 @@ fn apply_subscription_actions(
         {
             task.abort();
         }
-        end_video_renderer(&sid, video_tasks, mixer);
+        end_video_renderer(&sid, video_tasks, mixer, video_frames);
     }
     for action in &plan.actions {
         let publication = &action.publication;
@@ -1308,7 +1357,9 @@ fn end_video_renderer(
     sid: &str,
     tasks: &Arc<Mutex<HashMap<String, VideoRenderer>>>,
     mixer: &Arc<Mutex<audio::PlaybackMixer>>,
+    video_frames: &Arc<video_events::VideoMailbox>,
 ) {
+    video_frames.remove(sid);
     let task = tasks.lock().ok().and_then(|mut tasks| tasks.remove(sid));
     let Some(task) = task else { return };
     task.abort();
@@ -1330,6 +1381,7 @@ fn end_video_renderer(
 impl Drop for MediaEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.video_frames.clear();
         self.input_capture.take();
         self.output.stop();
         if let Ok(mut mixer) = self.mixer.lock() {
@@ -1399,12 +1451,26 @@ mod video_lifecycle_tests {
                 watch_generation: 1,
             },
         )])));
-        end_video_renderer("screen-sid", &tasks, &mixer);
+        end_video_renderer(
+            "screen-sid",
+            &tasks,
+            &mixer,
+            &Arc::new(video_events::VideoMailbox::new(Arc::new(Mutex::new(
+                subscriptions::Registry::default(),
+            )))),
+        );
         assert!(tasks.lock().unwrap().is_empty());
         assert!(
             matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id,..}) if track_id=="screen-sid")
         );
-        end_video_renderer("screen-sid", &tasks, &mixer);
+        end_video_renderer(
+            "screen-sid",
+            &tasks,
+            &mixer,
+            &Arc::new(video_events::VideoMailbox::new(Arc::new(Mutex::new(
+                subscriptions::Registry::default(),
+            )))),
+        );
         assert!(
             events.try_recv().is_err(),
             "late SDK unsubscribe cannot duplicate local frame end"
@@ -1427,7 +1493,14 @@ mod video_lifecycle_tests {
                 watch_generation: 1,
             },
         )])));
-        end_video_renderer("screen-sid", &tasks, &mixer);
+        end_video_renderer(
+            "screen-sid",
+            &tasks,
+            &mixer,
+            &Arc::new(video_events::VideoMailbox::new(Arc::new(Mutex::new(
+                subscriptions::Registry::default(),
+            )))),
+        );
         assert!(matches!(events.recv().await, Some(MediaEvent::Speakers(_))));
         assert!(
             matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id,..}) if track_id=="screen-sid")
