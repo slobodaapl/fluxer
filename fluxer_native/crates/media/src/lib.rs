@@ -119,6 +119,7 @@ pub enum MediaEvent {
     },
     ScreenShareStarted,
     ScreenShareStopped,
+    SharedAudioStopped,
     AudioLevels {
         input: f32,
         output: f32,
@@ -134,6 +135,32 @@ struct VideoRenderer {
 impl VideoRenderer {
     fn abort(&self) {
         self.task.abort();
+    }
+}
+
+struct SharedAudioLifecycle {
+    running: Arc<AtomicBool>,
+    events: Option<mpsc::Sender<MediaEvent>>,
+}
+fn shared_audio_stopped(events: &Option<mpsc::Sender<MediaEvent>>) {
+    if let Some(sender) = events {
+        if let Err(mpsc::error::TrySendError::Full(event)) =
+            sender.try_send(MediaEvent::SharedAudioStopped)
+        {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let sender = sender.clone();
+                runtime.spawn(async move {
+                    let _ = sender.send(event).await;
+                });
+            }
+        }
+    }
+}
+impl Drop for SharedAudioLifecycle {
+    fn drop(&mut self) {
+        if self.running.swap(false, Ordering::AcqRel) {
+            shared_audio_stopped(&self.events);
+        }
     }
 }
 
@@ -174,6 +201,7 @@ pub struct MediaEngine {
     video_frames: Arc<video_events::VideoMailbox>,
     stop: Arc<AtomicBool>,
     shared_audio_task: Option<JoinHandle<()>>,
+    shared_audio_running: Arc<AtomicBool>,
     shared_audio_publication: Option<TrackSid>,
     shared_audio_settings: Arc<Mutex<SharedAudioSettings>>,
     mixer: Arc<Mutex<audio::PlaybackMixer>>,
@@ -210,6 +238,7 @@ impl MediaEngine {
             video_frames,
             stop: Arc::new(AtomicBool::new(false)),
             shared_audio_task: None,
+            shared_audio_running: Arc::new(AtomicBool::new(false)),
             shared_audio_publication: None,
             shared_audio_settings: Arc::new(Mutex::new(SharedAudioSettings::default())),
             mixer,
@@ -1072,6 +1101,14 @@ impl MediaEngine {
             .as_ref()
             .is_some_and(|screen| !screen.is_stopped())
     }
+    pub fn screen_capture_has_frame(&self) -> bool {
+        self.screen
+            .as_ref()
+            .is_some_and(screen::ScreenSession::has_frame)
+    }
+    pub fn is_sharing_audio(&self) -> bool {
+        self.shared_audio_running.load(Ordering::Acquire)
+    }
     pub fn shared_audio_available() -> bool {
         if pipewire_runtime::ensure().is_err() {
             return false;
@@ -1123,9 +1160,15 @@ impl MediaEngine {
         self.shared_audio_publication = Some(publication.sid());
         let stop = self.stop.clone();
         let settings = self.shared_audio_settings.clone();
-        let state = self.state.clone();
         let events = self.events.clone();
+        let running = Arc::new(AtomicBool::new(true));
+        self.shared_audio_running = running.clone();
+        let lifecycle = SharedAudioLifecycle {
+            running,
+            events: events.clone(),
+        };
         self.shared_audio_task = Some(tokio::spawn(async move {
+            let _lifecycle = lifecycle;
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             while !stop.load(Ordering::Acquire) {
@@ -1143,12 +1186,9 @@ impl MediaEngine {
                     gain: 0.0,
                     muted: true,
                 });
-                let deaf = state.lock().map(|s| s.deafened).unwrap_or(true);
-                let gain = if controls.muted || deaf {
-                    0.0
-                } else {
-                    controls.gain
-                };
+                // Existing desktop only applies stream-audio preference here;
+                // local microphone mute/deafen must not silence the broadcast.
+                let gain = if controls.muted { 0.0 } else { controls.gain };
                 let data: Vec<i16> = frame
                     .samples
                     .iter()
@@ -1174,17 +1214,26 @@ impl MediaEngine {
         Ok(())
     }
     pub async fn stop_shared_audio(&mut self) -> Result<()> {
+        let active = self.shared_audio_task.is_some() || self.shared_audio_publication.is_some();
+        self.shared_audio_running.store(false, Ordering::Release);
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
             let _ = task.await;
         }
-        if let (Some(room), Some(sid)) = (&self.room, self.shared_audio_publication.take()) {
-            room.local_participant()
-                .unpublish_track(&sid)
-                .await
-                .map_err(|e| MediaError::Audio(e.to_string()))?;
+        let result =
+            if let (Some(room), Some(sid)) = (&self.room, self.shared_audio_publication.take()) {
+                room.local_participant()
+                    .unpublish_track(&sid)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| MediaError::Audio(e.to_string()))
+            } else {
+                Ok(())
+            };
+        if active {
+            shared_audio_stopped(&self.events);
         }
-        Ok(())
+        result
     }
     pub fn screen_sources(&self) -> Result<Vec<ScreenSource>> {
         screen::sources()
@@ -1277,6 +1326,7 @@ impl MediaEngine {
         }
         self.screen_publication = None;
         self.shared_audio_publication = None;
+        self.shared_audio_running.store(false, Ordering::Release);
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
             let _ = task.await;
@@ -1393,6 +1443,7 @@ impl Drop for MediaEngine {
                 task.abort();
             }
         }
+        self.shared_audio_running.store(false, Ordering::Release);
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
         }
