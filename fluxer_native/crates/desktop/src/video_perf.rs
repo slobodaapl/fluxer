@@ -29,6 +29,7 @@ struct Stats {
     stop_deadline: Option<Instant>,
     stop_handled: Option<Instant>,
     stop_presented: bool,
+    stop_render_reported: bool,
 }
 impl VideoStats {
     pub fn new() -> Self {
@@ -49,6 +50,7 @@ impl VideoStats {
                 stop_deadline: None,
                 stop_handled: None,
                 stop_presented: false,
+                stop_render_reported: false,
             })),
         }
     }
@@ -76,7 +78,7 @@ impl VideoStats {
         let period = stats.last_log.elapsed().as_secs_f64();
         if period >= 1.0 {
             eprintln!(
-                "video_perf elapsed_s={:.2} accepted_fps={:.2} presented_fps={:.2} poll_max_ms={:.3} render_build_max_ms={:.3} tracked_images={} frame_slots={slots}",
+                "video_perf elapsed_s={:.2} accepted_fps={:.2} rendered_fps={:.2} poll_max_ms={:.3} render_build_max_ms={:.3} tracked_images={} frame_slots={slots}",
                 stats.started.elapsed().as_secs_f64(),
                 (stats.accepted - stats.last_accepted) as f64 / period,
                 (stats.presented - stats.last_presented) as f64 / period,
@@ -101,21 +103,42 @@ impl VideoStats {
         if !self.enabled {
             return;
         }
-        let serial = self.inner.lock().unwrap().accepted;
+        let (serial, cleared_stop) = {
+            let mut stats = self.inner.lock().unwrap();
+            let cleared = if video_visible {
+                None
+            } else {
+                stats.stop_handled
+            };
+            if let Some(handled) = cleared
+                && !stats.stop_render_reported
+            {
+                eprintln!(
+                    "video_perf stop_render_received_ms={:.3}",
+                    handled.elapsed().as_secs_f64() * 1000.
+                );
+                stats.stop_render_reported = true;
+            }
+            (stats.accepted, cleared)
+        };
         let stats = self.inner.clone();
-        // GPUI runs this directly after rendering, rather than when a frame is
-        // merely created/received. Count each accepted image at most once.
+        // In GPUI 0.2.2 this runs at the beginning of the next platform frame,
+        // after the previous scene reached Window::present. It counts rendered
+        // scenes, not physical display scanout or GPU completion.
         window.on_next_frame(move |_, _| {
             let mut stats = stats.lock().unwrap();
             if video_visible && serial > stats.last_presented_serial {
                 stats.presented += 1;
                 stats.last_presented_serial = serial;
             }
-            if let Some(handled) = stats.stop_handled
+            // A callback scheduled by a pre-stop scene cannot acknowledge a
+            // later stop. Capture the stop epoch only on a cleared scene.
+            if let Some(handled) = cleared_stop
+                && stats.stop_handled == Some(handled)
                 && !stats.stop_presented
             {
                 eprintln!(
-                    "video_perf stop_visible_ms={:.3}",
+                    "video_perf stop_next_frame_callback_ms={:.3}",
                     handled.elapsed().as_secs_f64() * 1000.
                 );
                 stats.stop_presented = true;
@@ -139,6 +162,7 @@ impl VideoStats {
         eprintln!("video_perf stop_action_delay_ms={delay:?}");
         stats.stop_handled = Some(now);
         stats.stop_presented = false;
+        stats.stop_render_reported = false;
     }
 }
 

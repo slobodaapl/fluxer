@@ -598,7 +598,7 @@ impl Fluxer {
                         self.session_restore_failed = false;
                         self.session_context_loaded = false;
                         if self.demo_stream {
-                            self.install_stream_fixture();
+                            self.install_stream_fixture(cx);
                             if self.animation.is_some() {
                                 self.retire_stream_image("preview-1", cx);
                                 self.viewer.stop("preview-1");
