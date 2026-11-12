@@ -899,14 +899,24 @@ impl Worker {
                     self.state
                         .edit_message(channel, message_id, content.clone());
                 } else {
-                    let result=match self.client() {
-                        Ok(client)=>client.edit_message(&channel.to_string(),&message_id.to_string(),&content).await.map_err(error),
-                        Err(message)=>Err(message),
+                    let result = match self.client() {
+                        Ok(client) => client
+                            .edit_message(&channel.to_string(), &message_id.to_string(), &content)
+                            .await
+                            .map_err(error),
+                        Err(message) => Err(message),
                     };
-                    let message=match result {Ok(message)=>message,Err(message)=>{
-                        self.emit(Event::MessageOperationFailed{channel_id:channel,content:content.clone(),error:message.clone()});
-                        return Err(message);
-                    }};
+                    let message = match result {
+                        Ok(message) => message,
+                        Err(message) => {
+                            self.emit(Event::MessageOperationFailed {
+                                channel_id: channel,
+                                content: content.clone(),
+                                error: message.clone(),
+                            });
+                            return Err(message);
+                        }
+                    };
                     self.state
                         .apply_gateway("MESSAGE_UPDATE", message)
                         .map_err(error)?;
@@ -1575,14 +1585,34 @@ impl Worker {
                         .map_err(error)?;
                     if name == "MESSAGE_CREATE"
                         && let (Some(channel), Some(id)) = (
-                            data.get("channel_id").and_then(Value::as_str).and_then(|id| id.parse::<Snowflake>().ok()),
-                            data.get("id").and_then(Value::as_str).and_then(|id| id.parse::<Snowflake>().ok()),
+                            data.get("channel_id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| id.parse::<Snowflake>().ok()),
+                            data.get("id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| id.parse::<Snowflake>().ok()),
                         )
-                        && let Some(message) = self.state.messages.get(&channel).and_then(|messages| messages.get(&id)).cloned()
+                        && let Some(message) = self
+                            .state
+                            .messages
+                            .get(&channel)
+                            .and_then(|messages| messages.get(&id))
+                            .cloned()
                     {
                         self.reconcile_attachment_message(&message);
                     }
-                    if matches!(name.as_str(), "READY" | "USER_SETTINGS_UPDATE" | "USER_UPDATE" | "GUILD_UPDATE" | "GUILD_MEMBER_UPDATE" | "GUILD_ROLE_UPDATE" | "GUILD_ROLE_UPDATE_BULK" | "CHANNEL_UPDATE" | "CHANNEL_UPDATE_BULK") {
+                    if matches!(
+                        name.as_str(),
+                        "READY"
+                            | "USER_SETTINGS_UPDATE"
+                            | "USER_UPDATE"
+                            | "GUILD_UPDATE"
+                            | "GUILD_MEMBER_UPDATE"
+                            | "GUILD_ROLE_UPDATE"
+                            | "GUILD_ROLE_UPDATE_BULK"
+                            | "CHANNEL_UPDATE"
+                            | "CHANNEL_UPDATE_BULK"
+                    ) {
                         self.refresh_attachment_policies();
                     }
                     if name == "READY" {

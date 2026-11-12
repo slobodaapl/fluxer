@@ -3,7 +3,7 @@ use super::*;
 use crate::attachments::{
     self, AttachmentInput, AttachmentStatus, PreparedAttachment, StagedAttachment,
 };
-use fluxer_protocol::{UploadAttachment, UploadCancellation, UploadProgress};
+use fluxer_protocol::{PlannedAttachment, UploadAttachment, UploadCancellation, UploadProgress};
 use std::path::PathBuf;
 
 pub(super) struct Stage {
@@ -14,6 +14,9 @@ pub(super) struct Stage {
     uploaded: Option<Value>,
     job: Option<Job>,
     last_send_nonce: Option<String>,
+    batch: u64,
+    planning: Option<u64>,
+    upload_started: Option<tokio::time::Instant>,
 }
 struct Job {
     task: JoinHandle<()>,
@@ -33,6 +36,10 @@ struct PendingSend {
     ids: Vec<u64>,
     job: Option<Job>,
 }
+struct PreuploadPlan {
+    members: Vec<(u64, u64)>,
+    _job: Job,
+}
 #[derive(Clone, PartialEq)]
 struct Fingerprint {
     channel: Snowflake,
@@ -46,6 +53,13 @@ struct Attempt {
 }
 
 pub(super) enum AttachmentEvent {
+    Planned {
+        epoch: u64,
+        channel: Snowflake,
+        batch: u64,
+        members: Vec<(u64, u64)>,
+        result: Result<Vec<PlannedAttachment>>,
+    },
     Prepared {
         epoch: u64,
         channel: Snowflake,
@@ -72,17 +86,19 @@ pub(super) enum AttachmentEvent {
         channel: Snowflake,
         token: u64,
         nonce: String,
-        result: Result<Message>,
+        result: Result<Box<Message>>,
     },
 }
 pub(super) struct AttachmentState {
     epoch: u64,
     next_id: u64,
     next_send: u64,
+    next_batch: u64,
     channels: BTreeMap<Snowflake, Vec<Stage>>,
     sends: BTreeMap<Snowflake, PendingSend>,
     attempts: BTreeMap<String, Attempt>,
     last_attempt: BTreeMap<Snowflake, String>,
+    plans: BTreeMap<u64, PreuploadPlan>,
     tx: async_mpsc::UnboundedSender<AttachmentEvent>,
     pub rx: async_mpsc::UnboundedReceiver<AttachmentEvent>,
     preparation_slots: Arc<tokio::sync::Semaphore>,
@@ -94,10 +110,12 @@ impl AttachmentState {
             epoch: 1,
             next_id: 0,
             next_send: 0,
+            next_batch: 0,
             channels: BTreeMap::new(),
             sends: BTreeMap::new(),
             attempts: BTreeMap::new(),
             last_attempt: BTreeMap::new(),
+            plans: BTreeMap::new(),
             tx,
             rx,
             preparation_slots: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -115,6 +133,7 @@ impl Worker {
     pub(super) fn clear_attachments(&mut self) {
         self.attachments.epoch = self.attachments.epoch.wrapping_add(1);
         self.attachments.sends.clear();
+        self.attachments.plans.clear();
         self.attachments.channels.clear();
         self.attachments.attempts.clear();
         self.attachments.last_attempt.clear();
@@ -188,28 +207,61 @@ impl Worker {
     }
     fn refresh_attachment_policy(&mut self, channel: Snowflake) {
         let preupload = !self.demo
-            && self.attachment_policy(channel).is_ok_and(|policy| policy.preupload)
-            && self.client.as_ref().is_some_and(Client::supports_presigned_attachment_uploads)
+            && self
+                .attachment_policy(channel)
+                .is_ok_and(|policy| policy.preupload)
+            && self
+                .client
+                .as_ref()
+                .is_some_and(Client::supports_presigned_attachment_uploads)
             && self.can_attach(channel).is_ok();
         if !preupload {
-            for stage in self.attachments.channels.get_mut(&channel).into_iter().flatten() {
+            for stage in self
+                .attachments
+                .channels
+                .get_mut(&channel)
+                .into_iter()
+                .flatten()
+            {
                 // Preparation produces the local immutable clipboard source and
                 // preview. Only background HTTP uploads are privacy-dependent.
                 if stage.prepared.is_some() {
-                    if stage.job.take().is_some() {
+                    if stage.job.take().is_some() || stage.planning.take().is_some() {
                         stage.revision = stage.revision.wrapping_add(1);
                     }
+                    stage.planning = None;
                     stage.uploaded = None;
-                    if matches!(stage.dto.status, AttachmentStatus::Uploading | AttachmentStatus::Ready) {
+                    if matches!(
+                        stage.dto.status,
+                        AttachmentStatus::Uploading | AttachmentStatus::Ready
+                    ) {
                         stage.dto.status = AttachmentStatus::Staged;
                         stage.dto.progress = 0.;
                     }
                 }
             }
+            self.prune_attachment_plans();
         }
     }
+    fn prune_attachment_plans(&mut self) {
+        let active = self
+            .attachments
+            .channels
+            .values()
+            .flatten()
+            .filter_map(|stage| stage.planning)
+            .collect::<BTreeSet<_>>();
+        self.attachments
+            .plans
+            .retain(|batch, _| active.contains(batch));
+    }
     pub(super) fn refresh_attachment_policies(&mut self) {
-        let channels = self.attachments.channels.keys().copied().collect::<Vec<_>>();
+        let channels = self
+            .attachments
+            .channels
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for channel in channels {
             self.refresh_attachment_policy(channel);
             self.attachment_snapshot(channel);
@@ -251,6 +303,9 @@ impl Worker {
         if self.attachments.next_id.saturating_add(inputs.len() as u64) > i32::MAX as u64 {
             return Err("Attachment identifier limit reached; restart the client".into());
         }
+        self.attachments.next_batch = self.attachments.next_batch.wrapping_add(1);
+        let batch = self.attachments.next_batch;
+        let mut preparing = Vec::with_capacity(inputs.len());
         for input in inputs {
             self.attachments.next_id += 1;
             let id = self.attachments.next_id;
@@ -277,7 +332,15 @@ impl Worker {
                     uploaded: None,
                     job: None,
                     last_send_nonce: None,
+                    batch,
+                    planning: None,
+                    upload_started: None,
                 });
+            preparing.push(id);
+        }
+        // Reserve the whole batch before any preparation completion can start
+        // its one background plan (MessageQueue.startTextareaAttachmentUploads).
+        for id in preparing {
             self.prepare_attachment(channel, id, policy.max_file_size);
         }
         self.attachment_snapshot(channel);
@@ -302,7 +365,9 @@ impl Worker {
         stage.job = Some(Job {
             cancel: Some(cancel),
             task: tokio::spawn(async move {
-                let Ok(slot) = slots.acquire_owned().await else { return };
+                let Ok(slot) = slots.acquire_owned().await else {
+                    return;
+                };
                 let result = tokio::task::spawn_blocking(move || {
                     let _slot = slot;
                     attachments::prepare(input, max_size, revision, &cancelling)
@@ -321,7 +386,7 @@ impl Worker {
         });
     }
     fn start_preupload(&mut self, channel: Snowflake, id: u64) {
-        if self.demo || self.attachments.sends.get(&channel).is_some_and(|send|send.ids.contains(&id)) {
+        if self.demo {
             return;
         }
         let Ok(policy) = self.attachment_policy(channel) else {
@@ -334,20 +399,114 @@ impl Worker {
         else {
             return;
         };
+        let Some(batch) = self.attachments.stage(channel, id).map(|stage| stage.batch) else {
+            return;
+        };
+        if self.attachments.plans.contains_key(&batch) {
+            return;
+        }
+        let group = self
+            .attachments
+            .channels
+            .get(&channel)
+            .into_iter()
+            .flatten()
+            .filter(|stage| stage.batch == batch)
+            .collect::<Vec<_>>();
+        // A single file-picker action produces one plan, after local metadata
+        // for all its files is known. Transfers and cancellation remain per file.
+        if group
+            .iter()
+            .any(|stage| stage.job.is_some() || stage.planning.is_some())
+        {
+            return;
+        }
+        let stages = group
+            .into_iter()
+            .filter(|stage| {
+                stage.prepared.is_some()
+                    && stage.uploaded.is_none()
+                    && stage.dto.status == AttachmentStatus::Staged
+                    && !self
+                        .attachments
+                        .sends
+                        .get(&channel)
+                        .is_some_and(|send| send.ids.contains(&stage.dto.id))
+            })
+            .collect::<Vec<_>>();
+        if stages.is_empty() {
+            return;
+        }
+        let members = stages
+            .iter()
+            .map(|stage| (stage.dto.id, stage.revision))
+            .collect::<Vec<_>>();
+        let files = stages
+            .iter()
+            .map(|stage| upload_file(stage, stage.dto.id.to_string()))
+            .collect::<Vec<_>>();
+        let keepalive = stages
+            .iter()
+            .filter_map(|stage| stage.prepared.clone())
+            .collect::<Vec<_>>();
+        for (id, _) in &members {
+            let stage = self
+                .attachments
+                .stage(channel, *id)
+                .expect("selected staged file");
+            stage.planning = Some(batch);
+            stage.upload_started = Some(tokio::time::Instant::now());
+            stage.dto.status = AttachmentStatus::Uploading;
+        }
+        let epoch = self.attachments.epoch;
+        let tx = self.attachments.tx.clone();
+        let cancel = UploadCancellation::new();
+        let cancelling = cancel.clone();
+        let result_members = members.clone();
+        let job = Job {
+            cancel: Some(cancel),
+            task: tokio::spawn(async move {
+                let result = async {
+                    for prepared in &keepalive {
+                        prepared.validate_source().await?;
+                    }
+                    client
+                        .plan_attachments(
+                            &channel.to_string(),
+                            &files,
+                            &cancelling,
+                            Arc::new(|_| {}),
+                        )
+                        .await
+                        .map_err(error)
+                }
+                .await;
+                let _ = tx.send(AttachmentEvent::Planned {
+                    epoch,
+                    channel,
+                    batch,
+                    members: result_members,
+                    result,
+                });
+            }),
+        };
+        self.attachments
+            .plans
+            .insert(batch, PreuploadPlan { members, _job: job });
+    }
+    fn upload_planned_stage(&mut self, channel: Snowflake, id: u64, plan: PlannedAttachment) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
         let epoch = self.attachments.epoch;
         let tx = self.attachments.tx.clone();
         let Some(stage) = self.attachments.stage(channel, id) else {
             return;
         };
-        if stage.job.is_some() || stage.uploaded.is_some() {
-            return;
-        }
         let Some(prepared) = stage.prepared.clone() else {
             return;
         };
-        let file = upload_file(stage, id.to_string());
         let revision = stage.revision;
-        stage.dto.status = AttachmentStatus::Uploading;
         let cancel = UploadCancellation::new();
         let cancelling = cancel.clone();
         let callback = progress_callback(tx.clone(), epoch, channel, Some(id), revision);
@@ -357,17 +516,11 @@ impl Worker {
                 let result = async {
                     prepared.validate_source().await?;
                     client
-                    .preupload_attachments(&channel.to_string(), &[file], &cancelling, callback)
-                    .await
-                    .map_err(error)
-                    .and_then(|mut values| {
-                        if values.len() == 1 {
-                            Ok(values.remove(0))
-                        } else {
-                            Err("Upload response did not match the selected file".into())
-                        }
-                    })
-                }.await;
+                        .upload_planned_attachment(&plan, &cancelling, callback)
+                        .await
+                        .map_err(error)
+                }
+                .await;
                 let _ = tx.send(AttachmentEvent::Uploaded {
                     epoch,
                     channel,
@@ -380,7 +533,12 @@ impl Worker {
     }
     pub(super) fn retry_attachment(&mut self, channel: Snowflake, id: u64) -> Result<()> {
         self.can_attach(channel)?;
-        if self.attachments.sends.contains_key(&channel) {
+        if self
+            .attachments
+            .sends
+            .get(&channel)
+            .is_some_and(|send| send.ids.contains(&id))
+        {
             return Err("Cancel the queued message before retrying its attachments".into());
         }
         let policy = self.attachment_policy(channel)?;
@@ -390,10 +548,13 @@ impl Worker {
             .ok_or("Attachment is no longer staged")?;
         stage.dto.error = None;
         stage.dto.progress = 0.;
+        stage.uploaded = None;
         if stage.prepared.is_some() {
             stage.job = None;
+            stage.planning = None;
             stage.revision = stage.revision.wrapping_add(1);
             stage.dto.status = AttachmentStatus::Staged;
+            self.prune_attachment_plans();
             self.start_preupload(channel, id);
         } else {
             self.prepare_attachment(channel, id, policy.max_file_size);
@@ -421,6 +582,7 @@ impl Worker {
             .ok_or("Attachment is no longer staged")?;
         stage.job = None;
         stage.uploaded = None;
+        stage.planning = None;
         stage.revision = stage.revision.wrapping_add(1);
         stage.dto.status = AttachmentStatus::Cancelled;
         stage.dto.error = None;
@@ -431,6 +593,7 @@ impl Worker {
                 .expect("staged channel")
                 .retain(|stage| stage.dto.id != id);
         }
+        self.prune_attachment_plans();
         self.attachment_snapshot(channel);
         Ok(())
     }
@@ -484,7 +647,10 @@ impl Worker {
             .flatten()
             .collect::<Vec<_>>();
         if Client::build_message_body(&content, None, reference.as_ref(), mention_author)
-            .get("content").is_none() && stages.is_empty() {
+            .get("content")
+            .is_none()
+            && stages.is_empty()
+        {
             return Err("Message cannot be empty".into());
         }
         if !stages.is_empty() {
@@ -560,6 +726,24 @@ impl Worker {
     }
     fn advance_attachment_send(&mut self, channel: Snowflake) {
         self.refresh_attachment_policy(channel);
+        for stage in self
+            .attachments
+            .channels
+            .get_mut(&channel)
+            .into_iter()
+            .flatten()
+        {
+            // Textarea cache TTL is five minutes; source prunes only settled
+            // uploads. A queued send then obtains a fresh send-time plan.
+            if stage.job.is_none()
+                && stage.planning.is_none()
+                && stage
+                    .upload_started
+                    .is_some_and(|started| started.elapsed() >= Duration::from_secs(300))
+            {
+                stage.uploaded = None;
+            }
+        }
         let Some(send) = self.attachments.sends.get(&channel) else {
             return;
         };
@@ -574,7 +758,10 @@ impl Worker {
             .flatten()
             .filter(|stage| send.ids.contains(&stage.dto.id))
             .collect::<Vec<_>>();
-        if stages.iter().any(|stage| stage.job.is_some()) {
+        if stages
+            .iter()
+            .any(|stage| stage.job.is_some() || stage.planning.is_some())
+        {
             return;
         }
         if stages.len() != send.ids.len()
@@ -650,7 +837,7 @@ impl Worker {
             .get_mut(&channel)
             .into_iter()
             .flatten()
-            .filter(|stage| send_ids(&fingerprint).contains(&stage.dto.id))
+            .filter(|stage| fingerprint.files.iter().any(|(id, _)| *id == stage.dto.id))
         {
             stage.dto.status = AttachmentStatus::Sending;
             stage.dto.error = None;
@@ -682,7 +869,7 @@ impl Worker {
                 channel,
                 token,
                 nonce: sending_nonce,
-                result,
+                result: result.map(Box::new),
             });
         });
         self.attachments
@@ -713,11 +900,13 @@ impl Worker {
             .flatten()
             .filter(|stage| send.ids.contains(&stage.dto.id))
         {
-            stage.job=None;
-            stage.revision=stage.revision.wrapping_add(1);
+            stage.job = None;
+            stage.planning = None;
+            stage.revision = stage.revision.wrapping_add(1);
             stage.dto.status = AttachmentStatus::Failed;
             stage.dto.error = Some(message.clone());
         }
+        self.prune_attachment_plans();
         self.emit(Event::MessageOperationFailed {
             channel_id: channel,
             content,
@@ -779,6 +968,53 @@ impl Worker {
     }
     pub(super) fn attachment_event(&mut self, event: AttachmentEvent) {
         match event {
+            AttachmentEvent::Planned {
+                epoch,
+                channel,
+                batch,
+                members,
+                result,
+            } => {
+                if epoch != self.attachments.epoch
+                    || !self
+                        .attachments
+                        .plans
+                        .get(&batch)
+                        .is_some_and(|plan| plan.members == members)
+                {
+                    return;
+                }
+                self.attachments.plans.remove(&batch);
+                for (id, revision) in members {
+                    let Some(stage) = self.attachments.stage(channel, id).filter(|stage| {
+                        stage.revision == revision && stage.planning == Some(batch)
+                    }) else {
+                        continue;
+                    };
+                    stage.planning = None;
+                    match &result {
+                        Ok(plans) => {
+                            if let Some(plan) = plans
+                                .iter()
+                                .find(|plan| plan.id() == id.to_string())
+                                .cloned()
+                            {
+                                self.upload_planned_stage(channel, id, plan);
+                            } else {
+                                stage.dto.status = AttachmentStatus::Failed;
+                                stage.dto.error =
+                                    Some("Upload plan omitted the selected file".into());
+                            }
+                        }
+                        Err(message) => {
+                            stage.dto.status = AttachmentStatus::Failed;
+                            stage.dto.error = Some(message.clone());
+                        }
+                    }
+                }
+                self.attachment_snapshot(channel);
+                self.advance_attachment_send(channel);
+            }
             AttachmentEvent::Prepared {
                 epoch,
                 channel,
@@ -850,6 +1086,7 @@ impl Worker {
                         stage.dto.error = Some(message);
                     }
                 }
+                self.start_preupload(channel, id);
                 self.attachment_snapshot(channel);
                 self.advance_attachment_send(channel);
             }
@@ -904,7 +1141,7 @@ impl Worker {
                     return;
                 }
                 match result {
-                    Ok(message) => self.complete_attachment_send(channel, &nonce, message),
+                    Ok(message) => self.complete_attachment_send(channel, &nonce, *message),
                     Err(message) => {
                         if self
                             .attachments
@@ -919,9 +1156,6 @@ impl Worker {
             }
         }
     }
-}
-fn send_ids(fingerprint: &Fingerprint) -> Vec<u64> {
-    fingerprint.files.iter().map(|(id, _)| *id).collect()
 }
 fn upload_file(stage: &Stage, id: String) -> UploadAttachment {
     let prepared = stage.prepared.as_ref().expect("prepared attachment");
@@ -962,3 +1196,7 @@ fn progress_callback(
         });
     })
 }
+
+#[cfg(test)]
+#[path = "worker_attachment_tests.rs"]
+mod tests;
