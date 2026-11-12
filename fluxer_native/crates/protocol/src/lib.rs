@@ -3,6 +3,7 @@
 mod error;
 mod gateway;
 mod http;
+mod installation;
 mod instance;
 
 pub use error::{Error, Result};

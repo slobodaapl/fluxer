@@ -67,6 +67,7 @@ pub struct Client {
     instance: Instance,
     http: reqwest::Client,
     token: Option<SessionToken>,
+    auth_locale: header::HeaderValue,
 }
 
 impl Client {
@@ -81,6 +82,7 @@ impl Client {
             instance,
             http,
             token: None,
+            auth_locale: header::HeaderValue::from_static("en-US"),
         })
     }
 
@@ -90,6 +92,11 @@ impl Client {
     }
     pub fn instance(&self) -> &Instance {
         &self.instance
+    }
+    pub fn with_auth_locale(mut self, locale: impl Into<String>) -> Result<Self> {
+        self.auth_locale = header::HeaderValue::from_str(&locale.into())
+            .map_err(|_| Error::InvalidEndpoint("invalid authentication locale header".into()))?;
+        Ok(self)
     }
 
     /// Generic JSON access for endpoints without a typed wrapper. Requests are
@@ -135,7 +142,22 @@ impl Client {
         let mut request = self
             .http
             .request(method, url)
-            .header(header::ACCEPT, "application/json");
+            .header(header::ACCEPT, "application/json")
+            // RestTransport.assembleHeaders, same-origin first-party API calls.
+            .header(
+                "X-Fluxer-Features",
+                "view_channel_members_permission,channel_threads",
+            )
+            .header("X-Fluxer-Capabilities", "guild_visits")
+            .header(
+                "X-Fluxer-Client-Installation-ID",
+                crate::installation::get(),
+            )
+            .header(header::ACCEPT_ENCODING, "gzip, br");
+        if !authenticated {
+            // AuthenticationCommands.withAuthLocaleHeader (login and TOTP).
+            request = request.header(header::ACCEPT_LANGUAGE, self.auth_locale.clone());
+        }
         if requires_origin {
             // Match LocalAppAPIProxyRequestHandler.forward and
             // LocalAppProxyHTTPPolicy.buildAPIRequestHeaders: use the discovered
