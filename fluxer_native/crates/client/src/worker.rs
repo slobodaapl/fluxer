@@ -152,6 +152,9 @@ pub(crate) struct Worker {
     synced_guilds: BTreeMap<Snowflake, String>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
+    /// Media watch epochs fence frames and lifecycle notifications queued before
+    /// stopping/restarting a watch on the same publication SID.
+    video_generations: BTreeMap<String, u64>,
 }
 
 impl Worker {
@@ -194,6 +197,7 @@ impl Worker {
             synced_guilds: BTreeMap::new(),
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
+            video_generations: BTreeMap::new(),
         }
     }
     pub(crate) fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
@@ -918,6 +922,10 @@ impl Worker {
                 .media()?
                 .set_participant_audio(&identity, settings)
                 .map_err(error)?,
+            Command::SetStreamAudio { identity, settings } => self
+                .media()?
+                .set_stream_audio(&identity, settings)
+                .map_err(error)?,
             Command::WatchStream { identity, watch } => {
                 let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
                 self.set_watch(identity, watch, connected).await?;
@@ -1308,6 +1316,7 @@ impl Worker {
             }));
         }
         self.watched_streams.clear();
+        self.video_generations.clear();
         self.emit(Event::WatchedStreams(Vec::new()));
         self.media_events = None;
         // Stop capture before awaiting any network writes, including failures.
@@ -1647,11 +1656,24 @@ impl Worker {
                 self.emit(Event::Media(MediaEvent::ParticipantLeft { identity }));
             }
             MediaEvent::Video(frame) => {
+                if !self.watched_streams.contains(&frame.participant)
+                    || self.video_generations.get(&frame.participant)
+                        != Some(&frame.watch_generation)
+                {
+                    return Ok(());
+                }
                 if let Ok(mut frames) = self.frames.lock() {
                     frames.insert(frame.track_id.clone(), frame);
                 }
             }
-            MediaEvent::VideoEnded { ref track_id } => {
+            MediaEvent::VideoEnded {
+                ref track_id,
+                ref participant,
+                watch_generation,
+            } => {
+                if self.video_generations.get(participant) != Some(&watch_generation) {
+                    return Ok(());
+                }
                 if let Ok(mut frames) = self.frames.lock() {
                     frames.remove(track_id);
                 }
@@ -1759,23 +1781,53 @@ impl Worker {
         }
         let mut next = self.watched_streams.clone();
         if watch {
-            next.insert(identity);
+            next.insert(identity.clone());
         } else {
             next.remove(&identity);
+            // Stop is a local presentation operation first. Neither synchronous
+            // native/SDK teardown nor a full gateway send queue may delay it.
+            if let Ok(mut frames) = self.frames.lock() {
+                frames.retain(|_, frame| frame.participant != identity);
+            }
         }
         if next == self.watched_streams {
             return Ok(());
         }
-        if let Some(media) = &mut self.media {
+        if !watch {
+            self.watched_streams = next.clone();
+            self.emit(Event::WatchedStreams(next.iter().cloned().collect()));
+        }
+        let media_result = if let Some(media) = &mut self.media {
             media
                 .set_watched_participants(next.iter().cloned().collect())
-                .map_err(error)?;
+                .map_err(error)
+        } else {
+            Ok(())
+        };
+        if watch {
+            // A failed start retains the previous intent; a failed stop remains
+            // stopped locally and still removes server viewer demand below.
+            media_result.as_ref().map_err(Clone::clone)?;
+            self.watched_streams = next;
         }
-        self.watched_streams = next;
-        self.emit(Event::WatchedStreams(
-            self.watched_streams.iter().cloned().collect(),
-        ));
-        self.update_voice().await
+        let generation = self.media.as_ref().map_or_else(
+            || {
+                self.video_generations
+                    .get(&identity)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1)
+            },
+            |media| media.watch_generation(&identity),
+        );
+        self.video_generations.insert(identity, generation);
+        if watch {
+            self.emit(Event::WatchedStreams(
+                self.watched_streams.iter().cloned().collect(),
+            ));
+        }
+        let gateway_result = self.update_voice().await;
+        media_result.and(gateway_result)
     }
 
     // Capture-session liveness is supplied separately so lifecycle races can be

@@ -422,6 +422,163 @@ async fn watch_roster_in_ready_is_projected_when_joining_and_republished_after_t
         Event::Media(MediaEvent::ScreenStreamAvailable{identity:ref id,available:true}) if id=="user_123_live")));
 }
 
+fn watch_frame(identity: &str, generation: u64) -> VideoFrame {
+    VideoFrame {
+        track_id: "same-screen-sid".into(),
+        participant: identity.into(),
+        watch_generation: generation,
+        width: 1,
+        height: 1,
+        rgba: Arc::new(vec![0, 0, 0, 255]),
+    }
+}
+
+#[tokio::test]
+async fn watch_stop_is_observable_and_frames_evicted_before_a_full_gateway_queue_drains() {
+    let (mut worker, events, mut initial_outgoing) = watch_worker();
+    let identity = "user_123_live".to_owned();
+    gateway_voice(&mut worker,json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"live","self_stream":true})).await;
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    initial_outgoing.try_recv().unwrap();
+    let generation = worker.video_generations[&identity];
+    worker
+        .media_event(MediaEvent::Video(watch_frame(&identity, generation)))
+        .await
+        .unwrap();
+    let frames = worker.frames.clone();
+    assert_eq!(frames.lock().unwrap().len(), 1);
+    events.try_iter().for_each(drop);
+
+    let (gateway, mut outgoing) = async_mpsc::channel(1);
+    gateway
+        .try_send(GatewayCommand::Send {
+            op: 42,
+            data: json!({"blocked":true}),
+        })
+        .unwrap();
+    worker.gateway_commands = Some(gateway);
+    let stopping_identity = identity.clone();
+    let started = tokio::time::Instant::now();
+    let stopping = tokio::spawn(async move {
+        let result = worker.set_watch(stopping_identity, false, true).await;
+        (worker, result)
+    });
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if matches!(events.try_recv(),Ok(Event::WatchedStreams(streams)) if streams.is_empty())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("local stop must be visible without draining gateway commands");
+    println!(
+        "local watch stop published after {:?} with gateway queue full",
+        started.elapsed()
+    );
+    assert!(
+        frames.lock().unwrap().is_empty(),
+        "coalesced pixels are removed before network teardown"
+    );
+    assert!(
+        !stopping.is_finished(),
+        "gateway backpressure is still present during the local acknowledgment"
+    );
+    assert!(matches!(
+        outgoing.recv().await,
+        Some(GatewayCommand::Send { op: 42, .. })
+    ));
+    let GatewayCommand::VoiceState(payload) = outgoing.recv().await.unwrap() else {
+        panic!("stop viewer demand");
+    };
+    assert!(payload.viewer_stream_keys.is_empty());
+    let (mut worker, result) = stopping.await.unwrap();
+    result.unwrap();
+    worker
+        .media_event(MediaEvent::Video(watch_frame(&identity, generation)))
+        .await
+        .unwrap();
+    assert!(
+        frames.lock().unwrap().is_empty(),
+        "a buffered post-stop frame must not reappear"
+    );
+    assert!(
+        worker.media.is_none(),
+        "the regression never opens native media devices"
+    );
+}
+
+#[tokio::test]
+async fn watch_stop_rewatch_rejects_old_same_sid_frames_and_end_notifications() {
+    let (mut worker, events, mut outgoing) = watch_worker();
+    let identity = "user_123_live".to_owned();
+    gateway_voice(&mut worker,json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"live","self_stream":true})).await;
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    let old = worker.video_generations[&identity];
+    worker
+        .set_watch(identity.clone(), false, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    let current = worker.video_generations[&identity];
+    assert!(current > old);
+    events.try_iter().for_each(drop);
+    worker
+        .media_event(MediaEvent::Video(watch_frame(&identity, old)))
+        .await
+        .unwrap();
+    assert!(worker.frames.lock().unwrap().is_empty());
+    worker
+        .media_event(MediaEvent::Video(watch_frame(&identity, current)))
+        .await
+        .unwrap();
+    assert_eq!(worker.frames.lock().unwrap().len(), 1);
+    worker
+        .media_event(MediaEvent::VideoEnded {
+            track_id: "same-screen-sid".into(),
+            participant: identity.clone(),
+            watch_generation: old,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.frames.lock().unwrap().len(),
+        1,
+        "late stop from previous watch cannot clear the new frame"
+    );
+    assert!(
+        events.try_iter().next().is_none(),
+        "old lifecycle notifications cannot leak to the UI"
+    );
+    worker
+        .media_event(MediaEvent::VideoEnded {
+            track_id: "same-screen-sid".into(),
+            participant: identity,
+            watch_generation: current,
+        })
+        .await
+        .unwrap();
+    assert!(worker.frames.lock().unwrap().is_empty());
+    assert!(matches!(
+        events.try_recv(),
+        Ok(Event::Media(MediaEvent::VideoEnded { .. }))
+    ));
+}
+
 #[tokio::test]
 async fn selected_guild_sync_matches_desktop_payload_and_session_deduplication() {
     // GatewayGuildSubscriptionSynchronizer.ts:29-51,90-95; GuildSync.ts:8-11.
