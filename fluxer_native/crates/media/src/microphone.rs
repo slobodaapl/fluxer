@@ -60,6 +60,9 @@ impl MicrophoneCapture {
         let (task, track) = process(rx, controls, mixer, events, channels, active);
         Ok((Self { device, task }, track))
     }
+    pub fn stop(&self) -> Result<()> {
+        self.device.stop()
+    }
     pub fn controller(&self) -> super::microphone_device::CaptureControl {
         self.device.controller()
     }
@@ -72,8 +75,8 @@ impl MicrophoneCapture {
 }
 impl Drop for MicrophoneCapture {
     fn drop(&mut self) {
-        self.device.stop();
         self.task.abort();
+        self.device.shutdown();
     }
 }
 fn process(
@@ -407,6 +410,53 @@ mod tests {
                 .is_err()
         );
         task.abort();
+    }
+    #[tokio::test]
+    async fn default_sdk_audio_processing_forwards_nonzero_pcm_without_remote_audio() {
+        let (input, rx) = mpsc::channel(8);
+        let (events, mut errors) = mpsc::channel(32);
+        let controls = Arc::new(Mutex::new(InputRuntime::default()));
+        let (task, track) = process(
+            rx,
+            controls,
+            Arc::new(Mutex::new(PlaybackMixer::new())),
+            events,
+            1,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut output = NativeAudioStream::new(track.rtc_track(), 48_000, 1);
+        let mut nonzero = false;
+        for frame in 0..30 {
+            let data = (0..480)
+                .map(|sample| {
+                    let phase =
+                        (frame * 480 + sample) as f32 * 200.0 * std::f32::consts::TAU / 48_000.0;
+                    ((phase.sin() + 0.4 * (phase * 2.0).sin()) * 8000.0) as i16
+                })
+                .collect();
+            input
+                .send(Pcm {
+                    data,
+                    sample_rate: 48_000,
+                    channels: 1,
+                })
+                .await
+                .unwrap();
+            nonzero |= next(&mut output)
+                .await
+                .data
+                .iter()
+                .any(|sample| sample.abs() > 10);
+        }
+        while let Ok(event) = errors.try_recv() {
+            assert!(!matches!(event, MediaEvent::Error(_)), "{event:?}");
+        }
+        assert!(
+            nonzero,
+            "default AEC/NS/AGC must deliver actual input without needing a remote speaker stream"
+        );
+        task.abort();
+        output.close();
     }
     #[tokio::test]
     async fn sdk_resamples_44100_capture_before_native_publication() {

@@ -12,11 +12,13 @@ use tokio::sync::mpsc as async_mpsc;
 enum Command {
     Enabled(bool, mpsc::SyncSender<Result<()>>),
     Device(String, mpsc::SyncSender<Result<()>>),
-    Stop,
+    Stop(mpsc::SyncSender<Result<()>>),
+    Shutdown,
 }
 #[derive(Clone)]
 pub(crate) struct CaptureControl {
     commands: mpsc::Sender<Command>,
+    stopped: Arc<AtomicBool>,
 }
 impl CaptureControl {
     fn request(&self, make: impl FnOnce(mpsc::SyncSender<Result<()>>) -> Command) -> Result<()> {
@@ -33,8 +35,21 @@ impl CaptureControl {
     pub fn set_device(&self, id: &str) -> Result<()> {
         self.request(|tx| Command::Device(id.into(), tx))
     }
-    pub fn stop(&self) {
-        let _ = self.commands.send(Command::Stop);
+    pub fn stop(&self) -> Result<()> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let answer = self.request(Command::Stop);
+        // Another owner (e.g. remote room closure) may already have stopped
+        // the worker; repeated teardown succeeds once physical release finished.
+        if self.stopped.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            answer
+        }
+    }
+    pub fn shutdown(&self) {
+        let _ = self.commands.send(Command::Shutdown);
     }
 }
 pub(crate) struct CaptureDevice {
@@ -44,8 +59,11 @@ impl CaptureDevice {
     pub fn controller(&self) -> CaptureControl {
         self.control.clone()
     }
-    pub fn stop(&self) {
+    pub fn stop(&self) -> Result<()> {
         self.control.stop()
+    }
+    pub fn shutdown(&self) {
+        self.control.shutdown()
     }
     pub fn new(
         selected: Option<&str>,
@@ -59,6 +77,8 @@ impl CaptureDevice {
             validate(id)?;
         }
         let (tx, rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let worker_stopped = stopped.clone();
         std::thread::Builder::new()
             .name("fluxer-microphone".into())
             .spawn(move || {
@@ -104,11 +124,21 @@ impl CaptureDevice {
                             active.store(source.is_some(), Ordering::Release);
                             let _ = result.send(answer);
                         }
-                        Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Ok(Command::Stop(result)) => {
+                            release_input(&mut source, &active);
+                            worker_stopped.store(true, Ordering::Release);
+                            // The ACK happens after native stream destruction,
+                            // never merely after accepting the command.
+                            let _ = result.send(Ok(()));
+                            break;
+                        }
+                        Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                         Err(mpsc::RecvTimeoutError::Timeout) => (),
                     }
-                    if pcm.is_closed() || events.is_closed() { break; }
-                if let Some(input) = &source
+                    if pcm.is_closed() || events.is_closed() {
+                        break;
+                    }
+                    if let Some(input) = &source
                         && let Err(error) = input.pump(&pcm)
                     {
                         let _ = events.try_send(MediaEvent::Error(error.to_string()));
@@ -116,19 +146,26 @@ impl CaptureDevice {
                         active.store(false, Ordering::Release);
                     }
                 }
-                drop(source);
-                active.store(false, Ordering::Release);
+                release_input(&mut source, &active);
+                worker_stopped.store(true, Ordering::Release);
             })
             .map_err(|e| MediaError::Audio(e.to_string()))?;
         Ok(Self {
-            control: CaptureControl { commands: tx },
+            control: CaptureControl {
+                commands: tx,
+                stopped,
+            },
         })
     }
 }
 impl Drop for CaptureDevice {
     fn drop(&mut self) {
-        self.stop();
+        self.shutdown();
     }
+}
+fn release_input<T>(source: &mut Option<T>, active: &AtomicBool) {
+    source.take();
+    active.store(false, Ordering::Release);
 }
 fn validate(id: &str) -> Result<()> {
     if devices()?.iter().any(|d| d.id == id) {
@@ -196,3 +233,42 @@ mod platform;
 use platform::PlatformInput;
 #[cfg(not(target_os = "linux"))]
 pub(crate) use platform::devices;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct RecordingSource(Arc<AtomicBool>);
+    impl Drop for RecordingSource {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    #[test]
+    fn stop_acknowledges_only_after_device_owner_releases_capture() {
+        let (commands, rx) = mpsc::channel();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let control = CaptureControl {
+            commands,
+            stopped: stopped.clone(),
+        };
+        let recording = Arc::new(AtomicBool::new(true));
+        let active = Arc::new(AtomicBool::new(true));
+        let device_recording = recording.clone();
+        let device_active = active.clone();
+        let owner = std::thread::spawn(move || {
+            let mut source = Some(RecordingSource(device_recording));
+            if let Command::Stop(result) = rx.recv().unwrap() {
+                release_input(&mut source, &device_active);
+                stopped.store(true, Ordering::Release);
+                result.send(Ok(())).unwrap();
+            } else {
+                panic!("expected explicit stop request");
+            }
+        });
+        control.stop().unwrap();
+        assert!(!recording.load(Ordering::Acquire));
+        assert!(!active.load(Ordering::Acquire));
+        owner.join().unwrap();
+        control.stop().expect("repeated stop is idempotent");
+    }
+}
