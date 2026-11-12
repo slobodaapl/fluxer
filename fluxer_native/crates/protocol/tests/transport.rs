@@ -340,7 +340,10 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
         Url::parse(&format!("ws://{address}/gateway")).unwrap(),
         SessionToken::new("secret").unwrap(),
     )
-    .with_e2ee_capable(true);
+    .with_e2ee_capable(true)
+    // Lifecycle regression uses the existing codec-fallback mode; default
+    // bidirectional zstd wire tests live alongside Gateway's source fixtures.
+    .with_compression_enabled(false);
     let client = tokio::spawn(gateway.run(events_tx, commands_rx));
     timeout(Duration::from_secs(8), async {
         let mut connections = 0;
