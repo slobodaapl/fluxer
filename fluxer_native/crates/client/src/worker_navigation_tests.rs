@@ -446,6 +446,47 @@ async fn invalid_replacement_query_stops_old_poll_and_scope_precedence_matches_d
 }
 
 #[tokio::test]
+async fn detached_search_can_page_and_sort_after_cross_channel_jump_without_replacing_timeline() {
+    let (mut worker, _) = demo();
+    worker.seed_demo_search().unwrap();
+    finish_history(&mut worker).await;
+    let channel = Snowflake(21);
+    worker.state.selected_channel = Some(channel);
+    worker.navigation_context(channel);
+    let mut view = history([900, 901], true);
+    view.channel_id = channel;
+    install_history(&mut worker, view);
+    worker
+        .search_messages(
+            11.into(),
+            "release".into(),
+            SearchScope::Current,
+            None,
+            SearchSort::Oldest,
+            2,
+        )
+        .unwrap();
+    loop {
+        let event = worker.navigation.rx.recv().await.unwrap();
+        let done = matches!(event, NavigationEvent::Search { .. });
+        worker.navigation_event(event);
+        if done {
+            break;
+        }
+    }
+    let search = &worker.navigation.searches[&Snowflake(11)].snapshot;
+    assert_eq!(search.status, SearchStatus::Ready);
+    assert_eq!(search.page, 2);
+    assert_eq!(search.messages.first().unwrap().id, Snowflake(1025));
+    assert_eq!(worker.state.selected_channel, Some(channel));
+    assert_eq!(
+        worker.navigation.history[&channel].snapshot.message_ids,
+        vec![Snowflake(900), Snowflake(901)]
+    );
+    assert!(worker.navigation.acks.is_empty());
+}
+
+#[tokio::test]
 async fn only_painted_window_messages_can_be_acknowledged_and_never_the_unseen_latest() {
     let (mut worker, _) = demo();
     let channel = Snowflake(11);
@@ -520,7 +561,7 @@ async fn ack_failure_reports_exact_pending_id_without_advancing_read_state_and_s
         channel,
         id: 149.into(),
         token,
-        result: Ok(()),
+        result: Ok(Value::Null),
     });
     assert_eq!(
         worker.state.read_states[&channel].last_message_id,
@@ -568,6 +609,66 @@ async fn pins_open_ack_uses_pin_timestamp_guard_and_never_marks_message_history_
 }
 
 #[tokio::test]
+async fn ack_response_uses_server_cursor_mentions_and_versions_and_rejects_stale_server_rows() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    let epoch = worker.navigation.epoch;
+    worker.state.read_states.get_mut(&channel).unwrap().version = Some("6".into());
+    let respond = |worker: &mut Worker, version: &str, cursor: &str, count: u32| {
+        let token = worker.navigation.token();
+        worker.navigation.acks.insert(
+            channel,
+            Mutation {
+                token,
+                _task: Task(tokio::spawn(pending())),
+            },
+        );
+        worker.navigation_event(NavigationEvent::Ack{epoch,channel,id:149.into(),token,result:Ok(json!({"read_states":[{"id":"11","last_message_id":cursor,"mention_count":count,"version":version}]}))});
+    };
+    respond(&mut worker, "0007", "98", 3);
+    let read = &worker.state.read_states[&channel];
+    assert_eq!(read.last_message_id, Some(98.into()));
+    assert_eq!(read.mention_count, 3);
+    assert_eq!(read.version.as_deref(), Some("0007"));
+    worker
+        .state
+        .apply_gateway(
+            "MESSAGE_ACK",
+            json!({"channel_id":"11","message_id":"130","mention_count":1,"version":"9"}),
+        )
+        .unwrap();
+    respond(&mut worker, "8", "149", 0);
+    let read = &worker.state.read_states[&channel];
+    assert_eq!(read.last_message_id, Some(130.into()));
+    assert_eq!(read.mention_count, 1);
+    assert_eq!(read.version.as_deref(), Some("9"));
+    assert!(events.try_iter().any(|event|matches!(event,Event::MessageAckResult{channel_id,message_id,error:None}if channel_id==channel&&message_id==Snowflake(149))));
+}
+
+#[tokio::test]
+async fn older_backfill_of_live_window_keeps_live_arrivals_without_inventing_a_newer_gap() {
+    let (mut worker, _) = demo();
+    let mut snapshot = history(100..150, true);
+    snapshot.loading = true;
+    let token = install_history(&mut worker, snapshot);
+    worker.state.insert_message(messages(150, 150).remove(0));
+    worker.navigation_message_inserted(11.into(), 150.into());
+    worker.navigation_event(NavigationEvent::History {
+        epoch: worker.navigation.epoch,
+        channel: 11.into(),
+        token,
+        request: HistoryRequest::Before(100.into()),
+        result: Ok(serde_json::to_value(messages(50, 99)).unwrap()),
+    });
+    let view = &worker.navigation.history[&Snowflake(11)].snapshot;
+    assert_eq!(
+        view.message_ids,
+        (50..151).map(Snowflake).collect::<Vec<_>>()
+    );
+    assert!(view.latest && !view.has_newer);
+}
+
+#[tokio::test]
 async fn pin_permissions_allow_read_only_channel_with_pin_permission_and_honor_disabled_operation()
 {
     let (mut worker, _) = demo();
@@ -603,6 +704,152 @@ async fn pin_permissions_allow_read_only_channel_with_pin_permission_and_honor_d
         .extra
         .insert("disabled_operations".into(), json!(16));
     assert!(!worker.can_pin(channel));
+    assert!(worker.state.can_pin_messages(40.into()));
+    worker
+        .state
+        .channels
+        .get_mut(&Snowflake(40))
+        .unwrap()
+        .recipients
+        .push(User {
+            id: Snowflake(0),
+            username: "Fluxerbot".into(),
+            ..Default::default()
+        });
+    assert!(!worker.state.can_pin_messages(40.into()));
+    assert!(!worker.state.can_pin_messages(999999.into()));
+}
+
+#[tokio::test]
+async fn detached_search_and_pins_follow_gateway_edit_reaction_and_delete_without_timeline_insertion()
+ {
+    let (mut worker, _) = demo();
+    let channel = Snowflake(11);
+    install_search(&mut worker, channel);
+    let message = messages(777, 777).remove(0);
+    worker
+        .navigation
+        .searches
+        .get_mut(&channel)
+        .unwrap()
+        .snapshot
+        .messages = vec![message.clone()];
+    worker.navigation.pins.insert(
+        channel,
+        PinsJob {
+            token: 0,
+            snapshot: PinsSnapshot {
+                channel_id: channel,
+                items: vec![PinnedMessage {
+                    message,
+                    pinned_at: "2026-11-12T12:00:00Z".into(),
+                }],
+                loading: false,
+                fetched: true,
+                has_more: false,
+                can_manage: true,
+                error: None,
+            },
+            task: None,
+            open: true,
+        },
+    );
+    worker.navigation_gateway("MESSAGE_REACTION_ADD",&json!({"channel_id":"11","message_id":"777","user_id":"100","emoji":{"name":"😀","id":null}}));
+    assert_eq!(
+        worker.navigation.searches[&channel].snapshot.messages[0].reactions[0].count,
+        1
+    );
+    assert!(
+        worker.navigation.pins[&channel].snapshot.items[0]
+            .message
+            .reactions[0]
+            .me
+    );
+    worker.navigation_gateway(
+        "MESSAGE_UPDATE",
+        &json!({"channel_id":"11","id":"777","content":"edited preview","pinned":true}),
+    );
+    assert_eq!(
+        worker.navigation.searches[&channel].snapshot.messages[0].content,
+        "edited preview"
+    );
+    assert!(worker.navigation.searches[&channel].snapshot.messages[0].pinned);
+    assert_eq!(
+        worker.navigation.pins[&channel].snapshot.items[0]
+            .message
+            .content,
+        "edited preview"
+    );
+    assert!(!worker.state.messages[&channel].contains_key(&Snowflake(777)));
+    assert_eq!(
+        worker.state.read_states[&channel].last_message_id,
+        Some(10.into())
+    );
+    worker.navigation_gateway("MESSAGE_DELETE", &json!({"channel_id":"11","id":"777"}));
+    assert!(
+        worker.navigation.searches[&channel]
+            .snapshot
+            .messages
+            .is_empty()
+    );
+    assert!(worker.navigation.pins[&channel].snapshot.items.is_empty());
+}
+
+#[tokio::test]
+async fn live_pin_success_does_not_fetch_twice_and_gateway_invalidation_is_the_fetch_trigger() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    worker.demo = false;
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints("http://127.0.0.1:1/api", "ws://127.0.0.1:1/gateway").unwrap(),
+        )
+        .unwrap(),
+    );
+    worker.navigation.pins.insert(
+        channel,
+        PinsJob {
+            token: 0,
+            snapshot: PinsSnapshot {
+                channel_id: channel,
+                items: Vec::new(),
+                loading: false,
+                fetched: true,
+                has_more: false,
+                can_manage: true,
+                error: None,
+            },
+            task: None,
+            open: true,
+        },
+    );
+    let token = worker.navigation.token();
+    worker.navigation.mutations.insert(
+        (channel, 777.into()),
+        Mutation {
+            token,
+            _task: Task(tokio::spawn(pending())),
+        },
+    );
+    worker.navigation_event(NavigationEvent::Pin {
+        epoch: worker.navigation.epoch,
+        channel,
+        id: 777.into(),
+        token,
+        pinned: true,
+        result: Ok(()),
+    });
+    assert!(worker.navigation.pins[&channel].task.is_none());
+    assert!(worker.navigation.pins[&channel].snapshot.fetched);
+    assert!(events.try_iter().any(|event|matches!(event,Event::PinMutation{message_id,pending:false,error:None,..}if message_id==Snowflake(777))));
+    worker.navigation_gateway(
+        "CHANNEL_PINS_UPDATE",
+        &json!({"channel_id":"11","last_pin_timestamp":"2026-11-12T12:00:00Z"}),
+    );
+    assert!(worker.navigation.pins[&channel].task.is_some());
+    assert!(worker.navigation.pins[&channel].snapshot.loading);
+    assert_eq!(worker.navigation.next, token + 1);
+    worker.clear_navigation();
 }
 
 #[tokio::test]

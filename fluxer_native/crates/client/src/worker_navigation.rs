@@ -78,7 +78,7 @@ pub(super) enum NavigationEvent {
         channel: Snowflake,
         id: Snowflake,
         token: u64,
-        result: Result<()>,
+        result: Result<Value>,
     },
     PinAck {
         epoch: u64,
@@ -141,7 +141,8 @@ impl Worker {
         self.navigation.demo_pins.clear();
     }
     pub(super) fn navigation_context(&mut self, channel: Snowflake) {
-        self.navigation.searches.retain(|id, _| *id == channel);
+        // Search panes retain their detached context across explicit result
+        // jumps. CloseSearch/replacement/account reset own their cancellation.
         for (id, pins) in &mut self.navigation.pins {
             if *id != channel {
                 pins.task = None;
@@ -157,7 +158,7 @@ impl Worker {
         }
         self.navigation.acks.retain(|id, _| *id == channel);
     }
-    fn require_history(&self, channel: Snowflake) -> Result<()> {
+    pub(super) fn require_history(&self, channel: Snowflake) -> Result<()> {
         let target = self
             .state
             .channels
@@ -176,24 +177,7 @@ impl Worker {
         Ok(())
     }
     fn can_pin(&self, channel: Snowflake) -> bool {
-        self.state
-            .channels
-            .get(&channel)
-            .zip(self.state.current_user.as_ref())
-            .is_some_and(|(target, user)| {
-                let permissions = self.state.permissions_for(channel, user.id);
-                let disabled = target
-                    .guild_id
-                    .and_then(|id| self.state.guilds.get(&id))
-                    .and_then(|guild| guild.extra.get("disabled_operations"))
-                    .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
-                    .unwrap_or(0);
-                let system_dm = target.kind == ChannelType::Dm
-                    && target.recipients.iter().any(|user| user.id == Snowflake(0));
-                !system_dm
-                    && disabled & (1 << 4) == 0
-                    && (target.kind.is_private() || permissions.contains(Permissions::PIN_MESSAGES))
-            })
+        self.state.can_pin_messages(channel)
     }
     pub(super) fn close_search(&mut self, channel: Snowflake) {
         self.navigation.searches.remove(&channel);
@@ -210,9 +194,6 @@ impl Worker {
         // Submitting even an unsearchable replacement ends the previous poll.
         self.navigation.searches.remove(&channel);
         self.require_history(channel)?;
-        if self.state.selected_channel != Some(channel) {
-            return Err("Choose the search context first".into());
-        }
         if page == 0 {
             return Err("Search pages start at one".into());
         }
@@ -289,7 +270,11 @@ impl Worker {
         if let Some(guild) = guild {
             params["context_guild_id"] = guild.to_string().into();
         }
-        if let Some(ids) = params.get("channel_id").cloned() {
+        if let Some(ids) = params
+            .get("channel_id")
+            .filter(|ids| ids.as_array().is_some_and(|ids| !ids.is_empty()))
+            .cloned()
+        {
             params["channel_ids"] = ids;
         }
         params["scope"] = scope.as_str().into();
@@ -796,10 +781,9 @@ impl Worker {
                 client
                     .acknowledge(&channel.to_string(), &id.to_string())
                     .await
-                    .map(|_| ())
                     .map_err(error)
             } else {
-                Ok(())
+                Ok(Value::Null)
             };
             let _ = tx.send(NavigationEvent::Ack {
                 epoch,
@@ -893,6 +877,7 @@ impl Worker {
         let Some(channel) = channel else { return };
         let id = data
             .get("id")
+            .or_else(|| data.get("message_id"))
             .and_then(Value::as_str)
             .and_then(|id| id.parse::<Snowflake>().ok());
         if name == "MESSAGE_CREATE" {
@@ -900,6 +885,52 @@ impl Worker {
                 self.navigation_message_inserted(channel, id);
             }
             return;
+        }
+        if matches!(
+            name,
+            "MESSAGE_UPDATE" | "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK"
+        ) || name.starts_with("MESSAGE_REACTION_")
+        {
+            let ids = if name == "MESSAGE_DELETE_BULK" {
+                data.get("ids")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| id.as_str()?.parse::<Snowflake>().ok())
+                    .collect::<BTreeSet<_>>()
+            } else {
+                id.into_iter().collect()
+            };
+            let mut snapshots = Vec::new();
+            for job in self.navigation.searches.values_mut() {
+                let mut changed = false;
+                job.snapshot.messages.retain_mut(|message| {
+                    if message.channel_id != channel || !ids.contains(&message.id) {
+                        return true;
+                    }
+                    match self
+                        .state
+                        .reduce_detached_message(message, name, data.clone())
+                    {
+                        Ok(Some(updated)) => {
+                            *message = updated;
+                            changed = true;
+                            true
+                        }
+                        Ok(None) => {
+                            changed = true;
+                            false
+                        }
+                        Err(_) => true,
+                    }
+                });
+                if changed {
+                    snapshots.push(job.snapshot.clone());
+                }
+            }
+            for snapshot in snapshots {
+                self.emit(Event::Search(snapshot));
+            }
         }
         if name == "CHANNEL_PINS_UPDATE" {
             let open = self
@@ -932,6 +963,7 @@ impl Worker {
             };
             if let Some(history) = self.navigation.history.get_mut(&channel) {
                 history.snapshot.message_ids.retain(|id| !ids.contains(id));
+                history.arrived.retain(|id| !ids.contains(id));
                 self.emit(Event::History(
                     self.navigation.history[&channel].snapshot.clone(),
                 ));
@@ -942,7 +974,7 @@ impl Worker {
                     .retain(|pin| !ids.contains(&pin.message.id));
                 self.emit(Event::Pins(self.navigation.pins[&channel].snapshot.clone()));
             }
-        } else if name == "MESSAGE_UPDATE" {
+        } else if name == "MESSAGE_UPDATE" || name.starts_with("MESSAGE_REACTION_") {
             let Some(id) = id else { return };
             let mut changed = None;
             if let Some(pins) = self.navigation.pins.get_mut(&channel) {
@@ -953,17 +985,11 @@ impl Worker {
                     .items
                     .iter_mut()
                     .find(|pin| pin.message.id == id)
+                    && let Ok(Some(message)) =
+                        self.state
+                            .reduce_detached_message(&pin.message, name, data.clone())
                 {
-                    let mut message =
-                        serde_json::to_value(&pin.message).expect("message serializes");
-                    if let (Some(message), Some(update)) =
-                        (message.as_object_mut(), data.as_object())
-                    {
-                        message.extend(update.clone());
-                    }
-                    if let Ok(message) = self.state.decode_api(message) {
-                        pin.message = message;
-                    }
+                    pin.message = message;
                 }
                 changed = Some(pins.snapshot.clone());
             }
@@ -1002,7 +1028,6 @@ impl Worker {
                 result,
             } => {
                 if epoch != self.navigation.epoch
-                    || self.state.selected_channel != Some(channel)
                     || !self
                         .navigation
                         .searches
@@ -1256,6 +1281,7 @@ impl Worker {
                     error: result.err(),
                 });
                 if succeeded
+                    && self.demo
                     && self
                         .navigation
                         .pins
@@ -1314,8 +1340,13 @@ impl Worker {
                 job.snapshot.loading = false;
                 match result {
                     Ok(messages) => {
+                        let was_latest = job.snapshot.latest;
                         apply_history_page(&mut job.snapshot, request, &messages, known_latest);
-                        if matches!(request, HistoryRequest::Latest) {
+                        if matches!(request, HistoryRequest::Latest)
+                            || (matches!(request, HistoryRequest::Before(_))
+                                && was_latest
+                                && job.snapshot.latest)
+                        {
                             let newest = job.snapshot.message_ids.last().copied();
                             job.snapshot.message_ids.extend(
                                 job.arrived
@@ -1325,6 +1356,11 @@ impl Worker {
                             );
                             job.snapshot.message_ids.sort_unstable();
                             job.snapshot.message_ids.dedup();
+                            if job.snapshot.message_ids.len() > 200 {
+                                let excess = job.snapshot.message_ids.len() - 200;
+                                job.snapshot.message_ids.drain(..excess);
+                                job.snapshot.has_older = true;
+                            }
                         } else if !job.arrived.is_empty() {
                             job.snapshot.has_newer = true;
                             job.snapshot.latest = false;
@@ -1358,13 +1394,34 @@ impl Worker {
                     return;
                 }
                 self.navigation.acks.remove(&channel);
+                let result = result.and_then(|body| {
+                    body.get("read_states")
+                        .map(|rows| {
+                            self.state
+                                .decode_api::<Vec<fluxer_core::ReadState>>(rows.clone())
+                                .map(Some)
+                                .map_err(error)
+                        })
+                        .unwrap_or(Ok(None))
+                });
                 self.emit(Event::MessageAckResult {
                     channel_id: channel,
                     message_id: id,
                     error: result.as_ref().err().cloned(),
                 });
                 match result {
-                    Ok(()) => {
+                    Ok(Some(rows)) => {
+                        for row in rows {
+                            if let Some(message) = row.last_message_id {
+                                // Use the authoritative server rows, including
+                                // mention counts and version ordering, rather
+                                // than synthesizing the originally requested ID.
+                                let _=self.state.apply_gateway("MESSAGE_ACK",json!({"channel_id":row.id,"message_id":message,"mention_count":row.mention_count,"version":row.version}));
+                            }
+                        }
+                        self.snapshot();
+                    }
+                    Ok(None) => {
                         let read = self.state.read_states.entry(channel).or_insert(
                             fluxer_core::ReadState {
                                 id: channel,
