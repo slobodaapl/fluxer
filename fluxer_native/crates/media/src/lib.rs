@@ -2,10 +2,20 @@
 //! Native media transport. Call credentials come from Fluxer's gateway, never
 //! from an embedded LiveKit API secret. Capture begins only when joining/sharing.
 
+mod audio;
+mod microphone;
+mod playback;
 mod screen;
 
+pub use audio::{AudioMixSettings, InputMode, ParticipantAudioSettings};
+
 use futures_util::StreamExt;
-use livekit::webrtc::{video_frame::VideoFormatType, video_stream::native::NativeVideoStream};
+use livekit::webrtc::{
+    audio_stream::native::{NativeAudioStream, NativeAudioStreamOptions},
+    peer_connection_factory::native::PeerConnectionFactoryExt,
+    video_frame::VideoFormatType,
+    video_stream::native::NativeVideoStream,
+};
 use livekit::{AudioProcessingOptions, options::TrackPublishOptions, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -88,6 +98,7 @@ pub enum MediaEvent {
     VideoEnded { track_id: String },
     ScreenShareStarted,
     ScreenShareStopped,
+    AudioLevels { input: f32, output: f32 },
     Error(String),
 }
 
@@ -128,6 +139,11 @@ pub struct MediaEngine {
     shared_audio_task: Option<JoinHandle<()>>,
     shared_audio_publication: Option<TrackSid>,
     shared_audio_settings: Arc<Mutex<SharedAudioSettings>>,
+    mixer: Arc<Mutex<audio::PlaybackMixer>>,
+    output: playback::PlaybackOutput,
+    input_controls: Arc<Mutex<microphone::InputRuntime>>,
+    input_capture: Option<microphone::MicrophoneCapture>,
+    audio_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl MediaEngine {
@@ -138,6 +154,8 @@ impl MediaEngine {
         audio
             .stop_recording()
             .map_err(|e| MediaError::Audio(e.to_string()))?;
+        let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
+        let output = playback::PlaybackOutput::new(mixer.clone());
         Ok(Self {
             audio,
             room: None,
@@ -157,6 +175,11 @@ impl MediaEngine {
             shared_audio_task: None,
             shared_audio_publication: None,
             shared_audio_settings: Arc::new(Mutex::new(SharedAudioSettings::default())),
+            mixer,
+            output,
+            input_controls: Arc::new(Mutex::new(microphone::InputRuntime::default())),
+            input_capture: None,
+            audio_tasks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -170,14 +193,7 @@ impl MediaEngine {
                     label: d.name,
                 })
                 .collect(),
-            outputs: self
-                .audio
-                .playout_devices()
-                .map(|d| AudioDevice {
-                    id: d.id.as_str().into(),
-                    label: d.name,
-                })
-                .collect(),
+            outputs: playback::devices(),
         }
     }
 
@@ -190,7 +206,12 @@ impl MediaEngine {
         self.audio
             .switch_recording_device(&device.id)
             .map_err(|e| MediaError::Audio(e.to_string()))?;
-        if self.muted || self.deafened || self.room.is_none() {
+        let testing = self
+            .input_controls
+            .lock()
+            .map(|c| c.testing)
+            .unwrap_or(false);
+        if !testing && (self.muted || self.deafened || self.room.is_none()) {
             self.audio
                 .stop_recording()
                 .map_err(|e| MediaError::Audio(e.to_string()))?;
@@ -199,14 +220,7 @@ impl MediaEngine {
     }
 
     pub fn set_output_device(&self, id: &str) -> Result<()> {
-        let device = self
-            .audio
-            .playout_devices()
-            .find(|d| d.id.as_str() == id)
-            .ok_or(MediaError::UnknownDevice("output"))?;
-        self.audio
-            .switch_playout_device(&device.id)
-            .map_err(|e| MediaError::Audio(e.to_string()))
+        self.output.set_device(id)
     }
 
     pub fn configure(&self, settings: AudioSettings) -> Result<()> {
@@ -263,7 +277,29 @@ impl MediaEngine {
         let (room, mut room_events) = Room::connect(endpoint, token, options)
             .await
             .map_err(|_| MediaError::Call("Unable to connect to the voice server".into()))?;
-        let mic = LocalAudioTrack::create_audio_track("Fluxer microphone", self.audio.rtc_source());
+        // Turn off WebRTC's direct speaker path before enabling our gain mixer.
+        // The public runtime factory owns the same ADM as PlatformAudio.
+        livekit::rtc_engine::lk_runtime::LkRuntime::instance()
+            .pc_factory()
+            .set_adm_playout_enabled(false);
+        if let Err(error) = self.output.start() {
+            let _ = room.close().await;
+            return Err(error);
+        }
+        let (tx, rx) = mpsc::channel(32);
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.events = Some(tx.clone());
+        }
+        if let Ok(mut controls) = self.input_controls.lock() {
+            controls.testing = false;
+            controls.blocked = self.muted || self.deafened;
+        }
+        let (capture, mic) = microphone::MicrophoneCapture::start(
+            &self.audio,
+            self.input_controls.clone(),
+            self.mixer.clone(),
+            tx.clone(),
+        );
         if self.muted || self.deafened {
             mic.mute();
             mic.disable();
@@ -279,30 +315,37 @@ impl MediaEngine {
             )
             .await
         {
+            drop(capture);
+            self.output.stop();
             let _ = self.audio.stop_recording();
             let _ = room.close().await;
             return Err(MediaError::Call(error.to_string()));
         }
-        if self.muted || self.deafened {
-            self.audio
-                .stop_recording()
-                .map_err(|e| MediaError::Audio(e.to_string()))?;
-        } else if let Err(error) = self.audio.start_recording() {
+        let recording = if self.muted || self.deafened {
+            self.audio.stop_recording()
+        } else {
+            self.audio.start_recording()
+        };
+        if let Err(error) = recording {
+            drop(capture);
+            self.output.stop();
             let _ = room.close().await;
             return Err(MediaError::Audio(error.to_string()));
         }
         self.room = Some(room);
         self.microphone = Some(mic);
+        self.input_capture = Some(capture);
         // Each call owns its cancellation flag. A previous capture thread must
         // never resume when a new call starts.
         self.stop = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel(32);
         self.events = Some(tx.clone());
         let state = self.state.clone();
         let stop = self.stop.clone();
         let video_tasks = self.video_tasks.clone();
         let audio = self.audio.clone();
         let microphone = self.microphone.clone();
+        let mixer = self.mixer.clone();
+        let audio_tasks = self.audio_tasks.clone();
         let _ = tx.try_send(MediaEvent::Connected);
         self.room_task = Some(tokio::spawn(async move {
             while let Some(event) = room_events.recv().await {
@@ -329,6 +372,14 @@ impl MediaEngine {
                             mic.disable();
                         }
                         let _ = audio.stop_recording();
+                        if let Ok(mut m) = mixer.lock() {
+                            m.clear();
+                        }
+                        if let Ok(mut tasks) = audio_tasks.lock() {
+                            for (_, task) in tasks.drain() {
+                                task.abort();
+                            }
+                        }
                         if let Ok(mut tasks) = video_tasks.lock() {
                             for (_, task) in tasks.drain() {
                                 task.abort();
@@ -338,12 +389,38 @@ impl MediaEngine {
                     }
                     RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Audio(track),
+                        participant,
                         ..
                     } => {
-                        if let Ok(mut s) = state.lock() {
-                            if s.deafened {
-                                track.disable();
+                        let id = track.sid().to_string();
+                        let identity = participant.identity().to_string();
+                        let mut stream = NativeAudioStream::with_options(
+                            track.rtc_track(),
+                            48_000,
+                            2,
+                            NativeAudioStreamOptions {
+                                queue_size_frames: Some(4),
+                            },
+                        );
+                        if let Ok(mut m) = mixer.lock() {
+                            m.add_track(id.clone(), identity);
+                        }
+                        let frame_id = id.clone();
+                        let track_mixer = mixer.clone();
+                        let task = tokio::spawn(async move {
+                            while let Some(frame) = stream.next().await {
+                                if let Ok(mut m) = track_mixer.lock() {
+                                    m.push(&frame_id, &frame.data, frame.num_channels);
+                                }
                             }
+                            stream.close();
+                        });
+                        if let Ok(mut tasks) = audio_tasks.lock() {
+                            if let Some(old) = tasks.insert(id, task) {
+                                old.abort();
+                            }
+                        }
+                        if let Ok(mut s) = state.lock() {
                             s.remotes.insert(track.sid().to_string(), track);
                         }
                         None
@@ -352,6 +429,15 @@ impl MediaEngine {
                         track: RemoteTrack::Audio(track),
                         ..
                     } => {
+                        let id = track.sid().to_string();
+                        if let Ok(mut tasks) = audio_tasks.lock() {
+                            if let Some(task) = tasks.remove(&id) {
+                                task.abort();
+                            }
+                        }
+                        if let Ok(mut m) = mixer.lock() {
+                            m.tracks.remove(&id);
+                        }
                         if let Ok(mut s) = state.lock() {
                             s.remotes.remove(&track.sid().to_string());
                         }
@@ -433,17 +519,16 @@ impl MediaEngine {
         self.deafened = deafened;
         if let Ok(mut state) = self.state.lock() {
             state.deafened = deafened;
-            for track in state.remotes.values() {
-                if deafened {
-                    track.disable();
-                } else {
-                    track.enable();
-                }
-            }
+        }
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.deafened = deafened;
         }
         self.apply_microphone_state()
     }
     fn apply_microphone_state(&self) -> Result<()> {
+        if let Ok(mut controls) = self.input_controls.lock() {
+            controls.blocked = self.muted || self.deafened;
+        }
         if let Some(mic) = &self.microphone {
             if self.muted || self.deafened {
                 mic.mute();
@@ -458,6 +543,90 @@ impl MediaEngine {
                 mic.enable();
                 mic.unmute();
             }
+        }
+        Ok(())
+    }
+    pub fn configure_mixer(&self, settings: AudioMixSettings) -> Result<()> {
+        if !settings.validate() {
+            return Err(MediaError::InvalidSetting(
+                "audio gain/activation setting is outside its valid range",
+            ));
+        }
+        self.mixer
+            .lock()
+            .map_err(|_| MediaError::Audio("Audio mixer unavailable".into()))?
+            .master_gain = settings.output_gain;
+        self.input_controls
+            .lock()
+            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?
+            .settings = settings;
+        Ok(())
+    }
+    pub fn set_push_to_talk_pressed(&self, pressed: bool) -> Result<()> {
+        self.input_controls
+            .lock()
+            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?
+            .ptt = pressed;
+        Ok(())
+    }
+    pub fn set_participant_audio(
+        &self,
+        identity: &str,
+        settings: ParticipantAudioSettings,
+    ) -> Result<()> {
+        if identity.is_empty() || !settings.validate() {
+            return Err(MediaError::InvalidSetting(
+                "invalid participant audio setting",
+            ));
+        }
+        self.mixer
+            .lock()
+            .map_err(|_| MediaError::Audio("Audio mixer unavailable".into()))?
+            .participants
+            .insert(identity.into(), settings);
+        Ok(())
+    }
+    /// Explicit microphone meter test; it does not publish or play microphone
+    /// audio, and it stops on joining a call or invoking stop_microphone_test.
+    pub fn start_microphone_test(&mut self) -> Result<mpsc::Receiver<MediaEvent>> {
+        if self.room.is_some() {
+            return Err(MediaError::InvalidSetting(
+                "leave the call before starting a microphone test",
+            ));
+        }
+        self.stop_microphone_test()?;
+        let (tx, rx) = mpsc::channel(16);
+        self.input_controls
+            .lock()
+            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?
+            .testing = true;
+        let (capture, _unpublished) = microphone::MicrophoneCapture::start(
+            &self.audio,
+            self.input_controls.clone(),
+            self.mixer.clone(),
+            tx,
+        );
+        if let Err(error) = self.audio.start_recording() {
+            drop(capture);
+            if let Ok(mut c) = self.input_controls.lock() {
+                c.testing = false;
+            }
+            return Err(MediaError::Audio(error.to_string()));
+        }
+        self.input_capture = Some(capture);
+        Ok(rx)
+    }
+    pub fn stop_microphone_test(&mut self) -> Result<()> {
+        let mut controls = self
+            .input_controls
+            .lock()
+            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?;
+        if controls.testing {
+            controls.testing = false;
+            self.input_capture.take();
+            self.audio
+                .stop_recording()
+                .map_err(|e| MediaError::Audio(e.to_string()))?;
         }
         Ok(())
     }
@@ -643,6 +812,21 @@ impl MediaEngine {
     pub async fn disconnect(&mut self) -> Result<()> {
         // Release capture before network operations, including failed teardown.
         self.stop.store(true, Ordering::Release);
+        self.input_capture.take();
+        self.output.stop();
+        if let Ok(mut controls) = self.input_controls.lock() {
+            controls.testing = false;
+            controls.ptt = false;
+        }
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.clear();
+            mixer.events = None;
+        }
+        if let Ok(mut tasks) = self.audio_tasks.lock() {
+            for (_, task) in tasks.drain() {
+                task.abort();
+            }
+        }
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
@@ -688,6 +872,17 @@ impl MediaEngine {
 impl Drop for MediaEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.input_capture.take();
+        self.output.stop();
+        if let Ok(mut mixer) = self.mixer.lock() {
+            mixer.clear();
+            mixer.events = None;
+        }
+        if let Ok(mut tasks) = self.audio_tasks.lock() {
+            for (_, task) in tasks.drain() {
+                task.abort();
+            }
+        }
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
         }
