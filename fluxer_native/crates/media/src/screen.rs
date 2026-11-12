@@ -65,6 +65,7 @@ impl ScreenShareOptions {
                 max_framerate: self.fps as f64,
             }),
             simulcast: false,
+            stream: "screen_share".into(),
             degradation_preference: Some(
                 livekit::webrtc::rtp_parameters::DegradationPreference::MaintainFramerate,
             ),
@@ -158,12 +159,16 @@ pub(crate) fn video_source(options: &ScreenShareOptions) -> NativeVideoSource {
 
 pub(crate) struct ScreenSession {
     stop: Arc<AtomicBool>,
+    has_frame: Arc<AtomicBool>,
     thread: thread::Thread,
 }
 impl ScreenSession {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.thread.unpark();
+    }
+    pub fn has_frame(&self) -> bool {
+        self.has_frame.load(Ordering::Acquire) && !self.is_stopped()
     }
     pub fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
@@ -184,6 +189,8 @@ pub(crate) fn start(
     config.validate()?;
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
+    let has_frame = Arc::new(AtomicBool::new(false));
+    let first_frame_ready = has_frame.clone();
     // DesktopCapturer must be created, driven, and dropped on its capture thread.
     let capture_thread = thread::Builder::new()
         .name("fluxer-screen-capture".into())
@@ -250,6 +257,7 @@ pub(crate) fn start(
                             buffer,
                         });
                         if first_frame {
+                            first_frame_ready.store(true, Ordering::Release);
                             let _ = tx_callback.try_send(MediaEvent::ScreenShareStarted);
                             first_frame = false;
                         }
@@ -279,6 +287,7 @@ pub(crate) fn start(
         .map_err(|e| MediaError::Screen(e.to_string()))?;
     Ok(ScreenSession {
         stop,
+        has_frame,
         thread: capture_thread.thread().clone(),
     })
 }
@@ -297,6 +306,26 @@ fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn picker_readiness_requires_current_first_frame_and_ends_on_stop() {
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut session = ScreenSession {
+            stop: Arc::new(AtomicBool::new(false)),
+            has_frame: ready.clone(),
+            thread: thread::current(),
+        };
+        assert!(
+            !session.has_frame(),
+            "pending picker is not capture consent"
+        );
+        ready.store(true, Ordering::Release);
+        assert!(session.has_frame());
+        session.stop();
+        assert!(
+            !session.has_frame(),
+            "stale first-frame event cannot reopen stopped capture"
+        );
+    }
     #[test]
     fn production_screen_policy_has_one_selected_rate_layer_at_real_display_sizes() {
         let settings = ScreenShareOptions {
