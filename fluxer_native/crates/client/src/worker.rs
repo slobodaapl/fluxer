@@ -20,6 +20,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
+#[path = "worker_navigation.rs"]
+mod navigation_flow;
 
 type Result<T> = std::result::Result<T, String>;
 const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
@@ -127,6 +129,7 @@ impl VoiceTarget {
 }
 
 pub(crate) struct Worker {
+    navigation: navigation_flow::NavigationState,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     saved_session: Option<SavedSession>,
@@ -177,6 +180,7 @@ impl Worker {
         frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     ) -> Self {
         Self {
+            navigation: navigation_flow::NavigationState::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             saved_session: None,
@@ -358,6 +362,7 @@ impl Worker {
         self.snapshot();
         loop {
             enum Incoming {
+                Navigation(Option<navigation_flow::NavigationEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
@@ -375,6 +380,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
@@ -387,6 +393,11 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::Navigation(Some(event)) => {
+                    self.navigation_event(event);
+                    Ok(())
+                }
+                Incoming::Navigation(None) => Ok(()),
                 Incoming::Attachment(Some(event)) => {
                     self.attachment_event(event);
                     Ok(())
@@ -467,6 +478,7 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        self.clear_navigation();
         self.clear_attachments();
         if let Some(task) = self.restore_task.take() {
             task.abort();
@@ -741,28 +753,39 @@ impl Worker {
                 self.snapshot();
             }
             Command::SelectChannel { channel_id } => self.select_channel(channel_id).await?,
-            Command::LoadOlderMessages => {
-                if !self.demo {
-                    let channel = self.selected()?;
-                    let before = self
-                        .state
-                        .channel_messages(channel)
-                        .next()
-                        .map(|m| m.id.to_string());
-                    let history = self
-                        .client()?
-                        .messages(&channel.to_string(), before.as_deref(), 50)
-                        .await
-                        .map_err(error)?;
-                    let messages = values(history, "messages")?
-                        .into_iter()
-                        .map(serde_json::from_value)
-                        .collect::<std::result::Result<Vec<Message>, _>>()
-                        .map_err(error)?;
-                    self.state.load_history(channel, messages);
-                    self.snapshot();
-                }
+            Command::SearchMessages {
+                channel_id,
+                query,
+                scope,
+                sort,
+                page,
+            } => self.search_messages(channel_id, query, scope, sort, page)?,
+            Command::CloseSearch { channel_id } => self.close_search(channel_id),
+            Command::LoadPins { channel_id, more } => self.load_pins(channel_id, more)?,
+            Command::ClosePins { channel_id } => self.close_pins(channel_id),
+            Command::SetMessagePinned {
+                channel_id,
+                message_id,
+                pinned,
+            } => self.set_message_pinned(channel_id, message_id, pinned)?,
+            Command::JumpToMessage {
+                channel_id,
+                message_id,
+            } => self.jump_to_message(channel_id, message_id).await?,
+            Command::LoadOlderMessages { channel_id } => {
+                self.load_adjacent_history(channel_id, false)?
             }
+            Command::LoadNewerMessages { channel_id } => {
+                self.load_adjacent_history(channel_id, true)?
+            }
+            Command::ReturnToLatest { channel_id } => {
+                self.request_history(channel_id, navigation_flow::HistoryRequest::Latest)?
+            }
+            Command::AcknowledgeMessage {
+                channel_id,
+                message_id,
+            } => self.acknowledge_visible_message(channel_id, message_id)?,
+            Command::DemoSearch => self.seed_demo_search()?,
             Command::SetDraft(content) => {
                 let channel = self.selected()?;
                 self.state.set_draft(channel, content);
@@ -1381,33 +1404,19 @@ impl Worker {
         if !self.state.channels.contains_key(&channel) {
             return Err("Unknown channel".into());
         }
+        self.navigation_context(channel);
+        self.selected_guild = self
+            .state
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.guild_id);
+        // Channel selection is navigation, not evidence a message was visible.
+        // The UI explicitly acknowledges only rows painted in its viewport.
+        self.state.selected_channel = Some(channel);
+        self.request_history(channel, navigation_flow::HistoryRequest::Latest)?;
         if !self.demo {
-            self.selected_guild = self
-                .state
-                .channels
-                .get(&channel)
-                .and_then(|channel| channel.guild_id);
             self.sync_selected_guild().await?;
-            let history = self
-                .client()?
-                .messages(&channel.to_string(), None, 50)
-                .await
-                .map_err(error)?;
-            let messages = values(history, "messages")?
-                .into_iter()
-                .map(serde_json::from_value)
-                .collect::<std::result::Result<Vec<Message>, _>>()
-                .map_err(error)?;
-            self.state.load_history(channel, messages);
-            if let Some(message) = self.state.channel_messages(channel).next_back() {
-                let _ = self
-                    .client()?
-                    .acknowledge(&channel.to_string(), &message.id.to_string())
-                    .await
-                    .map_err(|message| self.emit(Event::Error(message.to_string())));
-            }
         }
-        self.state.select_channel(channel);
         self.attachment_snapshot(channel);
         self.restore_channel = None;
         self.persist_selection().await;
@@ -1583,6 +1592,7 @@ impl Worker {
                     self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
+                    self.navigation_gateway(&name, &data);
                     if name == "MESSAGE_CREATE"
                         && let (Some(channel), Some(id)) = (
                             data.get("channel_id")
@@ -2187,14 +2197,6 @@ async fn voice_timeout(deadline: Option<tokio::time::Instant>) {
         None => pending().await,
     }
 }
-fn values(value: Value, key: &str) -> Result<Vec<Value>> {
-    value
-        .as_array()
-        .or_else(|| value.get(key).and_then(Value::as_array))
-        .cloned()
-        .ok_or_else(|| format!("Server response omitted {key} list"))
-}
-
 // AccountSignInIdentifier.ts:10-11 and AccountIdentityFeatures.ts:13-18 select
 // the request field from discovery, independently of the entered text.
 fn login_identifier(instance: &Instance, identifier: String) -> LoginIdentifier {

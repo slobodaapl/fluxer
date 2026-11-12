@@ -48,6 +48,17 @@ pub struct ClientState {
     local_message_counter: u64,
 }
 impl ClientState {
+    /// REST/search/pin payloads use the same compact user references as gateway
+    /// dispatches. Hydrate from the bound account cache before schema decoding.
+    /// Decoding alone does not insert messages or advance read cursors.
+    pub fn decode_api<T: DeserializeOwned>(&self, mut data: Value) -> Result<T, StateError> {
+        hydrate_wire_users(
+            &mut data,
+            &self.users,
+            self.current_user.as_ref().map(|user| user.id),
+        );
+        decode("REST", data)
+    }
     fn cache_user(&mut self, user: User) {
         if let Some(me) = self.current_user.as_ref().filter(|me| me.id == user.id) {
             self.users.insert(me.id, me.clone());

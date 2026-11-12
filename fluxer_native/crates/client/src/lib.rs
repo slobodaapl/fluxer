@@ -1,9 +1,14 @@
 //! Serialized native client controller. Network and media handles stay on its
 //! Tokio worker; GPUI sends commands and polls coalesced presentation events.
 mod attachments;
+mod navigation;
 mod worker;
 
 pub use attachments::{AttachmentId, AttachmentPreview, AttachmentStatus, StagedAttachment};
+pub use navigation::{
+    HistorySnapshot, PinnedMessage, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort,
+    SearchStatus,
+};
 
 pub use fluxer_core::{ClientState, Snowflake};
 pub use fluxer_media::{
@@ -42,6 +47,7 @@ pub enum Command {
     CancelLogin,
     Logout,
     Demo,
+    DemoSearch,
     SetLocale(String),
     SelectGuild {
         guild_id: Snowflake,
@@ -49,7 +55,45 @@ pub enum Command {
     SelectChannel {
         channel_id: Snowflake,
     },
-    LoadOlderMessages,
+    SearchMessages {
+        channel_id: Snowflake,
+        query: String,
+        scope: SearchScope,
+        sort: SearchSort,
+        page: u32,
+    },
+    CloseSearch {
+        channel_id: Snowflake,
+    },
+    LoadPins {
+        channel_id: Snowflake,
+        more: bool,
+    },
+    ClosePins {
+        channel_id: Snowflake,
+    },
+    SetMessagePinned {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        pinned: bool,
+    },
+    JumpToMessage {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    },
+    LoadOlderMessages {
+        channel_id: Snowflake,
+    },
+    LoadNewerMessages {
+        channel_id: Snowflake,
+    },
+    ReturnToLatest {
+        channel_id: Snowflake,
+    },
+    AcknowledgeMessage {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    },
     StageFiles {
         channel_id: Snowflake,
         paths: Vec<std::path::PathBuf>,
@@ -152,6 +196,16 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    Search(SearchSnapshot),
+    Pins(PinsSnapshot),
+    History(HistorySnapshot),
+    PinMutation {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        pinned: bool,
+        pending: bool,
+        error: Option<String>,
+    },
     Attachments {
         channel_id: Snowflake,
         attachments: Vec<StagedAttachment>,

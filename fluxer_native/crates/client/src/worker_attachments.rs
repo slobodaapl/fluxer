@@ -943,7 +943,9 @@ impl Worker {
         {
             self.attachments.sends.remove(&channel);
         }
+        let message_id = message.id;
         self.state.insert_message(message);
+        self.navigation_message_inserted(channel, message_id);
         let content = attempt.fingerprint.content;
         if self.state.drafts.get(&channel) == Some(&content) {
             self.state.set_draft(channel, String::new());
