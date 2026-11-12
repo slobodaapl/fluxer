@@ -10,6 +10,7 @@ contract checks, not a claim that the whole native client has feature parity.
 | API Origin | `fluxer_desktop/src/main/LocalAppAPIProxyRequestHandler.ts`, `LocalAppProxyHTTPPolicy.ts` | `transport.rs` checks discovered **webapp** origin, distinct API/webapp authorities, bodyless mutations, GET/HEAD omission, and production-style `INVALID_API_ORIGIN` rejection |
 | REST headers | `fluxer_app/src/features/platform/transport/RestTransport.ts`; desktop `LocalAppProxyClient.ts`; app `ClientInstallationId.ts` | Feature/capability headers, stable 32-hex installation ID, raw authorization, gzip/br, locale and token omission on auth requests |
 | Password/TOTP/session startup | `features/auth/commands/AuthenticationCommands.ts`, `AccountSignInIdentifier.ts`, `AuthSessionLifecycle.ts` | Client fixtures select identifier by instance account-identity feature, retain locale, validate explicit token login, avoid extra bootstrap REST calls, bind authenticated identity to READY |
+| Saved-session startup/logout | `features/platform/state/auth_session/AuthSessionRestorer.ts`, `features/platform/state/auth_session/AuthSessionLifecycle.ts`; `features/app/state/RuntimeConfig.ts`; `AccountStorageKey.ts` | Encrypted OS-vault persistence, exact instance-qualified identity, discovery refresh with pinned offline fallback, cold IDENTIFY/READY, close-4004 invalidation, durable local logout even when server notification fails |
 | IP authorization | `features/platform/utils/ResponseInspection.ts`; `features/auth/flow/IpAuthorizationScreen.tsx`; `features/app/constants/Endpoints.ts` | Modern 403/context parsing, integer validation/defaults, exact resend/poll requests, form-encoded ticket and auth locale; native controller/UI continue the challenge |
 | Browser handoff (CODE return path) | `fluxer_desktop/src/main/BrowserHandoff.ts`; `features/auth/flow/browser_handoff/useBrowserLoginHandoff.ts` | Main-process headers, omitted return URI, private poll proof, 404/405-only persistent GET fallback, expiry/instance binding and public browser URL; native UI opens the browser on user action |
 | Read acknowledgement body/routes | `features/read_state/state/ReadStates.ts`; `ReadStateAckQueue.ts` | Authoritative `/read-states/ack` first; identical automatic entry shape; `/read-states/ack-bulk` fallback only for 404/405 |
@@ -27,8 +28,8 @@ browser or invent an Electron version.
 - Read acknowledgements still need desktop focus/visibility/bottom/modal
   predicates and the 3-second automatic batching queue. Matching route/body
   does not establish matching timing.
-- LocalPresence preferences, idle/away detection, custom status and all account
-  state persistence are incomplete; the initial native session uses online.
+- LocalPresence preferences, idle/away detection, custom status and broader account
+  preference persistence are incomplete; the initial native session uses online.
 - Remaining auth ceremonies include WebAuthn, SSO/browser handoff, registration,
   CAPTCHA inside GPUI, recovery, sudo, account restrictions and secure multi-account
   storage. Browser handoff can use the existing web sign-in ceremonies; native
@@ -37,8 +38,9 @@ browser or invent an Electron version.
   workflows, moderation and other feature areas are tracked in `parity.json`.
 - Gateway coverage remains partial: member lists, complete resync/error recovery,
   all dispatch types, member/thread/sidebar/visitor subscriptions, account
-  lifecycle and background account sessions. Selected guild restoration before
-  Identify also depends on pending account preference persistence.
+  lifecycle and background account sessions. Saved locale and guild restore
+  before Identify; the saved channel and its history restore after READY. Full
+  preference migration remains open.
 - REST pacing buckets, per-call retry overrides and automatic retry mode remain
   incomplete. Current native calls use the desktop default of zero retries and
   surface 429; the default alone does not cover the full transport policy.

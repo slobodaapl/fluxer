@@ -11,9 +11,11 @@ state; fresh password/MFA sessions do not issue a redundant current-user fetch.
 Explicit token login validates the token before starting the gateway.
 TOTP challenges are surfaced as `MfaRequired` for `LoginMfa`. IP authorization
 continues with the desktop email polling/resend flow and can be cancelled.
-Account switches and logout clear account state, drafts, voice credentials, and active media before
-starting another session. Tokens are memory-only. `Demo` is explicitly offline;
-it never claims to transmit voice or creates an audio engine.
+Account transitions clear runtime state, drafts, voice credentials and active
+media before starting another session. Completed logins save the token and
+instance through `fluxer-session` using the OS credential vault. Quitting keeps
+the saved account; explicit logout clears it before best-effort server logout.
+`Demo` stays offline and preserves the saved real account.
 
 Text operations load channel history, fetch older pages, send/edit/delete,
 toggle reactions through the server, acknowledge reads, and send typing events.
@@ -40,8 +42,8 @@ standard channel and should be drained on each UI polling tick.
 
 Tests include a real loopback HTTP/WebSocket text workflow and deterministic
 voice-correlation checks. They never open a microphone. Run `cargo test -p
-fluxer-client` with local socket permissions. Native passkey/SSO ceremonies, persistence, rich composer features, and platform
-packaging remain separate client migration work.
+fluxer-client` with local socket permissions. Native passkey/SSO ceremonies, multi-account switching, rich composer features
+and platform packaging remain separate client migration work.
 
 BrowserLogin uses the existing desktop CODE handoff, with private proof storage,
 expiry, delayed polling and cancellation. The UI receives only the public code
@@ -49,3 +51,11 @@ and browser URL. Stream reception requires explicit WatchStream intent; the
 controller synchronizes the corresponding viewer_stream_keys on all voice state
 updates and clears subscriptions on leave. Mesh calls fail explicitly before
 capture because the native mesh backend is still unimplemented.
+
+Cold restore follows AuthSessionRestorer: refresh the saved instance authority,
+fall back to its pinned snapshot when discovery is unreachable, and IDENTIFY for
+full READY. It does not GET /users/@me or RESUME without a hydrated gateway cache.
+The saved identity must match READY. Close 4004 marks the stored record invalid;
+transient network failures preserve it. Restore I/O is cancellable; it never joins
+a call or opens capture. `Controller::spawn_with_store` injects isolated test
+persistence without accessing the real OS vault.

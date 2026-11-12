@@ -92,6 +92,17 @@ fn codec_rejects_foreign_endpoint_referrals_and_qualified_account_changes() {
 
 #[test]
 fn codec_bounds_malformed_versions_credentials_and_selections_without_logging_secrets() {
+    // AccountStorageKey.ts caps the instance-qualified key at 1024 UTF-8 bytes.
+    let mut oversized = saved();
+    oversized.instance = Instance::from_endpoints(
+        &format!("https://chat.example/{}", "p".repeat(1024)),
+        "wss://chat.example/gateway",
+    )
+    .unwrap();
+    assert_eq!(
+        codec::encode(&oversized).unwrap_err(),
+        StoreError::InvalidRecord
+    );
     for version in [json!(0), json!(2), json!("1")] {
         let mut value = encoded_value();
         value["version"] = version;

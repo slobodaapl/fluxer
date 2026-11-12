@@ -33,6 +33,8 @@ work; do not replace it with an invented interaction. See
   controls, and asynchronous orchestration of the other crates.
 - `crates/client`: background account/session orchestration shared by GPUI views;
   authenticates, projects gateway/REST state, and manages call/media lifecycle.
+- `crates/session`: encrypted OS credential storage, pinned saved-account codec,
+  invalid-session retention and injectable persistence for restart tests.
 - `crates/system-audio`: Node-free access to the existing Rust PipeWire routing
   engine, including application isolation and capture feedback prevention.
 

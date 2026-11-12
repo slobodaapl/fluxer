@@ -108,7 +108,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<SavedSession, StoreError> {
 }
 
 fn validate_session(session: &SavedSession) -> Result<(), StoreError> {
-    if session.user_id.get() == 0
+    if session.account_key().len() > 1024
+        || session.user_id.get() == 0
         || session.token.expose_secret().len() > 4096
         || session.locale.is_empty()
         || session.locale.len() > 128

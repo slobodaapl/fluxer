@@ -16,9 +16,12 @@ cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
 ```
 
-Normal launch signs in to a selected instance. Demo mode uses clearly labeled
-local fixtures; it does not connect calls or transmit messages. The current
-client keeps session credentials in memory.
+Normal launch restores the saved account on Linux using the OS Secret Service.
+New sign-ins save the token, pinned instance, locale and last community/channel
+as one encrypted credential record. Closing the app keeps the session; Sign out
+removes it. A locked or unavailable vault is reported explicitly. Demo mode uses
+local fixtures and does not restore or overwrite a saved account. macOS/Windows
+credential backends and the account switcher remain migration work.
 
 Keep Cargo build output on disk rather than a RAM-backed `/tmp`. Cargo's default
 `fluxer_native/target` location already does this; custom `CARGO_TARGET_DIR`

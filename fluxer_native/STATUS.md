@@ -8,15 +8,16 @@ not individual types or controls.
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
 | Core state | 23 tests: wire IDs, permissions, READY projection, message deltas, reads, typing and voice controls | Full gateway event catalog, permission edge cases, all feature state |
-| HTTP/gateway | 38 tests: source-backed discovery/Origin/headers/IP/browser handoff, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
+| HTTP/gateway | 43 tests: source-backed discovery/Origin/headers/IP/browser handoff, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux shared audio | Existing PipeWire routing reused; 11 graph/identity regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
 | GPUI | Executable builds/links; Wayland demo visually verified; 7 multiline/Unicode/IME tests pass | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
 | Audio management | Real input/output gain, participant mixer/mute, PTT/VAD, DSP, device routing and local meters; 20 media tests pass; hardware enumerated | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
-| Client orchestration | 23 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, stream viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
+| Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
+| Client orchestration | 30 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, stream viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-122 tests. The opt-in LiveKit test verifies explicit microphone/screen
+141 tests. The opt-in LiveKit test verifies explicit microphone/screen
 subscription and screen unwatch while fresh microphone audio continues. The
 current run times out restoring the microphone immediately after deafen: the
 SDK's local unsubscribe event precedes wire completion, and its asynchronous
@@ -62,3 +63,13 @@ This verifies the Origin policy, not an authenticated account session. The nativ
 browser sign-in button uses the existing desktop CODE handoff so browser-based
 verification can complete through the normal web client. No real credentials
 were submitted during that probe.
+
+The earlier memory-only session behavior has been replaced by secure Linux
+session persistence. Password/TOTP, email authorization and browser handoff
+successes all save the account; cold startup refreshes its pinned authority and
+requests full READY. The restart fixture forbids redundant current-user/list
+requests and proves restoration without microphone initialization. Logout clears
+the vault before best-effort server notification; transient failures retain the
+session, and definitive invalidation disables automatic restoration. An older
+memory-only build cannot contribute a saved token, so one final sign-in is needed
+after this update.
