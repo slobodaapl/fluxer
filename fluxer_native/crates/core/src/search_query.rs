@@ -1014,19 +1014,95 @@ fn parse_js_date_fallback(input: &str, clock: &Clock) -> Option<DateTime<FixedOf
     .and_then(|date| zone.at(date.and_hms_opt(0, 0, 0)?, clock.now))
 }
 fn system_week_start() -> u32 {
-    // Luxon localeWeekStart uses the host Intl locale, not account UI language.
-    // Values for all Fluxer Locales.ts entries were checked with Intl.Locale.
-    let locale = std::env::var("LC_ALL")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| std::env::var("LANG").ok())
-        .unwrap_or_else(|| "en-US".into())
+    // ICU's host-locale environment priority, verified by isolated actual-Intl
+    // subprocess fixtures. Empty present variables resolve to und, not LANG.
+    host_week_start(
+        std::env::var("LC_ALL").ok().as_deref(),
+        std::env::var("LC_MESSAGES").ok().as_deref(),
+        std::env::var("LANG").ok().as_deref(),
+    )
+}
+fn host_week_start(lc_all: Option<&str>, lc_messages: Option<&str>, lang: Option<&str>) -> u32 {
+    locale_week_start(lc_all.or(lc_messages).or(lang).unwrap_or("en-US"))
+}
+fn locale_week_start(locale: &str) -> u32 {
+    // Compact non-Monday tables are generated from Intl.Locale week settings;
+    // fixtures also cover all 34 Locales.ts entries and likely default regions.
+    fn member(list: &str, value: &str) -> bool {
+        list.split_ascii_whitespace()
+            .any(|v| v.eq_ignore_ascii_case(value))
+    }
+    fn region(region: &str) -> u32 {
+        if region.eq_ignore_ascii_case("MV") {
+            5
+        } else if member("AF BH DJ DZ EG IQ IR JO KW LY OM QA SD SY", region) {
+            6
+        } else if member(
+            "AG AS BD BR BS BT BU BW BZ CA CO DM DO ET GT GU HK HN ID IL IN IS JM JP JT KE KH KR LA MH MI MM MO MT MX MZ NI NP NT PA PE PH PK PR PT PU PY PZ RH SA SG SV TH TT TW UM US VE VI WK WS YD YE ZA ZW",
+            region,
+        ) {
+            7
+        } else {
+            1
+        }
+    }
+    let normalized = locale
+        .split(['.', '@'])
+        .next()
+        .unwrap_or("")
         .replace('_', "-");
-    let locale = locale.split('.').next().unwrap_or("en-US");
-    match locale {
-        "ar" => 6,
-        "en-US" | "he" | "hi" | "id" | "ja" | "ko" | "pt-BR" | "th" | "zh-TW" => 7,
-        _ => 1,
+    if normalized.is_empty()
+        || normalized.eq_ignore_ascii_case("C")
+        || normalized.eq_ignore_ascii_case("POSIX")
+    {
+        return 7;
+    }
+    let tags = normalized.split('-').collect::<Vec<_>>();
+    let language = tags.first().copied().unwrap_or("");
+    let extension = tags.iter().position(|value| *value == "u");
+    if let Some(index) = extension {
+        for pair in tags[index + 1..].windows(2) {
+            if pair[0] == "fw"
+                && let Some(day) = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                    .iter()
+                    .position(|day| day.eq_ignore_ascii_case(pair[1]))
+            {
+                return day as u32 + 1;
+            }
+            if pair[0] == "rg"
+                && pair[1].len() == 6
+                && pair[1].is_ascii()
+                && pair[1][2..].eq_ignore_ascii_case("zzzz")
+            {
+                return region(&pair[1][..2]);
+            }
+        }
+    }
+    let base = &tags[..extension.unwrap_or(tags.len())];
+    if let Some(code) = base.iter().skip(1).find(|part| {
+        (part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
+            || (part.len() == 3 && part.bytes().all(|b| b.is_ascii_digit()))
+    }) {
+        return region(code);
+    }
+    if language.eq_ignore_ascii_case("zh")
+        && base
+            .iter()
+            .any(|script| script.eq_ignore_ascii_case("Hant"))
+    {
+        return 7;
+    }
+    if member("dv", language) {
+        5
+    } else if member("ae ar fa ps", language) {
+        6
+    } else if member(
+        "aa af am as bh bn ch cr dz en gn gu he hi id ik in is iu iw ja jv jw ki km kn ko ks lo mh ml mr mt my nd ne nr nv oj om or pa pt qu sa sd sm sn ss st su ta te th ti tl tn ts ur ve xh zu und",
+        language,
+    ) {
+        7
+    } else {
+        1
     }
 }
 
@@ -1199,6 +1275,57 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+    }
+
+    #[test]
+    fn locale_week_boundaries_match_executed_intl_and_host_environment_fixtures() {
+        let data: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/search_query_week.json")).unwrap();
+        for fixture in data["fixtures"].as_array().unwrap() {
+            let locale = fixture["locale"].as_str().unwrap();
+            assert_eq!(
+                locale_week_start(locale),
+                fixture["first_day"].as_u64().unwrap() as u32,
+                "{locale}"
+            );
+        }
+        for fixture in data["host_fixtures"].as_array().unwrap() {
+            let env = &fixture["environment"];
+            assert_eq!(
+                host_week_start(
+                    env["LC_ALL"].as_str(),
+                    env["LC_MESSAGES"].as_str(),
+                    env["LANG"].as_str()
+                ),
+                fixture["first_day"].as_u64().unwrap() as u32,
+                "{fixture}"
+            );
+        }
+        for first in b'A'..=b'Z' {
+            for second in b'A'..=b'Z' {
+                let region = String::from_utf8(vec![first, second]).unwrap();
+                let language = region.to_ascii_lowercase();
+                for (category, value, locale) in [
+                    ("territories", region.clone(), format!("und-{region}")),
+                    ("languages", language.clone(), language),
+                ] {
+                    let expected = data[category]
+                        .as_object()
+                        .unwrap()
+                        .iter()
+                        .find(|(_, values)| {
+                            values
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .any(|v| v.as_str() == Some(&value))
+                        })
+                        .map(|(day, _)| day.parse::<u32>().unwrap())
+                        .unwrap_or(1);
+                    assert_eq!(locale_week_start(&locale), expected, "{locale}");
+                }
+            }
+        }
     }
 
     #[test]

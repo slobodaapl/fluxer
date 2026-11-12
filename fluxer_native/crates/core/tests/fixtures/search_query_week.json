@@ -1,0 +1,593 @@
+{
+  "source": "Intl.Locale week info used by Luxon localeWeekStart",
+  "locale_source": "packages/constants/src/Locales.ts",
+  "territories": {
+    "5": [
+      "MV"
+    ],
+    "6": [
+      "AF",
+      "BH",
+      "DJ",
+      "DZ",
+      "EG",
+      "IQ",
+      "IR",
+      "JO",
+      "KW",
+      "LY",
+      "OM",
+      "QA",
+      "SD",
+      "SY"
+    ],
+    "7": [
+      "AG",
+      "AS",
+      "BD",
+      "BR",
+      "BS",
+      "BT",
+      "BU",
+      "BW",
+      "BZ",
+      "CA",
+      "CO",
+      "DM",
+      "DO",
+      "ET",
+      "GT",
+      "GU",
+      "HK",
+      "HN",
+      "ID",
+      "IL",
+      "IN",
+      "IS",
+      "JM",
+      "JP",
+      "JT",
+      "KE",
+      "KH",
+      "KR",
+      "LA",
+      "MH",
+      "MI",
+      "MM",
+      "MO",
+      "MT",
+      "MX",
+      "MZ",
+      "NI",
+      "NP",
+      "NT",
+      "PA",
+      "PE",
+      "PH",
+      "PK",
+      "PR",
+      "PT",
+      "PU",
+      "PY",
+      "PZ",
+      "RH",
+      "SA",
+      "SG",
+      "SV",
+      "TH",
+      "TT",
+      "TW",
+      "UM",
+      "US",
+      "VE",
+      "VI",
+      "WK",
+      "WS",
+      "YD",
+      "YE",
+      "ZA",
+      "ZW"
+    ]
+  },
+  "languages": {
+    "5": [
+      "dv"
+    ],
+    "6": [
+      "ae",
+      "ar",
+      "fa",
+      "ps"
+    ],
+    "7": [
+      "aa",
+      "af",
+      "am",
+      "as",
+      "bh",
+      "bn",
+      "ch",
+      "cr",
+      "dz",
+      "en",
+      "gn",
+      "gu",
+      "he",
+      "hi",
+      "id",
+      "ik",
+      "in",
+      "is",
+      "iu",
+      "iw",
+      "ja",
+      "jv",
+      "jw",
+      "ki",
+      "km",
+      "kn",
+      "ko",
+      "ks",
+      "lo",
+      "mh",
+      "ml",
+      "mr",
+      "mt",
+      "my",
+      "nd",
+      "ne",
+      "nr",
+      "nv",
+      "oj",
+      "om",
+      "or",
+      "pa",
+      "pt",
+      "qu",
+      "sa",
+      "sd",
+      "sm",
+      "sn",
+      "ss",
+      "st",
+      "su",
+      "ta",
+      "te",
+      "th",
+      "ti",
+      "tl",
+      "tn",
+      "ts",
+      "ur",
+      "ve",
+      "xh",
+      "zu"
+    ]
+  },
+  "territory_defaults": {
+    "aa": "ET",
+    "ae": "IR",
+    "af": "ZA",
+    "am": "ET",
+    "ar": "EG",
+    "as": "IN",
+    "bh": "IN",
+    "bn": "BD",
+    "ch": "GU",
+    "cr": "CA",
+    "dv": "MV",
+    "dz": "BT",
+    "en": "US",
+    "fa": "IR",
+    "gn": "PY",
+    "gu": "IN",
+    "he": "IL",
+    "hi": "IN",
+    "id": "ID",
+    "ik": "US",
+    "in": "ID",
+    "is": "IS",
+    "iu": "CA",
+    "iw": "IL",
+    "ja": "JP",
+    "jv": "ID",
+    "jw": "ID",
+    "ki": "KE",
+    "km": "KH",
+    "kn": "IN",
+    "ko": "KR",
+    "ks": "IN",
+    "lo": "LA",
+    "mh": "MH",
+    "ml": "IN",
+    "mr": "IN",
+    "mt": "MT",
+    "my": "MM",
+    "nd": "ZW",
+    "ne": "NP",
+    "nr": "ZA",
+    "nv": "US",
+    "oj": "CA",
+    "om": "ET",
+    "or": "IN",
+    "pa": "IN",
+    "ps": "AF",
+    "pt": "BR",
+    "qu": "PE",
+    "sa": "IN",
+    "sd": "PK",
+    "sm": "WS",
+    "sn": "ZW",
+    "ss": "ZA",
+    "st": "ZA",
+    "su": "ID",
+    "ta": "IN",
+    "te": "IN",
+    "th": "TH",
+    "ti": "ET",
+    "tl": "PH",
+    "tn": "ZA",
+    "ts": "ZA",
+    "ur": "PK",
+    "ve": "ZA",
+    "xh": "ZA",
+    "zu": "ZA"
+  },
+  "fixtures": [
+    {
+      "locale": "ar",
+      "region": "EG",
+      "first_day": 6
+    },
+    {
+      "locale": "bg",
+      "region": "BG",
+      "first_day": 1
+    },
+    {
+      "locale": "cs",
+      "region": "CZ",
+      "first_day": 1
+    },
+    {
+      "locale": "da",
+      "region": "DK",
+      "first_day": 1
+    },
+    {
+      "locale": "de",
+      "region": "DE",
+      "first_day": 1
+    },
+    {
+      "locale": "el",
+      "region": "GR",
+      "first_day": 1
+    },
+    {
+      "locale": "en-GB",
+      "region": "GB",
+      "first_day": 1
+    },
+    {
+      "locale": "en-US",
+      "region": "US",
+      "first_day": 7
+    },
+    {
+      "locale": "es-ES",
+      "region": "ES",
+      "first_day": 1
+    },
+    {
+      "locale": "es-419",
+      "region": "419",
+      "first_day": 1
+    },
+    {
+      "locale": "fi",
+      "region": "FI",
+      "first_day": 1
+    },
+    {
+      "locale": "fr",
+      "region": "FR",
+      "first_day": 1
+    },
+    {
+      "locale": "he",
+      "region": "IL",
+      "first_day": 7
+    },
+    {
+      "locale": "hi",
+      "region": "IN",
+      "first_day": 7
+    },
+    {
+      "locale": "hr",
+      "region": "HR",
+      "first_day": 1
+    },
+    {
+      "locale": "hu",
+      "region": "HU",
+      "first_day": 1
+    },
+    {
+      "locale": "id",
+      "region": "ID",
+      "first_day": 7
+    },
+    {
+      "locale": "it",
+      "region": "IT",
+      "first_day": 1
+    },
+    {
+      "locale": "ja",
+      "region": "JP",
+      "first_day": 7
+    },
+    {
+      "locale": "ko",
+      "region": "KR",
+      "first_day": 7
+    },
+    {
+      "locale": "lt",
+      "region": "LT",
+      "first_day": 1
+    },
+    {
+      "locale": "nl",
+      "region": "NL",
+      "first_day": 1
+    },
+    {
+      "locale": "no",
+      "region": "NO",
+      "first_day": 1
+    },
+    {
+      "locale": "pl",
+      "region": "PL",
+      "first_day": 1
+    },
+    {
+      "locale": "pt-BR",
+      "region": "BR",
+      "first_day": 7
+    },
+    {
+      "locale": "ro",
+      "region": "RO",
+      "first_day": 1
+    },
+    {
+      "locale": "ru",
+      "region": "RU",
+      "first_day": 1
+    },
+    {
+      "locale": "sv-SE",
+      "region": "SE",
+      "first_day": 1
+    },
+    {
+      "locale": "th",
+      "region": "TH",
+      "first_day": 7
+    },
+    {
+      "locale": "tr",
+      "region": "TR",
+      "first_day": 1
+    },
+    {
+      "locale": "uk",
+      "region": "UA",
+      "first_day": 1
+    },
+    {
+      "locale": "vi",
+      "region": "VN",
+      "first_day": 1
+    },
+    {
+      "locale": "zh-CN",
+      "region": "CN",
+      "first_day": 1
+    },
+    {
+      "locale": "zh-TW",
+      "region": "TW",
+      "first_day": 7
+    },
+    {
+      "locale": "en",
+      "region": "US",
+      "first_day": 7
+    },
+    {
+      "locale": "en-CA",
+      "region": "CA",
+      "first_day": 7
+    },
+    {
+      "locale": "ar-EG",
+      "region": "EG",
+      "first_day": 6
+    },
+    {
+      "locale": "ar-SA",
+      "region": "SA",
+      "first_day": 7
+    },
+    {
+      "locale": "dv-MV",
+      "region": "MV",
+      "first_day": 5
+    },
+    {
+      "locale": "pt",
+      "region": "BR",
+      "first_day": 7
+    },
+    {
+      "locale": "pt-PT",
+      "region": "PT",
+      "first_day": 7
+    },
+    {
+      "locale": "fa",
+      "region": "IR",
+      "first_day": 6
+    },
+    {
+      "locale": "zh-Hant",
+      "region": "TW",
+      "first_day": 7
+    },
+    {
+      "locale": "zh-Hans",
+      "region": "CN",
+      "first_day": 1
+    },
+    {
+      "locale": "xx",
+      "region": null,
+      "first_day": 1
+    },
+    {
+      "locale": "und",
+      "region": "US",
+      "first_day": 7
+    },
+    {
+      "locale": "en-US-u-fw-mon",
+      "region": "US",
+      "first_day": 1
+    },
+    {
+      "locale": "en-US-u-rg-gbzzzz",
+      "region": "US",
+      "first_day": 1
+    },
+    {
+      "locale": "en-Latn-CA",
+      "region": "CA",
+      "first_day": 7
+    }
+  ],
+  "host_fixtures": [
+    {
+      "environment": {},
+      "locale": "en-US",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "C"
+      },
+      "locale": "en-US",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "C.UTF-8"
+      },
+      "locale": "en-US",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "POSIX"
+      },
+      "locale": "en-US",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "en_US.UTF-8"
+      },
+      "locale": "en-US",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "en_GB.UTF-8"
+      },
+      "locale": "en-GB",
+      "first_day": 1
+    },
+    {
+      "environment": {
+        "LANG": "en_CA.UTF-8"
+      },
+      "locale": "en-CA",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "ar_EG.UTF-8"
+      },
+      "locale": "ar-EG",
+      "first_day": 6
+    },
+    {
+      "environment": {
+        "LANG": "ar_SA.UTF-8"
+      },
+      "locale": "ar-SA",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "dv_MV.UTF-8"
+      },
+      "locale": "dv-MV",
+      "first_day": 5
+    },
+    {
+      "environment": {
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_GB.UTF-8"
+      },
+      "locale": "en-GB",
+      "first_day": 1
+    },
+    {
+      "environment": {
+        "LANG": "en_US.UTF-8",
+        "LC_MESSAGES": "en_GB.UTF-8"
+      },
+      "locale": "en-GB",
+      "first_day": 1
+    },
+    {
+      "environment": {
+        "LANG": "en_GB.UTF-8",
+        "LC_ALL": ""
+      },
+      "locale": "und",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "en_GB.UTF-8",
+        "LC_MESSAGES": ""
+      },
+      "locale": "und",
+      "first_day": 7
+    },
+    {
+      "environment": {
+        "LANG": "en_US.UTF-8",
+        "LC_TIME": "en_GB.UTF-8"
+      },
+      "locale": "en-US",
+      "first_day": 7
+    }
+  ]
+}
