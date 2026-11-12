@@ -30,6 +30,9 @@ impl VideoMailbox {
         if !registry.desired_track_at(&frame.track_id, frame.watch_generation) {
             return;
         }
+        self.retain_latest(frame);
+    }
+    fn retain_latest(&self, frame: VideoFrame) {
         if let Ok(mut frames) = self.frames.lock() {
             frames.insert(frame.track_id.clone(), frame);
             self.ready.notify_one();
@@ -109,5 +112,73 @@ impl From<mpsc::Receiver<MediaEvent>> for MediaEvents {
             control,
             Arc::new(VideoMailbox::new(Arc::new(Mutex::new(Registry::default())))),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn frame(sequence: u8, generation: u64) -> VideoFrame {
+        VideoFrame {
+            track_id: "screen".into(),
+            participant: "alice".into(),
+            watch_generation: generation,
+            width: 1,
+            height: 1,
+            bgra: Arc::new(vec![sequence, 0, 0, 255]),
+        }
+    }
+    #[tokio::test]
+    async fn newest_only_storage_cannot_put_video_ahead_of_stop_control() {
+        let registry = Arc::new(Mutex::new(Registry::default()));
+        let video = Arc::new(VideoMailbox::new(registry));
+        for sequence in 0..200 {
+            video.retain_latest(frame(sequence, 1));
+        }
+        assert_eq!(video.frames.lock().unwrap().len(), 1);
+        assert_eq!(video.frames.lock().unwrap()["screen"].bgra[0], 199);
+        let (sender, receiver) = mpsc::channel(4);
+        let mut events = MediaEvents::new(receiver, video.clone());
+        sender
+            .send(MediaEvent::VideoEnded {
+                track_id: "screen".into(),
+                participant: "alice".into(),
+                watch_generation: 1,
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(events.recv().await, Some(MediaEvent::VideoEnded { .. })),
+            "local lifecycle event precedes all pending pixels"
+        );
+        assert_eq!(
+            events.pending_video_frames(),
+            1,
+            "control was delivered without consuming queued pixels"
+        );
+        video.remove("screen");
+        assert_eq!(events.pending_video_frames(), 0);
+    }
+    #[test]
+    fn stopped_or_old_epoch_renderer_cannot_repopulate_latest_slot() {
+        let registry = Arc::new(Mutex::new(Registry::default()));
+        registry
+            .lock()
+            .unwrap()
+            .replace_watched(vec!["alice".into()]);
+        let old = registry.lock().unwrap().watch_generation("alice");
+        let video = VideoMailbox::new(registry.clone());
+        video.retain_latest(frame(1, old));
+        registry.lock().unwrap().replace_watched(vec![]);
+        video.remove("screen");
+        video.publish(frame(2, old));
+        assert!(video.frames.lock().unwrap().is_empty());
+        registry
+            .lock()
+            .unwrap()
+            .replace_watched(vec!["alice".into()]);
+        assert!(!registry.lock().unwrap().watch_is_current("alice", old));
+        video.publish(frame(3, old));
+        assert!(video.frames.lock().unwrap().is_empty());
     }
 }
