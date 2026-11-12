@@ -212,6 +212,7 @@ impl Fluxer {
                         self.editing = None;
                     }
                     if self.state.current_user.is_some() {
+                        self.mfa_ticket = None;
                         self.password.update(cx, |v, cx| v.set(String::new(), cx));
                     }
                 }
@@ -566,6 +567,9 @@ impl Fluxer {
                         button("logout", "Sign out").on_click(cx.listener(|this, _, _, cx| {
                             this.command(Command::Logout, cx);
                             this.selected_guild = None;
+                            this.mfa_ticket = None;
+                            this.pending_message = None;
+                            this.editing = None;
                             this.video.clear();
                         })),
                     ),
@@ -701,6 +705,7 @@ impl Fluxer {
                     .children(messages.into_iter().map(|message| {
                         let id = message.id;
                         let content = message.content.clone();
+                        let copy_content = content.clone();
                         let own = self
                             .state
                             .current_user
@@ -764,6 +769,15 @@ impl Fluxer {
                                                         },
                                                         cx,
                                                     )
+                                                }),
+                                            ))
+                                            .child(button(("copy", id.0), "Copy").on_click(
+                                                cx.listener(move |_, _, _, cx| {
+                                                    cx.write_to_clipboard(
+                                                        ClipboardItem::new_string(
+                                                            copy_content.clone(),
+                                                        ),
+                                                    );
                                                 }),
                                             ))
                                             .children(message.reactions.iter().map(|r| {
