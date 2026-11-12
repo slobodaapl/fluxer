@@ -10,17 +10,17 @@ Pending real-account, device and usability checks are tracked in
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
-| Core state | 34 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
-| HTTP/gateway | 62 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
+| Core state | 45 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
+| HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 49 input/emoji/attachment/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 54 input/emoji/attachment/search/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 58 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-270 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+320 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -68,7 +68,7 @@ symlink for existing Cargo cache references; new build output consumes disk.
 
 The implemented native UI includes community/channel navigation, paginated text
 history, multiline compose/edit/delete/reactions/copy, draft retention on failed
-sends, loaded-message search, password/TOTP, IP email authorization and browser
+sends, server-backed search and pins, historical navigation, password/TOTP, IP email authorization and browser
 sign-in, voice join/leave/mute/deafen, gateway-backed participant rows beneath
 voice channels and a participant pane above voice-channel chat with state badges
 and exact-identity speaking indicators,
@@ -241,6 +241,37 @@ preparation, actual image paste and spoiler preview hiding. The --demo-attachmen
 fixture uses the real staging worker without uploading or restoring an account.
 Authenticated two-client upload acceptance and remaining platform checks are open;
 these fixtures do not claim full messaging parity.
+
+Server message search now uses the existing POST /search/messages request shape,
+including context, supported filter syntax, scopes, sorting, one-based pages and
+source indexing polling. Queries keep exact snowflake strings. The native parser
+is checked against 78 filter cases and 1,728 date cases executed from the existing
+TypeScript parser with its lockfile-pinned Luxon dependency. Host locale week data
+is checked against actual Intl behavior. Polling refreshes relative date bounds
+without cloning message history. Three uncommon V8 legacy date spellings remain
+explicitly documented in crates/protocol/CONTRACT.md; autocomplete, saved search
+history, quick switcher and mature-content consent UI remain broader parity work.
+
+Search/pin previews live outside the timeline. A result jump fetches its surrounding
+messages and centers/highlights the target; older/newer paging maintains a contiguous
+visible window capped at 200 IDs. Return to latest fetches a fresh window and scrolls
+to its tail after layout, preserving drafts, reply intent and staged attachments.
+The search pane remains usable for paging/sorting after a cross-channel jump.
+Pins use source timestamp pagination, shared PIN_MESSAGES permission policy,
+confirmation, gateway invalidation and guarded pin acknowledgement. Rejected
+mutations retain their displayed item; live HTTP success does not duplicate the
+refresh already driven by the gateway.
+
+Search, indexing, pins, history and acknowledgements run outside gateway/media
+processing with account/request/context fences. Merely fetching history or displaying
+a preview does not mark messages read. Automatic read acknowledgement requires a
+focused native window, the live timeline tail, ready history, no blocking modal and
+no manual-unread fence. Server read-state versions and mention counts remain
+authoritative; stale responses cannot undo newer or manual state. Offline checks
+verified five-page search, narrow-pane wrapping, centered old-message jumps,
+return-to-latest, pin pagination and cancel/confirm unpin. Real-account/two-client
+acceptance remains pending in REVIEW.md; fixtures use isolated peers and generated
+messages, never production mutations.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

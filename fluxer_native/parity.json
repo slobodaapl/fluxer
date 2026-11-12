@@ -249,7 +249,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher.",
-      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
+      "evidence": "Server-backed message search, source-executed query/date fixtures, indexing and pagination, detached previews and historical jumps implemented; quick switcher/autocomplete and live acceptance remain open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "slowmode",
