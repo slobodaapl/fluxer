@@ -683,3 +683,149 @@ async fn multipart_opens_exactly_four_concurrent_storage_requests() {
     api.next().await;
     api.none().await;
 }
+
+#[tokio::test]
+async fn staged_batch_plans_once_then_cancels_one_file_without_stopping_sibling_completion() {
+    let first = FixtureFile::new(b"FIRST");
+    let second = FixtureFile::new(b"SECOND");
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let stalled_origin = format!("http://{}", listener.local_addr().unwrap());
+    let (arrived, ready) = tokio::sync::oneshot::channel();
+    let stalled = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buffer = [0; 4096];
+        let _ = socket.read(&mut buffer).await.unwrap();
+        socket
+            .write_all(
+                b"HTTP/1.1 503 Fixture\r\nContent-Length: 10000\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        arrived.send(()).unwrap();
+        std::future::pending::<()>().await;
+    });
+    let mut storage = Server::new(|_| (200, json!({}))).await;
+    // Response order differs from request order; IDs bind the actual file.
+    let plan = json!({"attachments":[
+        {"id":"32","upload_mode":"multipart","filename":"fixture.bin","upload_filename":"second/object","upload_id":"second-handle","part_size":3,"parts":[{"part_number":1,"upload_url":format!("{}/second0",storage.origin)},{"part_number":2,"upload_url":format!("{}/second1",storage.origin)}],"file_size":6,"content_type":"application/planned"},
+        {"id":"31","upload_mode":"singlepart","filename":"fixture.bin","upload_filename":"first/object","upload_url":format!("{stalled_origin}/first?signature=private"),"file_size":5,"content_type":"application/planned"}
+    ]});
+    let mut api = Server::new(move |r| {
+        if r.path.contains("/attachments ") {
+            (200, plan.clone())
+        } else {
+            (200, json!({}))
+        }
+    })
+    .await;
+    let client = client(&api.origin, true);
+    let shared = UploadCancellation::new();
+    let planned = client
+        .plan_attachments(
+            "1",
+            &[first.attachment("31"), second.attachment("32")],
+            &shared,
+            progress().0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        planned.iter().map(|p| p.id()).collect::<Vec<_>>(),
+        vec!["31", "32"]
+    );
+    assert!(!format!("{:?}", planned[0]).contains("private"));
+    let request = api.next().await;
+    let body: Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body["attachments"].as_array().unwrap().len(), 2);
+    let cancelled = UploadCancellation::new();
+    let signal = cancelled.clone();
+    let own = planned[0].clone();
+    let uploading = client.clone();
+    let first = tokio::spawn(async move {
+        uploading
+            .upload_planned_attachment(&own, &cancelled, progress().0)
+            .await
+    });
+    let sibling = planned[1].clone();
+    let sibling_client = client.clone();
+    let second = tokio::spawn(async move {
+        sibling_client
+            .upload_planned_attachment(&sibling, &UploadCancellation::new(), progress().0)
+            .await
+    });
+    ready.await.unwrap();
+    signal.cancel();
+    assert!(matches!(
+        timeout(Duration::from_secs(1), first)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(Error::UploadCancelled)
+    ));
+    assert!(
+        !shared.is_cancelled(),
+        "independent cancellation must not abort the shared planning token"
+    );
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(second["upload_filename"], "second/object");
+    for _ in 0..2 {
+        let request = storage.next().await;
+        let bytes = if request.path.contains("second0") {
+            b"SEC"
+        } else {
+            b"OND"
+        };
+        assert_storage(&request, bytes);
+    }
+    let completion = api.next().await;
+    assert!(completion.path.contains("/attachments/complete "));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&completion.body).unwrap(),
+        json!({"uploads":[{"upload_filename":"second/object","upload_id":"second-handle"}]})
+    );
+    api.none().await;
+    storage.none().await;
+    stalled.abort();
+}
+
+#[tokio::test]
+async fn absent_batch_plan_fails_only_that_file_and_handles_reject_another_instance() {
+    let first = FixtureFile::new(b"a");
+    let second = FixtureFile::new(b"data");
+    let mut storage = Server::new(|_| (200, json!({}))).await;
+    let plan = single_plan(&storage.origin, "2", 4);
+    let mut api = Server::new(move |_| (200, plan.clone())).await;
+    let transport = client(&api.origin, true);
+    let planned = transport
+        .plan_attachments(
+            "1",
+            &[first.attachment("1"), second.attachment("2")],
+            &UploadCancellation::new(),
+            progress().0,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        transport
+            .upload_planned_attachment(&planned[0], &UploadCancellation::new(), progress().0)
+            .await,
+        Err(Error::AttachmentPlanMissing)
+    ));
+    let other = client("http://127.0.0.1:1", true);
+    assert!(matches!(
+        other
+            .upload_planned_attachment(&planned[1], &UploadCancellation::new(), progress().0)
+            .await,
+        Err(Error::InvalidUpload(
+            "upload plan belongs to a different instance"
+        ))
+    ));
+    let result = transport
+        .upload_planned_attachment(&planned[1], &UploadCancellation::new(), progress().0)
+        .await
+        .unwrap();
+    assert_eq!(result["id"], "2");
+    api.next().await;
+    assert_storage(&storage.next().await, b"data");
+    api.none().await;
+}

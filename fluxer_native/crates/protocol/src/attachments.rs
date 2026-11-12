@@ -1127,4 +1127,27 @@ mod tests {
         progress.finish_file(0);
         assert_eq!(events.lock().unwrap().last().unwrap().completed_files, 1);
     }
+    #[test]
+    fn textarea_progress_reports_retry_resets_while_message_progress_stays_monotonic() {
+        let file = PreparedFile {
+            attachment: UploadAttachment::new("0", "/unused", "file", "text/plain"),
+            size: 10,
+            modified: None,
+        };
+        for monotonic in [false, true] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let captured = events.clone();
+            let mut progress = Progress::new(
+                std::slice::from_ref(&file),
+                Arc::new(move |event| captured.lock().unwrap().push(event)),
+            );
+            progress.monotonic = monotonic;
+            progress.report(None, Some((0, 8)), false);
+            progress.report(None, Some((0, 0)), false);
+            assert_eq!(
+                events.lock().unwrap().last().unwrap().uploaded_bytes,
+                if monotonic { 8 } else { 0 }
+            );
+        }
+    }
 }
