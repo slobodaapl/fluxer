@@ -7,3 +7,10 @@ license.workspace = true
 [dependencies]
 fluxer-core.workspace = true
 fluxer-protocol.workspace = true
+gpui = "=0.2.2"
+unicode-segmentation = "1.12"
+fluxer-client.workspace = true
+fluxer-media.workspace = true
+serde_json.workspace = true
+image = "0.25"
+smallvec = "1"
