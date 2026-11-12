@@ -2,7 +2,7 @@ use crate::{Command, Event, VoiceStatus};
 use fluxer_core::{
     ChannelType, ClientState, Emoji, Message, MessageReference, Permissions, Snowflake, User,
 };
-use fluxer_media::{MediaEngine, MediaEvent, MediaEvents, VideoFrame};
+use fluxer_media::{MediaEngine, MediaEvent, MediaEvents, SharedAudioSelection, VideoFrame};
 use fluxer_protocol::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus, Gateway,
     GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome, SessionToken,
@@ -30,6 +30,10 @@ struct VoiceTarget {
     guild_id: Option<Snowflake>,
     channel_id: Snowflake,
     connection_id: Option<String>,
+}
+
+struct PendingShare {
+    audio: Option<SharedAudioSelection>,
 }
 
 struct PendingIpAuthorization {
@@ -157,6 +161,10 @@ pub(crate) struct Worker {
     /// Media watch epochs fence frames and lifecycle notifications queued before
     /// stopping/restarting a watch on the same publication SID.
     video_generations: BTreeMap<String, u64>,
+    /// A selected audio route is armed only after the video source starts;
+    /// opening an OS picker alone must never begin audio capture.
+    pending_share: Option<PendingShare>,
+    active_share_audio: bool,
 }
 
 impl Worker {
@@ -200,6 +208,8 @@ impl Worker {
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
             video_generations: BTreeMap::new(),
+            pending_share: None,
+            active_share_audio: false,
         }
     }
     pub(crate) fn with_session_store(mut self, store: Arc<dyn SessionStore>) -> Self {
@@ -1065,32 +1075,32 @@ impl Worker {
                 let sources = self.media()?.screen_sources().map_err(error)?;
                 self.emit(Event::ScreenSources(sources));
             }
-            Command::StartShare(options) => {
+            Command::StartShare { options, audio } => {
                 if self.state.voice.channel_id.is_none() {
                     return Err("Join a voice channel first".into());
                 }
                 options.validate().map_err(error)?;
-                let started = self
-                    .media()?
-                    .start_screen_share(options)
-                    .await
-                    .map_err(error);
+                self.pending_share = Some(PendingShare { audio });
+                self.active_share_audio = false;
                 self.state.voice.screen_share = false;
                 self.snapshot();
                 self.emit(Event::Media(MediaEvent::ScreenShareStopped));
                 self.emit(Event::SharedAudioStatus(false));
-                self.update_voice().await?;
-                started?;
+                let started = match self.media() {
+                    Ok(media) => media.start_screen_share(options).await.map_err(error),
+                    Err(message) => Err(message),
+                };
+                if let Err(message) = started {
+                    return self.rollback_share(message).await;
+                }
+                if let Err(message) = self.update_voice().await {
+                    return self.rollback_share(message).await;
+                }
                 // Publication can precede the OS picker or first captured
                 // frame. ScreenShareStarted is the authoritative transition.
             }
             Command::StopShare => {
-                if let Some(media) = &mut self.media {
-                    media.stop_screen_share().await.map_err(error)?;
-                }
-                self.state.voice.screen_share = false;
-                self.snapshot();
-                self.update_voice().await?;
+                self.stop_share().await?;
             }
             Command::RefreshAudioApplications => {
                 let applications = MediaEngine::audio_applications().map_err(error)?;
@@ -1100,13 +1110,20 @@ impl Worker {
                 if !self.state.voice.screen_share {
                     return Err("Start screen sharing before sharing audio".into());
                 }
-                self.media()?
+                let started = self
+                    .media()?
                     .start_shared_audio(selection)
                     .await
-                    .map_err(error)?;
-                self.emit(Event::SharedAudioStatus(true));
+                    .map_err(error);
+                self.active_share_audio = started.is_ok();
+                self.emit(Event::SharedAudioStatus(self.active_share_audio));
+                started?;
             }
             Command::StopSharedAudio => {
+                self.active_share_audio = false;
+                if let Some(pending) = &mut self.pending_share {
+                    pending.audio = None;
+                }
                 let stopped = if let Some(media) = &mut self.media {
                     media.stop_shared_audio().await.map_err(error)
                 } else {
@@ -1428,6 +1445,8 @@ impl Worker {
     }
 
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
+        self.pending_share = None;
+        self.active_share_audio = false;
         let target = self.voice_target.take();
         self.pending_voice_server = None;
         self.voice_credentials = None;
@@ -1819,12 +1838,22 @@ impl Worker {
                 }
             }
             MediaEvent::ScreenShareStarted => {
-                let running = self.media.as_ref().is_some_and(MediaEngine::is_sharing);
+                let running = self
+                    .media
+                    .as_ref()
+                    .is_some_and(MediaEngine::screen_capture_has_frame);
                 self.screen_event(true, running).await?;
             }
             MediaEvent::ScreenShareStopped => {
                 let running = self.media.as_ref().is_some_and(MediaEngine::is_sharing);
                 self.screen_event(false, running).await?;
+            }
+            MediaEvent::SharedAudioStopped => {
+                let running = self
+                    .media
+                    .as_ref()
+                    .is_some_and(MediaEngine::is_sharing_audio);
+                self.shared_audio_event(running).await?;
             }
             event => self.emit(Event::Media(event)),
         }
@@ -1970,29 +1999,94 @@ impl Worker {
             {
                 return Ok(());
             }
-            self.state.voice.screen_share = true;
-            self.snapshot();
-            self.emit(Event::Media(MediaEvent::ScreenShareStarted));
-            self.update_voice().await?;
+            // Consume consent once, after the source's first frame. A queued
+            // Started after StopShare or a duplicate start cannot open audio.
+            let Some(request) = self.pending_share.take() else {
+                return Ok(());
+            };
+            let has_audio = request.audio.is_some();
+            let audio_started = if let Some(selection) = request.audio {
+                match self.media.as_mut() {
+                    Some(media) => media.start_shared_audio(selection).await.map_err(error),
+                    None => Err("Screen-share audio transport is unavailable".into()),
+                }
+            } else {
+                Ok(())
+            };
+            self.complete_share_start(has_audio, audio_started).await?;
         } else {
             // A queued stop from the previous source must not stop its live replacement.
             if running {
                 return Ok(());
             }
-            let stopped = if let Some(media) = &mut self.media {
-                media.stop_screen_share().await.map_err(error)
-            } else {
-                Ok(())
-            };
-            self.state.voice.screen_share = false;
-            self.snapshot();
-            self.emit(Event::Media(MediaEvent::ScreenShareStopped));
-            self.emit(Event::SharedAudioStatus(false));
-            let gateway = self.update_voice().await;
-            stopped?;
-            gateway?;
+            if self.pending_share.is_some()
+                || self.state.voice.screen_share
+                || self.active_share_audio
+            {
+                self.stop_share().await?;
+            }
         }
         Ok(())
+    }
+
+    // The result is supplied separately so publication failure/rollback can be
+    // tested without opening a picker or an audio device. Production supplies
+    // the actual start_shared_audio result above.
+    async fn complete_share_start(
+        &mut self,
+        has_audio: bool,
+        audio_started: Result<()>,
+    ) -> Result<()> {
+        if let Err(message) = audio_started {
+            return self.rollback_share(message).await;
+        }
+        self.pending_share = None;
+        self.active_share_audio = has_audio;
+        self.state.voice.screen_share = true;
+        self.snapshot();
+        self.emit(Event::Media(MediaEvent::ScreenShareStarted));
+        self.emit(Event::SharedAudioStatus(has_audio));
+        match self.update_voice().await {
+            Ok(()) => Ok(()),
+            Err(message) => self.rollback_share(message).await,
+        }
+    }
+
+    async fn shared_audio_event(&mut self, running: bool) -> Result<()> {
+        // A stopped old route may be queued ahead of its live replacement.
+        // Explicit audio-only stop revokes this intent before invoking media.
+        if running || !self.active_share_audio {
+            return Ok(());
+        }
+        self.rollback_share("Screen-share audio stopped unexpectedly; sharing was stopped".into())
+            .await
+    }
+
+    /// ScreenShareStartFlow fails requested audio capture instead of silently
+    /// switching to video-only. Revoke both source lifetimes and server state.
+    async fn rollback_share(&mut self, message: String) -> Result<()> {
+        match self.stop_share().await {
+            Ok(()) => Err(message),
+            Err(cleanup) => Err(format!("{message}; screen-share cleanup failed: {cleanup}")),
+        }
+    }
+
+    async fn stop_share(&mut self) -> Result<()> {
+        self.pending_share = None;
+        self.active_share_audio = false;
+        self.state.voice.screen_share = false;
+        self.snapshot();
+        self.emit(Event::Media(MediaEvent::ScreenShareStopped));
+        self.emit(Event::SharedAudioStatus(false));
+        // MediaEngine stops physical capture before awaiting unpublish, and its
+        // screen teardown releases the coupled screen-audio publication too.
+        let stopped = if let Some(media) = &mut self.media {
+            media.stop_screen_share().await.map_err(error)
+        } else {
+            Ok(())
+        };
+        let gateway = self.update_voice().await;
+        stopped.and(gateway)
     }
 }
 

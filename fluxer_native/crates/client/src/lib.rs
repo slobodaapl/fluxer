@@ -98,7 +98,10 @@ pub enum Command {
     StartMicrophoneTest,
     StopMicrophoneTest,
     RefreshScreenSources,
-    StartShare(ScreenShareOptions),
+    StartShare {
+        options: ScreenShareOptions,
+        audio: Option<SharedAudioSelection>,
+    },
     StopShare,
     RefreshAudioApplications,
     StartSharedAudio(SharedAudioSelection),
