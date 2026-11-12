@@ -79,3 +79,12 @@ The saved identity must match READY. Close 4004 marks the stored record invalid;
 transient network failures preserve it. Restore I/O is cancellable; it never joins
 a call or opens capture. `Controller::spawn_with_store` injects isolated test
 persistence without accessing the real OS vault.
+
+`StartShare { options, audio }` retains the optional audio selection until the
+current screen capture has delivered its first frame. `None` explicitly requests
+video only; selected system/application audio is published before advertising
+`self_stream`. Stop/cancel revoke pending audio before media or gateway work.
+Requested-audio startup failure, an active audio task ending, or gateway startup
+failure rolls back both sources. Stale lifecycle messages from a live replacement
+do not revoke it. The screen readiness check belongs to the current capture, so
+an old Started event cannot open audio while a replacement picker awaits consent.

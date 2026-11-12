@@ -55,6 +55,21 @@ macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
 prerequisites; their builds and capture behavior have not yet been validated by
 this migration. Full cross-platform parity remains a release gate.
 
+## Screen-share audio
+
+On Linux, the sharing pane enables **Include audio** by default and lets you
+choose system audio or one playback application before opening the system
+screen/window picker. Video and the selected audio start together after screen
+capture succeeds. Turning Include audio off starts an explicit video-only share.
+The voice panel reports whether audio is shared and offers a stream-audio mute
+button. Microphone mute and deafen do not mute the outgoing stream; use its own
+mute control. Stop sharing releases both video and audio.
+
+If requested audio cannot start, sharing stops with an error instead of silently
+falling back to video only. Application refresh uses a synchronized PipeWire
+inventory and preserves the selected source. Audio sharing on other platforms
+remains migration work.
+
 ## Validation
 
 ```sh
@@ -89,6 +104,16 @@ This creates an isolated virtual microphone fed by a generated tone, checks the
 meter plus decoded gain/PTT/mute behavior, then removes its temporary audio
 modules. It leaves default devices and existing application routes unchanged.
 The Rust test refuses default/hardware input IDs and non-loopback servers.
+
+To verify actual shared-audio capture, with the disposable server running:
+
+```sh
+python3 fluxer_native/scripts/test_shared_audio_capture.py
+```
+
+This uses generated tones in runner-owned virtual sinks and a selected synthetic
+application. It validates native capture through remote PCM decoding and removes
+its capture nodes, playback process and sinks afterwards.
 
 ## Video performance checks
 

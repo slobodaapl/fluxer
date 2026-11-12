@@ -48,8 +48,11 @@ browser or invent an Electron version.
   `viewer_stream_keys`, deafen policy and credential change detection. Deferred
   watch removal, full publication/region migration, mesh/P2P transport, reliable
   screen codec negotiation messages and camera demand remain open.
-- Rust LiveKit's publish API lacks the existing JS client's `forceStereo` option;
-  matching stereo PCM does not alone establish matching SDP signaling.
+- The pinned SDK now mirrors the existing JS `forceStereo` publication option,
+  AddTrack stereo/audio-feature metadata and track-specific Opus SDP negotiation.
+  Shared audio explicitly requests stereo; microphone stereo remains opt-in.
+  Real native capture tests verify separate left/right tones after remote decoding
+  in plain and E2EE calls, rather than assuming stereo PCM implies stereo transport.
 - Stream availability now follows gateway `self_stream` in the joined channel,
   matching `useVoiceCallTracksAndLayout.ts`, before SFU metadata arrives. Native
   watch intent immediately projects the existing `viewer_stream_keys`; temporary

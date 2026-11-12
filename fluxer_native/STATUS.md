@@ -12,12 +12,12 @@ not individual types or controls.
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
 | GPUI | Executable builds/links; Wayland demo visually verified; 30 input/emoji/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, uploads, native audio/video playback, complete UI parity |
-| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 39 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
+| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 39 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 45 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-206 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+215 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -174,6 +174,23 @@ frame behind; storage stayed bounded to one frame. Presentation takes one atomic
 frame snapshot per tick, so continuous video cannot extend a UI poll indefinitely.
 Control events travel independently of video, and BGRA conversion happens in the
 native decoder path rather than a per-pixel loop on the UI thread.
+
+Screen-share start now carries an explicit optional audio selection. The Linux
+sharing pane defaults Include audio on, places the source choice before the
+system picker, and exposes active stream-audio mute/status in the voice panel.
+Audio waits for the current capture's first frame; cancelled/stopped starts revoke
+pending audio. Requested-audio or gateway startup failures roll back both sources,
+while old lifecycle events cannot stop a live replacement. Outgoing stream audio
+is independent of microphone mute/deafen. Application discovery now synchronizes
+PipeWire registry, node and client properties before returning sources.
+Actual selected-application capture through publication and remote PCM decoding
+passes in plain/E2EE local calls, including gain, mute/unmute, sender deafen and
+capture-node/unpublication cleanup. The SDK's missing forceStereo metadata and
+track-specific Opus negotiation are now implemented from the bundled JS source;
+strict decoded left/right tone separation passes in both plain and encrypted calls.
+Four focused SDK signaling/SDP checks pass, including mono microphone scoping and
+unmodified video sections. The runner uses only generated tones and its own virtual
+sinks; it does not capture personal applications or the system mix.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

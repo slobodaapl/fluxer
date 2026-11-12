@@ -73,6 +73,7 @@ python3 fluxer_native/scripts/test_microphone_capture.py
 python3 fluxer_native/scripts/test_output_routing.py
 python3 fluxer_native/scripts/test_output_routing.py --media
 python3 fluxer_native/scripts/test_output_routing.py --screen-watch
+python3 fluxer_native/scripts/test_shared_audio_capture.py
 ```
 
 Unit tests cover actual SDK track PCM for input gain/PTT, arbitrary callback
@@ -104,3 +105,20 @@ screen-share policy; the SDK default would introduce a 3 FPS low layer. Focused
 simulcast reception explicitly requests high quality. The full-HD screen fixture
 uses the same publication helper, checks sustained 30 FPS transport, and verifies
 freshness after a deliberately paused consumer in plain and encrypted calls.
+
+Shared-audio capture follows the selected system/application route after current
+screen capture has produced its first frame. Outgoing gain/mute is independent of
+microphone mute/deafen, matching `AudioPublishOptions.ts` and the existing media
+adapter. Application discovery waits for PipeWire core synchronization, node info
+and client identity properties before returning its inventory. The video and audio
+publications share the `screen_share` stream group.
+
+The shared-audio runner starts a sibling `pacat` process with generated 440/880 Hz
+stereo tones in isolated virtual sinks. Its real selected-application capture is
+published through MediaEngine and decoded by a second client in plain and E2EE
+calls. It verifies tone presence, gain, explicit mute/unmute, continued transmission
+while the sender is microphone-muted/deafened, and completed unpublication/capture
+node cleanup. Distinct left/right tones must remain separated after decoding;
+matching a two-channel PCM format alone does not pass. The SDK compatibility patch
+mirrors the existing client's forceStereo metadata and per-track SDP behavior.
+It does not record the system mix or personal applications.

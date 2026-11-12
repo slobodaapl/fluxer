@@ -280,6 +280,7 @@ struct Fluxer {
     available_streams: BTreeSet<String>,
     applications: Vec<AudioApplication>,
     shared_audio: bool,
+    share_audio_enabled: bool,
     shared_audio_settings: SharedAudioSettings,
     testing_microphone: bool,
     levels: (f32, f32),
@@ -408,6 +409,7 @@ impl Fluxer {
             available_streams: BTreeSet::new(),
             applications: Vec::new(),
             shared_audio: false,
+            share_audio_enabled: cfg!(target_os = "linux"),
             shared_audio_settings: SharedAudioSettings::default(),
             testing_microphone: false,
             levels: (0., 0.),
@@ -1611,6 +1613,33 @@ impl Fluxer {
                         cx.listener(|this, _, _, cx| this.command(Command::LeaveVoice, cx)),
                     )),
             )
+            .when(self.sharing, |view| {
+                view.child(muted(if self.shared_audio {
+                    if self.shared_audio_settings.muted {
+                        "Shared audio muted"
+                    } else {
+                        "Sharing screen and audio"
+                    }
+                } else {
+                    "Sharing screen without audio"
+                }))
+                .when(self.shared_audio, |view| {
+                    view.child(
+                        button(
+                            "active-share-audio-mute",
+                            if self.shared_audio_settings.muted {
+                                "Unmute stream audio"
+                            } else {
+                                "Mute stream audio"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shared_audio_settings.muted = !this.shared_audio_settings.muted;
+                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                        })),
+                    )
+                })
+            })
             .into_any_element()
     }
 
@@ -2917,8 +2946,8 @@ impl Fluxer {
             .into_any_element()
     }
 
-    fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let selection = self.share_audio_picker.read(cx).selected().and_then(|id| {
+    fn selected_share_audio(&self, cx: &App) -> Option<SharedAudioSelection> {
+        self.share_audio_picker.read(cx).selected().and_then(|id| {
             if id == "system" {
                 Some(SharedAudioSelection::System)
             } else {
@@ -2928,84 +2957,98 @@ impl Fluxer {
                         process_id: pid.into(),
                     })
             }
-        });
+        })
+    }
+
+    fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .flex_col()
             .gap_3()
             .child(heading("Share audio"))
-            .child(muted(if self.shared_audio {
-                "Audio sharing is active"
-            } else {
-                "No audio is being shared"
-            }))
-            .child(self.share_audio_picker.clone())
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .when_some(selection, |view, selection| {
-                        view.child(button("start-shared-audio", "Share audio").on_click(
-                            cx.listener(move |this, _, _, cx| {
-                                this.command(Command::StartSharedAudio(selection.clone()), cx);
-                            }),
-                        ))
-                    })
-                    .child(
-                        button("refresh-apps", "Refresh applications").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.command(Command::RefreshAudioApplications, cx);
-                            },
-                        )),
-                    )
-                    .when(self.shared_audio, |view| {
-                        view.child(button("stop-shared-audio", "Stop sharing audio").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.command(Command::StopSharedAudio, cx);
-                            }),
-                        ))
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_3()
-                    .items_center()
-                    .child(muted(format!(
-                        "Shared audio {:.0}%",
-                        self.shared_audio_settings.gain * 100.
-                    )))
-                    .child(button("share-gain-down", "−").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.shared_audio_settings.gain =
-                                (this.shared_audio_settings.gain - 0.1).max(0.);
-                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+            .when(cfg!(target_os = "linux"), |view| {
+                view.child(
+                    button(
+                        "include-share-audio",
+                        if self.share_audio_enabled {
+                            "Include audio: On"
+                        } else {
+                            "Include audio: Off"
                         },
-                    )))
-                    .child(
-                        button("share-gain-up", "+").on_click(cx.listener(|this, _, _, cx| {
-                            this.shared_audio_settings.gain =
-                                (this.shared_audio_settings.gain + 0.1).min(2.);
-                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
-                        })),
                     )
-                    .child(
-                        button(
-                            "share-audio-mute",
-                            if self.shared_audio_settings.muted {
-                                "Unmute shared audio"
-                            } else {
-                                "Mute shared audio"
+                    .w(px(180.))
+                    .when(self.share_audio_enabled, |button| button.bg(rgb(0x6650bd)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.share_audio_enabled = !this.share_audio_enabled;
+                        cx.notify();
+                    })),
+                )
+            })
+            .when(!cfg!(target_os = "linux"), |view| {
+                view.child(muted("Audio sharing is unavailable on this platform."))
+            })
+            .when(self.share_audio_enabled, |view| {
+                view.child(muted(
+                    "The selected audio source starts with your screen share.",
+                ))
+                .child(self.share_audio_picker.clone())
+                .child(
+                    button("refresh-apps", "Refresh applications").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.command(Command::RefreshAudioApplications, cx);
+                        },
+                    )),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_3()
+                        .items_center()
+                        .child(muted(format!(
+                            "Shared audio {:.0}%",
+                            self.shared_audio_settings.gain * 100.
+                        )))
+                        .child(button("share-gain-down", "−").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.shared_audio_settings.gain =
+                                    (this.shared_audio_settings.gain - 0.1).max(0.);
+                                this.command(
+                                    Command::SetSharedAudio(this.shared_audio_settings),
+                                    cx,
+                                );
                             },
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.shared_audio_settings.muted = !this.shared_audio_settings.muted;
-                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
-                        })),
-                    ),
-            )
+                        )))
+                        .child(button("share-gain-up", "+").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.shared_audio_settings.gain =
+                                    (this.shared_audio_settings.gain + 0.1).min(2.);
+                                this.command(
+                                    Command::SetSharedAudio(this.shared_audio_settings),
+                                    cx,
+                                );
+                            },
+                        )))
+                        .child(
+                            button(
+                                "share-audio-mute",
+                                if self.shared_audio_settings.muted {
+                                    "Unmute shared audio"
+                                } else {
+                                    "Mute shared audio"
+                                },
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.shared_audio_settings.muted =
+                                    !this.shared_audio_settings.muted;
+                                this.command(
+                                    Command::SetSharedAudio(this.shared_audio_settings),
+                                    cx,
+                                );
+                            })),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -3046,6 +3089,7 @@ impl Fluxer {
             })
             .child(self.fps_picker.clone())
             .child(self.resolution_picker.clone())
+            .child(self.shared_audio_controls(cx))
             .child(
                 div()
                     .flex()
@@ -3077,7 +3121,6 @@ impl Fluxer {
                         )),
                     ),
             )
-            .child(self.shared_audio_controls(cx))
             .child(button("cancel-share", "Back to chat").on_click(cx.listener(
                 |this, _, _, cx| {
                     this.pane = Pane::Chat;
@@ -3088,20 +3131,33 @@ impl Fluxer {
     }
 
     fn start_screen_share(&mut self, source: ScreenSource, cx: &mut Context<Self>) {
+        let audio = if self.share_audio_enabled {
+            let Some(selection) = self.selected_share_audio(cx) else {
+                self.error = Some("Choose an available audio source before sharing.".into());
+                cx.notify();
+                return;
+            };
+            Some(selection)
+        } else {
+            None
+        };
         self.command(
-            Command::StartShare(ScreenShareOptions {
-                source,
-                fps: self.share_fps,
-                max_width: self.share_size.0,
-                max_height: self.share_size.1,
-                max_bitrate: if self.share_size.1 > 1080 {
-                    8_000_000
-                } else if self.share_fps > 30 {
-                    6_000_000
-                } else {
-                    4_000_000
+            Command::StartShare {
+                options: ScreenShareOptions {
+                    source,
+                    fps: self.share_fps,
+                    max_width: self.share_size.0,
+                    max_height: self.share_size.1,
+                    max_bitrate: if self.share_size.1 > 1080 {
+                        8_000_000
+                    } else if self.share_fps > 30 {
+                        6_000_000
+                    } else {
+                        4_000_000
+                    },
                 },
-            }),
+                audio,
+            },
             cx,
         );
         // The first captured frame, rather than this request, marks sharing active.
