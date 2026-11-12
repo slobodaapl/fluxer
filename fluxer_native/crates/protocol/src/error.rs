@@ -5,6 +5,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("operating system randomness is unavailable for the client installation ID")]
+    InstallationIdUnavailable,
     #[error("invalid endpoint: {0}")]
     InvalidEndpoint(String),
     #[error("instance discovery failed: {0}")]

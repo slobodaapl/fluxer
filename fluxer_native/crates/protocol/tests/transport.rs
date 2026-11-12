@@ -137,7 +137,7 @@ async fn desktop_origin_comes_from_discovered_webapp_and_excludes_get_and_head()
     // Reference: LocalAppAPIProxyRequestHandler.ts forward() and
     // LocalAppProxyHTTPPolicy.ts buildAPIRequestHeaders()/requestHasBody().
     // Different API/webapp authorities catch an accidental API-origin fallback.
-    let web_app = "https://client.example.test:8443/client";
+    let web_app = "https://client.example.test:8443";
     let web_app_origin = "https://client.example.test:8443";
     let (origin, mut requests) = http_server_with_origin_policy(
         vec![response("200 OK", json!({})); 5],

@@ -151,7 +151,7 @@ impl Client {
             .header("X-Fluxer-Capabilities", "guild_visits")
             .header(
                 "X-Fluxer-Client-Installation-ID",
-                crate::installation::get(),
+                crate::installation::get()?,
             )
             .header(header::ACCEPT_ENCODING, "gzip, br");
         if !authenticated {

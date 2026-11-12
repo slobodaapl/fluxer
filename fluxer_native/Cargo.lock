@@ -2133,6 +2133,7 @@ dependencies = [
  "dirs 5.0.1",
  "fastrand 2.5.0",
  "futures-util",
+ "getrandom 0.3.4",
  "percent-encoding",
  "reqwest",
  "serde",
@@ -2141,7 +2142,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.28.0",
  "url",
- "uuid",
  "zstd",
 ]
 

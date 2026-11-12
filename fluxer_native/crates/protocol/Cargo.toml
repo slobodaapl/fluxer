@@ -16,5 +16,5 @@ url = { version = "2", features = ["serde"] }
 percent-encoding = "2"
 zstd = { version = "=0.14.0", default-features = false }
 fastrand = "2"
-uuid = { version = "1", features = ["v4"] }
+getrandom = "0.3"
 dirs = "5"
