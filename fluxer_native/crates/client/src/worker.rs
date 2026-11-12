@@ -195,6 +195,7 @@ impl Worker {
         self.last_sequence = None;
         self.pending_mfa = None;
         self.client = None;
+        self.media = None;
         self.state = ClientState::default();
         self.demo = false;
         if let Ok(mut frames) = self.frames.lock() {
@@ -785,14 +786,13 @@ impl Worker {
                                 self.leave_voice(false).await?;
                             }
                         }
-                        if let Some(update) = self.pending_voice_server.take() {
-                            if self
+                        if let Some(update) = self.pending_voice_server.take()
+                            && self
                                 .voice_target
                                 .as_ref()
                                 .is_some_and(|target| target.accepts(&update))
-                            {
-                                self.connect_voice(update).await?;
-                            }
+                        {
+                            self.connect_voice(update).await?;
                         }
                     }
                     if let Some(target) = &self.voice_target {
@@ -928,3 +928,7 @@ fn values(value: Value, key: &str) -> Result<Vec<Value>> {
         .cloned()
         .ok_or_else(|| format!("Server response omitted {key} list"))
 }
+
+#[cfg(test)]
+#[path = "worker_tests.rs"]
+mod tests;

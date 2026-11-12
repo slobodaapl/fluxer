@@ -123,6 +123,7 @@ pub struct Controller {
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Controller {
@@ -131,6 +132,7 @@ impl Controller {
         let (tx, events) = mpsc::channel();
         let frames = Arc::new(Mutex::new(BTreeMap::new()));
         let worker_frames = frames.clone();
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         thread::Builder::new()
             .name("fluxer-client".into())
             .spawn(move || {
@@ -138,7 +140,12 @@ impl Controller {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(worker::Worker::new(tx, worker_frames).run(rx)),
+                    Ok(runtime) => runtime.block_on(async move {
+                        tokio::select! {
+                            _ = worker::Worker::new(tx,worker_frames).run(rx) => {},
+                            _ = shutdown_rx => {},
+                        }
+                    }),
                     Err(error) => {
                         let _ = tx.send(Event::Error(format!("Unable to start client: {error}")));
                     }
@@ -149,6 +156,7 @@ impl Controller {
             commands,
             events,
             frames,
+            shutdown: Some(shutdown),
         })
     }
 
@@ -172,5 +180,10 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         let _ = self.commands.send(Command::Shutdown);
+        // Cancellation drops native handles immediately even while an HTTP
+        // request is waiting, rather than queueing shutdown behind that request.
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
     }
 }

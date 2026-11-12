@@ -10,3 +10,7 @@ fluxer-protocol.workspace = true
 fluxer-media.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["connect"] }
+futures-util = "0.3"
