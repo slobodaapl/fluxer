@@ -75,15 +75,33 @@ pub(crate) struct PreparedAttachment {
     pub size: u64,
     pub mime_type: String,
     pub preview: Option<AttachmentPreview>,
+    modified: Option<std::time::SystemTime>,
     // Clipboard data is an isolated 0600 temporary file for streaming uploads.
     // All references drop on removal/reset/task cancellation; no persistent copy.
     _temporary: Option<tempfile::NamedTempFile>,
+}
+impl PreparedAttachment {
+    /// Browser File objects preserve staged bytes. Reject mutable disk sources
+    /// that changed since preparation before creating any upload request.
+    pub async fn validate_source(&self) -> Result<(), String> {
+        let metadata = tokio::fs::metadata(&self.path)
+            .await
+            .map_err(|_| "The staged file is no longer available")?;
+        if !metadata.is_file()
+            || metadata.len() != self.size
+            || metadata.modified().ok() != self.modified
+        {
+            return Err("The staged file changed; remove it and attach it again".into());
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn prepare(
     input: AttachmentInput,
     max_size: u64,
     revision: u64,
+    cancel: &fluxer_protocol::UploadCancellation,
 ) -> Result<Arc<PreparedAttachment>, String> {
     use std::io::Write;
     let (path, temporary, declared) = match input {
@@ -96,8 +114,13 @@ pub(crate) fn prepare(
             }
             let mut file = tempfile::NamedTempFile::new()
                 .map_err(|_| "Could not prepare the clipboard image")?;
-            file.write_all(&bytes)
-                .map_err(|_| "Could not prepare the clipboard image")?;
+            for chunk in bytes.chunks(64 * 1024) {
+                if cancel.is_cancelled() {
+                    return Err("Attachment preparation cancelled".into());
+                }
+                file.write_all(chunk)
+                    .map_err(|_| "Could not prepare the clipboard image")?;
+            }
             (file.path().to_owned(), Some(file), Some(mime_type))
         }
     };
@@ -113,6 +136,9 @@ pub(crate) fn prepare(
             .first_or_octet_stream()
             .to_string()
     });
+    if cancel.is_cancelled() {
+        return Err("Attachment preparation cancelled".into());
+    }
     let preview = (|| {
         let mut reader = image::ImageReader::open(&path)
             .ok()?
@@ -144,6 +170,7 @@ pub(crate) fn prepare(
         size: metadata.len(),
         mime_type,
         preview,
+        modified: metadata.modified().ok(),
         _temporary: temporary,
     }))
 }

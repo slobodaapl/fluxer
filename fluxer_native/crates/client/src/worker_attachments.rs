@@ -85,6 +85,7 @@ pub(super) struct AttachmentState {
     last_attempt: BTreeMap<Snowflake, String>,
     tx: async_mpsc::UnboundedSender<AttachmentEvent>,
     pub rx: async_mpsc::UnboundedReceiver<AttachmentEvent>,
+    preparation_slots: Arc<tokio::sync::Semaphore>,
 }
 impl AttachmentState {
     pub fn new() -> Self {
@@ -99,6 +100,7 @@ impl AttachmentState {
             last_attempt: BTreeMap::new(),
             tx,
             rx,
+            preparation_slots: Arc::new(tokio::sync::Semaphore::new(4)),
         }
     }
     fn stage(&mut self, channel: Snowflake, id: u64) -> Option<&mut Stage> {
@@ -184,6 +186,36 @@ impl Worker {
             });
         }
     }
+    fn refresh_attachment_policy(&mut self, channel: Snowflake) {
+        let preupload = !self.demo
+            && self.attachment_policy(channel).is_ok_and(|policy| policy.preupload)
+            && self.client.as_ref().is_some_and(Client::supports_presigned_attachment_uploads)
+            && self.can_attach(channel).is_ok();
+        if !preupload {
+            for stage in self.attachments.channels.get_mut(&channel).into_iter().flatten() {
+                // Preparation produces the local immutable clipboard source and
+                // preview. Only background HTTP uploads are privacy-dependent.
+                if stage.prepared.is_some() {
+                    if stage.job.take().is_some() {
+                        stage.revision = stage.revision.wrapping_add(1);
+                    }
+                    stage.uploaded = None;
+                    if matches!(stage.dto.status, AttachmentStatus::Uploading | AttachmentStatus::Ready) {
+                        stage.dto.status = AttachmentStatus::Staged;
+                        stage.dto.progress = 0.;
+                    }
+                }
+            }
+        }
+    }
+    pub(super) fn refresh_attachment_policies(&mut self) {
+        let channels = self.attachments.channels.keys().copied().collect::<Vec<_>>();
+        for channel in channels {
+            self.refresh_attachment_policy(channel);
+            self.attachment_snapshot(channel);
+            self.advance_attachment_send(channel);
+        }
+    }
     pub(super) fn stage_files(&mut self, channel: Snowflake, paths: Vec<PathBuf>) -> Result<()> {
         self.stage_inputs(
             channel,
@@ -254,6 +286,7 @@ impl Worker {
     fn prepare_attachment(&mut self, channel: Snowflake, id: u64, max_size: u64) {
         let epoch = self.attachments.epoch;
         let tx = self.attachments.tx.clone();
+        let slots = self.attachments.preparation_slots.clone();
         let Some(stage) = self.attachments.stage(channel, id) else {
             return;
         };
@@ -264,11 +297,15 @@ impl Worker {
         stage.dto.status = AttachmentStatus::Preparing;
         stage.dto.error = None;
         stage.dto.progress = 0.;
+        let cancel = UploadCancellation::new();
+        let cancelling = cancel.clone();
         stage.job = Some(Job {
-            cancel: None,
+            cancel: Some(cancel),
             task: tokio::spawn(async move {
+                let Ok(slot) = slots.acquire_owned().await else { return };
                 let result = tokio::task::spawn_blocking(move || {
-                    attachments::prepare(input, max_size, revision)
+                    let _slot = slot;
+                    attachments::prepare(input, max_size, revision, &cancelling)
                 })
                 .await
                 .map_err(|_| "Attachment preparation stopped".into())
@@ -317,8 +354,9 @@ impl Worker {
         stage.job = Some(Job {
             cancel: Some(cancel),
             task: tokio::spawn(async move {
-                let _keepalive = prepared;
-                let result = client
+                let result = async {
+                    prepared.validate_source().await?;
+                    client
                     .preupload_attachments(&channel.to_string(), &[file], &cancelling, callback)
                     .await
                     .map_err(error)
@@ -328,7 +366,8 @@ impl Worker {
                         } else {
                             Err("Upload response did not match the selected file".into())
                         }
-                    });
+                    })
+                }.await;
                 let _ = tx.send(AttachmentEvent::Uploaded {
                     epoch,
                     channel,
@@ -381,6 +420,7 @@ impl Worker {
             .stage(channel, id)
             .ok_or("Attachment is no longer staged")?;
         stage.job = None;
+        stage.uploaded = None;
         stage.revision = stage.revision.wrapping_add(1);
         stage.dto.status = AttachmentStatus::Cancelled;
         stage.dto.error = None;
@@ -426,6 +466,7 @@ impl Worker {
         reference: Option<fluxer_core::MessageReference>,
         mention_author: bool,
     ) -> Result<()> {
+        self.refresh_attachment_policy(channel);
         let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
         let target = self.state.channels.get(&channel).ok_or("Unknown channel")?;
         if !fluxer_core::can_send_message(target.kind, self.state.permissions_for(channel, user.id))
@@ -442,7 +483,8 @@ impl Worker {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        if content.trim().is_empty() && stages.is_empty() {
+        if Client::build_message_body(&content, None, reference.as_ref(), mention_author)
+            .get("content").is_none() && stages.is_empty() {
             return Err("Message cannot be empty".into());
         }
         if !stages.is_empty() {
@@ -517,6 +559,7 @@ impl Worker {
         Ok(())
     }
     fn advance_attachment_send(&mut self, channel: Snowflake) {
+        self.refresh_attachment_policy(channel);
         let Some(send) = self.attachments.sends.get(&channel) else {
             return;
         };
@@ -615,6 +658,7 @@ impl Worker {
         let sending_nonce = nonce.clone();
         let task = tokio::spawn(async move {
             let result=async {
+                for prepared in &keepalive { prepared.validate_source().await?; }
                 let _keepalive=keepalive;
                 if let Some(client)=client {
                     let channel_wire=channel.to_string();
