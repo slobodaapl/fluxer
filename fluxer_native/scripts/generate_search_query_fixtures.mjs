@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import {spawnSync} from 'node:child_process';
 import {stripTypeScriptTypes,createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 
@@ -124,4 +125,39 @@ if (process.argv.includes('--dates')) {
   const dateOut=path.join(root,'fluxer_native/crates/core/tests/fixtures/search_query_dates.json');
   fs.writeFileSync(dateOut,JSON.stringify({source:sourcePath,luxon_version:VERSION,fixtures:dateFixtures},null,2)+'\n');
   console.log(`Wrote ${dateFixtures.length} source-executed date fixtures.`);
+}
+
+if (process.argv.includes('--week-locales')) {
+  const weekInfo=locale=> {const value=new Intl.Locale(locale);return (value.weekInfo??value.getWeekInfo()).firstDay;};
+  const territories={},languages={};
+  const territoryDefaults={};
+  for (let a=65;a<=90;a++) for(let b=65;b<=90;b++) {
+    const code=String.fromCharCode(a,b);const day=weekInfo(`und-${code}`);
+    if(day!==1)(territories[day]??=[]).push(code);
+  }
+  for (let a=97;a<=122;a++) for(let b=97;b<=122;b++) {
+    const code=String.fromCharCode(a,b);const day=weekInfo(code);
+    if(day!==1) {(languages[day]??=[]).push(code);territoryDefaults[code]=new Intl.Locale(code).maximize().region;}
+  }
+  const localeFile='packages/constants/src/Locales.ts';
+  const localeText=fs.readFileSync(path.join(root,localeFile),'utf8');
+  const locales=[...localeText.matchAll(/^\s*[A-Z_0-9]+: '([^']+)'/gm)].map(m=>m[1]);
+  const extra=['en','en-CA','ar-EG','ar-SA','dv-MV','pt','pt-PT','fa','zh-Hant','zh-Hans','xx','und','en-US-u-fw-mon','en-US-u-rg-gbzzzz','en-Latn-CA'];
+  const fixtures=[...new Set([...locales,...extra])].map(locale=>({locale,region:new Intl.Locale(locale).maximize().region??null,first_day:weekInfo(locale)}));
+  const environments=[{},...['C','C.UTF-8','POSIX','en_US.UTF-8','en_GB.UTF-8','en_CA.UTF-8','ar_EG.UTF-8','ar_SA.UTF-8','dv_MV.UTF-8'].map(LANG=>({LANG})),
+    {LANG:'en_US.UTF-8',LC_ALL:'en_GB.UTF-8'}, {LANG:'en_US.UTF-8',LC_MESSAGES:'en_GB.UTF-8'},
+    {LANG:'en_GB.UTF-8',LC_ALL:''},{LANG:'en_GB.UTF-8',LC_MESSAGES:''},
+    {LANG:'en_US.UTF-8',LC_TIME:'en_GB.UTF-8'},
+  ];
+  const hostFixtures=environments.map(environment=> {
+    const env={...process.env};for(const key of ['LC_ALL','LC_MESSAGES','LC_TIME','LANG','LANGUAGE'])delete env[key];Object.assign(env,environment);
+    const script=`const locale=Intl.DateTimeFormat().resolvedOptions().locale;const value=new Intl.Locale(locale);console.log(JSON.stringify({locale,first_day:(value.weekInfo??value.getWeekInfo()).firstDay}));`;
+    const child=spawnSync(process.execPath,['-e',script],{env,encoding:'utf8'});
+    if(child.error)throw child.error;
+    if(child.status!==0)throw new Error(child.stderr);
+    return {environment,...JSON.parse(child.stdout)};
+  });
+  const out=path.join(root,'fluxer_native/crates/core/tests/fixtures/search_query_week.json');
+  fs.writeFileSync(out,JSON.stringify({source:'Intl.Locale week info used by Luxon localeWeekStart',locale_source:localeFile,territories,languages,territory_defaults:territoryDefaults,fixtures,host_fixtures:hostFixtures},null,2)+'\n');
+  console.log(`Wrote ${fixtures.length} locale and ${hostFixtures.length} host-locale fixtures.`);
 }
