@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use fluxer_core::{ClientState, Emoji, Message, Snowflake};
-use serde::Deserialize;
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, Visitor},
+};
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
@@ -21,6 +24,38 @@ pub struct EmojiChoice {
     pub animated: bool,
     pub aliases: Arc<[String]>,
     pub keywords: Arc<[String]>,
+    /// Bundled artwork only. Mixed-tone extras have no tile in the six sheets.
+    pub sprite: Option<EmojiSprite>,
+}
+
+/// UnicodeEmojis.ts sprite indices, independent of the visible picker order.
+/// Sheet 0 is spritesheet-emoji; sheets 1–5 are 1f3fb through 1f3ff.
+/// Cells are 32 pixels in 1x assets, 64 pixels in @2x assets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EmojiSprite {
+    pub sheet: u8,
+    pub index: u32,
+}
+impl EmojiSprite {
+    pub fn columns(self) -> u32 {
+        if self.sheet == 0 { 42 } else { 10 }
+    }
+    pub fn rows(self) -> u32 {
+        let count = if self.sheet == 0 {
+            unicode_index().base_sprite_count
+        } else {
+            unicode_index().skin_sprite_count
+        };
+        count.div_ceil(self.columns())
+    }
+}
+
+/// Match the existing FE0F-insensitive Unicode lookup. No images are decoded.
+pub fn unicode_sprite(surrogate: &str) -> Option<EmojiSprite> {
+    unicode_index()
+        .sprites
+        .get(&surrogate.replace('\u{fe0f}', ""))
+        .copied()
 }
 #[derive(Deserialize)]
 struct UnicodeEmoji {
@@ -30,10 +65,36 @@ struct UnicodeEmoji {
     keywords: Vec<String>,
     #[serde(default)]
     skins: Vec<UnicodeEmoji>,
+    #[serde(default, rename = "hasSkinTones")]
+    has_skin_tones: bool,
+    #[serde(skip)]
+    sprite: Option<EmojiSprite>,
+    #[serde(skip)]
+    skin_sprite_index: Option<u32>,
 }
 #[derive(Deserialize)]
 struct EmojiData {
-    categories: BTreeMap<String, Vec<UnicodeEmoji>>,
+    #[serde(deserialize_with = "ordered_categories")]
+    categories: Vec<(String, Vec<UnicodeEmoji>)>,
+}
+fn ordered_categories<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<(String, Vec<UnicodeEmoji>)>, D::Error> {
+    struct Categories;
+    impl<'de> Visitor<'de> for Categories {
+        type Value = Vec<(String, Vec<UnicodeEmoji>)>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("emoji categories in source JSON order")
+        }
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut entries = Vec::new();
+            while let Some(entry) = map.next_entry()? {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+    deserializer.deserialize_map(Categories)
 }
 const CATEGORY_ORDER: [&str; 8] = [
     "people", "nature", "food", "activity", "travel", "objects", "symbols", "flags",
@@ -99,12 +160,16 @@ struct UnicodeIndex {
     /// Six precomputed base grids per category, including the complete grid.
     /// Empty search never scans aliases or all 2,030 skin variants.
     grids: BTreeMap<String, [ChoiceList; 6]>,
+    sprites: BTreeMap<String, EmojiSprite>,
+    base_sprite_count: u32,
+    skin_sprite_count: u32,
 }
 fn unicode_choice(
     category: &str,
     emoji: &UnicodeEmoji,
     base: &UnicodeEmoji,
     keywords: Arc<[String]>,
+    sprite: Option<EmojiSprite>,
 ) -> EmojiChoice {
     let name = emoji
         .names
@@ -128,6 +193,7 @@ fn unicode_choice(
         animated: false,
         aliases: aliases.into(),
         keywords,
+        sprite,
     }
 }
 fn unicode_index() -> &'static UnicodeIndex {
@@ -137,14 +203,31 @@ fn unicode_index() -> &'static UnicodeIndex {
             "../../../../fluxer_app/src/media/data/emojis.json"
         ))
         .expect("bundled emoji data");
+        // UnicodeEmojis.buildEmojiIndex counts in JSON object insertion order.
+        // Assign positions before applying the picker's category sorting.
+        let (mut base_sprite_count, mut skin_sprite_count) = (0, 0);
+        for (_, emojis) in &mut data.categories {
+            for emoji in emojis {
+                emoji.sprite = Some(EmojiSprite {
+                    sheet: 0,
+                    index: base_sprite_count,
+                });
+                base_sprite_count += 1;
+                if emoji.has_skin_tones || !emoji.skins.is_empty() {
+                    emoji.skin_sprite_index = Some(skin_sprite_count);
+                    skin_sprite_count += 1;
+                }
+            }
+        }
+        let mut source_categories: BTreeMap<_, _> = data.categories.into_iter().collect();
         let mut ordered = Vec::new();
         for category in CATEGORY_ORDER {
-            if let Some(emojis) = data.categories.remove(category) {
+            if let Some(emojis) = source_categories.remove(category) {
                 ordered.push((category.to_owned(), emojis));
             }
         }
         // Unknown future categories stay visible, after the source's known order.
-        ordered.extend(data.categories);
+        ordered.extend(source_categories);
         let categories = ordered
             .iter()
             .map(|(name, _)| name.clone())
@@ -153,12 +236,18 @@ fn unicode_index() -> &'static UnicodeIndex {
         for (category, emojis) in ordered {
             for emoji in emojis {
                 let keywords: Arc<[String]> = emoji.keywords.clone().into();
-                let base =
-                    IndexedChoice::new(unicode_choice(&category, &emoji, &emoji, keywords.clone()));
+                let base = IndexedChoice::new(unicode_choice(
+                    &category,
+                    &emoji,
+                    &emoji,
+                    keywords.clone(),
+                    emoji.sprite,
+                ));
                 let variants = emoji
                     .skins
                     .iter()
-                    .map(|variant| {
+                    .enumerate()
+                    .map(|(tone, variant)| {
                         let terms = variant
                             .names
                             .iter()
@@ -166,7 +255,18 @@ fn unicode_index() -> &'static UnicodeIndex {
                             .chain(std::iter::once(variant.surrogates.clone()))
                             .collect();
                         IndexedChoice::with_terms(
-                            unicode_choice(&category, variant, &emoji, keywords.clone()),
+                            unicode_choice(
+                                &category,
+                                variant,
+                                &emoji,
+                                keywords.clone(),
+                                emoji.skin_sprite_index.filter(|_| tone < 5).map(|index| {
+                                    EmojiSprite {
+                                        sheet: tone as u8 + 1,
+                                        index,
+                                    }
+                                }),
+                            ),
                             terms,
                         )
                     })
@@ -179,11 +279,17 @@ fn unicode_index() -> &'static UnicodeIndex {
             }
         }
         let mut grids: BTreeMap<String, [Vec<Arc<EmojiChoice>>; 6]> = BTreeMap::new();
+        let mut sprites = BTreeMap::new();
         grids.insert("all".into(), std::array::from_fn(|_| Vec::new()));
         for category in &categories {
             grids.insert(category.clone(), std::array::from_fn(|_| Vec::new()));
         }
         for group in &groups {
+            for entry in std::iter::once(&group.base).chain(&group.variants) {
+                if let Some(sprite) = entry.choice.sprite {
+                    sprites.insert(entry.choice.insert.replace('\u{fe0f}', ""), sprite);
+                }
+            }
             for tone in 0..6 {
                 let choice = group.preferred(tone).choice.clone();
                 grids.get_mut("all").expect("all category")[tone].push(choice.clone());
@@ -196,6 +302,9 @@ fn unicode_index() -> &'static UnicodeIndex {
         UnicodeIndex {
             categories,
             groups,
+            sprites,
+            base_sprite_count,
+            skin_sprite_count,
             grids: grids
                 .into_iter()
                 .map(|(category, lists)| (category, lists.map(Arc::from)))
@@ -250,6 +359,7 @@ impl EmojiCatalog {
                         animated: emoji.animated,
                         aliases: vec![emoji.name].into(),
                         keywords: Arc::from([]),
+                        sprite: None,
                     }));
                 }
             }
@@ -513,6 +623,105 @@ mod tests {
             toned.first().unwrap().insert,
             "😀",
             "no-tone emoji falls back to base"
+        );
+    }
+
+    #[test]
+    fn bundled_sprite_coordinates_match_real_unicode_index_and_skin_sheet_rules() {
+        for (unicode, index) in [
+            ("😀", 0),
+            ("👍", 198),
+            ("🍌", 725),
+            ("🚀", 1072),
+            ("🇺🇸", 1919),
+        ] {
+            let sprite = unicode_sprite(unicode).unwrap();
+            assert_eq!(sprite, EmojiSprite { sheet: 0, index });
+            assert_eq!((sprite.columns(), sprite.rows()), (42, 47));
+        }
+        for (tone, unicode) in ["👍🏻", "👍🏼", "👍🏽", "👍🏾", "👍🏿"].into_iter().enumerate()
+        {
+            let sprite = unicode_sprite(unicode).unwrap();
+            assert_eq!(
+                sprite,
+                EmojiSprite {
+                    sheet: tone as u8 + 1,
+                    index: 27
+                }
+            );
+            assert_eq!((sprite.columns(), sprite.rows()), (10, 33));
+        }
+        assert_eq!(
+            unicode_sprite("✋🏽"),
+            Some(EmojiSprite { sheet: 3, index: 3 })
+        );
+        assert_eq!(unicode_sprite("☺"), unicode_sprite("☺️"));
+        assert!(unicode_sprite("not an emoji").is_none());
+        // A base and its skin do not use the same sheet row or index.
+        let base = unicode_sprite("👍").unwrap();
+        let tone = unicode_sprite("👍🏽").unwrap();
+        assert_eq!(
+            (base.index % base.columns(), base.index / base.columns()),
+            (30, 4)
+        );
+        assert_eq!(
+            (tone.index % tone.columns(), tone.index / tone.columns()),
+            (7, 2)
+        );
+    }
+
+    #[test]
+    fn sprite_metadata_matches_bundled_png_grid_dimensions_without_decoding_tiles() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fluxer_app/src/media/images/emoji-sprites");
+        for (sheet, name) in ["emoji", "1f3fb", "1f3fc", "1f3fd", "1f3fe", "1f3ff"]
+            .into_iter()
+            .enumerate()
+        {
+            let sprite = EmojiSprite {
+                sheet: sheet as u8,
+                index: 0,
+            };
+            // image_dimensions reads the PNG header; no sheet or tile is decoded.
+            let size =
+                image::image_dimensions(directory.join(format!("spritesheet-{name}.png"))).unwrap();
+            assert_eq!(size, (sprite.columns() * 32, sprite.rows() * 32));
+            let retina =
+                image::image_dimensions(directory.join(format!("spritesheet-{name}@2x.png")))
+                    .unwrap();
+            assert_eq!(retina, (sprite.columns() * 64, sprite.rows() * 64));
+        }
+    }
+
+    #[test]
+    fn explicit_tone_and_mixed_tone_choices_keep_exact_unicode_wire_and_correct_art_coverage() {
+        let catalog = EmojiCatalog::new(&ClientState::default(), None);
+        let thumb = catalog.search_with_tone("thumbsup", "people", Some("🏽"))[0].clone();
+        assert_eq!(
+            thumb.sprite,
+            Some(EmojiSprite {
+                sheet: 3,
+                index: 27
+            })
+        );
+        assert_eq!(
+            (thumb.insert.as_str(), thumb.reaction.as_str()),
+            ("👍🏽", "👍🏽")
+        );
+        let mixed = catalog.search("handshake_tone1_tone2", "people")[0].clone();
+        assert_eq!(mixed.insert, "🫱🏻‍🫲🏼");
+        assert_eq!(mixed.reaction, mixed.insert);
+        assert!(
+            mixed.sprite.is_none(),
+            "mixed tones beyond the first five have no bundled tile"
+        );
+        assert!(unicode_sprite(&mixed.insert).is_none());
+        assert!(
+            EmojiCatalog::new(&custom_state(), Some(10.into()))
+                .search("", "community")
+                .iter()
+                .all(|choice| choice.sprite.is_none()),
+            "community art comes from its own emoji asset, not Unicode sheets"
         );
     }
 
