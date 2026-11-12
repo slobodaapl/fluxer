@@ -4,8 +4,9 @@ mod worker;
 
 pub use fluxer_core::{ClientState, Snowflake};
 pub use fluxer_media::{
-    AudioSettings, DeviceInventory, MediaEvent, ScreenShareOptions, ScreenSource,
-    SharedAudioSelection, SharedAudioSettings, VideoFrame,
+    AudioMixSettings, AudioSettings, DeviceInventory, InputMode, MediaEvent,
+    ParticipantAudioSettings, ScreenShareOptions, ScreenSource, SharedAudioSelection,
+    SharedAudioSettings, VideoFrame,
 };
 use std::{
     collections::BTreeMap,
@@ -35,6 +36,7 @@ pub enum Command {
     SelectChannel {
         channel_id: Snowflake,
     },
+    LoadOlderMessages,
     SendMessage {
         content: String,
     },
@@ -62,6 +64,14 @@ pub enum Command {
     SetInputDevice(String),
     SetOutputDevice(String),
     SetDsp(AudioSettings),
+    SetMixer(AudioMixSettings),
+    SetPushToTalkPressed(bool),
+    SetParticipantAudio {
+        identity: String,
+        settings: ParticipantAudioSettings,
+    },
+    StartMicrophoneTest,
+    StopMicrophoneTest,
     RefreshScreenSources,
     StartShare(ScreenShareOptions),
     StopShare,
@@ -82,6 +92,15 @@ pub enum VoiceStatus {
 
 pub enum Event {
     State(Box<ClientState>),
+    MessageSent {
+        channel_id: Snowflake,
+        content: String,
+    },
+    MessageEdited {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        content: String,
+    },
     Error(String),
     Status(String),
     MfaRequired {
