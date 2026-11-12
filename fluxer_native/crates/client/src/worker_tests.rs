@@ -65,6 +65,66 @@ async fn demo_never_initializes_capture_or_claims_voice_transmission() {
     assert!(worker.state.voice.channel_id.is_none());
 }
 
+#[tokio::test]
+async fn capture_events_drive_sharing_state_gateway_and_ui_without_opening_media() {
+    let (mut worker, events) = worker();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("connection".into()),
+    });
+    worker.state.voice.join(100.into());
+    let (tx, mut gateway) = async_mpsc::channel(8);
+    worker.gateway_commands = Some(tx);
+    // A previous share's stopped notification can precede a replacement start.
+    worker.screen_event(false, false).await.unwrap();
+    worker.screen_event(true, true).await.unwrap();
+    assert!(worker.state.voice.screen_share);
+    // A stale stop must not clear a replacement source that is still capturing.
+    worker.screen_event(false, true).await.unwrap();
+    assert!(worker.state.voice.screen_share);
+    worker.screen_event(false, false).await.unwrap();
+    assert!(!worker.state.voice.screen_share);
+    let mut states = Vec::new();
+    while let Ok(command) = gateway.try_recv() {
+        let GatewayCommand::VoiceState(state) = command else {
+            panic!("expected voice state");
+        };
+        assert_eq!(state.connection_id.as_deref(), Some("connection"));
+        states.push(state.self_stream);
+    }
+    assert_eq!(states, [false, true, false]);
+    let transitions = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::Media(MediaEvent::ScreenShareStarted) => Some(true),
+            Event::Media(MediaEvent::ScreenShareStopped) => Some(false),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(transitions, [false, true, false]);
+    assert!(
+        worker.media.is_none(),
+        "event-state tests must not create capture handles"
+    );
+}
+
+#[tokio::test]
+async fn late_share_started_after_leaving_does_not_reenable_sharing() {
+    let (mut worker, events) = worker();
+    worker
+        .media_event(MediaEvent::ScreenShareStarted)
+        .await
+        .unwrap();
+    assert!(!worker.state.voice.screen_share);
+    assert!(
+        !events
+            .try_iter()
+            .any(|event| matches!(event, Event::Media(MediaEvent::ScreenShareStarted)))
+    );
+    assert!(worker.media.is_none());
+}
+
 async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
     let mut request = Vec::new();
     let mut buffer = [0; 4096];

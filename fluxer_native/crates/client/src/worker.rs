@@ -538,9 +538,8 @@ impl Worker {
                     .start_screen_share(options)
                     .await
                     .map_err(error)?;
-                self.state.voice.screen_share = true;
-                self.snapshot();
-                self.update_voice().await?;
+                // Publication can precede the OS picker or first captured
+                // frame. ScreenShareStarted is the authoritative transition.
             }
             Command::StopShare => {
                 if let Some(media) = &mut self.media {
@@ -898,12 +897,51 @@ impl Worker {
                     }));
                 }
             }
+            MediaEvent::ScreenShareStarted => {
+                let running = self.media.as_ref().is_some_and(MediaEngine::is_sharing);
+                self.screen_event(true, running).await?;
+            }
             MediaEvent::ScreenShareStopped => {
-                self.state.voice.screen_share = false;
-                self.snapshot();
-                self.update_voice().await?;
+                let running = self.media.as_ref().is_some_and(MediaEngine::is_sharing);
+                self.screen_event(false, running).await?;
             }
             event => self.emit(Event::Media(event)),
+        }
+        Ok(())
+    }
+
+    // Capture-session liveness is supplied separately so lifecycle races can be
+    // verified without creating OS capture handles in tests.
+    async fn screen_event(&mut self, started: bool, running: bool) -> Result<()> {
+        if started {
+            if !running
+                || self
+                    .voice_target
+                    .as_ref()
+                    .is_none_or(|target| self.state.voice.channel_id != Some(target.channel_id))
+            {
+                return Ok(());
+            }
+            self.state.voice.screen_share = true;
+            self.snapshot();
+            self.emit(Event::Media(MediaEvent::ScreenShareStarted));
+            self.update_voice().await?;
+        } else {
+            // A queued stop from the previous source must not stop its live replacement.
+            if running {
+                return Ok(());
+            }
+            let stopped = if let Some(media) = &mut self.media {
+                media.stop_screen_share().await.map_err(error)
+            } else {
+                Ok(())
+            };
+            self.state.voice.screen_share = false;
+            self.snapshot();
+            self.emit(Event::Media(MediaEvent::ScreenShareStopped));
+            let gateway = self.update_voice().await;
+            stopped?;
+            gateway?;
         }
         Ok(())
     }
