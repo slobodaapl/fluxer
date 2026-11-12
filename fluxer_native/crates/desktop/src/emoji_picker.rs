@@ -70,7 +70,7 @@ impl Fluxer {
         if let Some(catalog) = &self.emoji_picker.catalog {
             self.emoji_picker.choices = Arc::new(catalog.search_with_tone(
                 &query,
-                &self.emoji_category,
+                search_category(&query, &self.emoji_category),
                 self.emoji_picker.tone.as_deref(),
             ));
         }
@@ -157,11 +157,11 @@ impl Fluxer {
         let popup = div().id("emoji-popover").w(px(410.)).h(px(456.).min(window.viewport_size().height-px(24.)))
             .occlude().flex().flex_col().overflow_hidden().rounded_lg().border_1().border_color(rgb(0x514861))
             .bg(rgb(PANEL)).shadow_lg()
-            .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+            .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                 // Let the trigger's own click toggle the picker, instead of
                 // closing on mouse-down and reopening on click.
                 if (event.position.x-anchor.x).abs() > px(24.) || (event.position.y-anchor.y).abs() > px(24.) {
-                    this.emoji_target = None; cx.notify();
+                    this.emoji_target = None; this.composer.focus_handle(cx).focus(window); cx.notify();
                 }
             }))
             .child(div().h(px(34.)).px_3().flex().items_center().justify_between()
@@ -187,13 +187,13 @@ impl Fluxer {
                     .child(div().h(px(30.)).flex_shrink_0().flex().items_center().gap_1()
                         .child(div().mr_1().text_size(px(11.)).text_color(rgb(MUTED)).child("Tone"))
                         .children(["", "🏻", "🏼", "🏽", "🏾", "🏿"].into_iter().enumerate().map(|(index,tone)| {
-                            button(("emoji-tone",index),format!("✋{tone}")).tooltip(move |_, cx| cx.new(|_| PickerTooltip(["Default tone", "Light tone", "Medium light tone", "Medium tone", "Medium dark tone", "Dark tone"][index])).into()).size(px(28.)).p_0().flex().items_center().justify_center().bg(rgb(PANEL)).text_size(px(20.)).line_height(relative(1.))
+                            button(("emoji-tone",index),format!("✋{tone}")).tooltip(move |_, cx| cx.new(|_| PickerTooltip(["Default tone", "Light tone", "Medium light tone", "Medium tone", "Medium dark tone", "Dark tone"][index])).into()).size(px(28.)).p_0().flex().items_center().justify_center().bg(rgb(PANEL)).text_size(px(20.)).font_family(emoji_font()).line_height(relative(1.))
                                 .when(self.emoji_picker.tone.as_deref().unwrap_or("") == tone, |view| view.bg(rgb(0x56438b)))
                                 .on_click(cx.listener(move |this, _, _, cx| { this.emoji_picker.tone = (!tone.is_empty()).then(||tone.to_owned()); this.refresh_emoji_results(cx); }))
                         })))
                     .child(div().h(px(24.)).flex_shrink_0().text_size(px(11.)).text_color(rgb(MUTED)).font_weight(FontWeight::SEMIBOLD)
                         .child(format!("{} · {}", if self.emoji_search.read(cx).content.is_empty() { category_label(&self.emoji_category) } else { "Search results" }, count)))
-                    .child(uniform_list("emoji-virtual-grid", rows, cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                    .when(count > 0, |view| view.child(uniform_list("emoji-virtual-grid", rows, cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                         let visible = range.len()*COLUMNS;
                         this.emoji_picker.visible_cells.set(this.emoji_picker.visible_cells.get().max(visible));
                         range.map(|row| {
@@ -209,8 +209,8 @@ impl Fluxer {
                                     })).on_click(cx.listener(move |this, _, window, cx| this.pick_emoji(&choice,window,cx)))
                                 }))
                         }).collect::<Vec<_>>()
-                    })).track_scroll(self.emoji_scroll.clone()).flex_1().min_h_0().w_full())
-                    .when(count == 0, |view| view.child(div().h(px(48.)).flex().items_center().justify_center().text_color(rgb(MUTED)).child("No matching emoji")))))
+                    })).track_scroll(self.emoji_scroll.clone()).flex_1().min_h_0().w_full()))
+                    .when(count == 0, |view| view.child(div().flex_1().min_h_0().flex().items_center().justify_center().text_color(rgb(MUTED)).child("No matching emoji")))))
             .child(div().h(px(52.)).flex_shrink_0().border_t_1().border_color(rgb(0x403749)).px_3().flex().items_center().gap_3()
                 .when_some(preview, |view, choice| view.child(self.emoji_art(choice,32.)).child(div().flex_1().min_w_0().flex().flex_col()
                     .child(div().text_size(px(13.)).text_ellipsis().child(format!(":{}:",choice.name)))
@@ -258,6 +258,8 @@ impl Fluxer {
             .items_center()
             .justify_center()
             .text_size(px(size))
+            .font_family(emoji_font())
+            .line_height(relative(1.))
             .child(choice.label.clone())
             .into_any_element()
     }
@@ -343,10 +345,36 @@ fn custom_emoji_snapshot(
     )
 }
 
+fn emoji_font() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "Apple Color Emoji",
+        "windows" => "Segoe UI Emoji",
+        _ => "Noto Color Emoji",
+    }
+}
+
+fn search_category<'a>(query: &str, category: &'a str) -> &'a str {
+    if query.trim().trim_matches(':').is_empty() {
+        category
+    } else {
+        "all"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::picker_origin;
+    use super::{picker_origin, search_category};
+    use crate::{ClientState, chat_helpers};
     use gpui::{point, px, size};
+    #[test]
+    fn search_finds_emoji_outside_selected_rail_and_clear_restores_category() {
+        let catalog = chat_helpers::EmojiCatalog::new(&ClientState::default(), None);
+        let results = catalog.search_with_tone("banana", search_category("banana", "people"), None);
+        assert!(results.iter().any(|choice| choice.insert == "🍌"));
+        let cleared = catalog.search_with_tone("", search_category("", "people"), None);
+        assert!(cleared.iter().all(|choice| choice.category == "people"));
+        assert!(!cleared.iter().any(|choice| choice.insert == "🍌"));
+    }
     #[test]
     fn reaction_popup_stays_beside_trigger_and_flips_above_near_bottom() {
         let viewport = size(px(1280.), px(820.));
