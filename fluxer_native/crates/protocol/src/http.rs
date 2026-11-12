@@ -35,6 +35,68 @@ pub enum LoginIdentifier {
     Login(String),
 }
 
+/// An initiating device's handoff proof. It never enters the browser URL or logs.
+#[derive(Clone)]
+pub struct HandoffPollSecret(Arc<str>);
+impl HandoffPollSecret {
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+impl fmt::Debug for HandoffPollSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HandoffPollSecret([REDACTED])")
+    }
+}
+
+/// Native currently has no registered return deep link, so initiation deliberately
+/// omits return_uri and follows the existing desktop CODE return path.
+#[derive(Clone, Debug)]
+pub struct DesktopHandoffSession {
+    pub code: String,
+    pub expires_at: String,
+    pub poll_secret: Option<HandoffPollSecret>,
+    expires_at_ms: i64,
+    api: Url,
+    api_version: u64,
+    web_app: Url,
+    active: bool,
+}
+impl DesktopHandoffSession {
+    pub fn expires_at_millis(&self) -> i64 {
+        self.expires_at_ms
+    }
+    pub fn is_expired(&self) -> bool {
+        unix_millis() >= self.expires_at_ms
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DesktopHandoffStatus {
+    Pending,
+    Completed,
+    Denied,
+    Expired,
+}
+
+#[derive(Clone)]
+pub struct DesktopHandoffPoll {
+    pub status: DesktopHandoffStatus,
+    pub token: Option<SessionToken>,
+    pub user_id: Option<String>,
+    pub user: Option<Value>,
+}
+impl fmt::Debug for DesktopHandoffPoll {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DesktopHandoffPoll")
+            .field("status", &self.status)
+            .field("token", &self.token)
+            .field("user_id", &self.user_id)
+            .field("user_present", &self.user.is_some())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AuthSession {
     pub token: SessionToken,
@@ -68,6 +130,7 @@ pub struct Client {
     http: reqwest::Client,
     token: Option<SessionToken>,
     auth_locale: header::HeaderValue,
+    handoff_http: reqwest::Client,
 }
 
 impl Client {
@@ -78,11 +141,20 @@ impl Client {
             .timeout(Duration::from_secs(30))
             .user_agent(concat!("Fluxer-Native/", env!("CARGO_PKG_VERSION")))
             .build()?;
+        // BrowserHandoff.requestJSON is a main-process request, not renderer
+        // RestTransport: no feature/installation/locale/auth or user-agent headers.
+        let handoff_http = reqwest::Client::builder()
+            .redirect(Policy::none())
+            .timeout(Duration::from_secs(15))
+            .no_gzip()
+            .no_brotli()
+            .build()?;
         Ok(Self {
             instance,
             http,
             token: None,
             auth_locale: header::HeaderValue::from_static("en-US"),
+            handoff_http,
         })
     }
 
@@ -301,6 +373,175 @@ impl Client {
         parse_session(response).map(Some)
     }
 
+    /// Exact BrowserHandoff.ts CODE initiation: no return_uri, auth, locale or
+    /// renderer REST headers. The browser performs CAPTCHA and account approval.
+    pub async fn initiate_desktop_handoff(&self) -> Result<DesktopHandoffSession> {
+        let (status, payload) = self
+            .handoff_request(Method::POST, "/auth/handoff/initiate", None)
+            .await?;
+        if status != 200 && status != 201 {
+            return Err(handoff_http_error(status));
+        }
+        let payload = payload
+            .filter(Value::is_object)
+            .ok_or(Error::InvalidAuthResponse)?;
+        let code = payload
+            .get("code")
+            .and_then(Value::as_str)
+            .filter(|code| valid_handoff_code(code))
+            .ok_or(Error::InvalidAuthResponse)?
+            .to_owned();
+        let expires_at = bounded_handoff_string(payload.get("expires_at"), 512)
+            .ok_or(Error::InvalidAuthResponse)?;
+        let expires_at_ms = chrono::DateTime::parse_from_rfc3339(expires_at)
+            .map_err(|_| Error::InvalidAuthResponse)?
+            .timestamp_millis();
+        let poll_secret = bounded_handoff_string(payload.get("poll_secret"), 512)
+            .filter(|secret| {
+                secret.len() <= 256
+                    && secret
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            })
+            .map(|secret| HandoffPollSecret(Arc::from(secret)));
+        Ok(DesktopHandoffSession {
+            code,
+            expires_at: expires_at.into(),
+            poll_secret,
+            expires_at_ms,
+            api: self.instance.api.clone(),
+            api_version: self.instance.api_version,
+            web_app: self.instance.web_app.clone(),
+            active: true,
+        })
+    }
+
+    /// Poll a session bound to its initiating instance. As in BrowserHandoff.ts
+    /// 306-325, POST falls back only on 404/405 and permanently clears its proof.
+    pub async fn poll_desktop_handoff(
+        &self,
+        session: &mut DesktopHandoffSession,
+    ) -> Result<DesktopHandoffPoll> {
+        if !session.active
+            || session.api != self.instance.api
+            || session.api_version != self.instance.api_version
+            || session.web_app != self.instance.web_app
+        {
+            return Err(Error::InvalidAuthResponse);
+        }
+        if session.is_expired() {
+            session.active = false;
+            session.poll_secret = None;
+            return Ok(empty_handoff_poll(DesktopHandoffStatus::Expired));
+        }
+        if !valid_handoff_code(&session.code) {
+            return Err(Error::InvalidAuthResponse);
+        }
+        // Validated codes are ASCII alphanumeric/hyphen, all left intact by
+        // BrowserHandoff.ts encodeURIComponent (including the display hyphen).
+        let path = format!("/auth/handoff/{}/status", session.code);
+        let mut response = None;
+        if let Some(secret) = &session.poll_secret {
+            let attempt = self
+                .handoff_request(
+                    Method::POST,
+                    &path,
+                    Some(&json!({"poll_secret":secret.expose_secret()})),
+                )
+                .await?;
+            if matches!(attempt.0, 404 | 405) {
+                session.poll_secret = None;
+            } else {
+                response = Some(attempt);
+            }
+        }
+        let (status, payload) = match response {
+            Some(response) => response,
+            None => self.handoff_request(Method::GET, &path, None).await?,
+        };
+        if status != 200 {
+            return Err(handoff_http_error(status));
+        }
+        let result = parse_handoff_poll(payload)?;
+        if result.status != DesktopHandoffStatus::Pending {
+            session.active = false;
+            session.poll_secret = None;
+        }
+        Ok(result)
+    }
+
+    /// useBrowserLoginHandoff.ts:105-122. Only the public display code travels to
+    /// the browser; poll secret and session token are never included.
+    pub fn desktop_handoff_url(
+        &self,
+        code: &str,
+        prefill: Option<&LoginIdentifier>,
+    ) -> Result<Url> {
+        if !valid_handoff_code(code) {
+            return Err(Error::InvalidAuthResponse);
+        }
+        let mut url = self
+            .instance
+            .web_app
+            .join("/login")
+            .map_err(|_| Error::InvalidEndpoint("invalid handoff web app endpoint".into()))?;
+        {
+            let mut params = url.query_pairs_mut();
+            params
+                .append_pair("handoff", "1")
+                .append_pair("code", code)
+                .append_pair("api", &self.instance.api.origin().ascii_serialization());
+            if let Some(prefill) = prefill {
+                let (field, value) = match prefill {
+                    LoginIdentifier::Email(value) => ("email", value),
+                    LoginIdentifier::Login(value) => ("login", value),
+                };
+                if !value.is_empty() {
+                    params.append_pair(field, value);
+                }
+            }
+        }
+        Ok(url)
+    }
+
+    async fn handoff_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<(u16, Option<Value>)> {
+        // BrowserHandoff.ts:114-140,334-364. API-origin admission is implicit in
+        // route_url; the POST Origin header itself is the discovered web app.
+        if !(1..=1000).contains(&self.instance.api_version)
+            || self.instance.api.as_str().len() > 2048
+            || self.instance.web_app.as_str().len() > 2048
+        {
+            return Err(Error::InvalidEndpoint(
+                "invalid desktop handoff instance".into(),
+            ));
+        }
+        let mut request = self
+            .handoff_http
+            .request(method.clone(), self.route_url(path)?)
+            .header(header::ACCEPT, "application/json");
+        if method == Method::POST {
+            request = request.header(
+                header::ORIGIN,
+                self.instance.web_app.origin().ascii_serialization(),
+            );
+        }
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await?;
+        let status = response.status().as_u16();
+        let bytes = bounded_body(response, 64 * 1024).await?;
+        let payload = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .filter(Value::is_object);
+        Ok((status, payload))
+    }
+
     pub async fn logout(&self) -> Result<()> {
         self.request(Method::POST, "/auth/logout", None).await?;
         Ok(())
@@ -495,6 +736,75 @@ fn ip_authorization_error(status: u16, body: &Value) -> Option<LoginOutcome> {
     })
 }
 
+fn unix_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+fn valid_handoff_code(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 64
+        && code.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+}
+fn bounded_handoff_string(value: Option<&Value>, max: usize) -> Option<&str> {
+    value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.encode_utf16().count() <= max)
+}
+fn handoff_http_error(status: u16) -> Error {
+    // Main-process handoff errors expose the status, not response tokens/proofs.
+    Error::Api {
+        status,
+        code: None,
+        body: Value::Null,
+    }
+}
+fn empty_handoff_poll(status: DesktopHandoffStatus) -> DesktopHandoffPoll {
+    DesktopHandoffPoll {
+        status,
+        token: None,
+        user_id: None,
+        user: None,
+    }
+}
+fn parse_handoff_user(value: Option<&Value>) -> Option<Value> {
+    let value = value.filter(|value| value.is_object())?;
+    let username = bounded_handoff_string(value.get("username"), 512)?;
+    let discriminator = bounded_handoff_string(value.get("discriminator"), 512)?;
+    let mut user = json!({"username":username,"discriminator":discriminator,
+        "global_name":bounded_handoff_string(value.get("global_name"),512),
+        "avatar":bounded_handoff_string(value.get("avatar"),512)});
+    if value.get("email").is_some() {
+        user["email"] = json!(bounded_handoff_string(value.get("email"), 512));
+    }
+    Some(user)
+}
+fn parse_handoff_poll(payload: Option<Value>) -> Result<DesktopHandoffPoll> {
+    let payload = payload
+        .filter(Value::is_object)
+        .ok_or(Error::InvalidAuthResponse)?;
+    let status = match payload.get("status").and_then(Value::as_str) {
+        Some("completed") => DesktopHandoffStatus::Completed,
+        Some("expired") => DesktopHandoffStatus::Expired,
+        Some("denied") => DesktopHandoffStatus::Denied,
+        _ => DesktopHandoffStatus::Pending,
+    };
+    if status != DesktopHandoffStatus::Completed {
+        return Ok(empty_handoff_poll(status));
+    }
+    let token =
+        bounded_handoff_string(payload.get("token"), 4096).ok_or(Error::InvalidAuthResponse)?;
+    let user_id =
+        bounded_handoff_string(payload.get("user_id"), 512).ok_or(Error::InvalidAuthResponse)?;
+    Ok(DesktopHandoffPoll {
+        status,
+        token: Some(SessionToken::new(token)?),
+        user_id: Some(user_id.into()),
+        user: parse_handoff_user(payload.get("user")),
+    })
+}
+
 fn parse_session(value: Value) -> Result<AuthSession> {
     Ok(AuthSession {
         token: SessionToken::new(
@@ -635,5 +945,298 @@ mod tests {
         }
         legacy["code"] = json!("INVALID_API_ORIGIN");
         assert!(ip_authorization_error(403, &legacy).is_none());
+    }
+
+    #[test]
+    fn handoff_public_url_uses_declared_webapp_and_api_origin_only() {
+        let mut instance =
+            Instance::from_endpoints("https://api.example/custom/api", "wss://gateway.example")
+                .unwrap();
+        instance.web_app = Url::parse("https://browser.example").unwrap();
+        let client = Client::new(instance).unwrap();
+        let url = client
+            .desktop_handoff_url(
+                "ABC-123",
+                Some(&LoginIdentifier::Email("name+tag@example.test".into())),
+            )
+            .unwrap();
+        assert_eq!(
+            url.origin().ascii_serialization(),
+            "https://browser.example"
+        );
+        assert_eq!(url.path(), "/login");
+        let pairs: std::collections::BTreeMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(pairs["handoff"], "1");
+        assert_eq!(pairs["code"], "ABC-123");
+        assert_eq!(pairs["api"], "https://api.example");
+        assert_eq!(pairs["email"], "name+tag@example.test");
+        assert_eq!(pairs.len(), 4);
+        assert!(client.desktop_handoff_url("../injected", None).is_err());
+        let url = client
+            .desktop_handoff_url("ABC-123", Some(&LoginIdentifier::Login("username".into())))
+            .unwrap();
+        assert!(
+            url.query_pairs()
+                .any(|(k, v)| k == "login" && v == "username")
+        );
+    }
+
+    #[test]
+    fn handoff_status_projection_and_debug_match_main_process_contract() {
+        for status in [json!("pending"), json!("future-status"), Value::Null] {
+            let poll =
+                parse_handoff_poll(Some(json!({"status":status,"token":"must-not-be-adopted"})))
+                    .unwrap();
+            assert_eq!(poll.status, DesktopHandoffStatus::Pending);
+            assert!(poll.token.is_none());
+        }
+        assert!(parse_handoff_poll(Some(json!({"status":"completed","token":"token"}))).is_err());
+        let poll = parse_handoff_poll(Some(json!({"status":"completed","token":"private-session-token","user_id":"100","user":{
+            "id":"100","username":"alex","discriminator":"0001","global_name":"Alex","avatar":null,"email":"fixture@example.test","ignored_secret":"do-not-copy"
+        }}))).unwrap();
+        assert_eq!(poll.status, DesktopHandoffStatus::Completed);
+        assert_eq!(poll.user.as_ref().unwrap()["username"], "alex");
+        assert!(poll.user.as_ref().unwrap().get("id").is_none());
+        assert!(poll.user.as_ref().unwrap().get("ignored_secret").is_none());
+        let debug = format!("{poll:?}");
+        assert!(!debug.contains("private-session-token"));
+        assert!(!debug.contains("fixture@example.test"));
+        let secret = HandoffPollSecret(Arc::from("private-poll-proof"));
+        assert!(!format!("{secret:?}").contains("private-poll-proof"));
+        assert!(
+            parse_handoff_poll(Some(
+                json!({"status":"completed","token":"t".repeat(4097),"user_id":"100"})
+            ))
+            .is_err()
+        );
+    }
+
+    #[derive(Debug)]
+    struct HandoffRequest {
+        method: String,
+        path: String,
+        headers: std::collections::BTreeMap<String, String>,
+        body: Vec<u8>,
+    }
+    async fn handoff_server(
+        responses: Vec<(u16, Value)>,
+    ) -> (
+        String,
+        std::sync::Arc<std::sync::Mutex<Vec<HandoffRequest>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        let task = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut data = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let end = loop {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&chunk[..n]);
+                    if let Some(end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let head = String::from_utf8_lossy(&data[..end]);
+                let mut lines = head.split("\r\n");
+                let mut first = lines.next().unwrap().split_whitespace();
+                let method = first.next().unwrap().to_owned();
+                let path = first.next().unwrap().to_owned();
+                let headers: std::collections::BTreeMap<String, String> = lines
+                    .filter_map(|line| line.split_once(':'))
+                    .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_owned()))
+                    .collect();
+                let length = headers
+                    .get("content-length")
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(0);
+                while data.len() - end < length {
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&chunk[..n]);
+                }
+                recorded.lock().unwrap().push(HandoffRequest {
+                    method,
+                    path,
+                    headers,
+                    body: data[end..end + length].to_vec(),
+                });
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status} Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+        });
+        (base, requests, task)
+    }
+    fn handoff_test_client(base: &str) -> Client {
+        let mut instance =
+            Instance::from_endpoints(&format!("{base}/api"), "ws://127.0.0.1/gateway").unwrap();
+        instance.web_app = Url::parse("https://browser.example").unwrap();
+        Client::new(instance)
+            .unwrap()
+            .with_token(SessionToken::new("existing-account-token").unwrap())
+            .with_auth_locale("fr")
+            .unwrap()
+    }
+    fn handoff_initiate_payload() -> Value {
+        json!({"code":"ABC-123","expires_at":"2099-01-01T00:00:00Z","poll_secret":"private_poll_proof","return_method":"deep_link"})
+    }
+
+    #[tokio::test]
+    async fn handoff_socket_code_path_uses_main_process_headers_and_remembers_get_fallback() {
+        let (base, requests, server) = handoff_server(vec![
+            (201, handoff_initiate_payload()),
+            (405, Value::Null),
+            (200, json!({"status":"pending"})),
+            (
+                200,
+                json!({"status":"completed","token":"new-session-token","user_id":"100"}),
+            ),
+        ])
+        .await;
+        let client = handoff_test_client(&base);
+        let mut session = client.initiate_desktop_handoff().await.unwrap();
+        assert!(!session.is_expired());
+        assert!(session.expires_at_millis() > unix_millis());
+        assert!(!format!("{session:?}").contains("private_poll_proof"));
+        assert_eq!(
+            client
+                .poll_desktop_handoff(&mut session)
+                .await
+                .unwrap()
+                .status,
+            DesktopHandoffStatus::Pending
+        );
+        assert!(session.poll_secret.is_none());
+        let result = client.poll_desktop_handoff(&mut session).await.unwrap();
+        assert_eq!(result.status, DesktopHandoffStatus::Completed);
+        assert_eq!(result.token.unwrap().expose_secret(), "new-session-token");
+        server.await.unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert_eq!(requests[0].path, "/api/v1/auth/handoff/initiate");
+        assert!(requests[0].body.is_empty());
+        assert!(!requests[0].headers.contains_key("content-type"));
+        assert_eq!(requests[1].path, "/api/v1/auth/handoff/ABC-123/status");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[1].body).unwrap(),
+            json!({"poll_secret":"private_poll_proof"})
+        );
+        assert_eq!(requests[2].method, "GET");
+        assert_eq!(requests[3].method, "GET");
+        for request in requests.iter() {
+            for header in [
+                "authorization",
+                "accept-language",
+                "x-fluxer-features",
+                "x-fluxer-capabilities",
+                "x-fluxer-client-installation-id",
+                "user-agent",
+                "accept-encoding",
+            ] {
+                assert!(!request.headers.contains_key(header), "{header}");
+            }
+            assert_eq!(request.headers["accept"], "application/json");
+            if request.method == "POST" {
+                assert_eq!(request.headers["origin"], "https://browser.example");
+            } else {
+                assert!(!request.headers.contains_key("origin"));
+                assert!(request.body.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_socket_never_falls_back_for_auth_rate_limit_or_server_errors() {
+        for status in [400, 401, 403, 429, 500, 501] {
+            let (base, requests, server) = handoff_server(vec![
+                (201, handoff_initiate_payload()),
+                (
+                    status,
+                    json!({"token":"must-not-log","poll_secret":"must-not-log"}),
+                ),
+            ])
+            .await;
+            let client = handoff_test_client(&base);
+            let mut session = client.initiate_desktop_handoff().await.unwrap();
+            let error = client.poll_desktop_handoff(&mut session).await.unwrap_err();
+            assert!(matches!(error,Error::Api{status:actual,..} if actual==status));
+            assert!(!format!("{error:?}").contains("must-not-log"));
+            assert!(session.poll_secret.is_some());
+            server.await.unwrap();
+            assert_eq!(requests.lock().unwrap().len(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_socket_missing_proof_uses_get_and_oversize_payload_is_rejected() {
+        let mut payload = handoff_initiate_payload();
+        payload["poll_secret"] = json!("invalid/proof");
+        let (base, requests, server) =
+            handoff_server(vec![(201, payload), (200, json!({"status":"pending"}))]).await;
+        let client = handoff_test_client(&base);
+        let mut session = client.initiate_desktop_handoff().await.unwrap();
+        assert!(session.poll_secret.is_none());
+        client.poll_desktop_handoff(&mut session).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(requests.lock().unwrap()[1].method, "GET");
+        let (base, _, server) =
+            handoff_server(vec![(201, json!({"oversize":"x".repeat(64*1024)}))]).await;
+        assert!(matches!(
+            handoff_test_client(&base).initiate_desktop_handoff().await,
+            Err(Error::ResponseTooLarge(65536))
+        ));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handoff_local_expiry_and_cross_instance_binding_do_not_send_requests() {
+        let client = handoff_test_client("http://127.0.0.1:1");
+        let mut session = DesktopHandoffSession {
+            code: "ABC-123".into(),
+            expires_at: "2000-01-01T00:00:00Z".into(),
+            poll_secret: Some(HandoffPollSecret(Arc::from("proof"))),
+            expires_at_ms: 0,
+            api: client.instance.api.clone(),
+            api_version: 1,
+            web_app: client.instance.web_app.clone(),
+            active: true,
+        };
+        assert_eq!(
+            client
+                .poll_desktop_handoff(&mut session)
+                .await
+                .unwrap()
+                .status,
+            DesktopHandoffStatus::Expired
+        );
+        assert!(session.poll_secret.is_none());
+        session.active = true;
+        session.api = Url::parse("http://other.example/api").unwrap();
+        assert!(matches!(
+            client.poll_desktop_handoff(&mut session).await,
+            Err(Error::InvalidAuthResponse)
+        ));
+        let mut invalid_version = client.instance.clone();
+        invalid_version.api_version = 1001;
+        assert!(matches!(
+            Client::new(invalid_version)
+                .unwrap()
+                .initiate_desktop_handoff()
+                .await,
+            Err(Error::InvalidEndpoint(_))
+        ));
     }
 }
