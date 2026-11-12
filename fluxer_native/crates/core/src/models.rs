@@ -352,6 +352,10 @@ pub struct ReadState {
     pub last_pin_timestamp: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
+    /// Local AutoAck suppression after an accepted manual mark-unread event.
+    /// This is deliberately absent from REST/gateway serialization.
+    #[serde(skip)]
+    pub manual_ack: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

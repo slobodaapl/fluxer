@@ -502,6 +502,26 @@ async fn only_painted_window_messages_can_be_acknowledged_and_never_the_unseen_l
             .acknowledge_visible_message(channel, 9999.into())
             .is_err()
     );
+    assert!(
+        worker
+            .acknowledge_visible_message(channel, 149.into())
+            .is_err(),
+        "a historical window is not an automatic-ack context"
+    );
+    worker
+        .navigation
+        .history
+        .get_mut(&channel)
+        .unwrap()
+        .snapshot
+        .latest = true;
+    worker
+        .navigation
+        .history
+        .get_mut(&channel)
+        .unwrap()
+        .snapshot
+        .has_newer = false;
     worker
         .acknowledge_visible_message(channel, 149.into())
         .unwrap();
@@ -530,8 +550,9 @@ async fn ack_failure_reports_exact_pending_id_without_advancing_read_state_and_s
     let token = worker.navigation.token();
     worker.navigation.acks.insert(
         channel,
-        Mutation {
+        AckJob {
             token,
+            message_id: 149.into(),
             _task: Task(tokio::spawn(pending())),
         },
     );
@@ -551,8 +572,9 @@ async fn ack_failure_reports_exact_pending_id_without_advancing_read_state_and_s
     let next = worker.navigation.token();
     worker.navigation.acks.insert(
         channel,
-        Mutation {
+        AckJob {
             token: next,
+            message_id: 149.into(),
             _task: Task(tokio::spawn(pending())),
         },
     );
@@ -618,8 +640,9 @@ async fn ack_response_uses_server_cursor_mentions_and_versions_and_rejects_stale
         let token = worker.navigation.token();
         worker.navigation.acks.insert(
             channel,
-            Mutation {
+            AckJob {
                 token,
+                message_id: 149.into(),
                 _task: Task(tokio::spawn(pending())),
             },
         );
@@ -643,6 +666,121 @@ async fn ack_response_uses_server_cursor_mentions_and_versions_and_rejects_stale
     assert_eq!(read.mention_count, 1);
     assert_eq!(read.version.as_deref(), Some("9"));
     assert!(events.try_iter().any(|event|matches!(event,Event::MessageAckResult{channel_id,message_id,error:None}if channel_id==channel&&message_id==Snowflake(149))));
+}
+
+#[tokio::test]
+async fn manual_server_ack_cancels_pending_auto_ack_and_holds_until_channel_unmount() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    install_history(&mut worker, history(100..150, true));
+    worker.state.read_states.get_mut(&channel).unwrap().version = Some("6".into());
+    let token = worker.navigation.token();
+    let (epoch, requested) = (worker.navigation.epoch, Snowflake(149));
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+    worker.navigation.acks.insert(
+        channel,
+        AckJob {
+            token,
+            message_id: requested,
+            _task: Task(tokio::spawn(async move {
+                let _captured = drop_tx;
+                pending::<()>().await
+            })),
+        },
+    );
+    let stale =
+        json!({"channel_id":"11","message_id":"50","mention_count":6,"version":"5","manual":true});
+    worker
+        .state
+        .apply_gateway("MESSAGE_ACK", stale.clone())
+        .unwrap();
+    worker.navigation_gateway("MESSAGE_ACK", &stale);
+    assert!(!worker.state.read_states[&channel].manual_ack);
+    assert!(worker.navigation.acks.contains_key(&channel));
+    let manual =
+        json!({"channel_id":"11","message_id":"50","mention_count":6,"version":"7","manual":true});
+    worker
+        .state
+        .apply_gateway("MESSAGE_ACK", manual.clone())
+        .unwrap();
+    worker.navigation_gateway("MESSAGE_ACK", &manual);
+    assert!(worker.state.read_states[&channel].manual_ack);
+    assert!(worker.navigation.acks.is_empty());
+    assert!(
+        worker
+            .acknowledge_visible_message(channel, requested)
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), drop_rx)
+            .await
+            .unwrap()
+            .is_err()
+    );
+    worker.navigation_event(NavigationEvent::Ack{epoch,channel,id:requested,token,result:Ok(json!({"read_states":[{"id":"11","last_message_id":"149","mention_count":0,"version":"8"}]}))});
+    assert_eq!(
+        worker.state.read_states[&channel].last_message_id,
+        Some(50.into())
+    );
+    assert_eq!(worker.state.read_states[&channel].mention_count, 6);
+    assert!(events.try_iter().any(|event|matches!(event,Event::MessageAckResult{channel_id,message_id,error:Some(_)}if channel_id==channel&&message_id==requested)));
+    worker.navigation_context(channel);
+    assert!(
+        worker.state.read_states[&channel].manual_ack,
+        "same-channel navigation does not invent a re-enable timer"
+    );
+    worker.navigation_context(13.into());
+    assert!(!worker.state.read_states[&channel].manual_ack);
+    assert!(
+        serde_json::to_value(&worker.state.read_states[&channel])
+            .unwrap()
+            .get("manual_ack")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn opt_in_demo_search_grants_pin_actions_and_real_timestamp_pagination_only_for_its_fixture()
+{
+    let (mut worker, _) = demo();
+    assert!(!worker.state.can_pin_messages(11.into()));
+    worker.seed_demo_search().unwrap();
+    finish_history(&mut worker).await;
+    assert!(worker.state.can_pin_messages(11.into()));
+    assert!(!ClientState::demo().can_pin_messages(11.into()));
+    worker.load_pins(11.into(), false).unwrap();
+    loop {
+        let event = worker.navigation.rx.recv().await.unwrap();
+        let done = matches!(event, NavigationEvent::Pins { .. });
+        worker.navigation_event(event);
+        if done {
+            break;
+        }
+    }
+    let pins = &worker.navigation.pins[&Snowflake(11)].snapshot;
+    assert_eq!(pins.items.len(), 25);
+    assert!(pins.has_more);
+    assert!(pins.items.iter().all(|pin| pin.message.pinned));
+    worker.load_pins(11.into(), true).unwrap();
+    loop {
+        let event = worker.navigation.rx.recv().await.unwrap();
+        let done = matches!(event, NavigationEvent::Pins { .. });
+        worker.navigation_event(event);
+        if done {
+            break;
+        }
+    }
+    let pins = &worker.navigation.pins[&Snowflake(11)].snapshot;
+    assert_eq!(pins.items.len(), 26);
+    assert!(!pins.has_more);
+    assert_eq!(
+        pins.items
+            .iter()
+            .map(|pin| &pin.pinned_at)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        26
+    );
 }
 
 #[tokio::test]

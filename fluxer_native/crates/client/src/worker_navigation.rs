@@ -36,6 +36,11 @@ struct Mutation {
     token: u64,
     _task: Task,
 }
+struct AckJob {
+    token: u64,
+    message_id: Snowflake,
+    _task: Task,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HistoryRequest {
     Latest,
@@ -95,7 +100,7 @@ pub(super) struct NavigationState {
     pins: BTreeMap<Snowflake, PinsJob>,
     history: BTreeMap<Snowflake, HistoryJob>,
     mutations: BTreeMap<(Snowflake, Snowflake), Mutation>,
-    acks: BTreeMap<Snowflake, Mutation>,
+    acks: BTreeMap<Snowflake, AckJob>,
     pin_acks: BTreeMap<Snowflake, Mutation>,
     demo_archive: BTreeMap<Snowflake, Vec<Message>>,
     demo_pins: BTreeMap<Snowflake, Vec<PinnedMessage>>,
@@ -141,6 +146,14 @@ impl Worker {
         self.navigation.demo_pins.clear();
     }
     pub(super) fn navigation_context(&mut self, channel: Snowflake) {
+        if let Some(previous) = self
+            .state
+            .selected_channel
+            .filter(|previous| *previous != channel)
+            && let Some(read) = self.state.read_states.get_mut(&previous)
+        {
+            read.manual_ack = false;
+        }
         // Search panes retain their detached context across explicit result
         // jumps. CloseSearch/replacement/account reset own their cancellation.
         for (id, pins) in &mut self.navigation.pins {
@@ -743,16 +756,29 @@ impl Worker {
         channel: Snowflake,
         id: Snowflake,
     ) -> Result<()> {
+        if self
+            .state
+            .read_states
+            .get(&channel)
+            .is_some_and(|read| read.manual_ack)
+        {
+            return Err("Automatic read acknowledgement is held by a manual unread marker".into());
+        }
         if self.state.selected_channel != Some(channel)
             || !self
                 .navigation
                 .history
                 .get(&channel)
                 .is_some_and(|history| {
-                    !history.snapshot.loading && history.snapshot.message_ids.contains(&id)
+                    !history.snapshot.loading
+                        && history.snapshot.latest
+                        && !history.snapshot.has_newer
+                        && history.snapshot.message_ids.contains(&id)
                 })
         {
-            return Err("Only a visible message can be marked read".into());
+            return Err(
+                "Only a visible message at the live edge can be automatically marked read".into(),
+            );
         }
         if self
             .state
@@ -795,8 +821,9 @@ impl Worker {
         });
         self.navigation.acks.insert(
             channel,
-            Mutation {
+            AckJob {
                 token,
+                message_id: id,
                 _task: Task(task),
             },
         );
@@ -808,7 +835,7 @@ impl Worker {
         }
         let channel = Snowflake(11);
         let user = self.state.current_user.clone().ok_or("Open Demo first")?;
-        let messages = (1000..1120)
+        let mut messages = (1000..1120)
             .map(|id| {
                 Message::text(
                     Snowflake(id),
@@ -820,13 +847,25 @@ impl Worker {
                 )
             })
             .collect::<Vec<_>>();
-        self.navigation.demo_pins.insert(
-            channel,
-            vec![PinnedMessage {
-                message: messages[42].clone(),
-                pinned_at: "2026-11-12T12:00:00.000Z".into(),
-            }],
-        );
+        if let Some(guild) = self.state.guilds.get_mut(&Snowflake(1))
+            && let Some(role) = guild.roles.iter_mut().find(|role| role.id == guild.id)
+        {
+            role.permissions |= Permissions::PIN_MESSAGES;
+        }
+        let pins = messages
+            .iter_mut()
+            .skip(42)
+            .take(26)
+            .enumerate()
+            .map(|(index, message)| {
+                message.pinned = true;
+                PinnedMessage {
+                    message: message.clone(),
+                    pinned_at: format!("2026-11-12T12:{:02}:00.000Z", 59 - index),
+                }
+            })
+            .collect();
+        self.navigation.demo_pins.insert(channel, pins);
         self.navigation.demo_archive.insert(channel, messages);
         self.state
             .channels
@@ -875,6 +914,25 @@ impl Worker {
             return;
         }
         let Some(channel) = channel else { return };
+        if name == "MESSAGE_ACK"
+            && data.get("manual").and_then(Value::as_bool) == Some(true)
+            && self
+                .state
+                .read_states
+                .get(&channel)
+                .is_some_and(|read| read.manual_ack)
+        {
+            if let Some(pending) = self.navigation.acks.remove(&channel) {
+                self.emit(Event::MessageAckResult {
+                    channel_id: channel,
+                    message_id: pending.message_id,
+                    error: Some(
+                        "Automatic acknowledgement cancelled by a manual unread marker".into(),
+                    ),
+                });
+            }
+            return;
+        }
         let id = data
             .get("id")
             .or_else(|| data.get("message_id"))
@@ -1250,6 +1308,16 @@ impl Worker {
                     {
                         message.pinned = pinned;
                     }
+                    if let Some(message) = self
+                        .navigation
+                        .demo_archive
+                        .get_mut(&channel)
+                        .into_iter()
+                        .flatten()
+                        .find(|message| message.id == id)
+                    {
+                        message.pinned = pinned;
+                    }
                     let pins = self.navigation.demo_pins.entry(channel).or_default();
                     pins.retain(|pin| pin.message.id != id);
                     if pinned
@@ -1266,7 +1334,7 @@ impl Worker {
                             0,
                             PinnedMessage {
                                 message,
-                                pinned_at: "2026-11-12T12:00:00.000Z".into(),
+                                pinned_at: "2026-11-12T13:00:00.000Z".into(),
                             },
                         );
                     }

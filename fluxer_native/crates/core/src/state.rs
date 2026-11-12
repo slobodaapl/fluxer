@@ -945,6 +945,11 @@ impl ClientState {
                     read.version = Some(version);
                 }
                 if ack.manual || read.last_message_id.is_none_or(|id| ack.message_id >= id) {
+                    if ack.manual {
+                        read.manual_ack = true;
+                    } else if read.last_message_id.is_none_or(|id| ack.message_id > id) {
+                        read.manual_ack = false;
+                    }
                     read.last_message_id = Some(ack.message_id);
                     if let Some(count) = ack.mention_count {
                         read.mention_count = count;
