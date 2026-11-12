@@ -598,16 +598,9 @@ impl Client {
         .await
     }
     pub async fn messages(&self, channel: &str, before: Option<&str>, limit: u8) -> Result<Value> {
-        let mut path = format!(
-            "/channels/{}/messages?limit={}",
-            segment(channel),
-            limit.clamp(1, 100)
-        );
-        if let Some(before) = before {
-            path.push_str(&format!("&before={}", segment(before)));
-        }
-        self.request(Method::GET, &path, None).await
+        self.messages_page(channel, before, None, None, limit).await
     }
+
     pub async fn send_message(
         &self,
         channel: &str,
@@ -710,13 +703,9 @@ impl Client {
         Ok(())
     }
     pub async fn pins(&self, channel: &str) -> Result<Value> {
-        self.request(
-            Method::GET,
-            &format!("/channels/{}/messages/pins", segment(channel)),
-            None,
-        )
-        .await
+        self.pins_page(channel, None).await
     }
+
     pub async fn create_dm(&self, recipient: &str) -> Result<Value> {
         self.request(
             Method::POST,

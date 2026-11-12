@@ -5,6 +5,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("message search returned no valid response body")]
+    InvalidSearchResponse,
     #[error("upload plan omitted an attachment ID")]
     AttachmentPlanMissing,
     #[error("unable to finalize multipart attachment upload: {0}")]

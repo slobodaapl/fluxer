@@ -6,6 +6,7 @@ mod gateway;
 mod http;
 mod installation;
 mod instance;
+mod navigation;
 
 pub use error::{Error, Result};
 pub use gateway::{
@@ -23,3 +24,5 @@ pub use attachments::{
     PlannedAttachment, UploadAttachment, UploadCancellation, UploadPhase, UploadProgress,
     UploadProgressCallback,
 };
+
+pub use navigation::{SearchResponse, channel_search_poll_interval};
