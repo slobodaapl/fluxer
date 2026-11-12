@@ -80,15 +80,23 @@ pub(super) enum NavigationEvent {
         token: u64,
         result: Result<()>,
     },
+    PinAck {
+        epoch: u64,
+        channel: Snowflake,
+        token: u64,
+        result: Result<()>,
+    },
 }
 pub(super) struct NavigationState {
     epoch: u64,
     next: u64,
     searches: BTreeMap<Snowflake, SearchJob>,
+    result_channels: BTreeMap<Snowflake, Channel>,
     pins: BTreeMap<Snowflake, PinsJob>,
     history: BTreeMap<Snowflake, HistoryJob>,
     mutations: BTreeMap<(Snowflake, Snowflake), Mutation>,
     acks: BTreeMap<Snowflake, Mutation>,
+    pin_acks: BTreeMap<Snowflake, Mutation>,
     demo_archive: BTreeMap<Snowflake, Vec<Message>>,
     demo_pins: BTreeMap<Snowflake, Vec<PinnedMessage>>,
     tx: async_mpsc::UnboundedSender<NavigationEvent>,
@@ -101,10 +109,12 @@ impl NavigationState {
             epoch: 1,
             next: 0,
             searches: BTreeMap::new(),
+            result_channels: BTreeMap::new(),
             pins: BTreeMap::new(),
             history: BTreeMap::new(),
             mutations: BTreeMap::new(),
             acks: BTreeMap::new(),
+            pin_acks: BTreeMap::new(),
             demo_archive: BTreeMap::new(),
             demo_pins: BTreeMap::new(),
             tx,
@@ -121,10 +131,12 @@ impl Worker {
     pub(super) fn clear_navigation(&mut self) {
         self.navigation.epoch = self.navigation.epoch.wrapping_add(1);
         self.navigation.searches.clear();
+        self.navigation.result_channels.clear();
         self.navigation.pins.clear();
         self.navigation.history.clear();
         self.navigation.mutations.clear();
         self.navigation.acks.clear();
+        self.navigation.pin_acks.clear();
         self.navigation.demo_archive.clear();
         self.navigation.demo_pins.clear();
     }
@@ -170,7 +182,16 @@ impl Worker {
             .zip(self.state.current_user.as_ref())
             .is_some_and(|(target, user)| {
                 let permissions = self.state.permissions_for(channel, user.id);
-                fluxer_core::can_send_message(target.kind, permissions)
+                let disabled = target
+                    .guild_id
+                    .and_then(|id| self.state.guilds.get(&id))
+                    .and_then(|guild| guild.extra.get("disabled_operations"))
+                    .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+                    .unwrap_or(0);
+                let system_dm = target.kind == ChannelType::Dm
+                    && target.recipients.iter().any(|user| user.id == Snowflake(0));
+                !system_dm
+                    && disabled & (1 << 4) == 0
                     && (target.kind.is_private() || permissions.contains(Permissions::PIN_MESSAGES))
             })
     }
@@ -182,9 +203,12 @@ impl Worker {
         channel: Snowflake,
         query: String,
         scope: SearchScope,
+        scope_override: Option<SearchScope>,
         sort: SearchSort,
         page: u32,
     ) -> Result<()> {
+        // Submitting even an unsearchable replacement ends the previous poll.
+        self.navigation.searches.remove(&channel);
         self.require_history(channel)?;
         if self.state.selected_channel != Some(channel) {
             return Err("Choose the search context first".into());
@@ -221,9 +245,46 @@ impl Worker {
             },
         );
         if !parsed.has_query {
+            self.emit(Event::Search(SearchSnapshot {
+                channel_id: channel,
+                query,
+                scope,
+                sort,
+                status: SearchStatus::Failed,
+                messages: Vec::new(),
+                channels: Vec::new(),
+                total: 0,
+                page,
+                hits_per_page: 25,
+                poll_count: 0,
+                http_status: None,
+                error: Some("Nothing in this query can be searched".into()),
+            }));
             return Err("Nothing in this query can be searched".into());
         }
         let mut params = parsed.params;
+        let allowed = |scope: SearchScope| guild.is_some() || scope != SearchScope::AllGuilds;
+        let parsed_scope =
+            params
+                .get("scope")
+                .and_then(Value::as_str)
+                .and_then(|scope| match scope {
+                    "current" => Some(SearchScope::Current),
+                    "all_dms" => Some(SearchScope::AllDms),
+                    "open_dms" => Some(SearchScope::OpenDms),
+                    "all" => Some(SearchScope::All),
+                    "open_dms_and_all_guilds" => Some(SearchScope::OpenDmsAndAllGuilds),
+                    "all_guilds" => Some(SearchScope::AllGuilds),
+                    _ => None,
+                });
+        let scope = scope_override
+            .filter(|scope| allowed(*scope))
+            .or(parsed_scope.filter(|scope| allowed(*scope)))
+            .unwrap_or(if allowed(scope) {
+                scope
+            } else {
+                SearchScope::Current
+            });
         params["context_channel_id"] = channel.to_string().into();
         if let Some(guild) = guild {
             params["context_guild_id"] = guild.to_string().into();
@@ -349,6 +410,15 @@ impl Worker {
     }
     pub(super) fn load_pins(&mut self, channel: Snowflake, more: bool) -> Result<()> {
         self.require_history(channel)?;
+        if !more
+            && self
+                .navigation
+                .pins
+                .get(&channel)
+                .is_none_or(|pins| !pins.open)
+        {
+            self.acknowledge_opened_pins(channel)?;
+        }
         let previous = self.navigation.pins.get(&channel);
         if more && previous.is_none_or(|pins| pins.snapshot.loading || !pins.snapshot.has_more) {
             return Ok(());
@@ -426,6 +496,44 @@ impl Worker {
                 snapshot,
                 task: Some(Task(task)),
                 open: true,
+            },
+        );
+        Ok(())
+    }
+    fn acknowledge_opened_pins(&mut self, channel: Snowflake) -> Result<()> {
+        if !self.state.apply_pin_ack(channel, None) {
+            return Ok(());
+        }
+        self.snapshot();
+        let client = if self.demo {
+            None
+        } else {
+            Some(self.client()?.clone())
+        };
+        let epoch = self.navigation.epoch;
+        let token = self.navigation.token();
+        let tx = self.navigation.tx.clone();
+        let task = tokio::spawn(async move {
+            let result = if let Some(client) = client {
+                client
+                    .acknowledge_pins(&channel.to_string())
+                    .await
+                    .map_err(error)
+            } else {
+                Ok(())
+            };
+            let _ = tx.send(NavigationEvent::PinAck {
+                epoch,
+                channel,
+                token,
+                result,
+            });
+        });
+        self.navigation.pin_acks.insert(
+            channel,
+            Mutation {
+                token,
+                _task: Task(task),
             },
         );
         Ok(())
@@ -625,10 +733,8 @@ impl Worker {
         if !self.state.channels.contains_key(&channel) {
             let target = self
                 .navigation
-                .searches
-                .values()
-                .flat_map(|job| job.snapshot.channels.iter())
-                .find(|target| target.id == channel)
+                .result_channels
+                .get(&channel)
                 .cloned()
                 .ok_or("Search result channel is no longer available")?;
             self.state.channels.insert(channel, target);
@@ -641,6 +747,9 @@ impl Worker {
         self.attachment_snapshot(channel);
         self.snapshot();
         self.request_history(channel, HistoryRequest::Around(id))?;
+        if !self.demo {
+            self.sync_selected_guild().await?;
+        }
         self.persist_selection().await;
         Ok(())
     }
@@ -800,10 +909,8 @@ impl Worker {
                 pins.snapshot.has_more = true;
                 pins.snapshot.loading = false;
             }
-            if open {
-                if let Err(message) = self.load_pins(channel, false) {
-                    self.emit(Event::Error(message));
-                }
+            if open && let Err(message) = self.load_pins(channel, false) {
+                self.emit(Event::Error(message));
             }
             return;
         }
@@ -862,6 +969,26 @@ impl Worker {
     }
     pub(super) fn navigation_event(&mut self, event: NavigationEvent) {
         match event {
+            NavigationEvent::PinAck {
+                epoch,
+                channel,
+                token,
+                result,
+            } => {
+                if epoch != self.navigation.epoch
+                    || !self
+                        .navigation
+                        .pin_acks
+                        .get(&channel)
+                        .is_some_and(|job| job.token == token)
+                {
+                    return;
+                }
+                self.navigation.pin_acks.remove(&channel);
+                if let Err(message) = result {
+                    self.emit(Event::Error(message));
+                }
+            }
             NavigationEvent::Search {
                 epoch,
                 channel,
@@ -882,6 +1009,9 @@ impl Worker {
                 let result = result.and_then(|response| {
                     if response.is_indexing() {
                         return Ok((response.status, None));
+                    }
+                    if !response.body.is_object() {
+                        return Err("Search returned no response body".into());
                     }
                     let messages = self
                         .state
@@ -914,14 +1044,14 @@ impl Worker {
                         let thread: Channel = self.state.decode_api(thread).map_err(error)?;
                         // ThreadCommands.ingestSearchThreads uses only known
                         // guilds; membership is retained on the channel object.
-                        if thread.kind.is_thread()
+                        let active = thread.kind.is_thread()
                             && thread
                                 .guild_id
-                                .is_some_and(|guild| self.state.guilds.contains_key(&guild))
-                        {
+                                .is_some_and(|guild| self.state.thread_guilds.contains(&guild));
+                        if active {
                             self.state.channels.insert(thread.id, thread.clone());
                         }
-                        if !channels.iter().any(|channel| channel.id == thread.id) {
+                        if active && !channels.iter().any(|channel| channel.id == thread.id) {
                             channels.push(thread);
                         }
                     }
@@ -961,6 +1091,12 @@ impl Worker {
                         job.snapshot.status = SearchStatus::Indexing;
                     }
                     Ok((status, Some((messages, channels, total, page, hits)))) => {
+                        self.navigation.result_channels.extend(
+                            channels
+                                .iter()
+                                .cloned()
+                                .map(|channel| (channel.id, channel)),
+                        );
                         job.snapshot.http_status = Some(status);
                         job.snapshot.status = SearchStatus::Ready;
                         job.snapshot.messages = messages;
@@ -1086,8 +1222,8 @@ impl Worker {
                     }
                     let pins = self.navigation.demo_pins.entry(channel).or_default();
                     pins.retain(|pin| pin.message.id != id);
-                    if pinned {
-                        if let Some(message) = self
+                    if pinned
+                        && let Some(message) = self
                             .navigation
                             .demo_archive
                             .get(&channel)
@@ -1095,15 +1231,14 @@ impl Worker {
                             .flatten()
                             .find(|message| message.id == id)
                             .cloned()
-                        {
-                            pins.insert(
-                                0,
-                                PinnedMessage {
-                                    message,
-                                    pinned_at: "2026-11-12T12:00:00.000Z".into(),
-                                },
-                            );
-                        }
+                    {
+                        pins.insert(
+                            0,
+                            PinnedMessage {
+                                message,
+                                pinned_at: "2026-11-12T12:00:00.000Z".into(),
+                            },
+                        );
                     }
                     self.snapshot();
                 }
@@ -1121,10 +1256,9 @@ impl Worker {
                         .pins
                         .get(&channel)
                         .is_some_and(|pins| pins.open)
+                    && let Err(message) = self.load_pins(channel, false)
                 {
-                    if let Err(message) = self.load_pins(channel, false) {
-                        self.emit(Event::Error(message));
-                    }
+                    self.emit(Event::Error(message));
                 }
             }
             NavigationEvent::History {
@@ -1145,7 +1279,15 @@ impl Worker {
                     return;
                 }
                 let result = result
-                    .and_then(|value| self.state.decode_api::<Vec<Message>>(value).map_err(error))
+                    .and_then(|value| {
+                        self.state
+                            .decode_api::<Vec<Message>>(if value.is_null() {
+                                json!([])
+                            } else {
+                                value
+                            })
+                            .map_err(error)
+                    })
                     .and_then(|messages| {
                         if messages.iter().any(|message| message.channel_id != channel) {
                             Err("History response contained a different channel".into())

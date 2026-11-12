@@ -1,7 +1,7 @@
 use crate::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -27,6 +27,9 @@ pub struct ClientState {
     pub current_user: Option<User>,
     pub users: BTreeMap<Snowflake, User>,
     pub guilds: BTreeMap<Snowflake, Guild>,
+    /// ThreadGuilds activates a guild only when its full gateway projection
+    /// includes the `threads` field, even when that array is empty.
+    pub thread_guilds: BTreeSet<Snowflake>,
     pub channels: BTreeMap<Snowflake, Channel>,
     pub messages: BTreeMap<Snowflake, BTreeMap<Snowflake, Message>>,
     pub members: BTreeMap<(Snowflake, Snowflake), Member>,
@@ -124,6 +127,40 @@ impl ClientState {
                     .and_then(|r| r.last_message_id)
                     .is_none_or(|read| last > read)
             })
+    }
+    pub fn has_unread_pins(&self, channel: Snowflake) -> bool {
+        let latest = self
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.last_pin_timestamp.as_deref());
+        let acknowledged = self
+            .read_states
+            .get(&channel)
+            .and_then(|state| state.last_pin_timestamp.as_deref());
+        pin_timestamp(latest) > pin_timestamp(acknowledged)
+    }
+    /// ReadStates.applyPinAck uses equality (not monotonic comparison); invalid
+    /// or absent acknowledgement timestamps fall back to the latest known pin.
+    pub fn apply_pin_ack(&mut self, channel: Snowflake, timestamp: Option<&str>) -> bool {
+        let latest = self
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.last_pin_timestamp.clone());
+        let candidate = if pin_timestamp(timestamp) != 0 {
+            timestamp.map(str::to_owned)
+        } else {
+            latest
+        };
+        let read = self.read_states.entry(channel).or_insert(ReadState {
+            id: channel,
+            ..Default::default()
+        });
+        if pin_timestamp(read.last_pin_timestamp.as_deref()) == pin_timestamp(candidate.as_deref())
+        {
+            return false;
+        }
+        read.last_pin_timestamp = candidate;
+        true
     }
     pub fn permissions_for(&self, channel_id: Snowflake, user_id: Snowflake) -> Permissions {
         let Some(channel) = self.channels.get(&channel_id) else {
@@ -381,6 +418,17 @@ impl ClientState {
                         *guild = normalize_guild(std::mem::take(guild));
                     }
                 }
+                let thread_guilds = data
+                    .get("guilds")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|guild| {
+                        guild.get("unavailable").and_then(Value::as_bool) != Some(true)
+                            && guild.get("threads").is_some()
+                    })
+                    .filter_map(|guild| guild.get("id")?.as_str()?.parse::<Snowflake>().ok())
+                    .collect();
                 let ready: Ready = decode(event, data)?;
                 if self
                     .current_user
@@ -395,6 +443,7 @@ impl ClientState {
                     settings: self.settings.clone(),
                     drafts: self.drafts.clone(),
                     user_settings: ready.user_settings,
+                    thread_guilds,
                     ..Self::default()
                 };
                 next.users.insert(ready.user.id, ready.user);
@@ -617,6 +666,14 @@ impl ClientState {
                 self.remove_channel(target.id);
             }
             "GUILD_CREATE" | "GUILD_SYNC" => {
+                if event == "GUILD_CREATE" {
+                    let target: Id = decode(event, data.clone())?;
+                    if data.get("threads").is_some() {
+                        self.thread_guilds.insert(target.id);
+                    } else {
+                        self.thread_guilds.remove(&target.id);
+                    }
+                }
                 let guild: Guild = decode(event, normalize_guild(data))?;
                 self.insert_guild(guild);
             }
@@ -641,6 +698,7 @@ impl ClientState {
                         guild.unavailable = true;
                     }
                 } else {
+                    self.thread_guilds.remove(&target.id);
                     self.guilds.remove(&target.id);
                     self.members.retain(|(guild, _), _| *guild != target.id);
                     let channels: Vec<_> = self
@@ -824,10 +882,42 @@ impl ClientState {
                     read.mention_count = ack.mention_count;
                 }
             }
+            "CHANNEL_PINS_UPDATE" => {
+                #[derive(Deserialize)]
+                struct Pins {
+                    channel_id: Snowflake,
+                    #[serde(default)]
+                    last_pin_timestamp: Option<String>,
+                }
+                let pins: Pins = decode(event, data)?;
+                if let Some(timestamp) = pins
+                    .last_pin_timestamp
+                    .filter(|timestamp| !timestamp.is_empty())
+                    && let Some(channel) = self.channels.get_mut(&pins.channel_id)
+                {
+                    channel.last_pin_timestamp = Some(timestamp);
+                }
+            }
+            "CHANNEL_PINS_ACK" => {
+                #[derive(Deserialize)]
+                struct Ack {
+                    channel_id: Snowflake,
+                    #[serde(default)]
+                    last_pin_timestamp: Option<String>,
+                }
+                let ack: Ack = decode(event, data)?;
+                self.apply_pin_ack(ack.channel_id, ack.last_pin_timestamp.as_deref());
+            }
             _ => return Ok(ApplyOutcome::Ignored),
         }
         Ok(ApplyOutcome::Applied)
     }
+}
+fn pin_timestamp(value: Option<&str>) -> i64 {
+    value
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|time| time.timestamp_millis())
+        .unwrap_or(0)
 }
 #[derive(Deserialize)]
 struct Id {

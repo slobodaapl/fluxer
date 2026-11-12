@@ -59,6 +59,7 @@ pub enum Command {
         channel_id: Snowflake,
         query: String,
         scope: SearchScope,
+        scope_override: Option<SearchScope>,
         sort: SearchSort,
         page: u32,
     },

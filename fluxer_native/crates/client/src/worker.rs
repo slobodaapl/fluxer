@@ -757,9 +757,10 @@ impl Worker {
                 channel_id,
                 query,
                 scope,
+                scope_override,
                 sort,
                 page,
-            } => self.search_messages(channel_id, query, scope, sort, page)?,
+            } => self.search_messages(channel_id, query, scope, scope_override, sort, page)?,
             Command::CloseSearch { channel_id } => self.close_search(channel_id),
             Command::LoadPins { channel_id, more } => self.load_pins(channel_id, more)?,
             Command::ClosePins { channel_id } => self.close_pins(channel_id),
@@ -1650,7 +1651,7 @@ impl Worker {
                                 .get(&channel)
                                 .is_some_and(|channel| channel.kind.is_message_channel())
                         {
-                            self.state.select_channel(channel);
+                            self.state.selected_channel = Some(channel);
                             // Load history through the normal selected-channel
                             // path once Identify/READY has completed.
                             self.restore_channel = Some(channel);

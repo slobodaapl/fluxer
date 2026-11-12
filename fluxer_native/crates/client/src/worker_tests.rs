@@ -48,6 +48,17 @@ async fn finish_attachment_send(worker: &mut Worker, channel: Snowflake) {
     }).await.expect("message HTTP task did not complete");
 }
 
+async fn finish_history(worker: &mut Worker, channel: Snowflake) {
+    timeout(Duration::from_secs(5),async {
+        loop {
+            let event=worker.navigation.rx.recv().await.expect("navigation task event");
+            let finished=matches!(&event,navigation_flow::NavigationEvent::History{channel:target,..}if *target==channel);
+            worker.navigation_event(event);
+            if finished {break;}
+        }
+    }).await.expect("history HTTP task did not complete");
+}
+
 fn voice_update(channel: Option<&str>, connection: &str) -> VoiceServerUpdate {
     serde_json::from_value(json!({"token":"voice-secret","endpoint":"wss://voice.example","connection_id":connection,"guild_id":"10","channel_id":channel})).unwrap()
 }
@@ -1635,6 +1646,7 @@ async fn actual_text_workflow(login_mode: u8) {
         })
         .await
         .unwrap();
+    finish_history(&mut worker, 100.into()).await;
     worker
         .command(Command::SendMessage {
             content: "hello".into(),
