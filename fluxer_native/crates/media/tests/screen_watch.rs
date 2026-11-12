@@ -66,6 +66,7 @@ async fn publish(
     NativeVideoSource,
     tokio::task::JoinHandle<()>,
     Arc<AtomicBool>,
+    Arc<AtomicBool>,
 ) {
     let source = NativeVideoSource::new(
         VideoResolution {
@@ -89,14 +90,22 @@ async fn publish(
     let sending = source.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = stop.clone();
+    let green = Arc::new(AtomicBool::new(false));
+    let source_green = green.clone();
     let task = tokio::spawn(async move {
         let mut tick = 0_i64;
         while !stopped.load(Ordering::Acquire) {
             let mut buffer = I420Buffer::new(320, 180);
             let (y, u, v) = buffer.data_mut();
-            y.fill(82);
-            u.fill(90);
-            v.fill(240);
+            if source_green.load(Ordering::Acquire) {
+                y.fill(145);
+                u.fill(54);
+                v.fill(34);
+            } else {
+                y.fill(82);
+                u.fill(90);
+                v.fill(240);
+            }
             sending.capture_frame(&VideoFrame {
                 rotation: VideoRotation::VideoRotation0,
                 timestamp_us: tick * 33_333,
@@ -107,12 +116,26 @@ async fn publish(
             tokio::time::sleep(Duration::from_millis(33)).await;
         }
     });
-    (publication.sid(), source, task, stop)
+    (publication.sid(), source, task, stop, green)
 }
-async fn decoded(events: &mut mpsc::Receiver<MediaEvent>, sid: &TrackSid, identity: &str) {
+fn has_color(frame: &fluxer_media::VideoFrame, green: bool) -> bool {
+    frame.rgba.as_chunks::<4>().0.iter().any(|pixel| {
+        if green {
+            pixel[1] > 180 && pixel[0] < 100 && pixel[2] < 100
+        } else {
+            pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100
+        }
+    })
+}
+async fn decoded(
+    events: &mut mpsc::Receiver<MediaEvent>,
+    sid: &TrackSid,
+    identity: &str,
+    green: bool,
+) {
     let event = until(
         events,
-        |event| matches!(event,MediaEvent::Video(frame) if frame.track_id==sid.to_string()),
+        |event| matches!(event,MediaEvent::Video(frame) if frame.track_id==sid.to_string() && has_color(frame,green)),
     )
     .await;
     let MediaEvent::Video(frame) = event else {
@@ -122,18 +145,11 @@ async fn decoded(events: &mut mpsc::Receiver<MediaEvent>, sid: &TrackSid, identi
     assert_eq!((frame.width, frame.height), (320, 180));
     assert_eq!(frame.rgba.len(), 320 * 180 * 4);
     assert!(
-        frame
-            .rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|pixel| pixel[0] > 180 && pixel[1] < 100 && pixel[2] < 100),
-        "decoded synthetic red screen must reach GPUI as RGBA"
+        has_color(&frame, green),
+        "fresh source color must reach GPUI after actual decoding"
     );
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires disposable local LiveKit and isolated virtual output; run test_media_loopback.py --screen-watch"]
-async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
+async fn watch_lifecycle(encrypted: bool) {
     let endpoint = std::env::var("FLUXER_MEDIA_TEST_URL").expect("local SFU URL");
     assert!(
         endpoint.starts_with("ws://127.0.0.1:") || endpoint.starts_with("ws://localhost:"),
@@ -151,11 +167,28 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
     let mut options = RoomOptions::default();
     options.auto_subscribe = false;
     options.single_peer_connection = false;
+    const KEY: &str = "synthetic-screen-fixture-passphrase";
+    if encrypted {
+        use livekit::e2ee::{
+            E2eeOptions, EncryptionType,
+            key_provider::{KeyProvider, KeyProviderOptions},
+        };
+        options.encryption = Some(E2eeOptions {
+            encryption_type: EncryptionType::Gcm,
+            key_provider: KeyProvider::with_shared_key(
+                KeyProviderOptions {
+                    ratchet_window_size: 0,
+                    ..Default::default()
+                },
+                KEY.as_bytes().to_vec(),
+            ),
+        });
+    }
     let (publisher, _publisher_events) = Room::connect(&endpoint, &publisher_token, options)
         .await
         .expect("publisher room");
     let identity = publisher.local_participant().identity().to_string();
-    let (first_sid, _source, first_task, first_stop) =
+    let (first_sid, _source, first_task, first_stop, first_green) =
         publish(&publisher, "fixture initial screen").await;
     let mut receiver = MediaEngine::new().expect("native media engine");
     receiver
@@ -163,7 +196,7 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
         .expect("explicit virtual output exists");
     receiver.set_muted(true).expect("microphone stays muted");
     let mut events = receiver
-        .connect(&endpoint, &receiver_token)
+        .connect_encrypted(&endpoint, &receiver_token, encrypted.then_some(KEY))
         .await
         .expect("actual MediaEngine joins room");
     // Screen already exists before receiver joins: exercise Connected roster,
@@ -174,7 +207,7 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("watch first screen");
-    decoded(&mut events, &first_sid, &identity).await;
+    decoded(&mut events, &first_sid, &identity, false).await;
     eprintln!("screen_watch: first publication decoded");
     eprintln!("screen_watch: unwatch requested; awaiting VideoEnded");
     receiver
@@ -184,10 +217,11 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
     eprintln!("screen_watch: VideoEnded received; verifying no more video");
     no_video(&mut events).await;
     eprintln!("screen_watch: no packets after unwatch; requesting same publication rewatch");
+    first_green.store(true, Ordering::Release);
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("rewatch same publication");
-    decoded(&mut events, &first_sid, &identity).await;
+    decoded(&mut events, &first_sid, &identity, true).await;
     eprintln!("screen_watch: same publication rewatch decoded");
     // Replacement SID must be observed while explicit participant watch intent
     // remains. This is not a blanket auto-subscribe to all room video.
@@ -199,11 +233,11 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
         .await
         .expect("end first screen");
     until(&mut events,|event|matches!(event,MediaEvent::ScreenStreamAvailable {identity:id,available:false} if id==&identity)).await;
-    let (second_sid, _second_source, second_task, second_stop) =
+    let (second_sid, _second_source, second_task, second_stop, _) =
         publish(&publisher, "fixture republished screen").await;
     assert_ne!(first_sid, second_sid);
     until(&mut events,|event|matches!(event,MediaEvent::ScreenStreamAvailable {identity:id,available:true} if id==&identity)).await;
-    decoded(&mut events, &second_sid, &identity).await;
+    decoded(&mut events, &second_sid, &identity, false).await;
     eprintln!("screen_watch: replacement SID decoded");
     // Also prove pending watch intent works before any publication metadata.
     second_stop.store(true, Ordering::Release);
@@ -220,12 +254,23 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("watch before metadata exists");
-    let (late_sid, _late_source, late_task, late_stop) =
+    let (late_sid, _late_source, late_task, late_stop, _) =
         publish(&publisher, "fixture late screen").await;
-    decoded(&mut events, &late_sid, &identity).await;
+    decoded(&mut events, &late_sid, &identity, false).await;
     eprintln!("screen_watch: pending watch before metadata decoded");
     late_stop.store(true, Ordering::Release);
     late_task.abort();
     receiver.disconnect().await.expect("release receiver");
     publisher.close().await.expect("release publisher");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable local LiveKit and isolated virtual output"]
+async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
+    watch_lifecycle(false).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires disposable local LiveKit and isolated virtual output"]
+async fn encrypted_engine_watch_retains_receiver_and_restores_decryptor_on_rewatch() {
+    watch_lifecycle(true).await;
 }
