@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+mod attachment_composer;
 mod call_view;
 mod chat_helpers;
 mod dropdown;
@@ -9,6 +10,7 @@ mod rich_message;
 mod stream_view;
 mod video_perf;
 
+use attachment_composer::AttachmentUi;
 use call_view::{StreamFrame, Viewer};
 use dropdown::{Dropdown, Selected};
 use emoji_picker::EmojiPickerState;
@@ -234,7 +236,8 @@ struct Fluxer {
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
-    pending_reply: Option<(Snowflake, Snowflake)>,
+    pending_replies: BTreeMap<Snowflake, (Snowflake, bool)>,
+    attachments: AttachmentUi,
     emoji_target: Option<EmojiTarget>,
     emoji_search: Entity<TextInput>,
     emoji_category: String,
@@ -288,7 +291,7 @@ struct Fluxer {
     shared_audio_settings: SharedAudioSettings,
     testing_microphone: bool,
     levels: (f32, f32),
-    pending_message: Option<(Snowflake, String)>,
+    pending_messages: BTreeMap<Snowflake, String>,
     timeline: ScrollHandle,
     last_typing: std::time::Instant,
 }
@@ -319,12 +322,14 @@ impl Fluxer {
             composer: cx.new(|cx| {
                 let mut input = TextInput::new("Message this channel…", cx);
                 input.multiline = true;
+                input.attachment_paste = true;
                 input
             }),
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
-            pending_reply: None,
+            pending_replies: BTreeMap::new(),
+            attachments: AttachmentUi::new(),
             emoji_target: None,
             emoji_search: cx.new(|cx| {
                 let mut input = TextInput::new("Search emoji…", cx);
@@ -418,7 +423,7 @@ impl Fluxer {
             shared_audio_settings: SharedAudioSettings::default(),
             testing_microphone: false,
             levels: (0., 0.),
-            pending_message: None,
+            pending_messages: BTreeMap::new(),
             timeline: ScrollHandle::new(),
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
@@ -472,6 +477,10 @@ impl Fluxer {
             this.forward_index = 0;
             this.forward_scroll.scroll_to_item(0);
             cx.notify();
+        })
+        .detach();
+        cx.subscribe(&view.composer, |this, _, image: &input::ImagePasted, cx| {
+            this.stage_clipboard_image(image, cx);
         })
         .detach();
         cx.observe(&view.composer, |this, _, cx| {
@@ -709,14 +718,15 @@ impl Fluxer {
                 }
                 Event::Error(error) => {
                     self.forward_pending = false;
-                    self.pending_reply = None;
                     self.error = Some(error);
-                    self.pending_message = None;
                 }
                 Event::Status(status) => self.status = status,
                 Event::Demo(demo) => {
                     self.demo = demo;
                     if demo {
+                        if std::env::args().any(|arg| arg == "--demo-attachments") {
+                            self.install_attachment_fixture(cx);
+                        }
                         self.session_restoring = false;
                         self.session_restore_failed = false;
                         self.session_context_loaded = false;
@@ -885,9 +895,13 @@ impl Fluxer {
                     content,
                     ..
                 } => {
-                    self.pending_message = None;
-                    if self.state.selected_channel == Some(channel_id)
-                        && self.composer.read(cx).content.as_ref() == content
+                    if self.complete_pending_message(channel_id, &content)
+                        && attachment_composer::sent_draft_can_clear(
+                            self.state.selected_channel,
+                            channel_id,
+                            &content,
+                            self.composer.read(cx).content.as_ref(),
+                        )
                     {
                         self.cancel_edit(cx);
                     }
@@ -896,23 +910,66 @@ impl Fluxer {
                     channel_id,
                     content,
                 } => {
-                    self.pending_message = None;
-                    if let Some((pending_channel, message)) = self.pending_reply.take()
-                        && pending_channel == channel_id
-                        && self
-                            .replies
-                            .get(&channel_id)
-                            .is_some_and(|(reply, _)| reply.id == message)
-                    {
-                        self.replies.remove(&channel_id);
+                    if self.complete_pending_message(channel_id, &content) {
+                        if let Some((message, mention)) = self.pending_replies.remove(&channel_id)
+                            && self.replies.get(&channel_id).is_some_and(
+                                |(reply, current_mention)| {
+                                    reply.id == message && *current_mention == mention
+                                },
+                            )
+                        {
+                            self.replies.remove(&channel_id);
+                        }
+                        if attachment_composer::sent_draft_can_clear(
+                            self.state.selected_channel,
+                            channel_id,
+                            &content,
+                            self.composer.read(cx).content.as_ref(),
+                        ) {
+                            self.composer
+                                .update(cx, |input, cx| input.set(String::new(), cx));
+                            self.editing = None;
+                        }
+                        if self.state.selected_channel == Some(channel_id) {
+                            self.timeline.scroll_to_bottom();
+                        }
                     }
-                    if self.state.selected_channel == Some(channel_id)
-                        && self.composer.read(cx).content.as_ref() == content
-                    {
-                        self.composer.update(cx, |v, cx| v.set(String::new(), cx));
-                        self.editing = None;
+                }
+                Event::MessageOperationFailed {
+                    channel_id,
+                    content,
+                    error,
+                } => {
+                    if self.complete_pending_message(channel_id, &content) {
+                        self.pending_replies.remove(&channel_id);
                     }
-                    self.timeline.scroll_to_bottom();
+                    self.error = Some(error);
+                }
+                Event::Attachments {
+                    channel_id,
+                    attachments,
+                } => {
+                    self.update_attachments(channel_id, attachments, cx);
+                }
+                Event::AttachmentLimits {
+                    channel_id,
+                    max_files,
+                    max_file_bytes,
+                    preupload,
+                } => {
+                    self.attachments.limits.insert(
+                        channel_id,
+                        attachment_composer::Limits {
+                            max_files,
+                            max_file_bytes,
+                            preupload,
+                        },
+                    );
+                }
+                Event::AttachmentsCleared => {
+                    self.clear_attachments(cx);
+                    self.pending_messages.clear();
+                    self.pending_replies.clear();
                 }
                 Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
@@ -973,11 +1030,8 @@ impl Fluxer {
                         self.active_speakers = identities.into_iter().collect()
                     }
                     MediaEvent::AudioLevels { input, output } => self.levels = (input, output),
-                    MediaEvent::Error(error) => {
-                        if !self.viewer.fail_pending(error.clone()) {
-                            self.error = Some(error);
-                        }
-                        self.pending_message = None;
+                    MediaEvent::Error(error) if !self.viewer.fail_pending(error.clone()) => {
+                        self.error = Some(error);
                     }
                     _ => {}
                 },
@@ -1023,19 +1077,19 @@ impl Fluxer {
             self.login(cx);
             return;
         }
-        if self.pane != Pane::Chat
-            || self.pending_message.is_some()
+        if !(self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open))
+            || self.message_pending()
             || self.emoji_target.is_some()
             || self.forwarding.is_some()
         {
             return;
         }
         let content = self.composer.read(cx).content.to_string();
-        if content.trim().is_empty() {
+        if content.trim().is_empty() && (self.editing.is_some() || !self.has_attachments()) {
             return;
         }
         if let Some(channel) = self.state.selected_channel {
-            self.pending_message = Some((channel, content.clone()));
+            self.pending_messages.insert(channel, content.clone());
         }
         if let Some(message_id) = self.editing {
             self.command(
@@ -1052,7 +1106,10 @@ impl Fluxer {
                 .and_then(|channel| self.replies.get(&channel));
             let reply_to = reply.map(|(message, _)| message.id);
             let mention_author = reply.is_some_and(|(_, mention)| *mention);
-            self.pending_reply = self.state.selected_channel.zip(reply_to);
+            if let Some((channel, reply)) = self.state.selected_channel.zip(reply_to) {
+                self.pending_replies
+                    .insert(channel, (reply, mention_author));
+            }
             self.command(
                 Command::SendMessage {
                     content,
@@ -1552,7 +1609,9 @@ impl Fluxer {
                             this.session_restore_failed = false;
                             this.session_restoring = false;
                             this.mfa_ticket = None;
-                            this.pending_message = None;
+                            this.pending_messages.clear();
+                            this.pending_replies.clear();
+                            this.clear_attachments(cx);
                             this.editing = None;
                             this.clear_viewer(cx);
                         })),
@@ -2075,7 +2134,13 @@ impl Fluxer {
                     .insert(message.id, cx.new(|cx| TextInput::read_only(&text, cx)));
             }
         }
-        div()
+        let can_attach = self.attachment_block_reason().is_none();
+        div().id("chat-file-drop-target")
+            .can_drop(move |dragged,_,_|can_attach && dragged.is::<ExternalPaths>())
+            .drag_over::<ExternalPaths>(move |style,_,_,_|if can_attach {style.bg(rgb(0x302744)).border_color(rgb(ACCENT))}else{style})
+            .on_drop(cx.listener(|this,paths:&ExternalPaths,_,cx| {
+                if let Some(channel)=this.state.selected_channel {this.stage_attachment_paths(channel,paths.paths().to_vec(),cx);}
+            }))
             .flex_1()
             .min_w_0()
             .min_h_0()
@@ -2277,9 +2342,6 @@ impl Fluxer {
                                             )
                                             .child(button(("reply", id.0), "Reply").on_click(
                                                 cx.listener(move |this, _, window, cx| {
-                                                    if this.pending_message.is_some() {
-                                                        return;
-                                                    }
                                                     if let Some(message) = this
                                                         .state
                                                         .selected_channel
@@ -2369,7 +2431,7 @@ impl Fluxer {
                                             .when(own, |v| {
                                                 v.child(button(("edit", id.0), "Edit").on_click(
                                                     cx.listener(move |this, _, window, cx| {
-                                                        if this.pending_message.is_some() {
+                                                        if this.message_pending() {
                                                             return;
                                                         }
                                                         if this.editing.is_none() {
@@ -2419,6 +2481,7 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(self.editing.is_none(), |view| view.child(self.attachment_strip(cx)))
                     .when(self.editing.is_none(), |view| {
                         view.when_some(
                             selected.and_then(|channel| self.replies.get(&channel)),
@@ -2494,6 +2557,7 @@ impl Fluxer {
                             .flex()
                             .items_center()
                             .gap_3()
+                            .child(self.attachment_button(cx))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .child(button("composer-emoji", "☺").on_click(cx.listener(
                                 |this, event: &ClickEvent, window, cx| {
@@ -2508,7 +2572,7 @@ impl Fluxer {
                             .child(
                                 button(
                                     "send",
-                                    if self.pending_message.is_some() {
+                                    if self.message_pending() {
                                         "Sending…"
                                     } else {
                                         "Send"
@@ -2522,7 +2586,7 @@ impl Fluxer {
                     )
                     .when(self.pane != Pane::Call, |view| {
                         view.child(muted(
-                            "Enter to send · Shift+Enter for a new line · paste multiline text",
+                            "Enter to send · Shift+Enter for a new line · Drop files or paste an image",
                         ))
                     }),
             )
@@ -3172,7 +3236,7 @@ impl Render for Fluxer {
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
-            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
+            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)));
@@ -3184,7 +3248,9 @@ impl Render for Fluxer {
 fn main() {
     let demo_stream =
         std::env::args().any(|v| v == "--demo-stream" || v == "--demo-stream-animated");
-    let demo = demo_stream || std::env::args().any(|v| v == "--demo" || v == "--demo-emoji");
+    let demo = demo_stream
+        || std::env::args()
+            .any(|v| v == "--demo" || v == "--demo-emoji" || v == "--demo-attachments");
     Application::new()
         .with_http_client(rich_message::http_client())
         .run(move |cx: &mut App| {
