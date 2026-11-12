@@ -962,7 +962,9 @@ async fn capture_events_drive_sharing_state_gateway_and_ui_without_opening_media
     let (tx, mut gateway) = async_mpsc::channel(8);
     worker.gateway_commands = Some(tx);
     // A previous share's stopped notification can precede a replacement start.
+    worker.pending_share = Some(PendingShare { audio: None });
     worker.screen_event(false, false).await.unwrap();
+    worker.pending_share = Some(PendingShare { audio: None });
     worker.screen_event(true, true).await.unwrap();
     assert!(worker.state.voice.screen_share);
     // A stale stop must not clear a replacement source that is still capturing.
@@ -1007,6 +1009,188 @@ async fn late_share_started_after_leaving_does_not_reenable_sharing() {
             .try_iter()
             .any(|event| matches!(event, Event::Media(MediaEvent::ScreenShareStarted)))
     );
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn unified_share_defers_requested_audio_until_capture_and_cancel_revokes_late_start() {
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.pending_share = Some(PendingShare {
+        audio: Some(SharedAudioSelection::Application {
+            process_id: "456".into(),
+        }),
+    });
+    worker.screen_event(true, false).await.unwrap();
+    assert!(!worker.state.voice.screen_share && !worker.active_share_audio);
+    assert!(
+        matches!(worker.pending_share.as_ref().and_then(|share|share.audio.as_ref()),
+        Some(SharedAudioSelection::Application{process_id}) if process_id=="456")
+    );
+    assert!(gateway.try_recv().is_err());
+    assert!(
+        worker.media.is_none(),
+        "opening a picker must not open audio devices"
+    );
+    worker.command(Command::StopShare).await.unwrap();
+    assert!(worker.pending_share.is_none());
+    // Even a misleading late source-liveness signal cannot reinstate revoked
+    // consent. No OS or media handle exists in this regression.
+    worker.screen_event(true, true).await.unwrap();
+    assert!(!worker.state.voice.screen_share && !worker.active_share_audio);
+    assert!(worker.media.is_none());
+    let GatewayCommand::VoiceState(payload) = gateway.try_recv().unwrap() else {
+        panic!("stopped share state");
+    };
+    assert!(!payload.self_stream);
+    assert!(!events.try_iter().any(|event| matches!(
+        event,
+        Event::SharedAudioStatus(true) | Event::Media(MediaEvent::ScreenShareStarted)
+    )));
+}
+
+#[tokio::test]
+async fn requested_share_audio_failure_rolls_back_pending_video_and_server_state() {
+    // ScreenShareStartFlow.ts:308 failRequestedAudioCapture and the capture
+    // adapter's rollback/cleanup paths reject silently dropping requested audio.
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.pending_share = Some(PendingShare {
+        audio: Some(SharedAudioSelection::System),
+    });
+    let message = worker
+        .complete_share_start(true, Err("Selected audio route could not start".into()))
+        .await
+        .unwrap_err();
+    assert!(message.contains("Selected audio route could not start"));
+    assert!(worker.pending_share.is_none());
+    assert!(!worker.state.voice.screen_share && !worker.active_share_audio);
+    let GatewayCommand::VoiceState(payload) = gateway.try_recv().unwrap() else {
+        panic!("rollback state");
+    };
+    assert!(!payload.self_stream);
+    let events: Vec<_> = events.try_iter().collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::SharedAudioStatus(false)))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Media(MediaEvent::ScreenShareStopped)))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Event::Media(MediaEvent::ScreenShareStarted)))
+    );
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn unified_share_success_and_stop_keep_audio_video_status_and_self_stream_together() {
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.complete_share_start(true, Ok(())).await.unwrap();
+    assert!(worker.state.voice.screen_share && worker.active_share_audio);
+    let GatewayCommand::VoiceState(started) = gateway.try_recv().unwrap() else {
+        panic!("started share");
+    };
+    assert!(started.self_stream);
+    worker.command(Command::StopShare).await.unwrap();
+    let GatewayCommand::VoiceState(stopped) = gateway.try_recv().unwrap() else {
+        panic!("stopped share");
+    };
+    assert!(!stopped.self_stream);
+    assert!(!worker.state.voice.screen_share && !worker.active_share_audio);
+    let audio: Vec<_> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::SharedAudioStatus(active) => Some(active),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(audio, [true, false]);
+}
+
+#[tokio::test]
+async fn disabling_audio_while_picker_is_pending_preserves_video_only_consent() {
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.pending_share = Some(PendingShare {
+        audio: Some(SharedAudioSelection::System),
+    });
+    worker.command(Command::StopSharedAudio).await.unwrap();
+    assert!(worker.pending_share.as_ref().unwrap().audio.is_none());
+    worker.screen_event(true, true).await.unwrap();
+    assert!(worker.state.voice.screen_share && !worker.active_share_audio);
+    assert!(
+        worker.media.is_none(),
+        "video-only readiness does not initialize audio capture"
+    );
+    let GatewayCommand::VoiceState(payload) = gateway.try_recv().unwrap() else {
+        panic!("video only share");
+    };
+    assert!(payload.self_stream);
+    assert!(
+        !events
+            .try_iter()
+            .any(|event| matches!(event, Event::SharedAudioStatus(true)))
+    );
+}
+
+#[tokio::test]
+async fn unified_share_gateway_failure_revokes_pending_and_active_sources() {
+    let (mut worker, events, gateway) = watch_worker();
+    drop(gateway);
+    worker.pending_share = Some(PendingShare {
+        audio: Some(SharedAudioSelection::System),
+    });
+    assert!(worker.complete_share_start(true, Ok(())).await.is_err());
+    assert!(worker.pending_share.is_none());
+    assert!(!worker.active_share_audio && !worker.state.voice.screen_share);
+    let audio: Vec<_> = events
+        .try_iter()
+        .filter_map(|event| match event {
+            Event::SharedAudioStatus(active) => Some(active),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(audio, [true, false]);
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn shared_audio_runtime_stop_rolls_back_video_but_old_or_manual_stops_do_not() {
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.complete_share_start(true, Ok(())).await.unwrap();
+    gateway.try_recv().unwrap();
+    events.try_iter().for_each(drop);
+    worker.shared_audio_event(true).await.unwrap();
+    assert!(
+        worker.active_share_audio && worker.state.voice.screen_share,
+        "old stopped route must not affect live replacement"
+    );
+    assert!(gateway.try_recv().is_err());
+    assert!(
+        worker
+            .shared_audio_event(false)
+            .await
+            .unwrap_err()
+            .contains("audio stopped unexpectedly")
+    );
+    assert!(!worker.active_share_audio && !worker.state.voice.screen_share);
+    let GatewayCommand::VoiceState(payload) = gateway.try_recv().unwrap() else {
+        panic!("audio failure rollback");
+    };
+    assert!(!payload.self_stream);
+
+    worker.complete_share_start(true, Ok(())).await.unwrap();
+    gateway.try_recv().unwrap();
+    worker.command(Command::StopSharedAudio).await.unwrap();
+    worker.shared_audio_event(false).await.unwrap();
+    assert!(
+        worker.state.voice.screen_share && !worker.active_share_audio,
+        "explicit audio-only stop preserves video"
+    );
+    assert!(gateway.try_recv().is_err());
     assert!(worker.media.is_none());
 }
 
