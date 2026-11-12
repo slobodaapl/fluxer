@@ -11,13 +11,13 @@ not individual types or controls.
 | HTTP/gateway | 44 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 30 input/emoji/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, uploads, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 43 input/emoji/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, uploads, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 45 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-215 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+228 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -191,6 +191,23 @@ strict decoded left/right tone separation passes in both plain and encrypted cal
 Four focused SDK signaling/SDP checks pass, including mono microphone scoping and
 unmodified video sections. The runner uses only generated tones and its own virtual
 sinks; it does not capture personal applications or the system mix.
+
+The reaction/composer emoji picker now opens as a bounded popover with centered
+square icon cells, a category rail, tone controls, search and an inspector. The old
+eager grid built all 3,970 base/tone choices and took 5.7–6.6 seconds to appear on
+this desktop. The virtualized grid built 56 visible cells in the measured run;
+cold first paint took 91 ms and external click-to-visible took 112 ms. Cached
+reopening painted in 23–29 ms (78 ms in an external capture check). These are
+local fixture measurements, not a cross-platform latency guarantee.
+
+Unicode tiles use the existing Fluxer sprite sheets, cropped lazily with a bounded
+256-image cache and explicit GPU eviction. This avoids inconsistent native font
+fallback; mixed-tone variants without bundled artwork preserve their exact Unicode
+fallback and reaction values. Search spans categories and ranks exact aliases ahead
+of keyword matches. Clearing search restores the selected category, and incoming
+custom-emoji availability changes refresh the open catalog without invalidating it
+for unrelated voice/state updates. Tests cover search/tone/custom wire values,
+source sprite indices and dimensions, crop colors and bounded image ownership.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

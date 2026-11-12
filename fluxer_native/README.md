@@ -14,6 +14,8 @@ Cargo workspace; its lockfile does not change the server workspace's resolution.
 ```sh
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
+# Offline reaction picker (synthetic messages, no saved account):
+FLUXER_EMOJI_PERF=1 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-emoji
 # Offline landscape/portrait screen viewer, synthetic participants, no capture:
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream
 ```
@@ -41,8 +43,13 @@ Chat shows discovered-instance avatars, inline image attachments, embed cards,
 and forwarded snapshots. Audio/video attachments open externally. Message bodies
 support mouse and keyboard selection, Unicode word selection, and Ctrl/Cmd+C.
 The emoji picker searches the existing Fluxer catalog, including skin tones and
-community emoji; arrow keys select a result, Enter chooses it, and Escape closes
-the picker. Replies have a cancellable preview and author-mention control;
+community emoji in a compact popover using Fluxer’s bundled emoji artwork. Only visible rows are built; results and
+search metadata are cached, and a tone selector replaces the expanded skin-tone
+list. Search spans categories, while clearing it restores the selected category.
+Emoji/images and category/tone controls use centered square cells. Arrow keys
+select a result, Enter chooses it, and Escape or an outside click closes the
+picker. `FLUXER_EMOJI_PERF=1` logs first paint/preparation times and visible-cell
+counts without message content. Replies have a cancellable preview and author-mention control;
 forwarding has a searchable destination picker. Reply intent and unsent drafts
 survive channel switching, and editing preserves the unsent composer draft.
 
