@@ -104,6 +104,7 @@ const TONES: [&str; 6] = ["", "🏻", "🏼", "🏽", "🏾", "🏿"];
 struct IndexedChoice {
     choice: Arc<EmojiChoice>,
     terms: Vec<String>,
+    exact_terms: Vec<String>,
     tone: Option<char>,
 }
 impl IndexedChoice {
@@ -118,6 +119,12 @@ impl IndexedChoice {
         Self::with_terms(choice, terms)
     }
     fn with_terms(choice: EmojiChoice, terms: Vec<String>) -> Self {
+        let exact_terms = choice
+            .aliases
+            .iter()
+            .map(|alias| alias.to_lowercase())
+            .chain(std::iter::once(choice.insert.clone()))
+            .collect();
         let mut tones = choice
             .insert
             .chars()
@@ -128,11 +135,15 @@ impl IndexedChoice {
         Self {
             choice: Arc::new(choice),
             terms,
+            exact_terms,
             tone,
         }
     }
     fn matches(&self, query: &str) -> bool {
         self.terms.iter().any(|term| term.contains(query))
+    }
+    fn exact_match(&self, query: &str) -> bool {
+        self.exact_terms.iter().any(|term| term == query)
     }
 }
 struct UnicodeGroup {
@@ -387,19 +398,30 @@ impl EmojiCatalog {
             .and_then(|tone| TONES.iter().position(|candidate| *candidate == tone))
             .unwrap_or(0);
         let mut choices = Vec::new();
-        if matches!(category, "all" | "community") {
-            choices.extend(
-                self.custom
-                    .iter()
-                    .filter(|entry| query.is_empty() || entry.matches(&query))
-                    .map(|entry| entry.choice.clone()),
-            );
-        }
         if query.is_empty() {
+            if matches!(category, "all" | "community") {
+                choices.extend(self.custom.iter().map(|entry| entry.choice.clone()));
+            }
             if let Some(grids) = self.unicode.grids.get(category) {
                 choices.extend(grids[tone].iter().cloned());
             }
             return choices;
+        }
+        // Stable promotion only: an exact shortcode/Unicode/custom name should
+        // be Enter's first choice before an earlier category's keyword match.
+        // Keep all remaining matches in their existing category/variant order.
+        let mut exact_choices = Vec::new();
+        let mut push = |entry: &IndexedChoice| {
+            if entry.exact_match(&query) {
+                exact_choices.push(entry.choice.clone());
+            } else {
+                choices.push(entry.choice.clone());
+            }
+        };
+        if matches!(category, "all" | "community") {
+            for entry in self.custom.iter().filter(|entry| entry.matches(&query)) {
+                push(entry);
+            }
         }
         for group in &self.unicode.groups {
             if category != "all" && category != group.category {
@@ -407,21 +429,22 @@ impl EmojiCatalog {
             }
             let base_matches = group.base.matches(&query);
             if base_matches && tone != 0 {
-                choices.push(group.preferred(tone).choice.clone());
+                push(group.preferred(tone));
             } else {
                 if base_matches {
-                    choices.push(group.base.choice.clone());
+                    push(&group.base);
                 }
-                choices.extend(
-                    group
-                        .variants
-                        .iter()
-                        .filter(|variant| base_matches || variant.matches(&query))
-                        .map(|variant| variant.choice.clone()),
-                );
+                for variant in group
+                    .variants
+                    .iter()
+                    .filter(|variant| base_matches || variant.matches(&query))
+                {
+                    push(variant);
+                }
             }
         }
-        choices
+        exact_choices.extend(choices);
+        exact_choices
     }
 }
 
@@ -557,6 +580,34 @@ mod tests {
         );
         assert!(emoji_choices(&state, None, "banana", "community").is_empty());
         assert!(emoji_choices(&state, None, "zzzz_nonexistent", "all").is_empty());
+    }
+
+    #[test]
+    fn exact_shortcode_is_first_before_earlier_category_keyword_matches() {
+        let catalog = EmojiCatalog::new(&ClientState::default(), None);
+        let banana = catalog.search("banana", "all");
+        assert_eq!(
+            banana[0].insert, "🍌",
+            "Enter must select the named fruit rather than a monkey keyword match"
+        );
+        assert!(banana.iter().any(|choice| choice.name == "monkey_face"));
+        assert_eq!(catalog.search(" :JOY: ", "all")[0].insert, "😂");
+        assert_eq!(catalog.search("👍🏽", "all")[0].insert, "👍🏽");
+        assert_eq!(
+            catalog.search_with_tone("thumbsup_tone1", "all", Some("🏽"))[0].insert,
+            "👍🏻"
+        );
+        assert_eq!(
+            catalog.search_with_tone("thumbsup", "all", Some("🏽"))[0].insert,
+            "👍🏽"
+        );
+        let customs = EmojiCatalog::new(&custom_state(), Some(10.into()));
+        assert_eq!(customs.search("party", "all")[0].reaction, "Party:42");
+        assert_eq!(
+            catalog.search("", "all")[0].insert,
+            "😀",
+            "empty browsing retains source category order"
+        );
     }
     #[test]
     fn skin_tones_are_searchable_by_base_keyword_and_variant_alias() {
