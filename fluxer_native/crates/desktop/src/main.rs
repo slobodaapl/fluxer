@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+mod call_view;
 mod dropdown;
 mod input;
+mod stream_view;
 
+use call_view::{StreamFrame, Viewer};
 use dropdown::{Dropdown, Selected};
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
 use fluxer_core::{ChannelType, ClientState, Snowflake, VoiceParticipant};
@@ -30,6 +33,7 @@ const MUTED: u32 = 0xa19bb3;
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
     Chat,
+    Call,
     Settings,
     Screens,
     Search,
@@ -223,12 +227,14 @@ struct Fluxer {
     dsp: AudioSettings,
     sharing: bool,
     editing: Option<Snowflake>,
-    video: BTreeMap<String, Arc<RenderImage>>,
+    viewer: Viewer<Arc<RenderImage>>,
+    demo_stream: bool,
+    fixture_generation: u64,
+    stream_audio: BTreeMap<String, ParticipantAudioSettings>,
     mixer: AudioMixSettings,
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
     active_speakers: BTreeSet<String>,
     available_streams: BTreeSet<String>,
-    watched_streams: BTreeSet<String>,
     applications: Vec<AudioApplication>,
     shared_audio: bool,
     shared_audio_settings: SharedAudioSettings,
@@ -240,7 +246,7 @@ struct Fluxer {
 }
 
 impl Fluxer {
-    fn new(demo: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(demo: bool, demo_stream: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let controller = Controller::spawn();
         let error = controller.as_ref().err().cloned();
         let controller = controller.ok();
@@ -324,12 +330,14 @@ impl Fluxer {
             dsp: AudioSettings::default(),
             sharing: false,
             editing: None,
-            video: BTreeMap::new(),
+            viewer: Viewer::default(),
+            demo_stream,
+            fixture_generation: 1,
+            stream_audio: BTreeMap::new(),
             mixer: AudioMixSettings::default(),
             participants: BTreeMap::new(),
             active_speakers: BTreeSet::new(),
             available_streams: BTreeSet::new(),
-            watched_streams: BTreeSet::new(),
             applications: Vec::new(),
             shared_audio: false,
             shared_audio_settings: SharedAudioSettings::default(),
@@ -432,6 +440,9 @@ impl Fluxer {
             }
         })
         .detach();
+        if demo_stream {
+            view.install_stream_fixture();
+        }
         view
     }
 
@@ -592,9 +603,9 @@ impl Fluxer {
                     self.status = "Waiting for browser sign-in…".into();
                 }
                 Event::BrowserLoginCleared => self.browser_login = None,
-                Event::WatchedStreams(identities) => {
-                    self.watched_streams = identities.into_iter().collect()
-                }
+                // Commands update desired viewing immediately. Delayed worker
+                // snapshots must never re-add a locally stopped stream.
+                Event::WatchedStreams(_) => {}
                 Event::Devices(devices) => {
                     self.input_picker.update(cx, |picker, cx| {
                         picker.set_options(
@@ -633,11 +644,13 @@ impl Fluxer {
                 Event::VoiceStatus(status) => {
                     self.voice_status = match status {
                         VoiceStatus::Disconnected => {
-                            self.video.clear();
+                            self.viewer.clear();
+                            if self.pane == Pane::Call {
+                                self.pane = Pane::Chat;
+                            }
                             self.participants.clear();
                             self.active_speakers.clear();
                             self.available_streams.clear();
-                            self.watched_streams.clear();
                             self.shared_audio = false;
                             self.sharing = false;
                             "Disconnected".into()
@@ -685,6 +698,12 @@ impl Fluxer {
                     self.timeline.scroll_to_bottom();
                 }
                 Event::Video(frame) => {
+                    if !self
+                        .viewer
+                        .accepts(&frame.participant, frame.watch_generation)
+                    {
+                        continue;
+                    }
                     if let Some(buffer) = image::RgbaImage::from_raw(
                         frame.width,
                         frame.height,
@@ -697,22 +716,37 @@ impl Fluxer {
                         }
                         let image =
                             RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]);
-                        self.video.insert(frame.track_id, Arc::new(image));
+                        self.viewer.receive(
+                            frame.participant,
+                            StreamFrame {
+                                track_id: frame.track_id,
+                                watch_generation: frame.watch_generation,
+                                width: frame.width,
+                                height: frame.height,
+                                image: Arc::new(image),
+                            },
+                        );
                     }
                 }
                 Event::Media(event) => match event {
                     MediaEvent::ScreenShareStarted => self.sharing = true,
                     MediaEvent::ScreenShareStopped => self.sharing = false,
-                    MediaEvent::VideoEnded { track_id } => {
-                        self.video.remove(&track_id);
+                    MediaEvent::VideoEnded {
+                        track_id,
+                        watch_generation,
+                        ..
+                    } => {
+                        self.viewer.end_track(&track_id, watch_generation);
                     }
                     MediaEvent::Disconnected => {
                         self.active_speakers.clear();
                         self.sharing = false;
-                        self.video.clear();
+                        self.viewer.clear();
+                        if self.pane == Pane::Call {
+                            self.pane = Pane::Chat;
+                        }
                         self.participants.clear();
                         self.available_streams.clear();
-                        self.watched_streams.clear();
                         self.shared_audio = false;
                     }
                     MediaEvent::ParticipantJoined { identity, name } => {
@@ -722,7 +756,6 @@ impl Fluxer {
                     MediaEvent::ParticipantLeft { identity } => {
                         self.active_speakers.remove(&identity);
                         self.participants.remove(&identity);
-                        self.available_streams.remove(&identity);
                     }
                     MediaEvent::ScreenStreamAvailable {
                         identity,
@@ -732,6 +765,7 @@ impl Fluxer {
                             self.available_streams.insert(identity);
                         } else {
                             self.available_streams.remove(&identity);
+                            self.viewer.unavailable(&identity);
                         }
                     }
                     MediaEvent::Speakers(identities) => {
@@ -739,7 +773,9 @@ impl Fluxer {
                     }
                     MediaEvent::AudioLevels { input, output } => self.levels = (input, output),
                     MediaEvent::Error(error) => {
-                        self.error = Some(error);
+                        if !self.viewer.fail_pending(error.clone()) {
+                            self.error = Some(error);
+                        }
                         self.pending_message = None;
                     }
                     _ => {}
@@ -1268,7 +1304,7 @@ impl Fluxer {
                             this.mfa_ticket = None;
                             this.pending_message = None;
                             this.editing = None;
-                            this.video.clear();
+                            this.viewer.clear();
                         })),
                     ),
             )
@@ -1516,7 +1552,7 @@ impl Fluxer {
                                     )
                                     .child(voice_badges(&participant, false))
                                     .when_some(stream_identity, |view, identity| {
-                                        let watching = self.watched_streams.contains(&identity);
+                                        let watching = self.viewer.desired.contains(&identity);
                                         view.child(
                                             button(
                                                 ("watch-participant-stream", index),
@@ -1529,11 +1565,9 @@ impl Fluxer {
                                             .when(watching, |view| view.bg(rgb(0x6650bd)))
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
-                                                    this.command(
-                                                        Command::WatchStream {
-                                                            identity: identity.clone(),
-                                                            watch: !watching,
-                                                        },
+                                                    this.watch_stream(
+                                                        identity.clone(),
+                                                        !watching,
                                                         cx,
                                                     );
                                                 }),
@@ -1592,73 +1626,70 @@ impl Fluxer {
                         })),
                     ),
             )
-            .when_some(voice_channel, |view, channel| {
-                view.child(self.voice_participant_pane(channel, cx))
-            })
-            .when(!self.available_streams.is_empty(), |v| {
-                v.child(
-                    div().flex().flex_wrap().gap_3().p_3().children(
-                        self.available_streams
-                            .iter()
-                            .enumerate()
-                            .map(|(index, identity)| {
-                                let watching = self.watched_streams.contains(identity);
-                                let name = self
-                                    .participants
-                                    .get(identity)
-                                    .map(|(name, _)| name.clone())
-                                    .filter(|name| !name.is_empty())
-                                    .or_else(|| {
-                                        self.state.voice.channel_id.and_then(|channel| {
-                                            self.state
-                                                .voice_participants(channel)
-                                                .into_iter()
-                                                .find(|participant| {
-                                                    participant.livekit_identity.as_ref()
-                                                        == Some(identity)
-                                                })
-                                                .map(|participant| participant.display_name)
-                                        })
-                                    })
-                                    .unwrap_or_else(|| identity.clone());
-                                let identity = identity.clone();
-                                button(
-                                    ("watch-stream", index),
-                                    format!(
-                                        "{} {name}'s screen",
-                                        if watching { "Stop watching" } else { "Watch" }
-                                    ),
-                                )
-                                .when(watching, |v| v.bg(rgb(0x6650bd)))
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        this.command(
-                                            Command::WatchStream {
-                                                identity: identity.clone(),
-                                                watch: !watching,
-                                            },
-                                            cx,
-                                        )
-                                    },
-                                ))
+            .when(
+                self.pane == Pane::Chat && self.viewer.focused.is_some(),
+                |view| {
+                    view.child(div().px_5().py_2().bg(rgb(0x30283f)).child(
+                        button("return-to-stream", "Return to stream viewer").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.pane = Pane::Call;
+                                cx.notify();
                             }),
-                    ),
-                )
-            })
-            .when(!self.video.is_empty(), |v| {
-                v.child(
-                    div()
-                        .flex()
-                        .gap_3()
-                        .p_3()
-                        .children(self.video.values().map(|image| {
-                            img(image.clone())
-                                .w(px(420.))
-                                .h(px(236.))
-                                .object_fit(ObjectFit::Contain)
-                        })),
-                )
-            })
+                        ),
+                    ))
+                },
+            )
+            .when_some(
+                voice_channel.filter(|_| self.pane != Pane::Call),
+                |view, channel| view.child(self.voice_participant_pane(channel, cx)),
+            )
+            .when(
+                self.pane != Pane::Call && !self.available_streams.is_empty(),
+                |v| {
+                    v.child(
+                        div().flex().flex_wrap().gap_3().p_3().children(
+                            self.available_streams
+                                .iter()
+                                .enumerate()
+                                .map(|(index, identity)| {
+                                    let watching = self.viewer.desired.contains(identity);
+                                    let name = self
+                                        .participants
+                                        .get(identity)
+                                        .map(|(name, _)| name.clone())
+                                        .filter(|name| !name.is_empty())
+                                        .or_else(|| {
+                                            self.state.voice.channel_id.and_then(|channel| {
+                                                self.state
+                                                    .voice_participants(channel)
+                                                    .into_iter()
+                                                    .find(|participant| {
+                                                        participant.livekit_identity.as_ref()
+                                                            == Some(identity)
+                                                    })
+                                                    .map(|participant| participant.display_name)
+                                            })
+                                        })
+                                        .unwrap_or_else(|| identity.clone());
+                                    let identity = identity.clone();
+                                    button(
+                                        ("watch-stream", index),
+                                        format!(
+                                            "{} {name}'s screen",
+                                            if watching { "Stop watching" } else { "Watch" }
+                                        ),
+                                    )
+                                    .when(watching, |v| v.bg(rgb(0x6650bd)))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.watch_stream(identity.clone(), !watching, cx)
+                                        },
+                                    ))
+                                }),
+                        ),
+                    )
+                },
+            )
             .when(voice_channel.is_some(), |view| {
                 view.child(
                     div()
@@ -2376,7 +2407,7 @@ impl Fluxer {
 }
 
 impl Render for Fluxer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = if self.session_restoring {
             self.restoring_view(cx)
         } else if self.state.current_user.is_none() {
@@ -2384,6 +2415,7 @@ impl Render for Fluxer {
         } else {
             let body = match self.pane {
                 Pane::Chat => self.chat(cx),
+                Pane::Call => self.call_view(window, cx),
                 Pane::Settings => self.settings(cx),
                 Pane::Screens => self.screens(cx),
                 Pane::Search => self.search(cx),
@@ -2392,8 +2424,9 @@ impl Render for Fluxer {
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(self.rail(cx))
-                .child(self.channels(cx))
+                .when(!(self.pane == Pane::Call && self.viewer.expanded), |view| {
+                    view.child(self.rail(cx)).child(self.channels(cx))
+                })
                 .child(body)
                 .into_any_element()
         };
@@ -2406,6 +2439,16 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key == "escape" && this.pane == Pane::Call {
+                    if window.is_fullscreen() {
+                        window.toggle_fullscreen();
+                    } else if this.viewer.expanded {
+                        this.viewer.expanded = false;
+                        cx.notify();
+                    }
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "tab" {
                     if event.keystroke.modifiers.shift { window.focus_prev(); } else { window.focus_next(); }
                     cx.stop_propagation();
@@ -2415,14 +2458,15 @@ impl Render for Fluxer {
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
-            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child("OFFLINE DEMO · Local sample messages · Calls require a connected account")))
+            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
     }
 }
 
 fn main() {
-    let demo = std::env::args().any(|v| v == "--demo");
+    let demo_stream = std::env::args().any(|v| v == "--demo-stream");
+    let demo = demo_stream || std::env::args().any(|v| v == "--demo");
     Application::new().run(move |cx: &mut App| {
         input::init(cx);
         cx.bind_keys([
@@ -2457,7 +2501,7 @@ fn main() {
             },
             move |window, cx| {
                 window.set_window_title(&window_title);
-                cx.new(|cx| Fluxer::new(demo, window, cx))
+                cx.new(|cx| Fluxer::new(demo, demo_stream, window, cx))
             },
         )
         .expect("open Fluxer window");
