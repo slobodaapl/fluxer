@@ -86,6 +86,7 @@ impl Default for AudioSettings {
 pub struct VideoFrame {
     pub track_id: String,
     pub participant: String,
+    pub watch_generation: u64,
     pub width: u32,
     pub height: u32,
     pub rgba: Arc<Vec<u8>>,
@@ -96,16 +97,42 @@ pub enum MediaEvent {
     Connected,
     Disconnected,
     Reconnecting,
-    ParticipantJoined { identity: String, name: String },
-    ParticipantLeft { identity: String },
-    ScreenStreamAvailable { identity: String, available: bool },
+    ParticipantJoined {
+        identity: String,
+        name: String,
+    },
+    ParticipantLeft {
+        identity: String,
+    },
+    ScreenStreamAvailable {
+        identity: String,
+        available: bool,
+    },
     Speakers(Vec<String>),
     Video(VideoFrame),
-    VideoEnded { track_id: String },
+    VideoEnded {
+        track_id: String,
+        participant: String,
+        watch_generation: u64,
+    },
     ScreenShareStarted,
     ScreenShareStopped,
-    AudioLevels { input: f32, output: f32 },
+    AudioLevels {
+        input: f32,
+        output: f32,
+    },
     Error(String),
+}
+
+struct VideoRenderer {
+    task: JoinHandle<()>,
+    participant: String,
+    watch_generation: u64,
+}
+impl VideoRenderer {
+    fn abort(&self) {
+        self.task.abort();
+    }
 }
 
 struct RuntimeState {
@@ -141,7 +168,7 @@ pub struct MediaEngine {
     room_task: Option<JoinHandle<()>>,
     screen: Option<screen::ScreenSession>,
     screen_publication: Option<TrackSid>,
-    video_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    video_tasks: Arc<Mutex<HashMap<String, VideoRenderer>>>,
     stop: Arc<AtomicBool>,
     shared_audio_task: Option<JoinHandle<()>>,
     shared_audio_publication: Option<TrackSid>,
@@ -597,15 +624,22 @@ impl MediaEngine {
                         participant,
                         publication,
                     } => {
-                        let desired = subscriptions
+                        let (desired, watch_generation) = subscriptions
                             .lock()
                             .map(|registry| {
-                                registry.decision(&participant.identity().to_string(), &publication)
+                                let identity = participant.identity().to_string();
+                                (
+                                    registry.decision(&identity, &publication),
+                                    registry.watch_generation(&identity),
+                                )
                             })
-                            .unwrap_or(subscriptions::Decision {
-                                subscribe: false,
-                                enabled: false,
-                            });
+                            .unwrap_or((
+                                subscriptions::Decision {
+                                    subscribe: false,
+                                    enabled: false,
+                                },
+                                0,
+                            ));
                         if !desired.subscribe {
                             track.disable();
                             publication.set_subscribed(false);
@@ -623,17 +657,22 @@ impl MediaEngine {
                             },
                         );
                         if let Ok(mut m) = mixer.lock() {
-                            m.add_track(id.clone(), identity);
+                            if publication.source() == TrackSource::ScreenshareAudio
+                                || subscriptions::is_screen_audio_label(&publication.name())
+                            {
+                                m.add_stream_track(id.clone(), identity);
+                            } else {
+                                m.add_track(id.clone(), identity);
+                            }
                         }
                         let frame_id = id.clone();
                         let track_mixer = mixer.clone();
                         let track_subscriptions = subscriptions.clone();
                         let task = tokio::spawn(async move {
                             while let Some(frame) = stream.next().await {
-                                if !track_subscriptions
-                                    .lock()
-                                    .is_ok_and(|registry| registry.desired_track(&frame_id))
-                                {
+                                if !track_subscriptions.lock().is_ok_and(|registry| {
+                                    registry.desired_track_at(&frame_id, watch_generation)
+                                }) {
                                     break;
                                 }
                                 if let Ok(mut m) = track_mixer.lock() {
@@ -675,15 +714,22 @@ impl MediaEngine {
                         participant,
                         publication,
                     } => {
-                        let desired = subscriptions
+                        let (desired, watch_generation) = subscriptions
                             .lock()
                             .map(|registry| {
-                                registry.decision(&participant.identity().to_string(), &publication)
+                                let identity = participant.identity().to_string();
+                                (
+                                    registry.decision(&identity, &publication),
+                                    registry.watch_generation(&identity),
+                                )
                             })
-                            .unwrap_or(subscriptions::Decision {
-                                subscribe: false,
-                                enabled: false,
-                            });
+                            .unwrap_or((
+                                subscriptions::Decision {
+                                    subscribe: false,
+                                    enabled: false,
+                                },
+                                0,
+                            ));
                         if !desired.subscribe {
                             track.disable();
                             publication.set_subscribed(false);
@@ -696,12 +742,12 @@ impl MediaEngine {
                         let sender = tx.clone();
                         let frame_id = id.clone();
                         let track_subscriptions = subscriptions.clone();
+                        let renderer_identity = identity.clone();
                         let task = tokio::spawn(async move {
                             while let Some(frame) = stream.next().await {
-                                if !track_subscriptions
-                                    .lock()
-                                    .is_ok_and(|registry| registry.desired_track(&frame_id))
-                                {
+                                if !track_subscriptions.lock().is_ok_and(|registry| {
+                                    registry.desired_track_at(&frame_id, watch_generation)
+                                }) {
                                     break;
                                 }
                                 let w = frame.buffer.width();
@@ -722,6 +768,7 @@ impl MediaEngine {
                                 let _ = sender.try_send(MediaEvent::Video(VideoFrame {
                                     track_id: frame_id.clone(),
                                     participant: identity.clone(),
+                                    watch_generation,
                                     width: w,
                                     height: h,
                                     rgba: Arc::new(rgba),
@@ -730,7 +777,14 @@ impl MediaEngine {
                             stream.close();
                         });
                         if let Ok(mut tasks) = video_tasks.lock()
-                            && let Some(old) = tasks.insert(id, task)
+                            && let Some(old) = tasks.insert(
+                                id,
+                                VideoRenderer {
+                                    task,
+                                    participant: renderer_identity,
+                                    watch_generation,
+                                },
+                            )
                         {
                             old.abort();
                         }
@@ -790,11 +844,18 @@ impl MediaEngine {
                 .subscriptions
                 .lock()
                 .map_err(|_| MediaError::Audio("Subscription registry unavailable".into()))?;
-            registry.policy.watched = identities.into_iter().filter(|id| !id.is_empty()).collect();
-            registry.plan()
+            registry.replace_watched(identities)
         };
         apply_subscription_actions(&plan, &self.mixer, &self.audio_tasks, &self.video_tasks);
         Ok(())
+    }
+    /// Frames from an earlier watch of the same publication carry an older
+    /// epoch, allowing consumers to reject buffered pixels after rapid rewatch.
+    pub fn watch_generation(&self, identity: &str) -> u64 {
+        self.subscriptions
+            .lock()
+            .map(|registry| registry.watch_generation(identity))
+            .unwrap_or(0)
     }
     pub fn set_deafened(&mut self, deafened: bool) -> Result<()> {
         self.deafened = deafened;
@@ -872,6 +933,21 @@ impl MediaEngine {
             .lock()
             .map_err(|_| MediaError::Audio("Audio mixer unavailable".into()))?
             .participants
+            .insert(identity.into(), settings);
+        Ok(())
+    }
+    pub fn set_stream_audio(
+        &self,
+        identity: &str,
+        settings: ParticipantAudioSettings,
+    ) -> Result<()> {
+        if identity.is_empty() || !settings.validate() {
+            return Err(MediaError::InvalidSetting("invalid stream audio setting"));
+        }
+        self.mixer
+            .lock()
+            .map_err(|_| MediaError::Audio("Audio mixer unavailable".into()))?
+            .streams
             .insert(identity.into(), settings);
         Ok(())
     }
@@ -1188,15 +1264,30 @@ fn apply_subscription_actions(
     plan: &subscriptions::Plan,
     mixer: &Arc<Mutex<audio::PlaybackMixer>>,
     audio_tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
-    video_tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    video_tasks: &Arc<Mutex<HashMap<String, VideoRenderer>>>,
 ) {
+    // Physical local playback/render demand ends before SDK callbacks can
+    // synchronously tear down decryptors or wait on native RTC threads.
+    for action in plan
+        .actions
+        .iter()
+        .filter(|action| !action.decision.subscribe)
+    {
+        let sid = action.publication.sid().to_string();
+        if let Ok(mut mixer) = mixer.lock() {
+            mixer.tracks.remove(&sid);
+        }
+        if let Ok(mut tasks) = audio_tasks.lock()
+            && let Some(task) = tasks.remove(&sid)
+        {
+            task.abort();
+        }
+        end_video_renderer(&sid, video_tasks, mixer);
+    }
     for action in &plan.actions {
         let publication = &action.publication;
-        // ScreenShareSubscriptionManager.unsubscribePublication only removes
-        // subscription demand. Disabling first leaves sticky SFU TrackSettings:
-        // Rust SDK set_enabled(true) cannot clear them before a track exists,
-        // and a new enabled track makes its later enable call a no-op.
-        // Only disable media that remains subscribed (watched/deafened audio).
+        // Ordinary unwatch is unsubscribe only, matching the existing client.
+        // Disabling first would leave SFU TrackSettings sticky across rewatch.
         if action.decision.subscribe && !action.decision.enabled && publication.is_subscribed() {
             publication.set_enabled(false);
         }
@@ -1205,27 +1296,17 @@ fn apply_subscription_actions(
         }
         if action.decision.subscribe {
             publication.set_enabled(action.decision.enabled);
-        } else {
-            let sid = publication.sid().to_string();
-            if let Ok(mut mixer) = mixer.lock() {
-                mixer.tracks.remove(&sid);
-            }
-            if let Ok(mut tasks) = audio_tasks.lock()
-                && let Some(task) = tasks.remove(&sid)
-            {
-                task.abort();
-            }
-            end_video_renderer(&sid, video_tasks, mixer);
         }
     }
 }
 
 /// Local renderer lifetime ends immediately when watch intent ends. Do not
 /// wait for SFU/SDK unsubscribe notification before releasing the displayed
-/// frame; late SDK notifications see no renderer and cannot emit duplicates.
+/// frame. The event carries the removed renderer's epoch so a delayed end
+/// cannot clear a newer watch of the same publication.
 fn end_video_renderer(
     sid: &str,
-    tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    tasks: &Arc<Mutex<HashMap<String, VideoRenderer>>>,
     mixer: &Arc<Mutex<audio::PlaybackMixer>>,
 ) {
     let task = tasks.lock().ok().and_then(|mut tasks| tasks.remove(sid));
@@ -1235,6 +1316,8 @@ fn end_video_renderer(
     let Some(sender) = sender else { return };
     let event = MediaEvent::VideoEnded {
         track_id: sid.into(),
+        participant: task.participant,
+        watch_generation: task.watch_generation,
     };
     if let Err(mpsc::error::TrySendError::Full(event)) = sender.try_send(event) {
         // Lifecycle events must survive a channel temporarily filled by video.
@@ -1308,11 +1391,18 @@ mod video_lifecycle_tests {
         mixer.lock().unwrap().events = Some(sender);
         let task = tokio::spawn(std::future::pending());
         let abort = task.abort_handle();
-        let tasks = Arc::new(Mutex::new(HashMap::from([("screen-sid".into(), task)])));
+        let tasks = Arc::new(Mutex::new(HashMap::from([(
+            "screen-sid".into(),
+            VideoRenderer {
+                task,
+                participant: "alice".into(),
+                watch_generation: 1,
+            },
+        )])));
         end_video_renderer("screen-sid", &tasks, &mixer);
         assert!(tasks.lock().unwrap().is_empty());
         assert!(
-            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id}) if track_id=="screen-sid")
+            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id,..}) if track_id=="screen-sid")
         );
         end_video_renderer("screen-sid", &tasks, &mixer);
         assert!(
@@ -1329,11 +1419,18 @@ mod video_lifecycle_tests {
         let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
         mixer.lock().unwrap().events = Some(sender);
         let task = tokio::spawn(std::future::pending());
-        let tasks = Arc::new(Mutex::new(HashMap::from([("screen-sid".into(), task)])));
+        let tasks = Arc::new(Mutex::new(HashMap::from([(
+            "screen-sid".into(),
+            VideoRenderer {
+                task,
+                participant: "alice".into(),
+                watch_generation: 1,
+            },
+        )])));
         end_video_renderer("screen-sid", &tasks, &mixer);
         assert!(matches!(events.recv().await, Some(MediaEvent::Speakers(_))));
         assert!(
-            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id}) if track_id=="screen-sid")
+            matches!(events.recv().await,Some(MediaEvent::VideoEnded {track_id,..}) if track_id=="screen-sid")
         );
     }
 }
