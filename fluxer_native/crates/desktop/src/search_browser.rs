@@ -35,6 +35,8 @@ pub(super) struct SearchUi {
     pub highlight: Option<(Snowflake, Snowflake)>,
     pub pending_center: Option<(Snowflake, Snowflake)>,
     center_scheduled: bool,
+    pending_latest: Option<Snowflake>,
+    latest_scheduled: bool,
     inflight_ack: BTreeMap<Snowflake, Snowflake>,
     failed_ack: BTreeSet<Snowflake>,
     returning_latest: BTreeSet<Snowflake>,
@@ -91,6 +93,8 @@ impl SearchUi {
             highlight: None,
             pending_center: None,
             center_scheduled: false,
+            pending_latest: None,
+            latest_scheduled: false,
             inflight_ack: BTreeMap::new(),
             failed_ack: BTreeSet::new(),
             returning_latest: BTreeSet::new(),
@@ -185,6 +189,8 @@ impl Fluxer {
         self.search_ui.highlight = None;
         self.search_ui.pending_center = None;
         self.search_ui.center_scheduled = false;
+        self.search_ui.pending_latest = None;
+        self.search_ui.latest_scheduled = false;
         self.search_ui.inflight_ack.clear();
         self.search_ui.failed_ack.clear();
         self.search_ui.returning_latest.clear();
@@ -337,6 +343,19 @@ impl Fluxer {
         snapshot: HistorySnapshot,
         cx: &mut Context<Self>,
     ) {
+        if snapshot.loading {
+            self.reset_ack_context(snapshot.channel_id);
+            if !self.search_ui.histories.contains_key(&snapshot.channel_id)
+                && snapshot.latest
+                && snapshot.target.is_none()
+            {
+                self.search_ui.returning_latest.insert(snapshot.channel_id);
+            }
+        }
+        if consume_latest_ready(&mut self.search_ui.returning_latest, &snapshot) {
+            self.search_ui.pending_latest = Some(snapshot.channel_id);
+            self.search_ui.latest_scheduled = false;
+        }
         if !snapshot.loading
             && let Some(target) = snapshot.target
         {
@@ -374,6 +393,8 @@ impl Fluxer {
         }
         self.reset_ack_context(message.channel_id);
         self.search_ui.returning_latest.remove(&message.channel_id);
+        self.search_ui.pending_latest = None;
+        self.search_ui.latest_scheduled = false;
         self.search_ui.pending_center = Some((message.channel_id, message.id));
         self.search_ui.center_scheduled = false;
         self.search_ui.highlight = Some((message.channel_id, message.id));
@@ -387,6 +408,37 @@ impl Fluxer {
         );
     }
     pub(super) fn schedule_history_center(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if let Some(channel) = self.search_ui.pending_latest
+            && !self.search_ui.latest_scheduled
+            && self.state.selected_channel == Some(channel)
+            && self
+                .search_ui
+                .histories
+                .get(&channel)
+                .is_some_and(|history| {
+                    !history.loading && history.latest && history.error.is_none()
+                })
+        {
+            self.search_ui.latest_scheduled = true;
+            let entity = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = entity.update(cx, |this, cx| {
+                    if this.search_ui.pending_latest == Some(channel)
+                        && this.state.selected_channel == Some(channel)
+                        && this
+                            .search_ui
+                            .histories
+                            .get(&channel)
+                            .is_some_and(|history| !history.loading && history.latest)
+                    {
+                        this.timeline.scroll_to_bottom();
+                        this.search_ui.pending_latest = None;
+                        cx.notify();
+                    }
+                    this.search_ui.latest_scheduled = false;
+                });
+            });
+        }
         let Some((channel, target)) = self.search_ui.pending_center else {
             return;
         };
@@ -529,7 +581,7 @@ impl Fluxer {
         canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
-                if bounds.intersects(&window.content_mask().bounds) {
+                if window.is_window_active() && bounds.intersects(&window.content_mask().bounds) {
                     let entity = entity.clone();
                     cx.defer(move |cx| {
                         let _ = entity.update(cx, |this, cx| {
@@ -562,8 +614,33 @@ impl Fluxer {
             self.search_ui.failed_ack.insert(channel);
         }
     }
+    fn auto_ack_allowed(&self, channel: Snowflake, cx: &mut Context<Self>) -> bool {
+        let active = cx
+            .windows()
+            .iter()
+            .find_map(|window| window.downcast::<Fluxer>())
+            .and_then(|window| window.is_active(cx))
+            .unwrap_or(false);
+        let at_bottom = self.timeline.max_offset().height + self.timeline.offset().y <= px(4.);
+        let latest = self
+            .search_ui
+            .histories
+            .get(&channel)
+            .is_some_and(|history| history.latest && !history.loading);
+        let manual = self
+            .state
+            .read_states
+            .get(&channel)
+            .is_some_and(|state| state.manual_ack);
+        let blocking = self.forwarding.is_some()
+            || self.search_ui.confirm.is_some()
+            || self.attachments.picker_open
+            || self.session_restoring;
+        auto_ack_policy(active, at_bottom, latest, manual, blocking)
+    }
     fn note_visible_message(&mut self, channel: Snowflake, id: Snowflake, cx: &mut Context<Self>) {
-        if self.search_ui.pending_center.is_some()
+        if !self.auto_ack_allowed(channel, cx)
+            || self.search_ui.pending_center.is_some()
             || self.state.selected_channel != Some(channel)
             || self
                 .search_ui
@@ -587,7 +664,8 @@ impl Fluxer {
             let _ = entity.update(cx, |this, cx| {
                 this.search_ui.ack_scheduled = false;
                 for (channel, id) in std::mem::take(&mut this.search_ui.pending_ack) {
-                    if this.state.selected_channel == Some(channel)
+                    if this.auto_ack_allowed(channel, cx)
+                        && this.state.selected_channel == Some(channel)
                         && this
                             .search_ui
                             .histories
@@ -1047,17 +1125,7 @@ impl Fluxer {
         body.into_any_element()
     }
     pub(super) fn can_pin_message(&self, message: &Message) -> bool {
-        let Some(channel) = self.state.channels.get(&message.channel_id) else {
-            return false;
-        };
-        if channel.guild_id.is_none() {
-            return true;
-        }
-        self.state.current_user.as_ref().is_some_and(|user| {
-            self.state
-                .permissions_for(channel.id, user.id)
-                .contains(fluxer_core::Permissions::PIN_MESSAGES)
-        })
+        self.state.can_pin_messages(message.channel_id)
     }
     pub(super) fn request_pin(
         &mut self,
@@ -1255,12 +1323,62 @@ fn search_has_next(page: u32, total: u64, hits_per_page: u32) -> bool {
     u64::from(page.max(1)) * u64::from(hits_per_page.max(1)) < total
 }
 
+fn auto_ack_policy(
+    active: bool,
+    at_bottom: bool,
+    latest: bool,
+    manual: bool,
+    blocking_modal: bool,
+) -> bool {
+    active && at_bottom && latest && !manual && !blocking_modal
+}
+
+fn consume_latest_ready(requests: &mut BTreeSet<Snowflake>, history: &HistorySnapshot) -> bool {
+    !history.loading
+        && history.latest
+        && history.target.is_none()
+        && history.error.is_none()
+        && requests.remove(&history.channel_id)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{search_has_next, should_request_ack, visible_window_messages};
+    use super::{
+        auto_ack_policy, consume_latest_ready, search_has_next, should_request_ack,
+        visible_window_messages,
+    };
     use fluxer_client::HistorySnapshot;
     use fluxer_core::{ClientState, Message, Snowflake, User};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
+    #[test]
+    fn return_latest_scroll_waits_for_ready_window_and_is_one_shot() {
+        let mut requests = BTreeSet::from([Snowflake(1)]);
+        let mut history = HistorySnapshot {
+            channel_id: Snowflake(1),
+            message_ids: Vec::new(),
+            target: None,
+            loading: true,
+            has_older: true,
+            has_newer: false,
+            latest: true,
+            error: None,
+        };
+        assert!(!consume_latest_ready(&mut requests, &history));
+        assert!(requests.contains(&Snowflake(1)));
+        history.loading = false;
+        history.message_ids = vec![Snowflake(1119)];
+        assert!(consume_latest_ready(&mut requests, &history));
+        assert!(!consume_latest_ready(&mut requests, &history));
+    }
+    #[test]
+    fn auto_ack_requires_focused_latest_tail_and_no_manual_or_modal_block() {
+        assert!(auto_ack_policy(true, true, true, false, false));
+        assert!(!auto_ack_policy(false, true, true, false, false));
+        assert!(!auto_ack_policy(true, false, true, false, false));
+        assert!(!auto_ack_policy(true, true, false, false, false));
+        assert!(!auto_ack_policy(true, true, true, true, false));
+        assert!(!auto_ack_policy(true, true, true, false, true));
+    }
     #[test]
     fn search_pagination_uses_one_based_server_pages() {
         assert!(search_has_next(1, 75, 25));

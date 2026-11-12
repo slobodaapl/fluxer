@@ -17,6 +17,7 @@ pub(super) struct AttachmentUi {
     pub fixture: bool,
     fixture_started: bool,
     pub cancelling: BTreeSet<Snowflake>,
+    pub picker_open: bool,
 }
 impl AttachmentUi {
     pub fn new() -> Self {
@@ -27,6 +28,7 @@ impl AttachmentUi {
             fixture: false,
             fixture_started: false,
             cancelling: BTreeSet::new(),
+            picker_open: false,
         }
     }
 }
@@ -160,6 +162,7 @@ impl Fluxer {
             .state
             .selected_channel
             .expect("permission checked channel");
+        self.attachments.picker_open = true;
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -168,17 +171,21 @@ impl Fluxer {
         });
         cx.spawn(async move |entity, cx| {
             let result = picked.await;
-            let _ = entity.update(cx, |this, cx| match result {
-                Ok(Ok(Some(paths))) => this.stage_attachment_paths(channel_id, paths, cx),
-                Ok(Ok(None)) => {}
-                Ok(Err(error)) => {
-                    this.error = Some(format!("Could not open the file picker: {error}"));
-                    cx.notify();
+            let _ = entity.update(cx, |this, cx| {
+                this.attachments.picker_open = false;
+                match result {
+                    Ok(Ok(Some(paths))) => this.stage_attachment_paths(channel_id, paths, cx),
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => {
+                        this.error = Some(format!("Could not open the file picker: {error}"));
+                        cx.notify();
+                    }
+                    Err(_) => {
+                        this.error = Some("The file picker closed unexpectedly".into());
+                        cx.notify();
+                    }
                 }
-                Err(_) => {
-                    this.error = Some("The file picker closed unexpectedly".into());
-                    cx.notify();
-                }
+                cx.notify();
             });
         })
         .detach();
