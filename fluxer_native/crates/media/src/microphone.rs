@@ -31,23 +31,25 @@ impl MicrophoneCapture {
         controls: Arc<Mutex<InputRuntime>>,
         mixer: Arc<Mutex<PlaybackMixer>>,
         events: mpsc::Sender<MediaEvent>,
+        channels: u32,
     ) -> (Self, LocalAudioTrack) {
         let device_track = LocalAudioTrack::create_audio_track(
             "Fluxer processed device input",
             audio.rtc_source(),
         );
-        Self::start_track(device_track, controls, mixer, events)
+        Self::start_track(device_track, controls, mixer, events, channels)
     }
     fn start_track(
         device_track: LocalAudioTrack,
         controls: Arc<Mutex<InputRuntime>>,
         mixer: Arc<Mutex<PlaybackMixer>>,
         events: mpsc::Sender<MediaEvent>,
+        channels: u32,
     ) -> (Self, LocalAudioTrack) {
         let mut stream = NativeAudioStream::with_options(
             device_track.rtc_track(),
             48_000,
-            1,
+            channels as i32,
             NativeAudioStreamOptions {
                 queue_size_frames: Some(4),
             },
@@ -59,7 +61,7 @@ impl MicrophoneCapture {
                 auto_gain_control: false,
             },
             48_000,
-            1,
+            channels,
             0,
         );
         let published = LocalAudioTrack::create_audio_track(
@@ -142,6 +144,7 @@ mod tests {
             controls.clone(),
             Arc::new(Mutex::new(PlaybackMixer::new())),
             events,
+            1,
         );
         let mut output = NativeAudioStream::new(processed.rtc_track(), 48_000, 1);
         let frame = AudioFrame {
@@ -175,6 +178,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(actual.data.iter().any(|sample| *sample > 0));
+        drop(capture);
+        output.close();
+    }
+    #[tokio::test]
+    async fn stereo_capture_preserves_distinct_pcm_channels_through_processing() {
+        let input = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 2, 0);
+        let device = LocalAudioTrack::create_audio_track(
+            "stereo fixture",
+            RtcAudioSource::Native(input.clone()),
+        );
+        let controls = Arc::new(Mutex::new(InputRuntime::default()));
+        let (events, _) = mpsc::channel(16);
+        let (capture, processed) = MicrophoneCapture::start_track(
+            device,
+            controls,
+            Arc::new(Mutex::new(PlaybackMixer::new())),
+            events,
+            2,
+        );
+        let mut output = NativeAudioStream::new(processed.rtc_track(), 48_000, 2);
+        let frame = AudioFrame {
+            data: [10_000_i16, -5_000].repeat(480).into(),
+            sample_rate: 48_000,
+            num_channels: 2,
+            samples_per_channel: 480,
+        };
+        input.capture_frame(&frame).await.unwrap();
+        let actual = tokio::time::timeout(std::time::Duration::from_secs(2), output.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual.num_channels, 2);
+        assert!(actual.data.as_chunks::<2>().0.iter().all(
+            |pair| (9_999..=10_000).contains(&pair[0]) && (-5_000..=-4_999).contains(&pair[1])
+        ));
         drop(capture);
         output.close();
     }
