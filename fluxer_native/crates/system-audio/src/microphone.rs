@@ -35,7 +35,7 @@ pub struct MicrophoneInput {
 
 impl MicrophoneInput {
     pub fn devices() -> Result<Vec<InputDevice>, Error> {
-        enumerate_inputs()
+        enumerate_audio_nodes()
             .map(input_devices)
             .map_err(|_| Error::Unavailable)
     }
@@ -120,7 +120,7 @@ impl MicrophoneInput {
     }
 }
 
-fn enumerate_inputs() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
+pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
     use std::{
         cell::{Cell, RefCell},
         rc::Rc,
@@ -143,7 +143,7 @@ fn enumerate_inputs() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
             };
             if !matches!(
                 props.get("media.class"),
-                Some("Audio/Source" | "Audio/Source/Virtual")
+                Some("Audio/Source" | "Audio/Source/Virtual" | "Audio/Sink" | "Audio/Sink/Virtual")
             ) {
                 return;
             }

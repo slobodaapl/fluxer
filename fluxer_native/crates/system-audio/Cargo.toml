@@ -8,5 +8,5 @@ license.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = "0.10.1"
+pipewire = { version = "0.10.1", features = ["v0_3_49"] }
 fluxer_rt_thread = { path = "../../../fluxer_desktop/native/rt-thread" }

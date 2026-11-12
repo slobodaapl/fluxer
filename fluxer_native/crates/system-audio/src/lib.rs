@@ -7,7 +7,11 @@
 #[cfg(target_os = "linux")]
 mod microphone;
 #[cfg(target_os = "linux")]
+mod output;
+#[cfg(target_os = "linux")]
 pub use microphone::{InputDevice, MicrophoneInput};
+#[cfg(target_os = "linux")]
+pub use output::{OutputDevice, SpeakerOutput};
 
 #[cfg(target_os = "linux")]
 #[rustfmt::skip]
@@ -60,6 +64,14 @@ pub enum Error {
     UnknownInput,
     #[error("Microphone capture requires 48 kHz mono or stereo audio")]
     InvalidInputFormat,
+    #[error("Unknown speaker; refresh the output device list")]
+    UnknownOutput,
+    #[error("PipeWire speaker output is unavailable; check the user audio service")]
+    OutputUnavailable,
+    #[error("Speaker output requires interleaved 48 kHz stereo float audio")]
+    InvalidOutputFormat,
+    #[error("Invalid PipeWire speaker output buffer")]
+    InvalidOutputBuffer,
 }
 pub struct PcmFrame {
     pub samples: Vec<f32>,
