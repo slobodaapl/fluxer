@@ -18,6 +18,7 @@ contract checks, not a claim that the whole native client has feature parity.
 | Gateway compression | `features/gateway/transport/PooledGatewayConnection.ts`, `GatewaySocket.ts`; `fluxer_app/rust/libfluxcore/src/zstd_stream.rs` | Reuses the exact Rust streaming codec; real bidirectional zstd sockets; fresh dictionary per connection; source compression fallback |
 | Identify/resume | Same gateway sources; `ClientInfo.ts` | Flags 14, version 1, selected guild/presence/locale builders, resume token/session/sequence, same-socket rejected-resume Identify, restored presence, source heartbeat/backoff limits |
 | READY/state/events | `fluxer_gateway/src/session/session_ready_collect.erl`; desktop gateway READY handler, user/member stores; `session_dispatch_voice.erl` | Core checked-in fixture resolves ID-only users, preserves own private fields; batched reactions/guild sync/channel and role updates |
+| Search/pins/history | `features/search/utils/SearchUtils.ts`; `ChannelSearchPolling.ts`, `useChannelSearch.ts`; `ChannelPinsCommands.tsx`; `MessageCommands.tsx`; `RestTransport.ts` | `navigation.rs` and loopback `tests/navigation.rs` preserve search HTTP status/body, explicit pin routes/timestamp pages, history cursor omissions and source retry policy |
 | Selected guild subscription | `features/gateway/transport/GatewayGuildSubscriptionSynchronizer.ts`, `GatewaySubscriptionLedger.ts` and pooled connection | Client fixture requires opcode 14 with `{subscriptions:{id:{active:true,sync:true}}}`; READY drives initial state |
 
 Gateway client metadata describes the Rust executable truthfully while retaining
@@ -154,3 +155,77 @@ servers. They do not send local files to an external instance. Remaining upload
 work includes desktop/native interoperability, complete media preprocessing and
 privacy/preupload UI parity, and broader rich-message composition; this transport
 contract alone does not close those areas.
+
+## Search, pins and history transport
+
+`search_messages(params)` posts the already-normalized API JSON to
+`/search/messages`. The caller owns query parsing and merges the source defaults
+(`hits_per_page:25`, `page:1`), context, scope, sort and mature-content policy.
+The protocol neither remaps camelCase names nor adds missing filter fields.
+`SearchUtils.ts:195–235,474–520` sends the context channel/guild when present;
+a nonempty channel filter is retained as `channel_id` and also sent as
+`channel_ids`. Undefined fields are omitted while false and empty arrays remain.
+
+`SearchResponse` preserves HTTP status, unmodified JSON and the response retry
+hint. It retains `channels`, `threads` and `members` for controller ingestion.
+Indexing is exactly `body.indexing === true`, independent of status: both 200 and
+202 are accepted. A 202 response without the body flag is not automatically
+classified as indexing. Missing/nonobject bodies fail. No request automatically
+polls, switches endpoints or falls back to a local search. The source
+`useChannelSearch.ts` polling path repeats page 1 and
+`ChannelSearchPolling.ts` uses 1500 ms times 1.25 to the poll count, capped at
+5000 ms; `channel_search_poll_interval()` exposes that policy without scheduling
+network work. A new query, reset or account change must cancel the controller's
+old task and discard stale results. The source indexing path does not change its
+poll interval based on response retry headers.
+
+`pins_page(channel,before)` GETs `/channels/:channel/messages/pins?limit=25`.
+The optional cursor is the oldest `pinned_at` timestamp; it is not the pinned
+message ID. The raw response is `{items:[{message,pinned_at}],has_more}`. An empty
+body becomes an empty page, matching `ChannelPinsCommands.tsx:33–64`.
+`pin_message` uses bodyless PUT `/channels/:channel/pins/:message` and
+`unpin_message` uses bodyless DELETE of that same route. Neither operation
+optimistically changes the wire response or invents a follow-up route.
+`acknowledge_pins` is an explicit bodyless POST `/channels/:channel/pins/ack`.
+Fetching a page never sends it. The existing `ChannelPinsContent.tsx:94–96`
+mount effect calls `ReadStates.ackPins`, whose
+`applyPinAck` (`ReadStates.ts:914–923`) suppresses the request when the locally
+acknowledged timestamp already equals the latest pin timestamp. The controller
+owns that state and UI visibility policy.
+
+The checked-in server uses `MessagePinService.ts:180–194`'s shared
+`loadPinnableMessage` for both pin and unpin: a guild requires `PIN_MESSAGES`.
+The message context action (`MessageActionUtils.tsx:239–241`) matches it. The
+existing pins-list UI's `MANAGE_MESSAGES` unpin visibility predicate differs;
+that UI predicate does not authorize the server operation. Protocol calls retain
+normal server permission errors rather than treating the UI predicate as success.
+
+`messages_page(channel,before,after,around,limit)` GETs the existing messages
+route with each supplied cursor and the exact requested limit. Absent cursor
+values are omitted; limits are not silently clamped. The server schema accepts
+1–100 and defaults to 50; the source native navigation caller should normally
+request 50 (`MAX_MESSAGES_PER_CHANNEL`). An empty successful body is an empty
+array. This is a transport page, not a declaration that history is contiguous:
+the controller owns jump/return context, edge detection and page merging.
+
+`MessageCommands.tsx:269–282` explicitly asks for two retries. This means up to
+three requests, with the exact `RestTransport.ts:47,1019–1025` retryable status
+set: 502, 504, 507, 522, 523, 524, 598, 599, plus network failures. Delays start at
+1000 then 2000 ms, with 25 percent jitter. Generic 500/503 and strict 429 do not
+retry. Search, pin fetches and mutations retain the default zero retries.
+429 hints follow the existing transport's unit convention:
+`recordPacing` (`RestTransport.ts:640–655`) treats positive
+`X-RateLimit-Reset-After` as milliseconds and prioritizes it over `Retry-After`
+seconds or HTTP date. Hints are exposed/surfaced, not an implicit indexing delay.
+The complete shared REST pacing cache and auto-retry modes remain separate work.
+The browser transport also waits for `navigator.onLine` when retries are enabled;
+native has no equivalent connectivity gate yet and performs the finite HTTP
+attempts directly. It does not invent an OS-online heuristic.
+
+These requests preserve existing first-party headers and discovered webapp
+Origin rules (GET omits Origin; mutations/search include it). Scoped clients
+retain the source's zero overall timeout; responses are bounded by the native
+16 MiB reader, and dropping the task cancels request/body reads and history
+retry delays. Fixtures verify actual loopback requests, finite retry exhaustion,
+status/body preservation and cancellation of a stalled search response. Tests
+use synthetic messages and never mutate a production pin.
