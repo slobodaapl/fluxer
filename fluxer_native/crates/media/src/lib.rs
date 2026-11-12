@@ -331,6 +331,7 @@ impl MediaEngine {
             )
             .await
         {
+            let _ = capture.stop();
             drop(capture);
             self.output.stop();
             let _ = room.close().await;
@@ -533,7 +534,7 @@ impl MediaEngine {
                             mic.disable();
                         }
                         if let Some(capture) = &capture_control {
-                            capture.stop();
+                            let _ = capture.stop();
                         }
                         if let Ok(mut m) = mixer.lock() {
                             m.clear();
@@ -739,7 +740,7 @@ impl MediaEngine {
                 mic.disable();
             }
             if let Some(capture) = &capture_control {
-                capture.stop();
+                let _ = capture.stop();
             }
             if let Ok(mut m) = mixer.lock() {
                 m.clear();
@@ -796,20 +797,22 @@ impl MediaEngine {
         self.apply_microphone_state()
     }
     fn apply_microphone_state(&self) -> Result<()> {
+        let blocked = self.muted || self.deafened;
         if let Ok(mut controls) = self.input_controls.lock() {
-            controls.blocked = self.muted || self.deafened;
+            controls.blocked = blocked;
+        }
+        // Close publication before waiting for physical device teardown, so
+        // previously queued frames cannot escape during mute/deafen.
+        if blocked && let Some(mic) = &self.microphone {
+            mic.mute();
+            mic.disable();
         }
         if let Some(capture) = &self.input_capture {
-            capture.set_enabled(!self.muted && !self.deafened)?;
+            capture.set_enabled(!blocked)?;
         }
-        if let Some(mic) = &self.microphone {
-            if self.muted || self.deafened {
-                mic.mute();
-                mic.disable();
-            } else {
-                mic.enable();
-                mic.unmute();
-            }
+        if !blocked && let Some(mic) = &self.microphone {
+            mic.enable();
+            mic.unmute();
         }
         Ok(())
     }
@@ -890,13 +893,20 @@ impl MediaEngine {
         Ok(rx)
     }
     pub fn stop_microphone_test(&mut self) -> Result<()> {
-        let mut controls = self
-            .input_controls
-            .lock()
-            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?;
-        if controls.testing {
-            controls.testing = false;
-            self.input_capture.take();
+        let testing = {
+            let mut controls = self
+                .input_controls
+                .lock()
+                .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?;
+            let testing = controls.testing;
+            if testing {
+                controls.testing = false;
+                controls.blocked = true;
+            }
+            testing
+        };
+        if testing && let Some(capture) = self.input_capture.take() {
+            capture.stop()?;
         }
         Ok(())
     }
@@ -1089,7 +1099,18 @@ impl MediaEngine {
             registry.clear_publications();
         }
         self.stop.store(true, Ordering::Release);
-        self.input_capture.take();
+        if let Ok(mut controls) = self.input_controls.lock() {
+            controls.blocked = true;
+        }
+        if let Some(mic) = self.microphone.take() {
+            mic.mute();
+            mic.disable();
+        }
+        let audio_result = if let Some(capture) = self.input_capture.take() {
+            capture.stop()
+        } else {
+            Ok(())
+        };
         self.output.stop();
         if let Ok(mut controls) = self.input_controls.lock() {
             controls.testing = false;
@@ -1113,10 +1134,6 @@ impl MediaEngine {
             task.abort();
             let _ = task.await;
         }
-        if let Some(mic) = self.microphone.take() {
-            mic.mute();
-            mic.disable();
-        }
         if let Some(task) = self.room_task.take() {
             task.abort();
         }
@@ -1139,7 +1156,7 @@ impl MediaEngine {
         if let Some(tx) = self.events.take() {
             let _ = tx.try_send(MediaEvent::Disconnected);
         }
-        room_result
+        audio_result.and(room_result)
     }
 }
 
