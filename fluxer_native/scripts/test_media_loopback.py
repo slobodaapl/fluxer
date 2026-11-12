@@ -7,6 +7,8 @@ The default test uses no account, microphone, display, or real user media.
 microphone audio is never published or saved.
 --microphone-pipeline publishes only its explicitly selected synthetic virtual
 source; use test_microphone_capture.py to create and clean up that source.
+--shared-audio-capture publishes only an isolated synthetic playback process;
+use test_shared_audio_capture.py to create and clean up its virtual sinks.
 """
 import argparse
 import base64
@@ -30,6 +32,8 @@ mode.add_argument('--output-pipeline', action='store_true',
                   help='Exercise decoded playback to isolated sinks; use test_output_routing.py --media.')
 mode.add_argument('--screen-watch', action='store_true',
                   help='Exercise explicit remote screen viewing; use test_output_routing.py --screen-watch.')
+mode.add_argument('--shared-audio-capture', action='store_true',
+                  help='Exercise actual isolated application-audio capture; use test_shared_audio_capture.py.')
 args = parser.parse_args()
 env = os.environ.copy()
 env.setdefault('FLUXER_MEDIA_TEST_URL', 'ws://127.0.0.1:7880')
@@ -48,12 +52,12 @@ def token(identity):
 env['FLUXER_MEDIA_TEST_TOKEN_A'] = token('publisher')
 env['FLUXER_MEDIA_TEST_TOKEN_B'] = token('receiver')
 command = ['cargo', 'test', '--manifest-path', str(native/'Cargo.toml'), '-p',
-           'fluxer-media', '--test', 'screen_watch' if args.screen_watch else 'output_pipeline' if args.output_pipeline else 'microphone_pipeline' if args.microphone_pipeline else 'audio_lifecycle' if args.audio_lifecycle else 'loopback',
+           'fluxer-media', '--test', 'shared_audio_capture' if args.shared_audio_capture else 'screen_watch' if args.screen_watch else 'output_pipeline' if args.output_pipeline else 'microphone_pipeline' if args.microphone_pipeline else 'audio_lifecycle' if args.audio_lifecycle else 'loopback',
            '--', '--ignored']
-if args.audio_lifecycle or args.microphone_pipeline or args.output_pipeline or args.screen_watch:
+if args.audio_lifecycle or args.microphone_pipeline or args.output_pipeline or args.screen_watch or args.shared_audio_capture:
     # PlatformAudio owns process-wide routing; hardware checks must be serial.
     command.append('--test-threads=1')
-if args.output_pipeline or args.screen_watch:
+if args.output_pipeline or args.screen_watch or args.shared_audio_capture:
     command.append('--nocapture')
 result = subprocess.run(command, env=env)
 raise SystemExit(result.returncode)
