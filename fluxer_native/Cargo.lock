@@ -2118,6 +2118,7 @@ dependencies = [
 name = "fluxer-media"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "cpal",
  "fluxer-system-audio",
  "futures-util",
