@@ -15,6 +15,7 @@ pub(super) struct AttachmentUi {
     pub limits: BTreeMap<Snowflake, Limits>,
     previews: RefCell<PreviewCache>,
     pub fixture: bool,
+    fixture_started: bool,
     pub cancelling: BTreeSet<Snowflake>,
 }
 impl AttachmentUi {
@@ -24,6 +25,7 @@ impl AttachmentUi {
             limits: BTreeMap::new(),
             previews: RefCell::new(PreviewCache::default()),
             fixture: false,
+            fixture_started: false,
             cancelling: BTreeSet::new(),
         }
     }
@@ -605,8 +607,15 @@ impl Fluxer {
         );
     }
     pub(super) fn install_attachment_fixture(&mut self, cx: &mut Context<Self>) {
+        if !self.demo {
+            return;
+        }
         self.attachments.fixture = true;
-        if let Some(channel_id) = self.state.selected_channel {
+        if let Some(channel_id) = claim_fixture_seed(
+            &mut self.attachments.fixture_started,
+            self.state.current_user.is_some(),
+            self.state.selected_channel,
+        ) {
             let bytes = Arc::new(
                 include_bytes!("../../../../fluxer_app/src/media/images/avatars/0.png").to_vec(),
             );
@@ -630,6 +639,18 @@ impl Fluxer {
             }
         }
     }
+}
+fn claim_fixture_seed(
+    started: &mut bool,
+    has_user: bool,
+    channel: Option<Snowflake>,
+) -> Option<Snowflake> {
+    if *started || !has_user {
+        return None;
+    }
+    let channel = channel?;
+    *started = true;
+    Some(channel)
 }
 fn safe_progress(value: f32) -> f32 {
     if value.is_finite() {
@@ -700,10 +721,30 @@ fn complete_pending(
 
 #[cfg(test)]
 mod tests {
-    use super::{PreviewCache, complete_pending, sent_draft_can_clear};
+    use super::{PreviewCache, claim_fixture_seed, complete_pending, sent_draft_can_clear};
     use fluxer_client::AttachmentPreview;
     use fluxer_core::Snowflake;
     use std::{collections::BTreeMap, sync::Arc};
+    #[test]
+    fn attachment_fixture_waits_for_ready_state_and_seeds_only_once() {
+        let mut started = false;
+        assert_eq!(claim_fixture_seed(&mut started, false, None), None); // Demo before State.
+        assert_eq!(claim_fixture_seed(&mut started, true, None), None);
+        assert!(!started);
+        assert_eq!(
+            claim_fixture_seed(&mut started, true, Some(Snowflake(11))),
+            Some(Snowflake(11))
+        );
+        assert!(started);
+        assert_eq!(
+            claim_fixture_seed(&mut started, true, Some(Snowflake(11))),
+            None
+        );
+        assert_eq!(
+            claim_fixture_seed(&mut started, true, Some(Snowflake(22))),
+            None
+        );
+    }
     #[test]
     fn successful_send_preserves_newly_typed_text_and_other_channel_drafts() {
         assert!(sent_draft_can_clear(
