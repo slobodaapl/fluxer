@@ -12,18 +12,18 @@ not individual types or controls.
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
 | GPUI | Executable builds/links; Wayland demo visually verified; 7 multiline/Unicode/IME tests pass | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
-| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 30 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
+| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 33 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 30 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, stream viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 33 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-163 tests. The opt-in LiveKit test verifies explicit microphone/screen
-subscription and screen unwatch while fresh microphone audio continues. The
-current run times out restoring the microphone immediately after deafen: the
-SDK's local unsubscribe event precedes wire completion, and its asynchronous
-subscription requests are not ordered. This is an open SDK compatibility gap;
-the complete synthetic test is not currently passing. The native lockfile is
-committed separately from the server workspace lockfile.
+169 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+screen unwatch while fresh microphone audio continues and microphone restoration
+after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
+explicit unsubscribe, restores it through normal renderer/decryption hooks and
+orders SFU subscription requests. See `compat/livekit/FLUXER_PATCHES.md` for the
+source-backed delta. The native lockfile is committed separately from the server
+workspace lockfile.
 
 The microphone path now captures physical PCM directly. The previous WebRTC
 Device-track tap never delivered PCM because its source implements `AddSink` as
@@ -75,8 +75,11 @@ system/application audio sharing. Screen selection
 includes frame-rate and resolution choices. Live behavior remains subject to the
 acceptance checks above; a button or transport test does not establish parity.
 
-Input/output devices, input mode, display/window source, share frame rate,
-resolution and shared-audio source now use one compact dropdown component.
+Input/output devices, input mode, share frame rate, resolution and shared-audio
+source now use one compact dropdown component. Wayland/macOS screen sharing has
+a direct button opening the system display/window picker, after quality choices;
+viewing or refreshing the sharing pane does not construct a capturer or open a
+permission dialog. Platforms with enumerated native sources retain that picker.
 Popups are bounded, scrollable and fitted to the window; arrows, Home/End,
 type-ahead, Enter, Escape and Tab support keyboard selection. Device refresh
 preserves exact IDs, including unavailable selections, without switching inputs.
@@ -84,6 +87,21 @@ Sharing starts through an explicit action after choosing its source. Offline
 Wayland preview verified layout, Enter selection/dismissal, Escape, Tab and
 Home/End navigation; strict checks cover the compiled UI. Ctrl/Cmd+, opens audio
 settings. Complete accessibility and platform UI parity remain pending.
+
+Live watch availability follows the joined channel's gateway `self_stream`
+roster before SFU publication metadata arrives, matching the existing client.
+Participant cards expose Watch/Stop and gateway display names; viewer keys are
+sent for explicit watch intent. Temporary SDK metadata loss does not cancel a
+gateway-live watch; authoritative stop/leave/move does. Another connection on
+the current account cannot replace the local connection binding. Subscription
+failures surface visibly, and stopping a local renderer releases its displayed
+frame without waiting for the SDK unsubscribe event.
+Actual MediaEngine screen-viewing fixtures pass both unencrypted and shared-key
+encrypted calls: no automatic video delivery, explicit watch, stop, same-track
+rewatch with changed source pixels, replacement publication and pending watch
+before metadata. These fixtures use synthetic video and an isolated output,
+without microphone or screen capture. Production interoperability remains an
+acceptance gate.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

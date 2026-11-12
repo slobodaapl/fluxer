@@ -70,6 +70,7 @@ python3 fluxer_native/scripts/test_media_loopback.py --audio-lifecycle
 python3 fluxer_native/scripts/test_microphone_capture.py
 python3 fluxer_native/scripts/test_output_routing.py
 python3 fluxer_native/scripts/test_output_routing.py --media
+python3 fluxer_native/scripts/test_output_routing.py --screen-watch
 ```
 
 Unit tests cover actual SDK track PCM for input gain/PTT, arbitrary callback
@@ -83,3 +84,9 @@ actual graph links. Its media mode decodes synthetic LiveKit audio through the
 real mixer/output, verifies gain and participant mute, switches sinks during the
 call, and checks teardown silence. No default devices or other application
 routes are changed; all temporary sinks are removed after the run.
+The screen-watch mode exercises the actual MediaEngine with synthetic video,
+an isolated output and a muted microphone. Both plain and encrypted calls verify
+explicit watch, local renderer release, fresh pixels after rewatch, republish and
+watch intent before publication metadata. Wayland/macOS source discovery returns
+an inert system-picker descriptor; only the explicit picker button starts
+capture/consent. X11/Windows retain enumerated native source selection.

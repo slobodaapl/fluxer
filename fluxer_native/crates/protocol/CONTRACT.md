@@ -50,14 +50,18 @@ browser or invent an Electron version.
   screen codec negotiation messages and camera demand remain open.
 - Rust LiveKit's publish API lacks the existing JS client's `forceStereo` option;
   matching stereo PCM does not alone establish matching SDP signaling.
-- Rapid microphone deafen/undeafen can fail to restore the remote track in the
-  Rust SDK. Its `RemoteTrackPublication::set_subscribed(false)` clears the local
-  track before signaling completes, while `RemoteParticipant::add_publication`
-  dispatches updates through independent spawned tasks. The desktop JS SDK
-  retains the track. The local synthetic test reproduces the missing restore
-  event at `media/tests/loopback.rs`'s final microphone resubscription. Resolving
-  this needs ordered SDK signaling and correct track reuse; sleeps in the test
-  would not establish parity.
+- Stream availability now follows gateway `self_stream` in the joined channel,
+  matching `useVoiceCallTracksAndLayout.ts`, before SFU metadata arrives. Native
+  watch intent immediately projects the existing `viewer_stream_keys`; temporary
+  metadata loss cannot revoke an authoritative gateway-live watch.
+- The pinned Rust SDK now has a local compatibility patch for receiver reuse and
+  ordered subscription signaling. Explicit unsubscribe retains the RTC handle
+  privately; resubscribe restores normal SDK renderer/E2EE hooks, and final
+  unpublication clears the handle. This fixes the reproduced screen-rewatch and
+  microphone-deafen restoration failures. The complete raw SDK loopback and
+  actual MediaEngine plain/encrypted screen fixtures pass without retry sleeps.
+  See `compat/livekit/FLUXER_PATCHES.md`; full region/publication migration remains
+  a separate interoperability gate.
 - Native capture/device routing, codec settings and E2EE need two-client
   interoperability checks against the existing desktop client. Synthetic LiveKit
   transport alone cannot verify Fluxer call parity.

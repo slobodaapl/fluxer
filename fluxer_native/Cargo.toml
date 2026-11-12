@@ -22,6 +22,5 @@ fluxer-client = { path = "crates/client" }
 [patch.crates-io]
 xattr = { path = "compat/xattr" }
 
-
 # Keep RTC handles through explicit unsubscribe and preserve ordered SFU demand.
 livekit = { path = "compat/livekit" }

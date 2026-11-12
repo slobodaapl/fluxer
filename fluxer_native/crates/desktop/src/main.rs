@@ -1606,9 +1606,21 @@ impl Fluxer {
                                 let name = self
                                     .participants
                                     .get(identity)
-                                    .map(|(name, _)| name.as_str())
+                                    .map(|(name, _)| name.clone())
                                     .filter(|name| !name.is_empty())
-                                    .unwrap_or(identity);
+                                    .or_else(|| {
+                                        self.state.voice.channel_id.and_then(|channel| {
+                                            self.state
+                                                .voice_participants(channel)
+                                                .into_iter()
+                                                .find(|participant| {
+                                                    participant.livekit_identity.as_ref()
+                                                        == Some(identity)
+                                                })
+                                                .map(|participant| participant.display_name)
+                                        })
+                                    })
+                                    .unwrap_or_else(|| identity.clone());
                                 let identity = identity.clone();
                                 button(
                                     ("watch-stream", index),

@@ -28,6 +28,8 @@ mode.add_argument('--microphone-pipeline', action='store_true',
                   help='Exercise the explicitly selected synthetic microphone; use test_microphone_capture.py.')
 mode.add_argument('--output-pipeline', action='store_true',
                   help='Exercise decoded playback to isolated sinks; use test_output_routing.py --media.')
+mode.add_argument('--screen-watch', action='store_true',
+                  help='Exercise explicit remote screen viewing; use test_output_routing.py --screen-watch.')
 args = parser.parse_args()
 env = os.environ.copy()
 env.setdefault('FLUXER_MEDIA_TEST_URL', 'ws://127.0.0.1:7880')
@@ -46,12 +48,12 @@ def token(identity):
 env['FLUXER_MEDIA_TEST_TOKEN_A'] = token('publisher')
 env['FLUXER_MEDIA_TEST_TOKEN_B'] = token('receiver')
 command = ['cargo', 'test', '--manifest-path', str(native/'Cargo.toml'), '-p',
-           'fluxer-media', '--test', 'output_pipeline' if args.output_pipeline else 'microphone_pipeline' if args.microphone_pipeline else 'audio_lifecycle' if args.audio_lifecycle else 'loopback',
+           'fluxer-media', '--test', 'screen_watch' if args.screen_watch else 'output_pipeline' if args.output_pipeline else 'microphone_pipeline' if args.microphone_pipeline else 'audio_lifecycle' if args.audio_lifecycle else 'loopback',
            '--', '--ignored']
-if args.audio_lifecycle or args.microphone_pipeline or args.output_pipeline:
+if args.audio_lifecycle or args.microphone_pipeline or args.output_pipeline or args.screen_watch:
     # PlatformAudio owns process-wide routing; hardware checks must be serial.
     command.append('--test-threads=1')
-if args.output_pipeline:
+if args.output_pipeline or args.screen_watch:
     command.append('--nocapture')
 result = subprocess.run(command, env=env)
 raise SystemExit(result.returncode)

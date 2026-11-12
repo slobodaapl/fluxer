@@ -52,6 +52,12 @@ controller synchronizes the corresponding viewer_stream_keys on all voice state
 updates and clears subscriptions on leave. Mesh calls fail explicitly before
 capture because the native mesh backend is still unimplemented.
 
+Watch controls are advertised from the joined channel's gateway `self_stream`
+roster, including streams whose SFU publication metadata has not arrived yet.
+Transient metadata loss cannot revoke a gateway-live watch; an authoritative
+stream stop, move or leave removes availability and viewer keys. The local
+connection is excluded while the same account's other devices remain watchable.
+
 Cold restore follows AuthSessionRestorer: refresh the saved instance authority,
 fall back to its pinned snapshot when discovery is unreachable, and IDENTIFY for
 full READY. It does not GET /users/@me or RESUME without a hydrated gateway cache.

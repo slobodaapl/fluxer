@@ -81,3 +81,6 @@ system audio shares source with `fluxer_desktop/native/linux-audio-capture`,
 avoiding a separate, divergent feedback-routing implementation. The GPUI
 0.2.2 dependency graph includes an obsolete xattr dependency; `compat/xattr`
 forwards that API to maintained xattr to support current Linux libc.
+The pinned LiveKit Rust dependency also has a workspace-local
+[compatibility patch](compat/livekit/FLUXER_PATCHES.md) for RTC receiver reuse,
+normal decryption-hook restoration and ordered subscription signaling.

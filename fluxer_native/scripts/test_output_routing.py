@@ -232,7 +232,9 @@ def build_probe(native, env):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--media", action="store_true", help="Run encoded remote audio through MediaEngine's mixer/output")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--media", action="store_true", help="Run encoded remote audio through MediaEngine's mixer/output")
+    mode.add_argument("--screen-watch", action="store_true", help="Run remote screen viewing with a muted microphone and isolated output")
     parser.add_argument("--self-test", action="store_true", help="Run pure fixture tests without accessing audio services")
     args = parser.parse_args()
     if args.self_test:
@@ -244,8 +246,9 @@ def main():
     native = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env.setdefault("CARGO_INCREMENTAL", "0")
-    command = ([sys.executable, str(native / "scripts" / "test_media_loopback.py"), "--output-pipeline"]
-               if args.media else build_probe(native, env))
+    command = ([sys.executable, str(native / "scripts" / "test_media_loopback.py"),
+                "--screen-watch" if args.screen_watch else "--output-pipeline"]
+               if args.media or args.screen_watch else build_probe(native, env))
     marker = uuid.uuid4().hex
     sinks = [f"{PREFIX}{marker}-{suffix}" for suffix in ("a", "b")]
     baseline = {int(entry["index"]) for entry in module_inventory()}
@@ -265,6 +268,12 @@ def main():
             created.append(module_id)
         observed = [wait_for_sink(sink) for sink in sinks]
         env["FLUXER_OUTPUT_TEST_A"], env["FLUXER_OUTPUT_TEST_B"] = [f"output:pipewire:{node}" for node in observed]
+        if args.screen_watch:
+            env["FLUXER_MEDIA_SCREEN_TEST_OUTPUT"] = env["FLUXER_OUTPUT_TEST_A"]
+            process = subprocess.Popen(command, env=env, start_new_session=True)
+            if process.wait(timeout=120):
+                raise RuntimeError("Remote screen viewing test failed")
+            return 0
         for sink in sinks:
             monitors.append(Monitor(sink))
         process = subprocess.Popen(command, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
