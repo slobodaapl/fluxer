@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Bounded expression popover: cached catalog results and visible grid rows only.
 use super::*;
-use std::{cell::Cell, rc::Rc, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Instant,
+};
 
 pub(super) const COLUMNS: usize = 8;
 const CELL: f32 = 40.;
 
 pub(super) struct EmojiPickerState {
     catalog: Option<chat_helpers::EmojiCatalog>,
+    sprites: RefCell<crate::emoji_sprites::SpriteCache>,
+    high_dpi: Cell<bool>,
     custom_guild: Option<Snowflake>,
     custom_emojis: Option<serde_json::Value>,
     pub choices: Arc<Vec<Arc<chat_helpers::EmojiChoice>>>,
@@ -24,6 +30,8 @@ impl EmojiPickerState {
     pub fn new() -> Self {
         Self {
             catalog: None,
+            sprites: RefCell::new(crate::emoji_sprites::SpriteCache::new()),
+            high_dpi: Cell::new(false),
             custom_guild: None,
             custom_emojis: None,
             choices: Arc::new(Vec::new()),
@@ -136,6 +144,7 @@ impl Fluxer {
     }
 
     pub(super) fn emoji_panel(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        self.emoji_picker.high_dpi.set(window.scale_factor() > 1.);
         let rows = self.emoji_picker.choices.len().div_ceil(COLUMNS);
         let preview = self
             .emoji_picker
@@ -172,7 +181,7 @@ impl Fluxer {
             .child(div().flex_1().min_h_0().flex()
                 .child(div().id("emoji-category-rail").w(px(44.)).flex_shrink_0().overflow_y_scroll().py_1().flex().flex_col().items_center().gap_1().bg(rgb(0x1c1925))
                     .children(chat_helpers::categories().into_iter().enumerate().map(|(index, category)| {
-                        button(("emoji-category",index),category_glyph(category)).size(px(34.)).p_0().flex().items_center().justify_center().bg(rgb(0x1c1925)).text_size(px(20.)).line_height(relative(1.))
+                        button_base(("emoji-category",index)).child(self.unicode_art(category_glyph(category),20.,cx)).size(px(34.)).p_0().flex().items_center().justify_center().bg(rgb(0x1c1925)).text_size(px(20.)).line_height(relative(1.))
                             .when(self.emoji_category == category, |view| view.bg(rgb(0x56438b)))
                             .tooltip(move |_, cx| cx.new(|_| PickerTooltip(category_label(category))).into())
                             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -187,7 +196,7 @@ impl Fluxer {
                     .child(div().h(px(30.)).flex_shrink_0().flex().items_center().gap_1()
                         .child(div().mr_1().text_size(px(11.)).text_color(rgb(MUTED)).child("Tone"))
                         .children(["", "🏻", "🏼", "🏽", "🏾", "🏿"].into_iter().enumerate().map(|(index,tone)| {
-                            button(("emoji-tone",index),format!("✋{tone}")).tooltip(move |_, cx| cx.new(|_| PickerTooltip(["Default tone", "Light tone", "Medium light tone", "Medium tone", "Medium dark tone", "Dark tone"][index])).into()).size(px(28.)).p_0().flex().items_center().justify_center().bg(rgb(PANEL)).text_size(px(20.)).font_family(emoji_font()).line_height(relative(1.))
+                            button_base(("emoji-tone",index)).child(self.unicode_art(&format!("✋{tone}"),20.,cx)).tooltip(move |_, cx| cx.new(|_| PickerTooltip(["Default tone", "Light tone", "Medium light tone", "Medium tone", "Medium dark tone", "Dark tone"][index])).into()).size(px(28.)).p_0().flex().items_center().justify_center().bg(rgb(PANEL)).text_size(px(20.)).line_height(relative(1.))
                                 .when(self.emoji_picker.tone.as_deref().unwrap_or("") == tone, |view| view.bg(rgb(0x56438b)))
                                 .on_click(cx.listener(move |this, _, _, cx| { this.emoji_picker.tone = (!tone.is_empty()).then(||tone.to_owned()); this.refresh_emoji_results(cx); }))
                         })))
@@ -203,7 +212,7 @@ impl Fluxer {
                                     let mut tile = div().id(SharedString::from(choice.key.clone())).size(px(CELL)).flex_shrink_0().flex().items_center().justify_center().rounded_md().cursor_pointer().text_size(px(28.)).line_height(relative(1.))
                                         .when(index == this.emoji_index, |view| view.bg(rgb(0x44365e)))
                                         .hover(|style| style.bg(rgb(0x504063)));
-                                    tile = tile.child(this.emoji_art(&choice,28.));
+                                    tile = tile.child(this.emoji_art(&choice,28.,cx));
                                     tile.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                                         if *hovered && this.emoji_picker.hovered != Some(index) { this.emoji_picker.hovered=Some(index); cx.notify(); }
                                     })).on_click(cx.listener(move |this, _, window, cx| this.pick_emoji(&choice,window,cx)))
@@ -212,7 +221,7 @@ impl Fluxer {
                     })).track_scroll(self.emoji_scroll.clone()).flex_1().min_h_0().w_full()))
                     .when(count == 0, |view| view.child(div().flex_1().min_h_0().flex().items_center().justify_center().text_color(rgb(MUTED)).child("No matching emoji")))))
             .child(div().h(px(52.)).flex_shrink_0().border_t_1().border_color(rgb(0x403749)).px_3().flex().items_center().gap_3()
-                .when_some(preview, |view, choice| view.child(self.emoji_art(choice,32.)).child(div().flex_1().min_w_0().flex().flex_col()
+                .when_some(preview, |view, choice| view.child(self.emoji_art(choice,32.,cx)).child(div().flex_1().min_w_0().flex().flex_col()
                     .child(div().text_size(px(13.)).text_ellipsis().child(format!(":{}:",choice.name)))
                     .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(if choice.animated { "Animated community emoji" } else if choice.id.is_some() { "Community emoji" } else { category_label(&choice.category) })))))
             .child(canvas(|_,_,_|{}, move |_,_,_,_| {
@@ -230,7 +239,44 @@ impl Fluxer {
         .into_any_element()
     }
 
-    fn emoji_art(&self, choice: &chat_helpers::EmojiChoice, size: f32) -> AnyElement {
+    fn sprite_image(
+        &self,
+        sprite: chat_helpers::EmojiSprite,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<RenderImage>> {
+        let (image, evicted) = self
+            .emoji_picker
+            .sprites
+            .borrow_mut()
+            .get(sprite, self.emoji_picker.high_dpi.get());
+        if let Some(evicted) = evicted {
+            cx.defer(move |cx| cx.drop_image(evicted, None));
+        }
+        image
+    }
+    fn unicode_art(&self, text: &str, size: f32, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(sprite) = chat_helpers::unicode_sprite(text)
+            && let Some(image) = self.sprite_image(sprite, cx)
+        {
+            img(image)
+                .size(px(size))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element()
+        } else {
+            div()
+                .text_size(px(size))
+                .line_height(relative(1.))
+                .child(text.to_owned())
+                .into_any_element()
+        }
+    }
+
+    fn emoji_art(
+        &self,
+        choice: &chat_helpers::EmojiChoice,
+        size: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(id) = choice.id {
             if let Some(endpoint) = self.media_endpoint.as_deref() {
                 return img(SharedString::from(format!(
@@ -252,13 +298,20 @@ impl Fluxer {
                 .child(choice.name.chars().take(2).collect::<String>())
                 .into_any_element();
         }
+        if let Some(sprite) = choice.sprite
+            && let Some(image) = self.sprite_image(sprite, cx)
+        {
+            return img(image)
+                .size(px(size))
+                .object_fit(ObjectFit::Contain)
+                .into_any_element();
+        }
         div()
             .size(px(size + 4.))
             .flex()
             .items_center()
             .justify_center()
             .text_size(px(size))
-            .font_family(emoji_font())
             .line_height(relative(1.))
             .child(choice.label.clone())
             .into_any_element()
@@ -276,7 +329,7 @@ fn category_glyph(category: &str) -> &'static str {
         "travel" => "🚀",
         "objects" => "💡",
         "symbols" => "♥",
-        "flags" => "⚑",
+        "flags" => "🏁",
         _ => "·",
     }
 }
@@ -343,14 +396,6 @@ fn custom_emoji_snapshot(
             .and_then(|id| state.guilds.get(&id))
             .and_then(|guild| guild.extra.get("emojis")),
     )
-}
-
-fn emoji_font() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "Apple Color Emoji",
-        "windows" => "Segoe UI Emoji",
-        _ => "Noto Color Emoji",
-    }
 }
 
 fn search_category<'a>(query: &str, category: &'a str) -> &'a str {
