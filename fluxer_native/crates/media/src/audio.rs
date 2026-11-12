@@ -121,6 +121,7 @@ pub(crate) struct PlaybackMixer {
     pub phase: f64,
     pub previous: [f32; 2],
     pub next: [f32; 2],
+    render_reference: VecDeque<i16>,
     pub events: Option<tokio::sync::mpsc::Sender<crate::MediaEvent>>,
 }
 impl PlaybackMixer {
@@ -174,7 +175,20 @@ impl PlaybackMixer {
         for sample in &mut out {
             *sample = (*sample * self.master_gain).clamp(-1.0, 1.0);
         }
+        self.render_reference
+            .extend(out.map(|sample| (sample * 32767.0).round() as i16));
+        while self.render_reference.len() > 9600 {
+            self.render_reference.pop_front();
+        }
         out
+    }
+    /// Bounded 48 kHz stereo, after per-user/master gains and mute/deafen.
+    pub fn take_render_reference(&mut self) -> Vec<Vec<i16>> {
+        let mut frames = Vec::new();
+        while self.render_reference.len() >= 960 {
+            frames.push(self.render_reference.drain(..960).collect());
+        }
+        frames
     }
     pub fn render_stereo(&mut self, rate: u32) -> [f32; 2] {
         let step = 48_000.0 / rate.max(1) as f64;
@@ -197,6 +211,7 @@ impl PlaybackMixer {
     }
     pub fn clear(&mut self) {
         self.tracks.clear();
+        self.render_reference.clear();
         self.previous = [0.0; 2];
         self.next = [0.0; 2];
         self.phase = 0.0;
@@ -207,6 +222,33 @@ impl PlaybackMixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn echo_reference_follows_participant_and_output_gains() {
+        let mut mixer = PlaybackMixer::new();
+        mixer.master_gain = 0.5;
+        mixer.add_track("track".into(), "person".into());
+        mixer.participants.insert(
+            "person".into(),
+            ParticipantAudioSettings {
+                gain: 0.5,
+                muted: false,
+            },
+        );
+        mixer.push("track", &vec![16_384; 960], 2);
+        for _ in 0..481 {
+            mixer.render_stereo(48_000);
+        }
+        let frames = mixer.take_render_reference();
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].iter().all(|s| (4095..=4096).contains(s)));
+        mixer.deafened = true;
+        for _ in 0..480 {
+            mixer.render_stereo(48_000);
+        }
+        assert!(mixer.take_render_reference()[0].iter().all(|s| *s == 0));
+        mixer.clear();
+        assert!(mixer.take_render_reference().is_empty());
+    }
     #[test]
     fn input_gain_and_gate_affect_actual_pcm() {
         let mut processor = InputProcessor::default();
