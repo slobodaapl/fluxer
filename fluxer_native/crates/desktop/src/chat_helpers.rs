@@ -187,7 +187,10 @@ fn unicode_index() -> &'static UnicodeIndex {
             for tone in 0..6 {
                 let choice = group.preferred(tone).choice.clone();
                 grids.get_mut("all").expect("all category")[tone].push(choice.clone());
-                grids.get_mut(&group.category).expect("emoji category")[tone].push(choice);
+                grids
+                    .get_mut(&group.base.choice.category)
+                    .expect("emoji category")[tone]
+                    .push(choice);
             }
         }
         UnicodeIndex {
@@ -464,6 +467,229 @@ mod tests {
             emoji_choices(&state, None, "👍🏽", "all")
                 .iter()
                 .any(|emoji| emoji.insert == "👍🏽")
+        );
+    }
+
+    #[test]
+    fn default_grid_has_faces_first_and_one_preferred_tone_per_base() {
+        assert_eq!(
+            categories(),
+            [
+                "all",
+                "community",
+                "people",
+                "nature",
+                "food",
+                "activity",
+                "travel",
+                "objects",
+                "symbols",
+                "flags"
+            ]
+        );
+        let catalog = EmojiCatalog::new(&ClientState::default(), None);
+        let base = catalog.search("", "all");
+        assert_eq!(base.first().unwrap().insert, "😀");
+        assert_eq!(base.first().unwrap().name, "grinning");
+        assert_eq!(base.first().unwrap().category, "people");
+        assert!(!base.iter().any(|choice| choice.insert == "👍🏽"));
+        assert_eq!(
+            base.iter()
+                .filter(|choice| choice.aliases.iter().any(|name| name == "thumbsup"))
+                .count(),
+            1
+        );
+        let toned = catalog.search_with_tone("", "all", Some("🏽"));
+        assert_eq!(toned.len(), base.len());
+        let thumb = toned
+            .iter()
+            .find(|choice| choice.name == "thumbsup_tone3")
+            .unwrap();
+        assert_eq!(thumb.insert, "👍🏽");
+        assert_eq!(thumb.reaction, "👍🏽");
+        assert!(thumb.aliases.iter().any(|alias| alias == "+1"));
+        assert!(thumb.keywords.iter().any(|keyword| keyword == "good"));
+        assert_eq!(
+            toned.first().unwrap().insert,
+            "😀",
+            "no-tone emoji falls back to base"
+        );
+    }
+
+    #[test]
+    fn preferred_tone_does_not_override_explicit_variant_alias_or_unicode() {
+        let catalog = EmojiCatalog::new(&ClientState::default(), None);
+        assert_eq!(
+            catalog
+                .search_with_tone(" :THUMBSUP: ", "people", Some("🏽"))
+                .iter()
+                .map(|c| c.insert.as_str())
+                .collect::<Vec<_>>(),
+            ["👍🏽"]
+        );
+        for query in ["thumbsup_tone1", "👍🏻"] {
+            assert_eq!(
+                catalog
+                    .search_with_tone(query, "people", Some("🏽"))
+                    .iter()
+                    .map(|c| c.insert.as_str())
+                    .collect::<Vec<_>>(),
+                ["👍🏻"]
+            );
+        }
+        assert!(
+            catalog
+                .search("+1", "all")
+                .iter()
+                .any(|choice| choice.insert == "👍🏿")
+        );
+        assert!(
+            catalog
+                .search("good", "people")
+                .iter()
+                .any(|choice| choice.insert == "👍🏽")
+        );
+        assert!(
+            catalog
+                .search_with_tone("", "not-a-category", Some("🏽"))
+                .is_empty()
+        );
+    }
+
+    fn custom_state() -> ClientState {
+        use fluxer_core::{Channel, Guild};
+        let mut state = ClientState::default();
+        for (guild, channel, emojis) in [
+            (
+                1,
+                10,
+                serde_json::json!([
+                    {"id":"42","name":"Party","animated":true,"available":true},
+                    {"id":"43","name":"still","animated":false},
+                    {"id":"44","name":"hidden","available":false},
+                    {"name":"missing_id"},
+                    {"id":45,"name":"numeric_id"},
+                    {"id":"invalid","name":"broken_id"},
+                ]),
+            ),
+            (
+                2,
+                20,
+                serde_json::json!([{"id":"99","name":"other_community"}]),
+            ),
+        ] {
+            state.guilds.insert(
+                guild.into(),
+                Guild {
+                    id: guild.into(),
+                    name: "Community".into(),
+                    extra: BTreeMap::from([("emojis".into(), emojis)]),
+                    ..Guild::default()
+                },
+            );
+            state.channels.insert(
+                channel.into(),
+                Channel {
+                    id: channel.into(),
+                    guild_id: Some(guild.into()),
+                    ..Channel::default()
+                },
+            );
+        }
+        state.channels.insert(
+            30.into(),
+            Channel {
+                id: 30.into(),
+                kind: fluxer_core::ChannelType::Dm,
+                ..Channel::default()
+            },
+        );
+        state
+    }
+
+    #[test]
+    fn custom_availability_and_context_preserve_actual_reaction_and_composer_wire() {
+        let state = custom_state();
+        let catalog = EmojiCatalog::new(&state, Some(10.into()));
+        let choices = catalog.search("", "community");
+        assert_eq!(choices.len(), 2);
+        let party = &catalog.search(" :pArTy: ", "community")[0];
+        assert_eq!(party.id, Some(42.into()));
+        assert_eq!(party.key, "custom:42");
+        assert_eq!(party.name, "Party");
+        assert_eq!(party.category, "community");
+        assert_eq!(party.label, ":Party:");
+        assert!(party.animated);
+        assert_eq!(party.insert, "<a:Party:42>");
+        assert_eq!(party.reaction, "Party:42");
+        assert_eq!(
+            catalog.search("still", "community")[0].insert,
+            "<:still:43>"
+        );
+        assert!(
+            catalog
+                .search("Party", "people")
+                .iter()
+                .all(|choice| choice.id.is_none())
+        );
+        assert!(
+            !catalog
+                .search("", "all")
+                .iter()
+                .any(|choice| choice.id == Some(99.into()))
+        );
+        assert_eq!(
+            EmojiCatalog::new(&state, Some(20.into())).search("", "community")[0].reaction,
+            "other_community:99"
+        );
+        assert!(
+            EmojiCatalog::new(&state, Some(30.into()))
+                .search("", "community")
+                .is_empty()
+        );
+        assert!(
+            EmojiCatalog::new(&state, None)
+                .search("", "community")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_handles_survive_search_navigation_and_new_snapshot_refreshes_availability() {
+        let mut state = custom_state();
+        let catalog = EmojiCatalog::new(&state, Some(10.into()));
+        let first = catalog.search("Party", "community")[0].clone();
+        let again = catalog
+            .search("Party", "all")
+            .into_iter()
+            .find(|choice| choice.id.is_some())
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "search results share choices rather than cloning their fields"
+        );
+        let grin = catalog.search("grinning", "people")[0].clone();
+        let other = EmojiCatalog::new(&state, None).search("grinning", "people")[0].clone();
+        assert!(
+            Arc::ptr_eq(&grin, &other),
+            "Unicode catalog is shared across picker instances"
+        );
+        state
+            .guilds
+            .get_mut(&1.into())
+            .unwrap()
+            .extra
+            .get_mut("emojis")
+            .unwrap()[0]["available"] = serde_json::json!(false);
+        assert_eq!(
+            catalog.search("Party", "community").len(),
+            1,
+            "existing picker snapshot is immutable"
+        );
+        assert!(
+            EmojiCatalog::new(&state, Some(10.into()))
+                .search("Party", "community")
+                .is_empty()
         );
     }
     #[test]
