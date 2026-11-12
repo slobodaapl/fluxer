@@ -10,7 +10,10 @@ pub use error::{Error, Result};
 pub use gateway::{
     Gateway, GatewayCommand, GatewayEvent, ResumeSession, VoiceServerUpdate, VoiceStateUpdate,
 };
-pub use http::{AuthSession, Client, LoginIdentifier, LoginOutcome, SessionToken};
+pub use http::{
+    AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus,
+    HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken,
+};
 pub use instance::Instance;
 pub use reqwest::Method;
 pub use url::Url;

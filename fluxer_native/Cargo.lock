@@ -2130,6 +2130,7 @@ dependencies = [
 name = "fluxer-protocol"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs 5.0.1",
  "fastrand 2.5.0",
  "futures-util",
