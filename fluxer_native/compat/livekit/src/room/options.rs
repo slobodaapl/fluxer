@@ -131,6 +131,8 @@ pub struct TrackPublishOptions {
     // If the encodings aren't set, LiveKit will compute the most appropriate ones
     pub video_encoding: Option<VideoEncoding>,
     pub audio_encoding: Option<AudioEncoding>,
+    /// Explicit stereo publishing hint, matching the JS forceStereo option.
+    pub force_stereo: bool,
     pub video_codec: VideoCodec,
     pub dtx: bool,
     pub red: bool,
@@ -171,6 +173,7 @@ impl Default for TrackPublishOptions {
         Self {
             video_encoding: None,
             audio_encoding: None,
+            force_stereo: false,
             video_codec: VideoCodec::VP8,
             dtx: true,
             red: true,

@@ -48,6 +48,7 @@ use crate::{ChatMessage, E2eeManager, TranscriptionSegment};
 mod dc_sender;
 pub mod lk_runtime;
 mod peer_transport;
+mod opus_stereo;
 mod reconnect_strategy;
 mod rtc_events;
 mod rtc_session;

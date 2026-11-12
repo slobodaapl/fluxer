@@ -67,6 +67,7 @@ impl MicrophonePublishSettings {
     pub fn options(self) -> TrackPublishOptions {
         TrackPublishOptions {
             source: TrackSource::Microphone,
+            force_stereo: self.channels() == 2,
             audio_encoding: Some(AudioEncoding {
                 max_bitrate: self.bitrate,
             }),
@@ -80,6 +81,7 @@ impl MicrophonePublishSettings {
 pub(crate) fn screen_audio_options() -> TrackPublishOptions {
     TrackPublishOptions {
         source: TrackSource::ScreenshareAudio,
+        force_stereo: true,
         audio_encoding: Some(AudioEncoding {
             max_bitrate: 128_000,
         }),
@@ -137,6 +139,12 @@ mod tests {
             1
         );
         let options = stereo.options();
+        assert!(options.force_stereo);
+        assert!(
+            !MicrophonePublishSettings::new(Some(64_000.), false)
+                .options()
+                .force_stereo
+        );
         assert!(!options.dtx);
         assert!(options.red);
         assert_eq!(options.source, TrackSource::Microphone);
@@ -145,6 +153,7 @@ mod tests {
     #[test]
     fn shared_audio_publication_matches_screen_share_options() {
         let options = screen_audio_options();
+        assert!(options.force_stereo);
         assert_eq!(options.audio_encoding.unwrap().max_bitrate, 128_000);
         assert!(!options.dtx);
         assert!(options.red);

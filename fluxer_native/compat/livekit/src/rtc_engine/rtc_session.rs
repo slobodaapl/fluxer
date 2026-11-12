@@ -2025,6 +2025,7 @@ impl SessionInner {
         if let Some(track) = sender.track() {
             let mut pending_tracks = self.pending_tracks.lock();
             pending_tracks.remove(&track.id());
+            self.publisher_pc.set_audio_stereo_track(&track.id(), false);
         }
 
         self.publisher_pc.peer_connection().remove_track(sender)?;
@@ -2053,6 +2054,10 @@ impl SessionInner {
             };
             let is_screen_share = options.source == TrackSource::Screenshare;
             self.publisher_pc.set_max_send_bitrate_bps(ultimate_bps, is_screen_share).await;
+        }
+
+        if track.kind() == TrackKind::Audio {
+            self.publisher_pc.set_audio_stereo_track(&track.rtc_track().id(), options.force_stereo);
         }
 
         let init = RtpTransceiverInit {

@@ -195,6 +195,12 @@ async fn fixture(encrypted: bool) {
     eprintln!(
         "shared_audio_capture: encrypted={encrypted} actual captured tone survives deafen, {baseline:?}"
     );
+    // Distinct runner-owned L440/R880 tones must survive encoding, transport
+    // and decoding as separate channels. Upmixed mono cannot satisfy this.
+    assert!(
+        baseline.left440 > baseline.left880 * 4. && baseline.right880 > baseline.right440 * 4.,
+        "stereo channels collapsed or crossed: {baseline:?}"
+    );
     publisher
         .configure_shared_audio(SharedAudioSettings {
             gain: 0.25,
