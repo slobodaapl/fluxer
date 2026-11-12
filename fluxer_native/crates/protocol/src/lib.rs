@@ -1,1 +1,15 @@
-//! Fluxer REST and gateway protocol.
+//! Native Fluxer REST and gateway transport. Wire responses remain JSON so newly
+//! introduced server fields can be consumed without upgrading this crate.
+mod error;
+mod gateway;
+mod http;
+mod instance;
+
+pub use error::{Error, Result};
+pub use gateway::{
+    Gateway, GatewayCommand, GatewayEvent, ResumeSession, VoiceServerUpdate, VoiceStateUpdate,
+};
+pub use http::{AuthSession, Client, LoginIdentifier, LoginOutcome, SessionToken};
+pub use instance::Instance;
+pub use reqwest::Method;
+pub use url::Url;
