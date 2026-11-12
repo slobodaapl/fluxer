@@ -85,6 +85,9 @@ struct Fluxer {
     controller: Option<Controller>,
     state: ClientState,
     demo: bool,
+    session_restoring: bool,
+    session_restore_failed: bool,
+    session_context_loaded: bool,
     pane: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
@@ -129,6 +132,7 @@ impl Fluxer {
         let controller = Controller::spawn();
         let error = controller.as_ref().err().cloned();
         let controller = controller.ok();
+        let session_restoring = !demo && controller.is_some();
         let instance = cx.new(|cx| TextInput::new("Instance URL", cx));
         instance.update(cx, |v, cx| v.set("https://web.fluxer.app/api".into(), cx));
         let password = cx.new(|cx| {
@@ -136,10 +140,13 @@ impl Fluxer {
             v.secret = true;
             v
         });
-        let view = Self {
+        let mut view = Self {
             controller,
             state: ClientState::default(),
             demo,
+            session_restoring,
+            session_restore_failed: false,
+            session_context_loaded: false,
             pane: Pane::Chat,
             selected_guild: None,
             composer: cx.new(|cx| {
@@ -157,7 +164,11 @@ impl Fluxer {
             last_ip_countdown: 0,
             browser_login: None,
             error,
-            status: "Sign in to your Fluxer instance".into(),
+            status: if session_restoring {
+                "Checking saved session…".into()
+            } else {
+                "Sign in to your Fluxer instance".into()
+            },
             voice_status: "Disconnected".into(),
             devices: DeviceInventory::default(),
             selected_input: None,
@@ -203,8 +214,16 @@ impl Fluxer {
             }
         })
         .detach();
-        if demo && let Some(c) = view.controller.as_ref() {
-            let _ = c.send(Command::Demo);
+        if let Some(controller) = view.controller.as_ref()
+            && let Err(error) = controller.send(if demo {
+                Command::Demo
+            } else {
+                Command::RestoreSession
+            })
+        {
+            view.error = Some(error);
+            view.session_restoring = false;
+            view.session_restore_failed = !demo;
         }
         cx.spawn(async move |entity, cx| {
             loop {
@@ -241,7 +260,15 @@ impl Fluxer {
                     let old = self.state.selected_channel;
                     self.state = *state;
                     self.sharing = self.state.voice.screen_share;
-                    if self.selected_guild.is_none() {
+                    if self.state.current_user.is_none() && self.state.guilds.is_empty() {
+                        // A restore can publish an empty transition before its
+                        // validated snapshot. Preserve its explicit context;
+                        // logout and ordinary session resets clear stale UI.
+                        if !self.session_restoring {
+                            self.selected_guild = None;
+                            self.session_context_loaded = false;
+                        }
+                    } else if self.selected_guild.is_none() && !self.session_context_loaded {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
                     if old != self.state.selected_channel {
@@ -259,12 +286,43 @@ impl Fluxer {
                         self.password.update(cx, |v, cx| v.set(String::new(), cx));
                     }
                 }
+                Event::SessionRestoring(restoring) => {
+                    self.session_restoring = restoring;
+                    if restoring {
+                        self.session_restore_failed = false;
+                        self.mfa_ticket = None;
+                        self.ip_authorization = None;
+                        self.browser_login = None;
+                    }
+                }
+                Event::SessionRestoreFailed => {
+                    self.session_restoring = false;
+                    self.session_restore_failed = true;
+                    self.status = "Saved sign-in is unavailable. Retry or sign in below.".into();
+                }
+                Event::SessionContext {
+                    instance,
+                    selected_guild,
+                } => {
+                    self.instance
+                        .update(cx, |input, cx| input.set(instance, cx));
+                    self.selected_guild = selected_guild;
+                    self.session_context_loaded = true;
+                    self.pane = Pane::Chat;
+                }
                 Event::Error(error) => {
                     self.error = Some(error);
                     self.pending_message = None;
                 }
                 Event::Status(status) => self.status = status,
-                Event::Demo(demo) => self.demo = demo,
+                Event::Demo(demo) => {
+                    self.demo = demo;
+                    if demo {
+                        self.session_restoring = false;
+                        self.session_restore_failed = false;
+                        self.session_context_loaded = false;
+                    }
+                }
                 Event::MfaRequired { ticket, .. } => {
                     self.mfa_ticket = Some(ticket);
                     self.status = "Enter your authenticator code".into();
@@ -452,6 +510,9 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.session_restoring {
+            return;
+        }
         if self.state.current_user.is_none() {
             self.login(cx);
             return;
@@ -489,7 +550,8 @@ impl Fluxer {
 
     fn login(&mut self, cx: &mut Context<Self>) {
         self.error = None;
-        if self.ip_authorization.is_some() || self.browser_login.is_some() {
+        if self.session_restoring || self.ip_authorization.is_some() || self.browser_login.is_some()
+        {
             return;
         }
         if let Some(ticket) = self.mfa_ticket.clone() {
@@ -501,6 +563,9 @@ impl Fluxer {
                 cx,
             );
         } else {
+            self.selected_guild = None;
+            self.session_context_loaded = false;
+            self.session_restore_failed = false;
             self.command(
                 Command::Login {
                     instance: self.instance.read(cx).content.to_string(),
@@ -519,6 +584,55 @@ impl Fluxer {
         );
         self.command(Command::SelectChannel { channel_id: id }, cx);
         self.pane = Pane::Chat;
+    }
+
+    fn restore_session(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        self.session_restoring = true;
+        self.session_restore_failed = false;
+        self.status = "Checking saved session…".into();
+        let result = self
+            .controller
+            .as_ref()
+            .ok_or_else(|| "The native client worker is unavailable".to_owned())
+            .and_then(|controller| controller.send(Command::RestoreSession));
+        if let Err(error) = result {
+            self.error = Some(error);
+            self.session_restoring = false;
+            self.session_restore_failed = true;
+        }
+        cx.notify();
+    }
+
+    fn restoring_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .size_full()
+            .gap_4()
+            .child(
+                div()
+                    .text_color(rgb(ACCENT))
+                    .text_size(px(36.))
+                    .font_weight(FontWeight::BOLD)
+                    .child("fluxer"),
+            )
+            .child(heading("Signing you in…"))
+            .child(muted("Restoring your saved session"))
+            .child(muted(self.status.clone()))
+            .child(
+                button("cancel-restore", "Back to sign in").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.session_restoring = false;
+                        this.session_restore_failed = true;
+                        this.status = "Automatic sign-in canceled".into();
+                        this.command(Command::CancelLogin, cx);
+                    },
+                )),
+            )
+            .into_any_element()
     }
 
     fn login_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -631,6 +745,12 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_3()
+                    .when(self.session_restore_failed, |view| {
+                        view.child(
+                            button("retry-session-restore", "Retry saved sign-in")
+                                .on_click(cx.listener(|this, _, _, cx| this.restore_session(cx))),
+                        )
+                    })
                     .child(self.instance.clone())
                     .child(self.identifier.clone())
                     .child(self.password.clone())
@@ -644,6 +764,9 @@ impl Fluxer {
                         button("browser-login", "Sign in with browser").on_click(cx.listener(
                             |this, _, _, cx| {
                                 this.error = None;
+                                this.selected_guild = None;
+                                this.session_context_loaded = false;
+                                this.session_restore_failed = false;
                                 this.command(
                                     Command::BrowserLogin {
                                         instance: this.instance.read(cx).content.to_string(),
@@ -812,6 +935,9 @@ impl Fluxer {
                         button("logout", "Sign out").on_click(cx.listener(|this, _, _, cx| {
                             this.command(Command::Logout, cx);
                             this.selected_guild = None;
+                            this.session_context_loaded = false;
+                            this.session_restore_failed = false;
+                            this.session_restoring = false;
                             this.mfa_ticket = None;
                             this.pending_message = None;
                             this.editing = None;
@@ -1617,7 +1743,9 @@ impl Fluxer {
 
 impl Render for Fluxer {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if self.state.current_user.is_none() {
+        let content = if self.session_restoring {
+            self.restoring_view(cx)
+        } else if self.state.current_user.is_none() {
             self.login_view(cx)
         } else {
             let body = match self.pane {
