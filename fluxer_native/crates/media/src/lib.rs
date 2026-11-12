@@ -189,10 +189,15 @@ impl MediaEngine {
     }
 
     pub fn devices(&self) -> DeviceInventory {
-        DeviceInventory {
-            inputs: microphone_device::devices().unwrap_or_default(),
-            outputs: playback::devices(),
-        }
+        self.try_devices().unwrap_or_default()
+    }
+
+    /// Enumerate current logical devices without hiding backend failures.
+    pub fn try_devices(&self) -> Result<DeviceInventory> {
+        Ok(DeviceInventory {
+            inputs: microphone_device::devices()?,
+            outputs: playback::devices()?,
+        })
     }
 
     pub fn set_input_device(&self, id: &str) -> Result<()> {

@@ -1,7 +1,7 @@
 # Native media and audio management
 
 The media engine owns LiveKit transport, native screen capture, application/system
-share audio, a processed microphone pipeline, and a CPAL speaker mixer. Device
+share audio, a processed microphone pipeline, and a native speaker mixer. Device
 handles stay off the GPUI rendering thread. Physical microphone capture starts
 only for an unmuted call or an explicit microphone test. Mute/deafen, leave,
 failed join, test stop, and drop release capture.
@@ -26,13 +26,20 @@ Audio controls process actual samples:
   successful publication/device initialization as evidence of capture.
 - Remote streams feed a bounded 48 kHz stereo mixer. Master output gain,
   per-participant gain/local mute, and deafen affect speaker samples. Native
-  direct speaker playout is disabled to prevent double playback. CPAL resamples
-  the mixer to its output rate and converts to f32/i16/u16. Mono output is
-  downmixed; extra surround channels remain silent. The standalone microphone
+  direct speaker playout is disabled to prevent double playback. Linux uses a
+  dedicated PipeWire output stream at 48 kHz stereo f32. The picker lists logical
+  sinks such as GoXLR Chat/Game/Music rather than their shared ALSA card; explicit
+  `output:pipewire:<node.name>` choices target that exact current sink, while
+  `output:default` follows system routing policy. Other platforms use CPAL to
+  resample and convert to f32/i16/u16; mono is downmixed and extra surround
+  channels remain silent. The standalone microphone
   APM receives the post-gain/mute mixer as its echo-cancellation reference.
 - Input selection releases old capture before opening its replacement. A stale
   explicit identifier fails instead of silently choosing another source. Output
-  selection replaces the CPAL stream after its replacement opens. Device errors
+  selection validates the current identifier, releases and joins the old output,
+  then opens its replacement. Stale explicit Linux sink IDs fail without ALSA
+  or default-device fallback. Stop acknowledges completed output teardown before
+  reconnect starts another stream. Device errors
   surface as media errors; active input with no callbacks for two seconds emits
   an actionable stall error. Silence still produces frames and is not a stall.
 - Microphone test meters local capture only and never publishes, records to
@@ -47,8 +54,10 @@ resampling/mono downmix; physical DAC/acoustic delay is not measured. Real
 headset/speaker echo behavior needs hardware testing. Advanced existing Fluxer
 speaker isolation/effects and global OS push-to-talk hooks are not ported.
 Hot-unplug errors require refreshing/selecting another device; automatic
-preferred-device fallback is pending. CPAL identifiers contain index/name and
-are not stable persistence keys. Linux PipeWire choices use source node names.
+preferred-device fallback is pending. CPAL identifiers on other platforms contain
+index/name and are not stable persistence keys. Linux PipeWire choices use exact
+source/sink node names. `try_devices()` reports enumeration failures; `devices()`
+retains the legacy best-effort interface for probes.
 
 Validation:
 
