@@ -1339,7 +1339,7 @@ mod message_reference_tests {
         reference.guild_id = Some(10.into());
         assert_eq!(
             message_body("", None, Some(&reference), false),
-            json!({"content":"","message_reference":{"channel_id":"100","message_id":"200","guild_id":"10","type":1}})
+            json!({"message_reference":{"channel_id":"100","message_id":"200","guild_id":"10","type":1}})
         );
         assert_eq!(
             message_body("hello", None, None, false),
