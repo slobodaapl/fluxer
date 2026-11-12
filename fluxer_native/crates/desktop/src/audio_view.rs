@@ -492,7 +492,7 @@ impl Fluxer {
                     ("agc","Automatic gain control","Keep your microphone at a consistent listening level.",self.dsp.auto_gain_control),
                 ].into_iter().map(|(id,label,description,enabled)|{
                     audio_setting_row(label,description).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{
-                        match id{"aec"=>this.dsp.echo_cancellation=!this.dsp.echo_cancellation,"ns"=>this.dsp.noise_suppression=!this.dsp.noise_suppression,_=>this.dsp.auto_gain_control=!this.dsp.auto_gain_control}
+                        match id{"aec"=>this.dsp.echo_cancellation= !this.dsp.echo_cancellation,"ns"=>this.dsp.noise_suppression= !this.dsp.noise_suppression,_=>this.dsp.auto_gain_control= !this.dsp.auto_gain_control}
                         this.command(Command::SetDsp(this.dsp.clone()),cx);
                     })))
                 })))
@@ -508,13 +508,13 @@ impl Fluxer {
         div().flex().flex_col().gap_5()
             .child(audio_section("Levels")
                 .child(audio_value("Microphone volume",format!("{:.0}%",self.mixer.input_gain*100.)))
-                .child(slider("input-volume",self.mixer.input_gain,0.,2.,0.01,"Microphone volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.input_gain=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
+                .child(slider("input-volume",self.mixer.input_gain,0.,2.,0.01,"Microphone volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.input_gain= *value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
                 .child(audio_value("Output volume",format!("{:.0}%",self.mixer.output_gain*100.)))
-                .child(slider("output-volume",self.mixer.output_gain,0.,2.,0.01,"Output volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.output_gain=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);}))))
+                .child(slider("output-volume",self.mixer.output_gain,0.,2.,0.01,"Output volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.output_gain= *value;this.command(Command::SetMixer(this.mixer.clone()),cx);}))))
             .child(audio_section("Input mode").child(self.mode_picker.clone())
                 .when(mode==InputMode::VoiceActivity,|view|view
                     .child(audio_value("Activation threshold",format!("{:.0} dB",self.mixer.voice_activation_threshold_db)))
-                    .child(slider("activation-threshold",self.mixer.voice_activation_threshold_db,-96.,0.,1.,"Voice activation threshold",cx.listener(|this,value:&f32,_,cx|{this.mixer.voice_activation_threshold_db=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
+                    .child(slider("activation-threshold",self.mixer.voice_activation_threshold_db,-96.,0.,1.,"Voice activation threshold",cx.listener(|this,value:&f32,_,cx|{this.mixer.voice_activation_threshold_db= *value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
                     .child(audio_description("Lower thresholds pick up quieter speech.")))
                 .when(mode==InputMode::PushToTalk,|view|view
                     .child(audio_description("Hold F8 while this window is active, or press and hold below."))
@@ -525,7 +525,7 @@ impl Fluxer {
                 .child(audio_setting_row("Check your input","Uses your selected microphone for a level meter. Audio is not played back.")
                     .child(quiet_button("mic-test",if self.testing_microphone{"Stop test"}else{"Test microphone"})
                         .when(self.testing_microphone,|view|view.text_color(rgb(0xe79a9e)))
-                        .on_click(cx.listener(|this,_,_,cx|{this.testing_microphone=!this.testing_microphone;this.command(if this.testing_microphone{Command::StartMicrophoneTest}else{Command::StopMicrophoneTest},cx);}))))
+                        .on_click(cx.listener(|this,_,_,cx|{this.testing_microphone= !this.testing_microphone;this.command(if this.testing_microphone{Command::StartMicrophoneTest}else{Command::StopMicrophoneTest},cx);}))))
                 .child(audio_meter(self.levels.0))
                 .child(audio_description(format!("Input {:.0}% · Output {:.0}%",self.levels.0*100.,self.levels.1*100.))))
             .when(!self.participants.is_empty(),|view|view.child(audio_section("People in your call").children(self.participants.iter().map(|(identity,(name,settings))|{
@@ -536,8 +536,8 @@ impl Fluxer {
                         .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!("{:.0}%",settings.gain*100.)))
                         .child(icon_button(SharedString::from(format!("participant-mute-{identity}")),if settings.muted{Icon::VolumeOff}else{Icon::Volume},if settings.muted{"Unmute participant for you"}else{"Mute participant for you"})
                             .when(settings.muted,|view|view.text_color(rgb(0xe79a9e)))
-                            .on_click(cx.listener(move|this,_,_,cx|{if let Some((_,settings))=this.participants.get_mut(&mute_id){settings.muted=!settings.muted;let settings=*settings;this.command(Command::SetParticipantAudio{identity:mute_id.clone(),settings},cx);}}))))
-                    .child(slider(SharedString::from(format!("participant-volume-{identity}")),settings.gain,0.,2.,0.01,"Participant volume",cx.listener(move|this,value:&f32,_,cx|{if let Some((_,settings))=this.participants.get_mut(&gain_id){settings.gain=*value;let settings=*settings;this.command(Command::SetParticipantAudio{identity:gain_id.clone(),settings},cx);}})))
+                            .on_click(cx.listener(move|this,_,_,cx|{if let Some((_,settings))=this.participants.get_mut(&mute_id){settings.muted= !settings.muted;let settings= *settings;this.command(Command::SetParticipantAudio{identity:mute_id.clone(),settings},cx);}}))))
+                    .child(slider(SharedString::from(format!("participant-volume-{identity}")),settings.gain,0.,2.,0.01,"Participant volume",cx.listener(move|this,value:&f32,_,cx|{if let Some((_,settings))=this.participants.get_mut(&gain_id){settings.gain= *value;let settings= *settings;this.command(Command::SetParticipantAudio{identity:gain_id.clone(),settings},cx);}})))
             }))))
             .into_any_element()
     }

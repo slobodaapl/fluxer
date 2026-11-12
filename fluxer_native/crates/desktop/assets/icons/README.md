@@ -1,1 +1,2 @@
 Regular-weight Phosphor icons from @phosphor-icons/react 2.1.10, the version pinned by the existing Fluxer client. Extracted from dist/defs; MIT license in LICENSE. Embedded into the native executable.
+Deafen combines the regular Headphones artwork with a diagonal slash, matching the disabled microphone convention.

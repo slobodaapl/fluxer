@@ -15,15 +15,11 @@ pub(super) enum Icon {
     Close,
     Jump,
     Search,
-    Add,
     Attachment,
     File,
     Eye,
     EyeOff,
     Retry,
-    Cancel,
-    Check,
-    Logout,
     Send,
     Mic,
     MicOff,
@@ -42,8 +38,6 @@ pub(super) enum Icon {
     Refresh,
     Stop,
     Home,
-    ChevronDown,
-    ChevronRight,
 }
 impl Icon {
     fn path(self) -> &'static str {
@@ -59,15 +53,11 @@ impl Icon {
             Self::Close => "icons/Close.svg",
             Self::Jump => "icons/Jump.svg",
             Self::Search => "icons/Search.svg",
-            Self::Add => "icons/Add.svg",
             Self::Attachment => "icons/Attachment.svg",
             Self::File => "icons/File.svg",
             Self::Eye => "icons/Eye.svg",
             Self::EyeOff => "icons/EyeOff.svg",
             Self::Retry => "icons/Retry.svg",
-            Self::Cancel => "icons/Cancel.svg",
-            Self::Check => "icons/Check.svg",
-            Self::Logout => "icons/Logout.svg",
             Self::Send => "icons/Send.svg",
             Self::Mic => "icons/Mic.svg",
             Self::MicOff => "icons/MicOff.svg",
@@ -86,8 +76,6 @@ impl Icon {
             Self::Refresh => "icons/Refresh.svg",
             Self::Stop => "icons/Stop.svg",
             Self::Home => "icons/Home.svg",
-            Self::ChevronDown => "icons/ChevronDown.svg",
-            Self::ChevronRight => "icons/ChevronRight.svg",
         }
     }
 }
@@ -121,7 +109,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/Search.svg",
         include_bytes!("../assets/icons/Search.svg"),
     ),
-    ("icons/Add.svg", include_bytes!("../assets/icons/Add.svg")),
     (
         "icons/Attachment.svg",
         include_bytes!("../assets/icons/Attachment.svg"),
@@ -135,18 +122,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "icons/Retry.svg",
         include_bytes!("../assets/icons/Retry.svg"),
-    ),
-    (
-        "icons/Cancel.svg",
-        include_bytes!("../assets/icons/Cancel.svg"),
-    ),
-    (
-        "icons/Check.svg",
-        include_bytes!("../assets/icons/Check.svg"),
-    ),
-    (
-        "icons/Logout.svg",
-        include_bytes!("../assets/icons/Logout.svg"),
     ),
     ("icons/Send.svg", include_bytes!("../assets/icons/Send.svg")),
     ("icons/Mic.svg", include_bytes!("../assets/icons/Mic.svg")),
@@ -202,14 +177,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     ),
     ("icons/Stop.svg", include_bytes!("../assets/icons/Stop.svg")),
     ("icons/Home.svg", include_bytes!("../assets/icons/Home.svg")),
-    (
-        "icons/ChevronDown.svg",
-        include_bytes!("../assets/icons/ChevronDown.svg"),
-    ),
-    (
-        "icons/ChevronRight.svg",
-        include_bytes!("../assets/icons/ChevronRight.svg"),
-    ),
 ];
 pub(super) struct Assets;
 impl AssetSource for Assets {
@@ -228,7 +195,11 @@ impl AssetSource for Assets {
     }
 }
 pub(super) fn icon(kind: Icon, size: f32) -> Svg {
-    svg().path(kind.path()).size(px(size)).flex_shrink_0()
+    svg()
+        .path(kind.path())
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(rgb(MUTED))
 }
 struct ControlTooltip(SharedString);
 impl Render for ControlTooltip {
@@ -236,6 +207,8 @@ impl Render for ControlTooltip {
         div()
             .px_2()
             .py_1()
+            .max_w(px(320.))
+            .whitespace_normal()
             .rounded_md()
             .bg(rgb(0x15121c))
             .text_color(rgb(TEXT))
@@ -263,6 +236,7 @@ pub(super) fn icon_button(
         .border_1()
         .border_color(transparent_black())
         .focusable()
+        .tab_stop(true)
         .hover(|s| s.bg(rgb(0x3b3549)).text_color(rgb(TEXT)))
         .focus(|s| {
             s.opacity(1.)
@@ -288,6 +262,7 @@ pub(super) fn quiet_button(
         .border_1()
         .border_color(transparent_black())
         .focusable()
+        .tab_stop(true)
         .hover(|s| s.bg(rgb(0x3b3549)).text_color(rgb(TEXT)))
         .focus(|s| {
             s.opacity(1.)
@@ -318,6 +293,7 @@ pub(super) fn toggle(
         .border_1()
         .border_color(transparent_black())
         .focusable()
+        .tab_stop(true)
         .focus(|s| s.border_color(rgb(TEXT)))
         .tooltip(move |_, cx| cx.new(|_| ControlTooltip(label.clone())).into())
         .child(div().size(px(16.)).rounded_full().bg(rgb(TEXT)))
@@ -382,6 +358,7 @@ pub(super) fn slider(
         .border_1()
         .border_color(transparent_black())
         .focusable()
+        .tab_stop(true)
         .rounded_md()
         .focus(|s| s.border_color(rgb(ACCENT)))
         .tooltip(move |_, cx| cx.new(|_| ControlTooltip(label.clone())).into())
@@ -449,7 +426,7 @@ pub(super) fn slider(
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::quantize;
     #[test]
     fn slider_clamps_and_rounds_to_the_control_step() {
         assert_eq!(quantize(-200., 0., 200., 1.), 0.);

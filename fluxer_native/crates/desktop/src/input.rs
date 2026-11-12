@@ -113,7 +113,7 @@ impl gpui::EventEmitter<ImagePasted> for TextInput {}
 impl TextInput {
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             content: "".into(),
             secret: false,
             multiline: false,
@@ -142,6 +142,7 @@ impl TextInput {
         let mut input = Self::new("", cx);
         input.multiline = true;
         input.read_only = true;
+        input.focus_handle = input.focus_handle.clone().tab_stop(false);
         input.content = text.to_owned().into();
         input
     }

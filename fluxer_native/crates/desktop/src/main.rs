@@ -101,6 +101,8 @@ fn button_base(id: impl Into<ElementId>) -> Stateful<Div> {
         .rounded_md()
         .bg(rgb(0x353142))
         .cursor_pointer()
+        .focusable()
+        .tab_stop(true)
         .text_size(px(13.))
         .hover(|style| style.bg(rgb(0x484054)))
 }
@@ -1163,6 +1165,7 @@ impl Fluxer {
             return;
         }
         if !(self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open))
+            || !self.composer.focus_handle(cx).is_focused(window)
             || self.message_pending()
             || self.emoji_target.is_some()
             || self.forwarding.is_some()
@@ -1687,39 +1690,6 @@ impl Fluxer {
                     })),
             )
             .child(self.voice_bar(cx))
-            .child(
-                div()
-                    .h(px(52.))
-                    .px_3()
-                    .bg(rgb(0x201e2a))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .when_some(self.state.current_user.as_ref(), |view, user| {
-                        view.child(voice_avatar(user.display_name(), user.id, false, 28.))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .text_size(px(12.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_ellipsis()
-                                            .child(user.display_name().to_string()),
-                                    )
-                                    .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(
-                                        if self.demo {
-                                            "Offline demo"
-                                        } else {
-                                            "Connected"
-                                        },
-                                    )),
-                            )
-                    }),
-            )
             .into_any_element()
     }
 
