@@ -9,12 +9,18 @@ verification without treating their absence as approval of a manual test result.
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The final navigation gate passes 320 tests, formatting, strict Clippy and the
+The UI refinement gate passes 326 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
-STATUS.md. Full feature parity remains in progress.
+STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
+Full feature parity remains in progress.
 
 | ID | Review | Steps and expected result | Evidence / status |
 |---|---|---|---|
+| U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
+| U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
+| U3 | Search, pins and attachments | Browse results and pins; use corner actions, select text without jumping, and open a result. Add image/file attachments and check overlay controls, spoiler/retry/cancel and uncluttered empty composer. | **Pending subjective/live review.** Offline compact search layout, generated-file cards/spoiler concealment and confirmation cancellation checked. Existing upload/search/controller contracts pass. |
+| U4 | Keyboard and small windows | Use Tab/Shift+Tab, timeline Up/Down, menus and confirmation dialogs at 880×600. Try long channel/user/file names and increased text size. Controls should remain reachable, focus visible and dialogs on screen. | **Pending complete accessibility review.** Local keyboard/slider/menu fixtures pass; screen-reader semantics, preference migration and broader focus consistency remain incomplete. |
+| U5 | Stream controls | Watch and share with regular Fluxer; check the quieter toolbar, chat/fullscreen/volume and Stop Watching/Stop sharing controls. | **Pending real-call review.** Synthetic viewer toolbar/volume layout checked; UI commands and immediate local stop paths retained. Prior synthetic media evidence remains scoped as V1/V2 below. |
 | A1 | Real attachment delivery | In a suitable test conversation, attach a small image and a normal file. Send with text, as a reply, and with no text. View each from regular Fluxer. Filenames, bytes, reply target and spoiler visibility should match. | **Pending real-account check.** Real-byte HTTP contracts and public-controller fixtures pass. |
 | A2 | Attachment input and layout | Add several files using the system picker, drag files into chat, and paste a screenshot. Toggle a spoiler and remove a file; switch channels and back. Cards should remain compact and belong to the original channel. | **Pending usability review.** Generated-file preparation, actual Wayland image paste, native picker opening and spoiler preview hiding checked offline. Physical drag/drop and picker selection need review. |
 | A3 | Upload failure and cancellation | Cancel a large upload; retry after a temporary connection failure. Files, text and reply intent should remain available. Type the next draft and add another file while a send is pending; completion must preserve the new draft/file. | **Pending real-network check.** Loopback retry/cancellation, retained nonce, draft preservation and changed-file rejection pass. |
@@ -49,3 +55,15 @@ result and date; distinguish a confirmed pass from a pending check. New bugs sho
 remain linked to the review item until their fix and follow-up evidence are saved.
 Broader release gates and platform work remain in [PLAN.md](PLAN.md) and
 [STATUS.md](STATUS.md).
+
+## Local UI evidence (2026-11-12)
+
+The ignored `target/qa/ui-refinement/` directory contains offline screenshots and
+the verification logs. Captures show SVG rendering, message hover/context menu,
+Delete/Pin dialogs, compact search results, audio sliders and staged/spoiler
+attachment cards. Slider pointer drag, arrow fine adjustment and Home-to-zero
+were checked; two-choice dialogs remained open after the initiating key release
+and canceled after Tab wrapping back to Cancel. The minimum supported width
+(880 px) was exercised; a complete 880×600, increased-text and screen-reader
+review remains U4. No real account messages/pins/uploads or microphone capture
+were used for this UI verification.

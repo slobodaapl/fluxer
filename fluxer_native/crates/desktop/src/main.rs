@@ -105,6 +105,7 @@ fn button_base(id: impl Into<ElementId>) -> Stateful<Div> {
         .tab_stop(true)
         .text_size(px(13.))
         .hover(|style| style.bg(rgb(0x484054)))
+        .focus(|style| style.bg(rgb(0x484054)))
 }
 fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
     button_base(id).child(label.into())
@@ -1148,7 +1149,6 @@ impl Fluxer {
             return;
         }
         if self.search_ui.confirm.is_some() {
-            self.confirm_pin(cx);
             return;
         }
         if self.search_ui.open == Some(BrowserTab::Search)
@@ -1984,9 +1984,8 @@ impl Render for Fluxer {
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
-                if this.search_ui.confirm.is_some() && (event.keystroke.key=="enter" || event.keystroke.key=="escape") {
-                    if event.keystroke.key=="enter" {this.confirm_pin(cx);}else{this.search_ui.confirm=None;this.composer.focus_handle(cx).focus(window);cx.notify();}
-                    cx.stop_propagation();return;
+                if this.search_ui.confirm.is_some() && event.keystroke.key=="escape" {
+                    this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
                 }
                 if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
 

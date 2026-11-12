@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 54 input/emoji/attachment/search/media/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 60 input/emoji/attachment/search/media/viewer/UI control tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-320 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+326 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -300,3 +300,13 @@ the vault before best-effort server notification; transient failures retain the
 session, and definitive invalidation disables automatic restoration. An older
 memory-only build cannot contribute a saved token, so one final sign-in is needed
 after this update.
+
+The 2026-11-12 UI refinement pass replaces persistent message/search action banks
+with contextual toolbars and menus; compacts headers, composer and attachment
+cards; consolidates the voice/account dock; and replaces audio adjustment button
+banks with labeled sliders and switches. Artwork matches Fluxer's pinned
+Phosphor icon set. Keyboard access includes editable fields/controls, roving
+timeline focus, and two-choice confirmation traps with opening-key-release
+protection. The API/client/media worker layers are unchanged by this pass.
+See [UI_UX.md](UI_UX.md) for the source-backed audit and remaining UI priorities,
+and [REVIEW.md](REVIEW.md) for U1–U5 and pending real-account acceptance.

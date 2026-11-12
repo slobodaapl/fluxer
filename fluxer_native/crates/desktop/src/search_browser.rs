@@ -1325,14 +1325,14 @@ impl Fluxer {
                             .justify_end()
                             .gap_2()
                             .child(
-                                button("cancel-pin", "Cancel")
+                                quiet_button("cancel-pin", "Cancel")
                                     .track_focus(&self.search_ui.pin_cancel_focus)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.dismiss_pin_confirmation(window, cx)
                                     })),
                             )
                             .child(
-                                button(
+                                quiet_button(
                                     "confirm-pin",
                                     if confirm.pinned {
                                         "Pin message"
