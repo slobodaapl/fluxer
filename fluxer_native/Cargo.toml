@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media", "crates/system-audio", "crates/client", "crates/session"]
 resolver = "2"
-exclude = ["compat/xattr"]
+exclude = ["compat/xattr", "compat/livekit"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,3 +22,6 @@ fluxer-client = { path = "crates/client" }
 [patch.crates-io]
 xattr = { path = "compat/xattr" }
 
+
+# Keep RTC handles through explicit unsubscribe and preserve ordered SFU demand.
+livekit = { path = "compat/livekit" }
