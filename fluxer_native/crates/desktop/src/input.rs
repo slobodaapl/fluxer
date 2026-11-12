@@ -615,13 +615,13 @@ impl Element for TextElement {
                 .shape_text(
                     display.clone(),
                     font_size,
-                    &[base.clone()],
+                    std::slice::from_ref(&base),
                     Some(bounds.size.width.max(px(1.))),
                     None,
                 )
                 .expect("shape native composer text");
             let paragraphs = logical_lines(&display);
-            for (paragraph, wrapped) in paragraphs.into_iter().zip(wrapped.into_iter()) {
+            for (paragraph, wrapped) in paragraphs.into_iter().zip(wrapped) {
                 let breaks = wrapped
                     .wrap_boundaries
                     .iter()
@@ -931,6 +931,55 @@ fn grapheme_offset(text: &str, index: usize) -> usize {
         .unwrap_or(0)
 }
 
+fn normalize_insert(text: &str, multiline: bool) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    if multiline {
+        text
+    } else {
+        text.replace('\n', " ")
+    }
+}
+fn logical_lines(text: &str) -> Vec<Range<usize>> {
+    let mut offset = 0;
+    text.split('\n')
+        .map(|line| {
+            let range = offset..offset + line.len();
+            offset = range.end + 1;
+            range
+        })
+        .collect()
+}
+fn visual_ranges(paragraph: Range<usize>, breaks: &[usize]) -> Vec<Range<usize>> {
+    let mut boundaries = vec![paragraph.start];
+    boundaries.extend(
+        breaks
+            .iter()
+            .filter(|index| **index > 0 && **index < paragraph.len())
+            .map(|index| paragraph.start + index),
+    );
+    boundaries.push(paragraph.end);
+    boundaries.sort_unstable();
+    // Preserve empty paragraphs, including the trailing row after a newline.
+    if paragraph.is_empty() {
+        return vec![paragraph];
+    }
+    boundaries.dedup();
+    boundaries.windows(2).map(|pair| pair[0]..pair[1]).collect()
+}
+fn row_for_index(rows: &[Range<usize>], index: usize) -> usize {
+    rows.iter()
+        .position(|row| index <= row.end)
+        .unwrap_or(rows.len().saturating_sub(1))
+}
+
+fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) -> Range<usize> {
+    selection
+        .map(|selected| {
+            start + utf16_offset(text, selected.start)..start + utf16_offset(text, selected.end)
+        })
+        .unwrap_or(start + text.len()..start + text.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1005,53 +1054,4 @@ mod tests {
         assert_eq!(utf16_offset(text, 4), 7);
         assert_eq!(utf16_offset(text, 99), 7);
     }
-}
-
-fn normalize_insert(text: &str, multiline: bool) -> String {
-    let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    if multiline {
-        text
-    } else {
-        text.replace('\n', " ")
-    }
-}
-fn logical_lines(text: &str) -> Vec<Range<usize>> {
-    let mut offset = 0;
-    text.split('\n')
-        .map(|line| {
-            let range = offset..offset + line.len();
-            offset = range.end + 1;
-            range
-        })
-        .collect()
-}
-fn visual_ranges(paragraph: Range<usize>, breaks: &[usize]) -> Vec<Range<usize>> {
-    let mut boundaries = vec![paragraph.start];
-    boundaries.extend(
-        breaks
-            .iter()
-            .filter(|index| **index > 0 && **index < paragraph.len())
-            .map(|index| paragraph.start + index),
-    );
-    boundaries.push(paragraph.end);
-    boundaries.sort_unstable();
-    // Preserve empty paragraphs, including the trailing row after a newline.
-    if paragraph.is_empty() {
-        return vec![paragraph];
-    }
-    boundaries.dedup();
-    boundaries.windows(2).map(|pair| pair[0]..pair[1]).collect()
-}
-fn row_for_index(rows: &[Range<usize>], index: usize) -> usize {
-    rows.iter()
-        .position(|row| index <= row.end)
-        .unwrap_or(rows.len().saturating_sub(1))
-}
-
-fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) -> Range<usize> {
-    selection
-        .map(|selected| {
-            start + utf16_offset(text, selected.start)..start + utf16_offset(text, selected.end)
-        })
-        .unwrap_or(start + text.len()..start + text.len())
 }
