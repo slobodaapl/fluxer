@@ -205,6 +205,10 @@ pub struct Member {
     #[serde(default)]
     pub nick: Option<String>,
     #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub profile_flags: Option<i32>,
+    #[serde(default)]
     pub roles: Vec<Snowflake>,
     #[serde(default)]
     pub communication_disabled_until: Option<String>,

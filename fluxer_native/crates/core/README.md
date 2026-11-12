@@ -10,6 +10,17 @@ counts, local drafts, navigation, relationships, presence, expiring typing,
 multi-connection voice state, desired mute/deafen/camera/share controls, base
 role/channel overwrite permissions, and offline demo data.
 
+`voice_participants(channel)` projects all gateway connections in a channel,
+including the current account and channels the local media SDK has not joined.
+It retains simultaneous connections and provides exact LiveKit identities,
+nickname precedence, account/member avatar hashes, avatar-unset flags, and raw
+voice flags. Group rows by user ID for the sidebar; display individual connections
+in the call pane. `is_current_user` does not identify the local device. Name order
+is deterministic, case-insensitive and numeric; the existing web UI's
+locale-specific ICU collation and per-mounted-list frozen-name/join-order
+snapshots are not reproduced by this stateless helper. Missing users are exposed
+with an ID label without inserting synthetic cache records.
+
 `apply_gateway(event, data)` consumes one dispatch. The gateway transport must
 filter duplicate/stale dispatch sequence numbers first. `READY` validates before
 replacing state and rejects an account change; replace `ClientState` when switching
