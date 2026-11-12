@@ -1,0 +1,12 @@
+[package]
+name = "fluxer-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluxer-core.workspace = true
+fluxer-protocol.workspace = true
+fluxer-media.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
