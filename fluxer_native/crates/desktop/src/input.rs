@@ -41,6 +41,7 @@ pub struct TextInput {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    scroll_x: Pixels,
 }
 
 impl TextInput {
@@ -56,6 +57,7 @@ impl TextInput {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            scroll_x: px(0.),
         }
     }
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
@@ -119,9 +121,10 @@ impl TextInput {
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.focus(&self.focus_handle);
         self.is_selecting = true;
 
         if event.modifiers.shift {
@@ -200,7 +203,10 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        grapheme_offset(
+            &self.content,
+            line.closest_index_for_x(position.x - bounds.left() + self.scroll_x),
+        )
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -217,18 +223,7 @@ impl TextInput {
     }
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8_offset = 0;
-        let mut utf16_count = 0;
-
-        for ch in self.content.chars() {
-            if utf16_count >= offset {
-                break;
-            }
-            utf16_count += ch.len_utf16();
-            utf8_offset += ch.len_utf8();
-        }
-
-        utf8_offset
+        utf16_offset(&self.content, offset)
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
@@ -354,8 +349,10 @@ impl EntityInputHandler for TextInput {
         }
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.end)
+            .map(|selected| {
+                range.start + utf16_offset(new_text, selected.start)
+                    ..range.start + utf16_offset(new_text, selected.end)
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
 
         cx.notify();
@@ -372,11 +369,11 @@ impl EntityInputHandler for TextInput {
         let range = self.range_from_utf16(&range_utf16);
         Some(Bounds::from_corners(
             point(
-                bounds.left() + last_layout.x_for_index(range.start),
+                bounds.left() + last_layout.x_for_index(range.start) - self.scroll_x,
                 bounds.top(),
             ),
             point(
-                bounds.left() + last_layout.x_for_index(range.end),
+                bounds.left() + last_layout.x_for_index(range.end) - self.scroll_x,
                 bounds.bottom(),
             ),
         ))
@@ -391,9 +388,13 @@ impl EntityInputHandler for TextInput {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
 
-        assert_eq!(last_layout.text, self.content);
-        let utf8_index = last_layout.index_for_x(point.x - line_point.x)?;
-        Some(self.offset_to_utf16(utf8_index))
+        let utf8_index = last_layout.closest_index_for_x(line_point.x + self.scroll_x);
+        Some(
+            self.offset_to_utf16(
+                self.content
+                    .floor_char_boundary(utf8_index.min(self.content.len())),
+            ),
+        )
     }
 }
 
@@ -403,6 +404,7 @@ struct TextElement {
 
 struct PrepaintState {
     line: Option<ShapedLine>,
+    scroll_x: Pixels,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
 }
@@ -509,12 +511,19 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let cursor_pos = line.x_for_index(cursor);
+        let mut scroll_x = input.scroll_x;
+        if cursor_pos < scroll_x {
+            scroll_x = cursor_pos;
+        }
+        if cursor_pos > scroll_x + bounds.size.width - px(3.) {
+            scroll_x = (cursor_pos - bounds.size.width + px(3.)).max(px(0.));
+        }
         let (selection, cursor) = if selected_range.is_empty() {
             (
                 None,
                 Some(fill(
                     Bounds::new(
-                        point(bounds.left() + cursor_pos, bounds.top()),
+                        point(bounds.left() + cursor_pos - scroll_x, bounds.top()),
                         size(px(2.), bounds.bottom() - bounds.top()),
                     ),
                     gpui::blue(),
@@ -525,11 +534,11 @@ impl Element for TextElement {
                 Some(fill(
                     Bounds::from_corners(
                         point(
-                            bounds.left() + line.x_for_index(selected_range.start),
+                            bounds.left() + line.x_for_index(selected_range.start) - scroll_x,
                             bounds.top(),
                         ),
                         point(
-                            bounds.left() + line.x_for_index(selected_range.end),
+                            bounds.left() + line.x_for_index(selected_range.end) - scroll_x,
                             bounds.bottom(),
                         ),
                     ),
@@ -540,6 +549,7 @@ impl Element for TextElement {
         };
         PrepaintState {
             line: Some(line),
+            scroll_x,
             cursor,
             selection,
         }
@@ -565,8 +575,13 @@ impl Element for TextElement {
             window.paint_quad(selection)
         }
         let line = prepaint.line.take().unwrap();
-        line.paint(bounds.origin, window.line_height(), window, cx)
-            .unwrap();
+        line.paint(
+            point(bounds.origin.x - prepaint.scroll_x, bounds.origin.y),
+            window.line_height(),
+            window,
+            cx,
+        )
+        .unwrap();
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
@@ -577,6 +592,7 @@ impl Element for TextElement {
         self.input.update(cx, |input, _cx| {
             input.last_layout = Some(line);
             input.last_bounds = Some(bounds);
+            input.scroll_x = prepaint.scroll_x;
         });
     }
 }
@@ -646,4 +662,51 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
     ]);
+}
+
+// IME selections are relative to the newly marked text, in UTF-16 units.
+fn utf16_offset(text: &str, offset: usize) -> usize {
+    let mut units = 0;
+    for (index, ch) in text.char_indices() {
+        if units >= offset {
+            return index;
+        }
+        units += ch.len_utf16();
+    }
+    text.len()
+}
+
+fn grapheme_offset(text: &str, index: usize) -> usize {
+    if index >= text.len() {
+        return text.len();
+    }
+    text.grapheme_indices(true)
+        .map(|(offset, _)| offset)
+        .take_while(|offset| *offset <= index)
+        .last()
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{grapheme_offset, utf16_offset};
+    #[test]
+    fn masked_mouse_offsets_never_split_unicode_or_combining_marks() {
+        let text = "a😀e\u{301}";
+        for offset in 1..5 {
+            assert_eq!(grapheme_offset(text, offset), 1);
+        }
+        assert_eq!(grapheme_offset(text, 6), 5);
+        assert_eq!(grapheme_offset(text, 7), 5);
+        assert_eq!(grapheme_offset(text, 99), text.len());
+    }
+    #[test]
+    fn ime_utf16_offsets_preserve_unicode_boundaries() {
+        let text = "a😀é";
+        assert_eq!(utf16_offset(text, 0), 0);
+        assert_eq!(utf16_offset(text, 1), 1);
+        assert_eq!(utf16_offset(text, 3), 5);
+        assert_eq!(utf16_offset(text, 4), 7);
+        assert_eq!(utf16_offset(text, 99), 7);
+    }
 }
