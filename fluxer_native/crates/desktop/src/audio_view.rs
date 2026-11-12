@@ -1,52 +1,158 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
+use crate::controls::{Icon, icon, icon_button, quiet_button, slider, toggle};
 
 impl Fluxer {
     pub(super) fn voice_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let connected = self.state.voice.channel_id.is_some();
+        let active = connected || self.voice_connecting;
+        let can_share = self
+            .state
+            .voice
+            .channel_id
+            .zip(self.state.current_user.as_ref())
+            .is_some_and(|(channel, user)| {
+                self.state
+                    .permissions_for(channel, user.id)
+                    .contains(fluxer_core::Permissions::STREAM)
+            });
         div()
-            .p_3()
-            .bg(rgb(0x292438))
+            .w_full()
             .flex()
             .flex_col()
             .gap_2()
-            .child(muted(self.voice_status.clone()))
+            .px_3()
+            .py_2()
+            .when(active, |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().size(px(6.)).rounded_full().bg(rgb(if connected {
+                            0x6bc99d
+                        } else {
+                            0xd4b76b
+                        })))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(rgb(if connected { 0x6bc99d } else { TEXT }))
+                                        .child(if connected {
+                                            "Voice connected"
+                                        } else {
+                                            "Connecting…"
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(rgb(MUTED))
+                                        .text_ellipsis()
+                                        .child(
+                                            self.state
+                                                .voice
+                                                .channel_id
+                                                .map(|id| self.channel_name(id))
+                                                .unwrap_or_else(|| self.voice_status.clone()),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            icon_button(
+                                "leave",
+                                Icon::PhoneOff,
+                                if connected {
+                                    "Disconnect from voice"
+                                } else {
+                                    "Cancel voice connection"
+                                },
+                            )
+                            .text_color(rgb(0xe79a9e))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.command(Command::LeaveVoice, cx)),
+                            ),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
-                    .gap_2()
+                    .items_center()
+                    .gap_1()
                     .child(
-                        button(
+                        icon_button(
                             "mute",
                             if self.state.voice.muted {
-                                "Unmute"
+                                Icon::MicOff
                             } else {
-                                "Mute"
+                                Icon::Mic
+                            },
+                            if self.state.voice.muted {
+                                "Unmute microphone"
+                            } else {
+                                "Mute microphone"
                             },
                         )
+                        .when(self.state.voice.muted, |view| {
+                            view.text_color(rgb(0xe79a9e))
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.command(Command::SetMute(!this.state.voice.muted), cx)
                         })),
                     )
                     .child(
-                        button(
+                        icon_button(
                             "deaf",
+                            if self.state.voice.deafened {
+                                Icon::Deafen
+                            } else {
+                                Icon::Headphones
+                            },
                             if self.state.voice.deafened {
                                 "Undeafen"
                             } else {
                                 "Deafen"
                             },
                         )
+                        .when(self.state.voice.deafened, |view| {
+                            view.text_color(rgb(0xe79a9e))
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.command(Command::SetDeaf(!this.state.voice.deafened), cx)
                         })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
+                    )
                     .child(
-                        button("share", if self.sharing { "Stop share" } else { "Share" })
+                        icon_button("voice-settings", Icon::Settings, "Voice and audio settings")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pane = Pane::Settings;
+                                this.command(Command::RefreshDevices, cx);
+                            })),
+                    )
+                    .child(div().flex_1())
+                    .when(connected && (can_share || self.sharing), |view| {
+                        view.child(
+                            icon_button(
+                                "share",
+                                if self.sharing {
+                                    Icon::Stop
+                                } else {
+                                    Icon::ScreenShare
+                                },
+                                if self.sharing {
+                                    "Stop sharing your screen"
+                                } else {
+                                    "Share your screen"
+                                },
+                            )
+                            .when(self.sharing, |view| view.text_color(rgb(0x6bc99d)))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if this.sharing {
                                     this.command(Command::StopShare, cx);
@@ -56,37 +162,59 @@ impl Fluxer {
                                     this.command(Command::RefreshAudioApplications, cx);
                                 }
                             })),
-                    )
-                    .child(button("leave", "Leave").on_click(
-                        cx.listener(|this, _, _, cx| this.command(Command::LeaveVoice, cx)),
-                    )),
+                        )
+                    }),
             )
             .when(self.sharing, |view| {
-                view.child(muted(if self.shared_audio {
-                    if self.shared_audio_settings.muted {
-                        "Shared audio muted"
-                    } else {
-                        "Sharing screen and audio"
-                    }
-                } else {
-                    "Sharing screen without audio"
-                }))
-                .when(self.shared_audio, |view| {
-                    view.child(
-                        button(
-                            "active-share-audio-mute",
-                            if self.shared_audio_settings.muted {
-                                "Unmute stream audio"
-                            } else {
-                                "Mute stream audio"
-                            },
+                view.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(11.))
+                                .text_color(rgb(MUTED))
+                                .child(if self.shared_audio {
+                                    if self.shared_audio_settings.muted {
+                                        "Screen sharing · audio muted"
+                                    } else {
+                                        "Screen and audio sharing"
+                                    }
+                                } else {
+                                    "Screen sharing"
+                                }),
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.shared_audio_settings.muted = !this.shared_audio_settings.muted;
-                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
-                        })),
-                    )
-                })
+                        .when(self.shared_audio, |view| {
+                            view.child(
+                                icon_button(
+                                    "active-share-audio-mute",
+                                    if self.shared_audio_settings.muted {
+                                        Icon::VolumeOff
+                                    } else {
+                                        Icon::Volume
+                                    },
+                                    if self.shared_audio_settings.muted {
+                                        "Unmute shared audio"
+                                    } else {
+                                        "Mute shared audio"
+                                    },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.shared_audio_settings.muted =
+                                            !this.shared_audio_settings.muted;
+                                        this.command(
+                                            Command::SetSharedAudio(this.shared_audio_settings),
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                        }),
+                )
             })
             .into_any_element()
     }
@@ -143,7 +271,6 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let participants = self.state.voice_participants(channel);
-        let count = participants.len();
         let connected = self.state.voice.channel_id == Some(channel);
         let guild = self
             .state
@@ -152,48 +279,35 @@ impl Fluxer {
             .and_then(|channel| channel.guild_id);
         div()
             .flex_shrink_0()
-            .bg(rgb(0x211e2b))
             .border_b_1()
-            .border_color(rgb(0x363140))
+            .border_color(rgb(PANEL))
             .flex()
             .flex_col()
             .child(
                 div()
                     .px_5()
-                    .py_3()
+                    .py_2()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap_3()
+                    .gap_2()
+                    .child(icon(Icon::Headphones, 14.).text_color(rgb(MUTED)))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Voice participants"),
-                            )
-                            .child(
-                                div()
-                                    .px_2()
-                                    .rounded_md()
-                                    .bg(rgb(0x393248))
-                                    .text_size(px(12.))
-                                    .child(count.to_string()),
-                            ),
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("In voice · {}", participants.len())),
                     )
+                    .child(div().flex_1())
                     .child(
-                        button(
+                        quiet_button(
                             ("viewed-voice-call", channel.0),
                             if connected {
-                                "Leave voice"
+                                "Disconnect"
                             } else {
                                 "Join voice"
                             },
                         )
-                        .bg(rgb(if connected { 0x613342 } else { 0x6f56d7 }))
+                        .text_color(rgb(if connected { MUTED } else { ACCENT }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if connected {
                                 this.command(Command::LeaveVoice, cx);
@@ -212,19 +326,20 @@ impl Fluxer {
             .child(
                 div()
                     .id(("voice-participants", channel.0))
-                    .max_h(px(250.))
+                    .max_h(px(180.))
                     .overflow_y_scroll()
                     .px_5()
-                    .pb_4()
+                    .pb_3()
                     .flex()
                     .flex_wrap()
-                    .gap_3()
+                    .gap_2()
                     .when(participants.is_empty(), |view| {
                         view.child(
                             div()
-                                .py_5()
+                                .py_3()
+                                .text_size(px(12.))
                                 .text_color(rgb(MUTED))
-                                .child("No one is in this voice channel."),
+                                .child("No one is here yet."),
                         )
                     })
                     .children(
@@ -233,82 +348,84 @@ impl Fluxer {
                             .enumerate()
                             .map(|(index, participant)| {
                                 let speaking = self.participant_speaking(&participant, channel);
-                                // Availability is filtered by the worker's current call
-                                // and local connection, including own-account other devices.
-                                let stream_identity =
+                                let stream =
                                     participant.livekit_identity.clone().filter(|identity| {
                                         participant.self_stream
-                                            && self.state.voice.channel_id == Some(channel)
+                                            && connected
                                             && self.available_streams.contains(identity)
                                     });
                                 div()
                                     .id(("voice-participant-card", index))
-                                    .w(px(172.))
-                                    .min_h(px(134.))
-                                    .p_3()
-                                    .rounded_lg()
-                                    .border_2()
-                                    .border_color(rgb(if speaking { 0x4fc58a } else { 0x373140 }))
-                                    .bg(rgb(0x2b2638))
+                                    .w(px(200.))
+                                    .min_h(px(58.))
+                                    .px_2()
+                                    .py_2()
+                                    .rounded_md()
+                                    .border_1()
+                                    .border_color(rgb(if speaking { 0x559b7c } else { PANEL }))
                                     .flex()
-                                    .flex_col()
                                     .items_center()
-                                    .justify_center()
                                     .gap_2()
                                     .child(voice_avatar(
                                         &participant.display_name,
                                         participant.user_id,
                                         speaking,
-                                        48.,
+                                        32.,
                                     ))
                                     .child(
                                         div()
-                                            .w_full()
+                                            .flex_1()
                                             .min_w_0()
-                                            .text_center()
-                                            .text_size(px(13.))
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_ellipsis()
-                                            .child(format!(
-                                                "{}{}",
-                                                participant.display_name,
-                                                if participant.is_current_user {
-                                                    " (you)"
-                                                } else {
-                                                    ""
-                                                }
-                                            )),
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .text_size(px(12.))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_ellipsis()
+                                                    .child(format!(
+                                                        "{}{}",
+                                                        participant.display_name,
+                                                        if participant.is_current_user {
+                                                            " (you)"
+                                                        } else {
+                                                            ""
+                                                        }
+                                                    )),
+                                            )
+                                            .child(voice_badges(&participant, false)),
                                     )
-                                    .child(voice_badges(&participant, false))
-                                    .when_some(stream_identity, |view, identity| {
+                                    .when_some(stream, |view, identity| {
                                         let watching = self.viewer.desired.contains(&identity);
                                         view.child(
-                                            button(
+                                            icon_button(
                                                 ("watch-participant-stream", index),
                                                 if watching {
-                                                    "Stop watching"
+                                                    Icon::Stop
                                                 } else {
-                                                    "Watch stream"
+                                                    Icon::ScreenShare
+                                                },
+                                                if watching {
+                                                    "Stop watching this stream"
+                                                } else {
+                                                    "Watch live stream"
                                                 },
                                             )
-                                            .when(watching, |view| view.bg(rgb(0x6650bd)))
+                                            .text_color(rgb(if watching {
+                                                0xe79a9e
+                                            } else {
+                                                ACCENT
+                                            }))
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
                                                     this.watch_stream(
                                                         identity.clone(),
                                                         !watching,
                                                         cx,
-                                                    );
+                                                    )
                                                 }),
                                             ),
-                                        )
-                                    })
-                                    .when(speaking, |view| {
-                                        view.child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(rgb(0x66d4a0))
-                                                .child("Speaking"),
                                         )
                                     })
                             }),
@@ -318,306 +435,67 @@ impl Fluxer {
     }
 
     pub(super) fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("settings-body")
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .overflow_y_scroll()
-            .p_6()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(heading("Voice & audio"))
-            .child(muted(
-                "Choose devices and configure microphone processing. Changes apply immediately.",
-            ))
-            .child(
-                button("refresh-devices", "Refresh audio devices")
-                    .max_w(px(180.))
-                    .on_click(
-                        cx.listener(|this, _, _, cx| this.command(Command::RefreshDevices, cx)),
-                    ),
-            )
-            .child(self.input_picker.clone())
-            .child(self.output_picker.clone())
-            .child(self.audio_controls(cx))
-            .child(heading("Microphone processing"))
-            .children(
-                [
-                    ("aec", "Echo cancellation", self.dsp.echo_cancellation),
-                    ("ns", "Noise suppression", self.dsp.noise_suppression),
-                    ("agc", "Automatic gain", self.dsp.auto_gain_control),
-                ]
-                .into_iter()
-                .map(|(id, label, enabled)| {
-                    div()
-                        .w_full()
-                        .max_w(px(520.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(label)
-                        .child(
-                            button(id, if enabled { "On" } else { "Off" })
-                                .w(px(64.))
-                                .text_center()
-                                .when(enabled, |view| view.bg(rgb(0x6650bd)))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    match id {
-                                        "aec" => {
-                                            this.dsp.echo_cancellation = !this.dsp.echo_cancellation
-                                        }
-                                        "ns" => {
-                                            this.dsp.noise_suppression = !this.dsp.noise_suppression
-                                        }
-                                        _ => {
-                                            this.dsp.auto_gain_control = !this.dsp.auto_gain_control
-                                        }
-                                    }
-                                    this.command(Command::SetDsp(this.dsp.clone()), cx);
-                                })),
-                        )
-                }),
-            )
-            .child(
-                button("back-chat", "Back to chat")
-                    .max_w(px(180.))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.pane = Pane::Chat;
-                        cx.notify();
-                    })),
-            )
+        div().id("settings-body").flex_1().min_w_0().h_full().overflow_y_scroll().p_6()
+            .child(div().w_full().max_w(px(720.)).flex().flex_col().gap_5()
+                .child(div().flex().items_center().gap_3().child(heading("Voice & audio")).child(div().flex_1())
+                    .child(icon_button("back-chat",Icon::Back,"Back to chat").on_click(cx.listener(|this,_,_,cx|{this.pane=Pane::Chat;cx.notify();}))))
+                .child(audio_description("Changes apply immediately. Microphone testing starts only when you choose to test it."))
+                .child(audio_section("Devices").child(div().flex().items_center().justify_between().child(audio_description("Choose where you speak and listen."))
+                    .child(icon_button("refresh-devices",Icon::Refresh,"Refresh audio devices").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshDevices,cx)))))
+                    .child(self.input_picker.clone()).child(self.output_picker.clone()))
+                .child(self.audio_controls(cx))
+                .child(audio_section("Microphone processing").children([
+                    ("aec","Echo cancellation","Reduce echo from sound playing through your speakers.",self.dsp.echo_cancellation),
+                    ("ns","Noise suppression","Reduce steady background noise from your microphone.",self.dsp.noise_suppression),
+                    ("agc","Automatic gain control","Keep your microphone at a consistent listening level.",self.dsp.auto_gain_control),
+                ].into_iter().map(|(id,label,description,enabled)|{
+                    audio_setting_row(label,description).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{
+                        match id{"aec"=>this.dsp.echo_cancellation=!this.dsp.echo_cancellation,"ns"=>this.dsp.noise_suppression=!this.dsp.noise_suppression,_=>this.dsp.auto_gain_control=!this.dsp.auto_gain_control}
+                        this.command(Command::SetDsp(this.dsp.clone()),cx);
+                    })))
+                })))
+                .child(audio_section("Account").child(div().flex().items_center().gap_3()
+                    .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(rgb(MUTED)).text_ellipsis().child(self.state.current_user.as_ref().map(|user|user.display_name().to_owned()).unwrap_or_else(||"Offline preview".into())))
+                    .child(quiet_button("settings-sign-out","Sign out").on_click(cx.listener(|this,_,_,cx|this.logout(cx)))))))
             .into_any_element()
     }
 
     pub(super) fn audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.mixer.input_mode;
-        div()
-            .w_full()
-            .max_w(px(520.))
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(heading("Levels & transmission"))
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .items_center()
-                    .child(muted(format!(
-                        "Microphone {}%",
-                        (self.mixer.input_gain * 100.).round()
-                    )))
-                    .child(
-                        button("input-down", "−").on_click(cx.listener(|this, _, _, cx| {
-                            this.mixer.input_gain = (this.mixer.input_gain - 0.1).max(0.);
-                            this.command(Command::SetMixer(this.mixer.clone()), cx);
-                        })),
-                    )
-                    .child(
-                        button("input-up", "+").on_click(cx.listener(|this, _, _, cx| {
-                            this.mixer.input_gain = (this.mixer.input_gain + 0.1).min(2.);
-                            this.command(Command::SetMixer(this.mixer.clone()), cx);
-                        })),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .items_center()
-                    .child(muted(format!(
-                        "Output {}%",
-                        (self.mixer.output_gain * 100.).round()
-                    )))
-                    .child(
-                        button("output-down", "−").on_click(cx.listener(|this, _, _, cx| {
-                            this.mixer.output_gain = (this.mixer.output_gain - 0.1).max(0.);
-                            this.command(Command::SetMixer(this.mixer.clone()), cx);
-                        })),
-                    )
-                    .child(
-                        button("output-up", "+").on_click(cx.listener(|this, _, _, cx| {
-                            this.mixer.output_gain = (this.mixer.output_gain + 0.1).min(2.);
-                            this.command(Command::SetMixer(this.mixer.clone()), cx);
-                        })),
-                    ),
-            )
-            .child(self.mode_picker.clone())
-            .when(mode == InputMode::VoiceActivity, |v| {
-                v.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(muted(format!(
-                            "Activation threshold: {:.0} dB",
-                            self.mixer.voice_activation_threshold_db
-                        )))
-                        .child(button("threshold-down", "−5 dB").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.mixer.voice_activation_threshold_db =
-                                    (this.mixer.voice_activation_threshold_db - 5.).max(-96.);
-                                this.command(Command::SetMixer(this.mixer.clone()), cx);
-                            },
-                        )))
-                        .child(button("threshold-up", "+5 dB").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.mixer.voice_activation_threshold_db =
-                                    (this.mixer.voice_activation_threshold_db + 5.).min(0.);
-                                this.command(Command::SetMixer(this.mixer.clone()), cx);
-                            },
-                        ))),
-                )
-            })
-            .when(mode == InputMode::PushToTalk, |v| {
-                v.child(muted(
-                    "Hold F8 while this window is active, or hold the Talk button.",
-                ))
-                .child(
-                    button("ptt-held", "Hold to talk")
-                        .bg(rgb(0x6650bd))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.command(Command::SetPushToTalkPressed(true), cx)
-                            }),
-                        )
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.command(Command::SetPushToTalkPressed(false), cx)
-                            }),
-                        )
-                        .on_mouse_up_out(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| {
-                                this.command(Command::SetPushToTalkPressed(false), cx)
-                            }),
-                        ),
-                )
-            })
-            .child(
-                button(
-                    "mic-test",
-                    if self.testing_microphone {
-                        "Stop microphone test"
-                    } else {
-                        "Test microphone (meter only)"
-                    },
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.testing_microphone = !this.testing_microphone;
-                    this.command(
-                        if this.testing_microphone {
-                            Command::StartMicrophoneTest
-                        } else {
-                            Command::StopMicrophoneTest
-                        },
-                        cx,
-                    );
-                })),
-            )
-            .child(muted(format!(
-                "Input level {:.0}% · Output level {:.0}%",
-                self.levels.0 * 100.,
-                self.levels.1 * 100.
-            )))
-            .child(
-                div()
-                    .h(px(6.))
-                    .w_full()
-                    .rounded_md()
-                    .bg(rgb(0x353142))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(self.levels.0.clamp(0., 1.)))
-                            .rounded_md()
-                            .bg(rgb(0x6bc99d)),
-                    ),
-            )
-            .when(!self.participants.is_empty(), |v| {
-                v.child(heading("Participant volume"))
-            })
-            .children(
-                self.participants
-                    .iter()
-                    .map(|(identity, (name, settings))| {
-                        let id = identity.clone();
-                        let down = id.clone();
-                        let up = id.clone();
-                        div()
-                            .flex()
-                            .gap_3()
-                            .items_center()
-                            .child(format!(
-                                "{} · {:.0}%",
-                                if name.is_empty() { identity } else { name },
-                                settings.gain * 100.
-                            ))
-                            .child(
-                                button(SharedString::from(format!("participant-down-{id}")), "−")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some((_, settings)) =
-                                            this.participants.get_mut(&down)
-                                        {
-                                            settings.gain = (settings.gain - 0.1).max(0.);
-                                            let settings = *settings;
-                                            this.command(
-                                                Command::SetParticipantAudio {
-                                                    identity: down.clone(),
-                                                    settings,
-                                                },
-                                                cx,
-                                            );
-                                        }
-                                    })),
-                            )
-                            .child(
-                                button(SharedString::from(format!("participant-up-{id}")), "+")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some((_, settings)) = this.participants.get_mut(&up)
-                                        {
-                                            settings.gain = (settings.gain + 0.1).min(2.);
-                                            let settings = *settings;
-                                            this.command(
-                                                Command::SetParticipantAudio {
-                                                    identity: up.clone(),
-                                                    settings,
-                                                },
-                                                cx,
-                                            );
-                                        }
-                                    })),
-                            )
-                            .child(
-                                button(
-                                    SharedString::from(format!("participant-mute-{id}")),
-                                    if settings.muted { "Unmute" } else { "Mute" },
-                                )
-                                .on_click(cx.listener(
-                                    move |this, _, _, cx| {
-                                        if let Some((_, settings)) = this.participants.get_mut(&id)
-                                        {
-                                            settings.muted = !settings.muted;
-                                            let settings = *settings;
-                                            this.command(
-                                                Command::SetParticipantAudio {
-                                                    identity: id.clone(),
-                                                    settings,
-                                                },
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )),
-                            )
-                    }),
-            )
+        div().flex().flex_col().gap_5()
+            .child(audio_section("Levels")
+                .child(audio_value("Microphone volume",format!("{:.0}%",self.mixer.input_gain*100.)))
+                .child(slider("input-volume",self.mixer.input_gain,0.,2.,0.01,"Microphone volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.input_gain=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
+                .child(audio_value("Output volume",format!("{:.0}%",self.mixer.output_gain*100.)))
+                .child(slider("output-volume",self.mixer.output_gain,0.,2.,0.01,"Output volume",cx.listener(|this,value:&f32,_,cx|{this.mixer.output_gain=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);}))))
+            .child(audio_section("Input mode").child(self.mode_picker.clone())
+                .when(mode==InputMode::VoiceActivity,|view|view
+                    .child(audio_value("Activation threshold",format!("{:.0} dB",self.mixer.voice_activation_threshold_db)))
+                    .child(slider("activation-threshold",self.mixer.voice_activation_threshold_db,-96.,0.,1.,"Voice activation threshold",cx.listener(|this,value:&f32,_,cx|{this.mixer.voice_activation_threshold_db=*value;this.command(Command::SetMixer(this.mixer.clone()),cx);})))
+                    .child(audio_description("Lower thresholds pick up quieter speech.")))
+                .when(mode==InputMode::PushToTalk,|view|view
+                    .child(audio_description("Hold F8 while this window is active, or press and hold below."))
+                    .child(quiet_button("ptt-held","Hold to talk").on_mouse_down(MouseButton::Left,cx.listener(|this,_,_,cx|this.command(Command::SetPushToTalkPressed(true),cx)))
+                        .on_mouse_up(MouseButton::Left,cx.listener(|this,_,_,cx|this.command(Command::SetPushToTalkPressed(false),cx)))
+                        .on_mouse_up_out(MouseButton::Left,cx.listener(|this,_,_,cx|this.command(Command::SetPushToTalkPressed(false),cx))))))
+            .child(audio_section("Microphone test")
+                .child(audio_setting_row("Check your input","Uses your selected microphone for a level meter. Audio is not played back.")
+                    .child(quiet_button("mic-test",if self.testing_microphone{"Stop test"}else{"Test microphone"})
+                        .when(self.testing_microphone,|view|view.text_color(rgb(0xe79a9e)))
+                        .on_click(cx.listener(|this,_,_,cx|{this.testing_microphone=!this.testing_microphone;this.command(if this.testing_microphone{Command::StartMicrophoneTest}else{Command::StopMicrophoneTest},cx);}))))
+                .child(audio_meter(self.levels.0))
+                .child(audio_description(format!("Input {:.0}% · Output {:.0}%",self.levels.0*100.,self.levels.1*100.))))
+            .when(!self.participants.is_empty(),|view|view.child(audio_section("People in your call").children(self.participants.iter().map(|(identity,(name,settings))|{
+                let gain_id=identity.clone();let mute_id=identity.clone();
+                div().flex().flex_col().gap_2().py_2()
+                    .child(div().flex().items_center().gap_2()
+                        .child(div().flex_1().min_w_0().text_ellipsis().text_size(px(13.)).child(if name.is_empty(){identity.clone()}else{name.clone()}))
+                        .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!("{:.0}%",settings.gain*100.)))
+                        .child(icon_button(SharedString::from(format!("participant-mute-{identity}")),if settings.muted{Icon::VolumeOff}else{Icon::Volume},if settings.muted{"Unmute participant for you"}else{"Mute participant for you"})
+                            .when(settings.muted,|view|view.text_color(rgb(0xe79a9e)))
+                            .on_click(cx.listener(move|this,_,_,cx|{if let Some((_,settings))=this.participants.get_mut(&mute_id){settings.muted=!settings.muted;let settings=*settings;this.command(Command::SetParticipantAudio{identity:mute_id.clone(),settings},cx);}}))))
+                    .child(slider(SharedString::from(format!("participant-volume-{identity}")),settings.gain,0.,2.,0.01,"Participant volume",cx.listener(move|this,value:&f32,_,cx|{if let Some((_,settings))=this.participants.get_mut(&gain_id){settings.gain=*value;let settings=*settings;this.command(Command::SetParticipantAudio{identity:gain_id.clone(),settings},cx);}})))
+            }))))
             .into_any_element()
     }
 
@@ -636,82 +514,79 @@ impl Fluxer {
     }
 
     pub(super) fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(heading("Share audio"))
+        audio_section("Audio")
             .when(cfg!(target_os = "linux"), |view| {
                 view.child(
-                    button(
-                        "include-share-audio",
-                        if self.share_audio_enabled {
-                            "Include audio: On"
-                        } else {
-                            "Include audio: Off"
-                        },
+                    audio_setting_row(
+                        "Include audio",
+                        "Start the selected audio source with your screen share.",
                     )
-                    .w(px(180.))
-                    .when(self.share_audio_enabled, |button| button.bg(rgb(0x6650bd)))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.share_audio_enabled = !this.share_audio_enabled;
-                        cx.notify();
-                    })),
+                    .child(
+                        toggle(
+                            "include-share-audio",
+                            self.share_audio_enabled,
+                            "Include screen share audio",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.share_audio_enabled = !this.share_audio_enabled;
+                            cx.notify();
+                        })),
+                    ),
                 )
             })
             .when(!cfg!(target_os = "linux"), |view| {
-                view.child(muted("Audio sharing is unavailable on this platform."))
+                view.child(audio_description(
+                    "Audio sharing is unavailable on this platform.",
+                ))
             })
             .when(self.share_audio_enabled, |view| {
-                view.child(muted(
-                    "The selected audio source starts with your screen share.",
-                ))
-                .child(self.share_audio_picker.clone())
-                .child(
-                    button("refresh-apps", "Refresh applications").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.command(Command::RefreshAudioApplications, cx);
-                        },
-                    )),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_3()
-                        .items_center()
-                        .child(muted(format!(
-                            "Shared audio {:.0}%",
-                            self.shared_audio_settings.gain * 100.
-                        )))
-                        .child(button("share-gain-down", "−").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.shared_audio_settings.gain =
-                                    (this.shared_audio_settings.gain - 0.1).max(0.);
-                                this.command(
-                                    Command::SetSharedAudio(this.shared_audio_settings),
-                                    cx,
-                                );
-                            },
-                        )))
-                        .child(button("share-gain-up", "+").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.shared_audio_settings.gain =
-                                    (this.shared_audio_settings.gain + 0.1).min(2.);
-                                this.command(
-                                    Command::SetSharedAudio(this.shared_audio_settings),
-                                    cx,
-                                );
-                            },
-                        )))
+                view.child(self.share_audio_picker.clone())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(audio_description("Choose system audio or an application."))
+                            .child(div().flex_1())
+                            .child(
+                                icon_button(
+                                    "refresh-apps",
+                                    Icon::Refresh,
+                                    "Refresh audio applications",
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.command(Command::RefreshAudioApplications, cx)
+                                    },
+                                )),
+                            ),
+                    )
+                    .child(audio_value(
+                        "Shared audio volume",
+                        format!("{:.0}%", self.shared_audio_settings.gain * 100.),
+                    ))
+                    .child(slider(
+                        "shared-audio-volume",
+                        self.shared_audio_settings.gain,
+                        0.,
+                        2.,
+                        0.01,
+                        "Shared audio volume",
+                        cx.listener(|this, value: &f32, _, cx| {
+                            this.shared_audio_settings.gain = *value;
+                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                        }),
+                    ))
+                    .child(
+                        audio_setting_row(
+                            "Mute shared audio",
+                            "Independent of your microphone and deafen controls.",
+                        )
                         .child(
-                            button(
+                            toggle(
                                 "share-audio-mute",
-                                if self.shared_audio_settings.muted {
-                                    "Unmute shared audio"
-                                } else {
-                                    "Mute shared audio"
-                                },
+                                self.shared_audio_settings.muted,
+                                "Mute shared audio",
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.shared_audio_settings.muted =
@@ -722,7 +597,7 @@ impl Fluxer {
                                 );
                             })),
                         ),
-                )
+                    )
             })
             .into_any_element()
     }
@@ -743,65 +618,68 @@ impl Fluxer {
                 })
             })
             .cloned();
-        div()
-            .id("screen-sources")
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .overflow_y_scroll()
-            .p_6()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(heading("Share your screen"))
-            .child(muted(if system_picker.is_some() {
-                "Choose your quality, then select a display or window in the system dialog."
-            } else {
-                "Choose a display or window and your sharing quality."
-            }))
-            .when(system_picker.is_none(), |view| {
-                view.child(self.screen_picker.clone())
-            })
-            .child(self.fps_picker.clone())
-            .child(self.resolution_picker.clone())
-            .child(self.shared_audio_controls(cx))
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .when_some(system_picker, |view, source| {
-                        view.child(
-                            button("choose-screen-source", "Choose display or window…")
-                                .bg(rgb(0x6f56d7))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.start_screen_share(source.clone(), cx);
-                                })),
-                        )
-                    })
-                    .when_some(selected, |view, source| {
-                        view.child(
-                            button("start-screen-share", "Share screen")
-                                .bg(rgb(0x6f56d7))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.start_screen_share(source.clone(), cx);
-                                })),
-                        )
-                    })
-                    .child(
-                        button("refresh-sources", "Refresh sources").on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.command(Command::RefreshScreenSources, cx);
-                            },
-                        )),
-                    ),
-            )
-            .child(button("cancel-share", "Back to chat").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.pane = Pane::Chat;
-                    cx.notify();
-                },
-            )))
+        div().id("screen-sources").flex_1().min_w_0().h_full().overflow_y_scroll().p_6()
+            .child(div().w_full().max_w(px(720.)).flex().flex_col().gap_5()
+                .child(div().flex().items_center().gap_3().child(heading("Share your screen")).child(div().flex_1())
+                    .child(icon_button("cancel-share",Icon::Back,"Back to chat").on_click(cx.listener(|this,_,_,cx|{this.pane=Pane::Chat;cx.notify();}))))
+                .child(audio_description(if system_picker.is_some(){"Choose your quality and audio, then select a display or window in the system dialog."}else{"Choose a display or window, then set the quality and audio you want to share."}))
+                .when(system_picker.is_none(),|view|view.child(self.screen_picker.clone()))
+                .child(audio_section("Video quality").child(self.fps_picker.clone()).child(self.resolution_picker.clone()))
+                .child(self.shared_audio_controls(cx))
+                .child(div().flex().items_center().gap_2()
+                    .when_some(system_picker,|view,source|view.child(quiet_button("choose-screen-source","Choose display or window…").bg(rgb(ACCENT)).text_color(rgb(TEXT)).on_click(cx.listener(move|this,_,_,cx|this.start_screen_share(source.clone(),cx)))))
+                    .when_some(selected,|view,source|view.child(quiet_button("start-screen-share","Share screen").bg(rgb(ACCENT)).text_color(rgb(TEXT)).on_click(cx.listener(move|this,_,_,cx|this.start_screen_share(source.clone(),cx)))))
+                    .child(icon_button("refresh-sources",Icon::Refresh,"Refresh available sources").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshScreenSources,cx))))))
             .into_any_element()
     }
+}
+
+fn audio_description(text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(12.))
+        .text_color(rgb(MUTED))
+        .child(text.into())
+}
+fn audio_section(title: &'static str) -> Div {
+    div().flex().flex_col().gap_3().child(
+        div()
+            .text_size(px(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(title),
+    )
+}
+fn audio_setting_row(title: &'static str, description: &'static str) -> Div {
+    div().flex().items_center().gap_4().py_2().child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(div().text_size(px(13.)).child(title))
+            .child(audio_description(description)),
+    )
+}
+fn audio_value(title: &'static str, value: String) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(div().text_size(px(13.)).child(title))
+        .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(value))
+}
+fn audio_meter(level: f32) -> Div {
+    div()
+        .h(px(5.))
+        .w_full()
+        .rounded_full()
+        .bg(rgb(PANEL))
+        .child(
+            div()
+                .h_full()
+                .rounded_full()
+                .w(relative(level.clamp(0., 1.)))
+                .bg(rgb(0x6bc99d)),
+        )
 }

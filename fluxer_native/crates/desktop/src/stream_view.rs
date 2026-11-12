@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
+use crate::controls::{Icon, icon_button, quiet_button, slider};
 
 impl Fluxer {
     pub(super) fn watch_stream(&mut self, identity: String, watch: bool, cx: &mut Context<Self>) {
@@ -104,7 +105,7 @@ impl Fluxer {
 
     pub(super) fn call_view(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(identity) = self.viewer.focused.clone() else {
-            return self.chat(cx);
+            return self.chat(window, cx);
         };
         let name = self.stream_name(&identity);
         let frame = self.viewer.frames.get(&identity);
@@ -148,8 +149,7 @@ impl Fluxer {
         };
         let retry_identity = identity.clone();
         let mute_identity = identity.clone();
-        let down_identity = identity.clone();
-        let up_identity = identity.clone();
+        let gain_identity = identity.clone();
         div()
             .flex_1()
             .min_w_0()
@@ -160,62 +160,71 @@ impl Fluxer {
             .bg(rgb(0x111015))
             .child(
                 div()
-                    .px_4()
-                    .py_3()
+                    .px_3()
+                    .py_2()
                     .flex()
                     .items_center()
-                    .flex_wrap()
-                    .gap_3()
+                    .gap_1()
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(200.))
+                            .min_w_0()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(rgb(if ended { 0x4a404b } else { 0xb82c50 }))
-                                    .text_size(px(10.))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(if ended { "ENDED" } else { "LIVE" }),
-                            )
+                            .child(div().size(px(6.)).rounded_full().bg(rgb(if ended {
+                                MUTED
+                            } else {
+                                0x6bc99d
+                            })))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
                                     .text_ellipsis()
-                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("{name}'s screen")),
                             )
                             .when_some(frame, |view, frame| {
-                                view.child(muted(format!("{} × {}", frame.width, frame.height)))
+                                view.when(!narrow, |view| {
+                                    view.child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(rgb(MUTED))
+                                            .child(format!("{} × {}", frame.width, frame.height)),
+                                    )
+                                })
                             }),
                     )
                     .child(
-                        button(
+                        icon_button(
                             "viewer-chat",
+                            Icon::Chat,
                             if self.viewer.chat_open {
                                 "Hide chat"
                             } else {
-                                "Chat"
+                                "Show chat"
                             },
                         )
+                        .when(self.viewer.chat_open, |view| view.text_color(rgb(ACCENT)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.viewer.chat_open = !this.viewer.chat_open;
                             cx.notify();
                         })),
                     )
                     .child(
-                        button(
+                        icon_button(
                             "viewer-expand",
                             if self.viewer.expanded {
-                                "Restore"
+                                Icon::Minimize
                             } else {
-                                "Expand"
+                                Icon::Expand
+                            },
+                            if self.viewer.expanded {
+                                "Restore sidebar"
+                            } else {
+                                "Expand stream"
                             },
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -224,8 +233,9 @@ impl Fluxer {
                         })),
                     )
                     .child(
-                        button(
+                        icon_button(
                             "viewer-fullscreen",
+                            Icon::Fullscreen,
                             if window.is_fullscreen() {
                                 "Exit fullscreen"
                             } else {
@@ -237,22 +247,21 @@ impl Fluxer {
                             cx.notify();
                         })),
                     )
-                    .child(button("viewer-back", "Back to chat").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.pane = Pane::Chat;
-                            cx.notify();
-                        },
-                    )))
                     .child(
-                        button("viewer-minimize", "Minimize")
+                        icon_button("viewer-back", Icon::Back, "Back to chat; keep watching")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pane = Pane::Chat;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        icon_button("viewer-minimize", Icon::Minimize, "Minimize window")
                             .on_click(cx.listener(|_, _, window, _| window.minimize_window())),
                     )
                     .child(
-                        button("viewer-stop", "Stop watching")
-                            .bg(rgb(0xb92e50))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.stop_focused_stream(cx);
-                            })),
+                        icon_button("viewer-stop", Icon::Stop, "Stop watching")
+                            .text_color(rgb(0xe79a9e))
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_focused_stream(cx))),
                     ),
             )
             .child(
@@ -333,7 +342,7 @@ impl Fluxer {
                                                 )
                                                 .when(stream_error.is_some(), |view| {
                                                     view.child(
-                                                        button(
+                                                        quiet_button(
                                                             "retry-viewer-stream",
                                                             "Retry stream",
                                                         )
@@ -477,90 +486,118 @@ impl Fluxer {
                                         .h(px(if short { 150. } else { 220. }))
                                         .flex_shrink_0()
                                 })
-                                .child(self.chat(cx)),
+                                .child(self.chat(window, cx)),
                         )
                     }),
             )
             .child(
                 div()
-                    .px_4()
-                    .py_3()
+                    .px_3()
+                    .py_2()
                     .flex()
                     .items_center()
-                    .flex_wrap()
                     .gap_2()
                     .border_t_1()
                     .border_color(rgb(PANEL))
                     .child(
-                        button(
+                        icon_button(
                             "stream-audio-mute",
                             if audio.muted {
-                                "Unmute stream"
+                                Icon::VolumeOff
                             } else {
-                                "Mute stream"
+                                Icon::Volume
+                            },
+                            if audio.muted {
+                                "Unmute stream audio"
+                            } else {
+                                "Mute stream audio"
                             },
                         )
+                        .when(audio.muted, |view| view.text_color(rgb(0xe79a9e)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.change_stream_audio(
                                 mute_identity.clone(),
                                 |audio| audio.muted = !audio.muted,
                                 cx,
-                            );
+                            )
                         })),
                     )
-                    .child(button("stream-volume-down", "−").on_click(cx.listener(
-                        move |this, _, _, cx| {
+                    .child(div().w(px(if narrow { 90. } else { 150. })).child(slider(
+                        "stream-volume",
+                        audio.gain,
+                        0.,
+                        2.,
+                        0.01,
+                        "Stream audio volume",
+                        cx.listener(move |this, value: &f32, _, cx| {
                             this.change_stream_audio(
-                                down_identity.clone(),
-                                |audio| audio.gain = (audio.gain - 0.1).max(0.),
+                                gain_identity.clone(),
+                                |audio| audio.gain = *value,
                                 cx,
                             );
-                        },
+                        }),
                     )))
-                    .child(muted(format!("Stream {:.0}%", audio.gain * 100.)))
-                    .child(button("stream-volume-up", "+").on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.change_stream_audio(
-                                up_identity.clone(),
-                                |audio| audio.gain = (audio.gain + 0.1).min(2.),
-                                cx,
-                            );
-                        },
-                    )))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(format!("{:.0}%", audio.gain * 100.)),
+                    )
                     .child(div().flex_1())
                     .when(self.demo_stream, |view| {
-                        view.child(muted("Offline preview · No voice connection"))
+                        view.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(MUTED))
+                                .child("Offline preview"),
+                        )
                     })
                     .when(!self.demo_stream, |view| {
                         view.child(
-                            button(
+                            icon_button(
                                 "viewer-mic",
                                 if self.state.voice.muted {
-                                    "Unmute mic"
+                                    Icon::MicOff
                                 } else {
-                                    "Mute mic"
+                                    Icon::Mic
+                                },
+                                if self.state.voice.muted {
+                                    "Unmute microphone"
+                                } else {
+                                    "Mute microphone"
                                 },
                             )
+                            .when(self.state.voice.muted, |view| {
+                                view.text_color(rgb(0xe79a9e))
+                            })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.command(Command::SetMute(!this.state.voice.muted), cx);
+                                this.command(Command::SetMute(!this.state.voice.muted), cx)
                             })),
                         )
                         .child(
-                            button(
+                            icon_button(
                                 "viewer-deafen",
+                                if self.state.voice.deafened {
+                                    Icon::Deafen
+                                } else {
+                                    Icon::Headphones
+                                },
                                 if self.state.voice.deafened {
                                     "Undeafen"
                                 } else {
                                     "Deafen"
                                 },
                             )
+                            .when(self.state.voice.deafened, |view| {
+                                view.text_color(rgb(0xe79a9e))
+                            })
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.command(Command::SetDeaf(!this.state.voice.deafened), cx);
+                                this.command(Command::SetDeaf(!this.state.voice.deafened), cx)
                             })),
                         )
                         .child(
-                            button("viewer-leave", "Leave voice")
-                                .bg(rgb(0x68303c))
+                            icon_button("viewer-leave", Icon::PhoneOff, "Disconnect from voice")
+                                .text_color(rgb(0xe79a9e))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.clear_viewer(cx);
                                     this.pane = Pane::Chat;
