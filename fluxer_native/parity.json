@@ -25,22 +25,25 @@
       "id": "app",
       "source": "fluxer_app/src/features/app",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Native app shell, layouts, dialogs, launch lifecycle, instance capabilities and product flags."
+      "status": "partial",
+      "acceptance": "Native app shell, layouts, dialogs, launch lifecycle, instance capabilities and product flags.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "auth",
       "source": "fluxer_app/src/features/auth",
       "milestone": "M5",
-      "status": "pending",
-      "acceptance": "Login, registration, unclaimed accounts, recovery, MFA, passkeys, SSO, verification and sudo."
+      "status": "partial",
+      "acceptance": "Login, registration, unclaimed accounts, recovery, MFA, passkeys, SSO, verification and sudo.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "channel",
       "source": "fluxer_app/src/features/channel",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings."
+      "status": "partial",
+      "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "code_highlighting",
@@ -102,8 +105,9 @@
       "id": "gateway",
       "source": "fluxer_app/src/features/gateway",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Identify, ready, heartbeat, resume/reconnect, dispatch reduction, lazy subscriptions and snapshots."
+      "status": "partial",
+      "acceptance": "Identify, ready, heartbeat, resume/reconnect, dispatch reduction, lazy subscriptions and snapshots.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "gift",
@@ -116,8 +120,9 @@
       "id": "guild",
       "source": "fluxer_app/src/features/guild",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Community list and channel loading; M4 adds CRUD, roles, bans, audit log and integrations."
+      "status": "partial",
+      "acceptance": "Community list and channel loading; M4 adds CRUD, roles, bans, audit log and integrations.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "i18n",
@@ -137,8 +142,9 @@
       "id": "input",
       "source": "fluxer_app/src/features/input",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Native editing, IME, clipboard, selection, multiline input, shortcuts and composition."
+      "status": "partial",
+      "acceptance": "Native editing, IME, clipboard, selection, multiline input, shortcuts and composition.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "invite",
@@ -158,15 +164,17 @@
       "id": "member",
       "source": "fluxer_app/src/features/member",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Members and roles for current communities; M4 adds management, search, chunking and hierarchy."
+      "status": "partial",
+      "acceptance": "Members and roles for current communities; M4 adds management, search, chunking and hierarchy.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "messaging",
       "source": "fluxer_app/src/features/messaging",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "History, send/edit/delete/reply/reactions, live updates, attachments and delivery errors; rich rendering M3."
+      "status": "partial",
+      "acceptance": "History, send/edit/delete/reply/reactions, live updates, attachments and delivery errors; rich rendering M3.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "moderation",
@@ -179,8 +187,9 @@
       "id": "navigation",
       "source": "fluxer_app/src/features/navigation",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Routes, back/forward, quick switcher, channel/message jump and deep-link targets."
+      "status": "partial",
+      "acceptance": "Routes, back/forward, quick switcher, channel/message jump and deep-link targets.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "notification",
@@ -193,15 +202,17 @@
       "id": "permissions",
       "source": "fluxer_app/src/features/permissions",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Owner/admin, role hierarchy, everyone/role/member overwrites, implicit permissions and live invalidation."
+      "status": "partial",
+      "acceptance": "Owner/admin, role hierarchy, everyone/role/member overwrites, implicit permissions and live invalidation.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "platform",
       "source": "fluxer_app/src/features/platform",
       "milestone": "M6",
-      "status": "pending",
-      "acceptance": "Native OS ports, persistence, network/runtime policy, storage and platform capability boundaries."
+      "status": "partial",
+      "acceptance": "Native OS ports, persistence, network/runtime policy, storage and platform capability boundaries.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "premium",
@@ -221,8 +232,9 @@
       "id": "read_state",
       "source": "fluxer_app/src/features/read_state",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Channel read acknowledgments, mention counts, unread jumps and synchronization."
+      "status": "partial",
+      "acceptance": "Channel read acknowledgments, mention counts, unread jumps and synchronization.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "relationship",
@@ -235,8 +247,9 @@
       "id": "search",
       "source": "fluxer_app/src/features/search",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher."
+      "status": "partial",
+      "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "slowmode",
@@ -263,8 +276,9 @@
       "id": "theme",
       "source": "fluxer_app/src/features/theme",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Native base palette, appearance and font/scale preferences; theme links and sharing M5."
+      "status": "partial",
+      "acceptance": "Native base palette, appearance and font/scale preferences; theme links and sharing M5.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "theme_settings",
@@ -291,15 +305,17 @@
       "id": "typing",
       "source": "fluxer_app/src/features/typing",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Typing send throttling, incoming expiry and participant display."
+      "status": "partial",
+      "acceptance": "Typing send throttling, incoming expiry and participant display.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "ui",
       "source": "fluxer_app/src/features/ui",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Reusable native widgets, dialogs, menus, lists, tooltips and keyboard focus."
+      "status": "partial",
+      "acceptance": "Reusable native widgets, dialogs, menus, lists, tooltips and keyboard focus.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     },
     {
       "id": "updater",
@@ -319,8 +335,9 @@
       "id": "voice",
       "source": "fluxer_app/src/features/voice",
       "milestone": "M2",
-      "status": "pending",
-      "acceptance": "Native calls, microphone/playout, device/gain/DSP/PTT, screen/video/audio share, encryption and reconnect."
+      "status": "partial",
+      "acceptance": "Native calls, microphone/playout, device/gain/DSP/PTT, screen/video/audio share, encryption and reconnect.",
+      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
     },
     {
       "id": "webhook",
@@ -333,8 +350,9 @@
       "id": "window",
       "source": "fluxer_app/src/features/window",
       "milestone": "M6",
-      "status": "pending",
-      "acceptance": "Window state, fullscreen, popouts, geometry and native lifecycle."
+      "status": "partial",
+      "acceptance": "Window state, fullscreen, popouts, geometry and native lifecycle.",
+      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
     }
   ],
   "native_addons": [

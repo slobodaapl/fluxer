@@ -15,6 +15,10 @@ that gate.
   capture/publication, and incoming media. No browser or Electron renderer.
 - `crates/desktop`: GPUI windows, text input, lists, navigation, settings, call
   controls, and asynchronous orchestration of the other crates.
+- `crates/client`: background account/session orchestration shared by GPUI views;
+  authenticates, projects gateway/REST state, and manages call/media lifecycle.
+- `crates/system-audio`: Node-free access to the existing Rust PipeWire routing
+  engine, including application isolation and capture feedback prevention.
 
 The native client has an independent Cargo workspace and lockfile. Existing
 backend services, HTTP schemas, gateway protocols, web/mobile clients, and
@@ -29,6 +33,8 @@ Implementation branches/worktrees:
 | State agent | `gpui/core` | `/tmp/fluxer-gpui-core` | Main agent |
 | Protocol agent | `gpui/protocol` | `/tmp/fluxer-gpui-protocol` | Main agent |
 | GPUI agent | `gpui/desktop` | `/tmp/fluxer-gpui-desktop` | Main agent |
+| Client/backend agent | `gpui/backend` | `/tmp/fluxer-gpui-backend` | Main agent |
+| Audio agent | `gpui/audio` | `/tmp/fluxer-gpui-audio` | Main agent |
 | Main agent | `yolo/gpui` | Repository root | Integration, media, plans, checks |
 
 Agents commit only their owned crate. Main merges reviewed commits, resolves

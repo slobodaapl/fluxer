@@ -135,6 +135,7 @@ Full setup notes, including canary, are in the [Linux repositories documentation
 
 - [Open Fluxer in a browser](https://web.fluxer.app), no install needed.
 - [Host your own instance][docs-selfhost] from this repository.
+- [Build the experimental Rust/GPUI desktop client](./fluxer_native/README.md).
 
 ## Documentation
 
