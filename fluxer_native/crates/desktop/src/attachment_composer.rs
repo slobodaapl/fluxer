@@ -458,7 +458,7 @@ impl Fluxer {
                                                 )
                                                 .size(px(24.))
                                                 .bg(rgba(0x1a1722ee))
-                                                .opacity(0.)
+                                                .opacity(0.55)
                                                 .group_hover("staged-attachment", move |style| {
                                                     style.opacity(if frozen { 0.4 } else { 1. })
                                                 })
@@ -487,7 +487,7 @@ impl Fluxer {
                                                     )
                                                     .size(px(24.))
                                                     .bg(rgba(0x1a1722ee))
-                                                    .opacity(0.)
+                                                    .opacity(0.55)
                                                     .group_hover("staged-attachment", |style| {
                                                         style.opacity(1.)
                                                     })
@@ -521,7 +521,7 @@ impl Fluxer {
                                                 )
                                                 .size(px(24.))
                                                 .bg(rgba(0x1a1722ee))
-                                                .opacity(0.)
+                                                .opacity(0.55)
                                                 .group_hover("staged-attachment", |style| {
                                                     style.opacity(1.)
                                                 })
