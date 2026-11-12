@@ -691,6 +691,9 @@ impl Fluxer {
                         self.mfa_ticket = None;
                         self.password.update(cx, |v, cx| v.set(String::new(), cx));
                     }
+                    if self.demo && std::env::args().any(|arg| arg == "--demo-attachments") {
+                        self.install_attachment_fixture(cx);
+                    }
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
