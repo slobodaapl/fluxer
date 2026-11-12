@@ -110,6 +110,13 @@ impl MicrophoneCapture {
     }
 }
 
+impl Drop for MicrophoneCapture {
+    fn drop(&mut self) {
+        self.device_track.disable();
+        self.task.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,11 +177,5 @@ mod tests {
         assert!(actual.data.iter().any(|sample| *sample > 0));
         drop(capture);
         output.close();
-    }
-}
-impl Drop for MicrophoneCapture {
-    fn drop(&mut self) {
-        self.device_track.disable();
-        self.task.abort();
     }
 }

@@ -97,23 +97,29 @@ impl Drop for PlaybackOutput {
 }
 pub(crate) fn devices() -> Vec<AudioDevice> {
     let host = cpal::default_host();
-    host.output_devices()
-        .ok()
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(index, device)| {
-            let label = device.name().ok()?;
-            Some(AudioDevice {
-                id: format!("output:{index}:{label}"),
-                label,
-            })
-        })
-        .collect()
+    std::iter::once(AudioDevice {
+        id: "output:default".into(),
+        label: "System Default".into(),
+    })
+    .chain(
+        host.output_devices()
+            .ok()
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(index, device)| {
+                let label = device.name().ok()?;
+                Some(AudioDevice {
+                    id: format!("output:{index}:{label}"),
+                    label,
+                })
+            }),
+    )
+    .collect()
 }
 fn find_device(id: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
-    if let Some(id) = id {
+    if let Some(id) = id.filter(|id| *id != "output:default") {
         return host
             .output_devices()
             .map_err(|e| MediaError::Audio(e.to_string()))?

@@ -121,10 +121,15 @@ pub(crate) fn video_source(options: &ScreenShareOptions) -> NativeVideoSource {
 
 pub(crate) struct ScreenSession {
     stop: Arc<AtomicBool>,
+    thread: thread::Thread,
 }
 impl ScreenSession {
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
     }
 }
 impl Drop for ScreenSession {
@@ -143,14 +148,15 @@ pub(crate) fn start(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
     // DesktopCapturer must be created, driven, and dropped on its capture thread.
-    thread::Builder::new()
+    let capture_thread = thread::Builder::new()
         .name("fluxer-screen-capture".into())
         .spawn(move || {
             let Some(mut capturer) = DesktopCapturer::new(options(config.source.kind)) else {
-                let _ = tx.blocking_send(MediaEvent::Error(
+                stop_thread.store(true, Ordering::Release);
+                let _ = tx.try_send(MediaEvent::Error(
                     "Screen capture is unavailable; check OS permissions".into(),
                 ));
-                let _ = tx.blocking_send(MediaEvent::ScreenShareStopped);
+                let _ = tx.try_send(MediaEvent::ScreenShareStopped);
                 return;
             };
             let selected = if config.source.kind == ScreenSourceKind::SystemPicker {
@@ -163,10 +169,11 @@ pub(crate) fn start(
                 {
                     Some(s) => Some(s),
                     None => {
-                        let _ = tx.blocking_send(MediaEvent::Error(
+                        stop_thread.store(true, Ordering::Release);
+                        let _ = tx.try_send(MediaEvent::Error(
                             "The selected capture source disappeared".into(),
                         ));
-                        let _ = tx.blocking_send(MediaEvent::ScreenShareStopped);
+                        let _ = tx.try_send(MediaEvent::ScreenShareStopped);
                         return;
                     }
                 }
@@ -226,13 +233,17 @@ pub(crate) fn start(
             {
                 let tick = Instant::now();
                 capturer.capture_frame();
-                thread::sleep(interval.saturating_sub(tick.elapsed()));
+                thread::park_timeout(interval.saturating_sub(tick.elapsed()));
             }
             drop(capturer);
+            stop_thread.store(true, Ordering::Release);
             let _ = tx.try_send(MediaEvent::ScreenShareStopped);
         })
         .map_err(|e| MediaError::Screen(e.to_string()))?;
-    Ok(ScreenSession { stop })
+    Ok(ScreenSession {
+        stop,
+        thread: capture_thread.thread().clone(),
+    })
 }
 
 fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
@@ -257,11 +268,36 @@ mod tests {
     }
     #[test]
     fn invalid_capture_parameters_are_rejected_before_capture() {
-        let mut config = ScreenShareOptions::default();
-        config.fps = 0;
+        let mut config = ScreenShareOptions {
+            fps: 0,
+            ..ScreenShareOptions::default()
+        };
         assert!(config.validate().is_err());
         config.fps = 30;
         config.max_width = u32::MAX;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn stopping_screen_session_wakes_capture_timer_and_marks_stopped() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                thread::park_timeout(Duration::from_secs(10));
+            }
+            tx.send(()).unwrap();
+        });
+        let mut session = ScreenSession {
+            stop,
+            thread: worker.thread().clone(),
+        };
+        assert!(!session.is_stopped());
+        session.stop();
+        assert!(session.is_stopped());
+        rx.recv_timeout(Duration::from_secs(1))
+            .expect("stop wakes timer promptly");
+        worker.join().unwrap();
     }
 }
