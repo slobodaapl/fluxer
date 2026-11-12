@@ -24,3 +24,18 @@ xattr = { path = "compat/xattr" }
 
 # Keep RTC handles through explicit unsubscribe and preserve ordered SFU demand.
 livekit = { path = "compat/livekit" }
+
+# Video capture, pixel handling and GPUI rendering must meet real-time budgets
+# in development builds too. Keep debug symbols/assertions and optimize only
+# the frame-processing crates rather than rebuilding every dependency.
+[profile.dev.package.fluxer-desktop]
+opt-level = 2
+
+[profile.dev.package.fluxer-media]
+opt-level = 2
+
+[profile.dev.package.gpui]
+opt-level = 2
+
+[profile.dev.package.image]
+opt-level = 2
