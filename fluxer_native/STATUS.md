@@ -16,9 +16,24 @@ not individual types or controls.
 | Client orchestration | 23 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, stream viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-122 tests. The opt-in LiveKit test also passes explicit microphone/screen
-subscription, screen unwatch while fresh microphone audio continues, and
-deafen/undeafen checks. The native lockfile is committed separately from the server workspace lockfile.
+122 tests. The opt-in LiveKit test verifies explicit microphone/screen
+subscription and screen unwatch while fresh microphone audio continues. The
+current run times out restoring the microphone immediately after deafen: the
+SDK's local unsubscribe event precedes wire completion, and its asynchronous
+subscription requests are not ordered. This is an open SDK compatibility gap;
+the complete synthetic test is not currently passing. The native lockfile is
+committed separately from the server workspace lockfile.
+
+An explicit desktop-device regression reproduced `stop_recording failed` during
+repeated teardown after a muted call. All stop paths now check LiveKit's recording
+initialized state, matching its device-switch implementation. Both idle setup
+and actual muted local join/leave/rejoin pass on this desktop with the fix. Run
+`scripts/test_media_loopback.py --audio-lifecycle` against the disposable local
+server to repeat these two hardware checks; they are opt-in in the normal gate.
+
+The shared build cache was moved from RAM-backed `/tmp` into the ignored
+`fluxer_native/target/gpui-shared-cache` directory. The old `/tmp` path is only a
+symlink for existing Cargo cache references; new build output consumes disk.
 
 The implemented native UI includes community/channel navigation, paginated text
 history, multiline compose/edit/delete/reactions/copy, draft retention on failed

@@ -51,6 +51,19 @@ pub enum MediaError {
 
 pub type Result<T> = std::result::Result<T, MediaError>;
 
+/// PlatformAudio::stop_recording forwards directly to the ADM. Some native
+/// backends reject StopRecording after the room has already released recording.
+/// Match PlatformAudio::switch_recording_device's initialized-state guard so
+/// fresh/idle setup and repeated teardown are valid. Genuine stop failures for
+/// initialized recording still propagate to callers.
+fn stop_recording_if_initialized(audio: &PlatformAudio) -> livekit::AudioResult<()> {
+    if audio.is_recording_initialized() {
+        audio.stop_recording()
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioDevice {
     pub id: String,
@@ -157,9 +170,7 @@ impl MediaEngine {
         let audio = PlatformAudio::new().map_err(|e| MediaError::Audio(e.to_string()))?;
         // Creating/enumerating the device manager does not grant permission to
         // transmit. Recording remains stopped until an unmuted call is joined.
-        audio
-            .stop_recording()
-            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        stop_recording_if_initialized(&audio).map_err(|e| MediaError::Audio(e.to_string()))?;
         let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
         let output = playback::PlaybackOutput::new(mixer.clone());
         Ok(Self {
@@ -219,9 +230,7 @@ impl MediaEngine {
         // switch_recording_device restarts any initialized ADM even after mute.
         // Explicit stop/set/start avoids briefly recording in muted/settings-only
         // flows and leaves the device stopped if selecting a replacement fails.
-        self.audio
-            .stop_recording()
-            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        stop_recording_if_initialized(&self.audio).map_err(|e| MediaError::Audio(e.to_string()))?;
         self.audio
             .set_recording_device(&device.id)
             .map_err(|e| MediaError::Audio(e.to_string()))?;
@@ -351,12 +360,12 @@ impl MediaEngine {
         {
             drop(capture);
             self.output.stop();
-            let _ = self.audio.stop_recording();
+            let _ = stop_recording_if_initialized(&self.audio);
             let _ = room.close().await;
             return Err(MediaError::Call(error.to_string()));
         }
         let recording = if self.muted || self.deafened {
-            self.audio.stop_recording()
+            stop_recording_if_initialized(&self.audio)
         } else {
             self.audio.start_recording()
         };
@@ -364,7 +373,7 @@ impl MediaEngine {
             drop(capture);
             mic.mute();
             mic.disable();
-            let _ = self.audio.stop_recording();
+            let _ = stop_recording_if_initialized(&self.audio);
             self.output.stop();
             let _ = room.close().await;
             return Err(MediaError::Audio(error.to_string()));
@@ -562,7 +571,7 @@ impl MediaEngine {
                             mic.mute();
                             mic.disable();
                         }
-                        let _ = audio.stop_recording();
+                        let _ = stop_recording_if_initialized(&audio);
                         if let Ok(mut m) = mixer.lock() {
                             m.clear();
                         }
@@ -766,7 +775,7 @@ impl MediaEngine {
                 mic.mute();
                 mic.disable();
             }
-            let _ = audio.stop_recording();
+            let _ = stop_recording_if_initialized(&audio);
             if let Ok(mut m) = mixer.lock() {
                 m.clear();
             }
@@ -829,8 +838,7 @@ impl MediaEngine {
             if self.muted || self.deafened {
                 mic.mute();
                 mic.disable();
-                self.audio
-                    .stop_recording()
+                stop_recording_if_initialized(&self.audio)
                     .map_err(|e| MediaError::Audio(e.to_string()))?;
             } else {
                 self.audio
@@ -921,8 +929,7 @@ impl MediaEngine {
         if controls.testing {
             controls.testing = false;
             self.input_capture.take();
-            self.audio
-                .stop_recording()
+            stop_recording_if_initialized(&self.audio)
                 .map_err(|e| MediaError::Audio(e.to_string()))?;
         }
         Ok(())
@@ -1144,9 +1151,7 @@ impl MediaEngine {
             mic.mute();
             mic.disable();
         }
-        let audio_result = self
-            .audio
-            .stop_recording()
+        let audio_result = stop_recording_if_initialized(&self.audio)
             .map_err(|e| MediaError::Audio(e.to_string()));
         if let Some(task) = self.room_task.take() {
             task.abort();
@@ -1234,7 +1239,7 @@ impl Drop for MediaEngine {
             mic.mute();
             mic.disable();
         }
-        let _ = self.audio.stop_recording();
+        let _ = stop_recording_if_initialized(&self.audio);
         if let Some(task) = self.room_task.take() {
             task.abort();
         }

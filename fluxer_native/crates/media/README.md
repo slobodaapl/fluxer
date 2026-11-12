@@ -6,6 +6,11 @@ speaker mixer. All device handles stay off the GPUI rendering thread. Device
 capture starts on an explicit call join or microphone test and stops on leave,
 failed join, mute/deafen, test stop, or drop.
 
+Recording stop checks the SDK's initialized state, as LiveKit's own device-switch
+code does. Repeated cleanup after room closure is valid; a fresh or already
+released recorder does not receive another StopRecording call. Errors stopping
+initialized recording still propagate.
+
 Audio controls process actual samples:
 
 - PlatformAudio supplies device routing and WebRTC AEC/noise suppression/AGC.
@@ -51,6 +56,9 @@ cargo test --manifest-path fluxer_native/Cargo.toml -p fluxer-media --lib
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example audio_probe
 # Explicitly capture five seconds of local mic level readings:
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example audio_probe -- --meter
+# With the disposable local LiveKit server: exercise actual desktop device
+# initialization, muted join/leave/rejoin and repeated cleanup.
+python3 fluxer_native/scripts/test_media_loopback.py --audio-lifecycle
 ```
 
 Unit tests cover PCM gain, saturation, PTT, voice-activation release, participant

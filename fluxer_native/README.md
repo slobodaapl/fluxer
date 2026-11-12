@@ -20,6 +20,10 @@ Normal launch signs in to a selected instance. Demo mode uses clearly labeled
 local fixtures; it does not connect calls or transmit messages. The current
 client keeps session credentials in memory.
 
+Keep Cargo build output on disk rather than a RAM-backed `/tmp`. Cargo's default
+`fluxer_native/target` location already does this; custom `CARGO_TARGET_DIR`
+settings should also point to a disk-backed directory.
+
 Linux needs a working X11 or Wayland session, Vulkan-capable GPU/driver,
 fontconfig/freetype, xkbcommon (including X11 support), ALSA, PipeWire, GLib,
 OpenSSL, and development headers. Build tooling includes Rust, pkg-config,

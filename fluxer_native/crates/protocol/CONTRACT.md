@@ -48,6 +48,14 @@ browser or invent an Electron version.
   screen codec negotiation messages and camera demand remain open.
 - Rust LiveKit's publish API lacks the existing JS client's `forceStereo` option;
   matching stereo PCM does not alone establish matching SDP signaling.
+- Rapid microphone deafen/undeafen can fail to restore the remote track in the
+  Rust SDK. Its `RemoteTrackPublication::set_subscribed(false)` clears the local
+  track before signaling completes, while `RemoteParticipant::add_publication`
+  dispatches updates through independent spawned tasks. The desktop JS SDK
+  retains the track. The local synthetic test reproduces the missing restore
+  event at `media/tests/loopback.rs`'s final microphone resubscription. Resolving
+  this needs ordered SDK signaling and correct track reuse; sleeps in the test
+  would not establish parity.
 - Native capture/device routing, codec settings and E2EE need two-client
   interoperability checks against the existing desktop client. Synthetic LiveKit
   transport alone cannot verify Fluxer call parity.
