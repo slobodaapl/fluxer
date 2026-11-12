@@ -11,3 +11,4 @@ futures-util = "0.3"
 thiserror.workspace = true
 serde.workspace = true
 fluxer-system-audio = { path = "../system-audio" }
+cpal = "0.16"
