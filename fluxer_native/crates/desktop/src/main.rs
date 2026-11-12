@@ -3,6 +3,7 @@ mod call_view;
 mod chat_helpers;
 mod dropdown;
 mod emoji_picker;
+mod emoji_sprites;
 mod input;
 mod rich_message;
 mod stream_view;
