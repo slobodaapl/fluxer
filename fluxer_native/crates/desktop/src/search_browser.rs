@@ -57,7 +57,7 @@ impl SearchUi {
             scope: picker(
                 "Search scope",
                 &[
-                    ("current", "Current community"),
+                    ("current", "This community"),
                     ("all_dms", "All DMs"),
                     ("open_dms", "Open DMs"),
                     ("all", "All DMs + communities"),
@@ -115,12 +115,7 @@ impl Fluxer {
         let mut options = vec![
             (
                 "current".into(),
-                if private {
-                    "Current DM"
-                } else {
-                    "Current community"
-                }
-                .into(),
+                if private { "This DM" } else { "This community" }.into(),
             ),
             ("all_dms".into(), "All DMs".into()),
             ("open_dms".into(), "Open DMs".into()),
@@ -655,6 +650,9 @@ impl Fluxer {
             .unwrap_or_else(|| "Conversation".into());
         div()
             .id(("browse-message", message.id.0))
+            .w_full()
+            .max_w_full()
+            .overflow_hidden()
             .px_3()
             .py_3()
             .border_b_1()
@@ -698,7 +696,15 @@ impl Fluxer {
                 )
             })
             .when(!text.is_empty(), |view| {
-                view.child(div().max_h(px(140.)).overflow_hidden().child(input))
+                view.child(
+                    div()
+                        .w_full()
+                        .min_w_0()
+                        .max_w_full()
+                        .max_h(px(140.))
+                        .overflow_hidden()
+                        .child(input),
+                )
             })
             .child(
                 div()
@@ -871,6 +877,8 @@ impl Fluxer {
                                 .unwrap_or_else(|| div().into_any_element())
                             }),
                         )
+                        .w_full()
+                        .min_w_0()
                         .flex_1()
                         .min_h_0(),
                     );
@@ -987,6 +995,8 @@ impl Fluxer {
                                             .unwrap_or_else(|| div().into_any_element())
                                     }),
                                 )
+                                .w_full()
+                                .min_w_0()
                                 .flex_1()
                                 .min_h_0(),
                             );
