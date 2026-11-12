@@ -150,7 +150,30 @@ pub(crate) fn endpoint(value: &str, socket: bool) -> Result<Url> {
 }
 
 pub(crate) fn discovery_candidates(input: &str) -> Result<Vec<Url>> {
-    let base = endpoint(input, false)?;
+    let mut base = endpoint(input, false)?;
+    // These aliases and client API routes are shared with OfficialInstance.ts.
+    // Marketing/web/API hosts identify one account authority; discovery still
+    // verifies the selected client API's own origin before credentials are sent.
+    if base.scheme() == "https"
+        && base.port().is_none()
+        && matches!(base.path(), "" | "/" | "/api" | "/api/")
+    {
+        let target = match base.host_str() {
+            Some("fluxer.app" | "web.fluxer.app" | "api.fluxer.app" | "fluxer.com") => {
+                Some("https://web.fluxer.app/api")
+            }
+            Some(
+                "canary.fluxer.app"
+                | "web.canary.fluxer.app"
+                | "api.canary.fluxer.app"
+                | "canary.fluxer.com",
+            ) => Some("https://web.canary.fluxer.app/api"),
+            _ => None,
+        };
+        if let Some(target) = target {
+            base = Url::parse(target).expect("static official API URL");
+        }
+    }
     let mut paths = vec!["/.well-known/fluxer".to_owned()];
     let carried = base.path().trim_end_matches('/');
     if !carried.is_empty() {
@@ -223,5 +246,29 @@ mod tests {
         ] {
             assert!(endpoint(url, false).is_err());
         }
+    }
+
+    #[test]
+    fn official_aliases_resolve_to_the_existing_client_api_authority() {
+        for host in [
+            "fluxer.app",
+            "web.fluxer.app",
+            "api.fluxer.app",
+            "fluxer.com",
+        ] {
+            let urls = discovery_candidates(&format!("https://{host}")).unwrap();
+            assert!(
+                urls.iter()
+                    .all(|url| url.host_str() == Some("web.fluxer.app"))
+            );
+            assert!(
+                urls.iter()
+                    .any(|url| url.path() == "/api/.well-known/fluxer")
+            );
+        }
+        assert_eq!(
+            discovery_candidates("https://chat.example/api").unwrap()[0].host_str(),
+            Some("chat.example")
+        );
     }
 }

@@ -149,6 +149,11 @@ impl Gateway {
         self.properties = properties;
         self
     }
+    /// Advertise only after the caller has an E2EE-capable native media backend.
+    pub fn with_e2ee_capable(mut self, capable: bool) -> Self {
+        self.properties["e2ee_capable"] = capable.into();
+        self
+    }
     pub fn resume_session(&self) -> &ResumeSession {
         &self.resume
     }
@@ -284,6 +289,13 @@ impl Gateway {
                             },
                             0 => {
                                 let Some(name) = payload.t else { break; };
+                                // A resumed connection can repeat its last delivered
+                                // dispatch. In particular, reactions are deltas and
+                                // must not be applied twice.
+                                if let (Some(previous), Some(sequence)) = (self.resume.sequence, payload.s)
+                                    && sequence <= previous && name != "READY" {
+                                    continue;
+                                }
                                 if name == "READY" {
                                     let Some(session_id) = payload.d.get("session_id").and_then(Value::as_str) else { break; };
                                     self.resume.session_id = Some(session_id.to_owned());

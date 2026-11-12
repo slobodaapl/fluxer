@@ -172,6 +172,7 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
         let identify = next_json(&mut socket).await;
         assert_eq!(identify["op"], 2);
         assert_eq!(identify["d"]["token"], "secret");
+        assert_eq!(identify["d"]["properties"]["e2ee_capable"], true);
         gateway_send(
             &mut socket,
             json!({"op":0,"t":"READY","s":1,"d":{"session_id":"session"}}),
@@ -208,6 +209,7 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
         assert_eq!(resume["op"], 6);
         assert_eq!(resume["d"]["seq"], 2);
         assert_eq!(resume["d"]["session_id"], "session");
+        gateway_send(&mut socket, json!({"op":0,"t":"VOICE_SERVER_UPDATE","s":2,"d":{"token":"voice-secret","endpoint":"wss://voice.example","connection_id":"duplicate"}})).await;
         gateway_send(&mut socket, json!({"op":0,"t":"RESUMED","s":3,"d":{}})).await;
         // Keep the server side alive until the client explicitly closes.
         while let Some(Ok(message)) = socket.next().await {
@@ -221,10 +223,12 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
     let gateway = Gateway::new(
         Url::parse(&format!("ws://{address}/gateway")).unwrap(),
         SessionToken::new("secret").unwrap(),
-    );
+    )
+    .with_e2ee_capable(true);
     let client = tokio::spawn(gateway.run(events_tx, commands_rx));
     timeout(Duration::from_secs(8), async {
         let mut connections = 0;
+        let mut voice_updates = 0;
         while let Some(event) = events.recv().await {
             match event {
                 GatewayEvent::Connected => {
@@ -238,12 +242,17 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
                             .await
                             .unwrap();
                     } else {
+                        assert_eq!(
+                            voice_updates, 1,
+                            "resumed dispatch must not repeat a voice transition"
+                        );
                         commands.send(GatewayCommand::Close).await.unwrap();
                         break;
                     }
                 }
                 GatewayEvent::Dispatch { name, data, .. } if name == "VOICE_SERVER_UPDATE" => {
-                    assert_eq!(data["connection_id"], "conn")
+                    assert_eq!(data["connection_id"], "conn");
+                    voice_updates += 1;
                 }
                 _ => {}
             }
