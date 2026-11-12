@@ -1411,6 +1411,7 @@ impl Worker {
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {
+        self.require_history(channel)?;
         if !self.state.channels.contains_key(&channel) {
             return Err("Unknown channel".into());
         }

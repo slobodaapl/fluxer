@@ -350,6 +350,8 @@ pub struct ReadState {
     /// GatewaySchemas: timestamp of the last pin the user acknowledged.
     #[serde(default)]
     pub last_pin_timestamp: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

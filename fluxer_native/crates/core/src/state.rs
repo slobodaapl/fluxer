@@ -62,6 +62,30 @@ impl ClientState {
         );
         decode("REST", data)
     }
+    /// Update a search/pin preview with gateway data without inserting it into
+    /// the live timeline or changing unread counts in the account state.
+    pub fn reduce_detached_message(
+        &self,
+        message: &Message,
+        event: &str,
+        mut data: Value,
+    ) -> Result<Option<Message>, StateError> {
+        hydrate_wire_users(
+            &mut data,
+            &self.users,
+            self.current_user.as_ref().map(|user| user.id),
+        );
+        let mut detached = Self {
+            current_user: self.current_user.clone(),
+            ..Default::default()
+        };
+        detached.load_history(message.channel_id, vec![message.clone()]);
+        detached.apply_gateway(event, data)?;
+        Ok(detached
+            .messages
+            .get_mut(&message.channel_id)
+            .and_then(|messages| messages.remove(&message.id)))
+    }
     fn cache_user(&mut self, user: User) {
         if let Some(me) = self.current_user.as_ref().filter(|me| me.id == user.id) {
             self.users.insert(me.id, me.clone());
@@ -205,6 +229,32 @@ impl ClientState {
         } else {
             permissions
         }
+    }
+    /// MessageActionUtils/MessagePinService: PIN_MESSAGES is independent of
+    /// SEND_MESSAGES; guild-wide SEND_MESSAGE can still disable pin operations.
+    pub fn can_pin_messages(&self, channel_id: Snowflake) -> bool {
+        self.channels
+            .get(&channel_id)
+            .zip(self.current_user.as_ref())
+            .is_some_and(|(channel, user)| {
+                let disabled = channel
+                    .guild_id
+                    .and_then(|id| self.guilds.get(&id))
+                    .and_then(|guild| guild.extra.get("disabled_operations"))
+                    .and_then(|value| value.as_i64().or_else(|| value.as_str()?.parse().ok()))
+                    .unwrap_or(0);
+                let system_dm = channel.kind == ChannelType::Dm
+                    && channel
+                        .recipients
+                        .iter()
+                        .any(|user| user.id == Snowflake(0));
+                !system_dm
+                    && disabled & (1 << 4) == 0
+                    && (channel.kind.is_private()
+                        || self
+                            .permissions_for(channel_id, user.id)
+                            .contains(Permissions::PIN_MESSAGES))
+            })
     }
     pub fn insert_message(&mut self, message: Message) {
         self.cache_user(message.author.clone());
@@ -871,17 +921,34 @@ impl ClientState {
                     channel_id: Snowflake,
                     message_id: Snowflake,
                     #[serde(default)]
-                    mention_count: u32,
+                    mention_count: Option<u32>,
+                    #[serde(default)]
+                    version: Option<String>,
+                    #[serde(default)]
+                    manual: bool,
                 }
                 let ack: Ack = decode(event, data)?;
                 let read = self.read_states.entry(ack.channel_id).or_insert(ReadState {
                     id: ack.channel_id,
                     ..ReadState::default()
                 });
-                // A delayed ACK cannot move the local cursor backward.
-                if read.last_message_id.is_none_or(|id| ack.message_id >= id) {
+                // ReadStateServerAckMachine routes stale versions before the
+                // manual/older/current/newer message cases. Decimal comparison
+                // must preserve full precision and leading-zero semantics.
+                if ack.version.is_some()
+                    && compare_read_versions(ack.version.as_deref(), read.version.as_deref())
+                        .is_lt()
+                {
+                    return Ok(ApplyOutcome::Ignored);
+                }
+                if let Some(version) = ack.version {
+                    read.version = Some(version);
+                }
+                if ack.manual || read.last_message_id.is_none_or(|id| ack.message_id >= id) {
                     read.last_message_id = Some(ack.message_id);
-                    read.mention_count = ack.mention_count;
+                    if let Some(count) = ack.mention_count {
+                        read.mention_count = count;
+                    }
                 }
             }
             "CHANNEL_PINS_UPDATE" => {
@@ -920,6 +987,19 @@ fn pin_timestamp(value: Option<&str>) -> i64 {
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
         .map(|time| time.timestamp_millis())
         .unwrap_or(0)
+}
+fn compare_read_versions(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    fn normalized(value: &str) -> Option<&str> {
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let value = value.trim_start_matches('0');
+        Some(if value.is_empty() { "0" } else { value })
+    }
+    match left.and_then(normalized).zip(right.and_then(normalized)) {
+        Some((left, right)) => left.len().cmp(&right.len()).then_with(|| left.cmp(right)),
+        None => std::cmp::Ordering::Equal,
+    }
 }
 #[derive(Deserialize)]
 struct Id {
@@ -1078,6 +1158,65 @@ mod attachment_preferences_tests {
 mod navigation_state_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn server_ack_ordering_compares_versions_before_manual_or_message_order() {
+        let mut state = ClientState::default();
+        let channel = Snowflake(1);
+        for data in [
+            json!({"channel_id":"1","message_id":"100","mention_count":4,"version":"0007"}),
+            json!({"channel_id":"1","message_id":"150","mention_count":0,"version":"6"}),
+        ] {
+            state.apply_gateway("MESSAGE_ACK", data).unwrap();
+        }
+        let read = &state.read_states[&channel];
+        assert_eq!(read.last_message_id, Some(100.into()));
+        assert_eq!(read.mention_count, 4);
+        assert_eq!(read.version.as_deref(), Some("0007"));
+        state
+            .apply_gateway(
+                "MESSAGE_ACK",
+                json!({"channel_id":"1","message_id":"90","mention_count":9,"version":"8"}),
+            )
+            .unwrap();
+        let read = &state.read_states[&channel];
+        assert_eq!(read.last_message_id, Some(100.into()));
+        assert_eq!(read.mention_count, 4);
+        assert_eq!(read.version.as_deref(), Some("8"));
+        state
+            .apply_gateway(
+                "MESSAGE_ACK",
+                json!({"channel_id":"1","message_id":"100","mention_count":3,"version":"9"}),
+            )
+            .unwrap();
+        assert_eq!(state.read_states[&channel].mention_count, 3);
+        state.apply_gateway("MESSAGE_ACK",json!({"channel_id":"1","message_id":"50","mention_count":7,"manual":true,"version":"8"})).unwrap();
+        assert_eq!(
+            state.read_states[&channel].last_message_id,
+            Some(100.into())
+        );
+        state.apply_gateway("MESSAGE_ACK",json!({"channel_id":"1","message_id":"50","mention_count":7,"manual":true,"version":"10"})).unwrap();
+        assert_eq!(state.read_states[&channel].last_message_id, Some(50.into()));
+        assert_eq!(state.read_states[&channel].mention_count, 7);
+        state
+            .apply_gateway("MESSAGE_ACK", json!({"channel_id":"1","message_id":"60"}))
+            .unwrap();
+        assert_eq!(
+            state.read_states[&channel].mention_count, 7,
+            "missing mention_count does not manufacture zero"
+        );
+        assert_eq!(
+            compare_read_versions(
+                Some("184467440737095516159999"),
+                Some("18446744073709551615")
+            ),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_read_versions(Some("invalid"), Some("10")),
+            std::cmp::Ordering::Equal
+        );
+    }
 
     #[test]
     fn pin_timestamps_use_channel_latest_and_read_state_ack_without_changing_message_read_cursor() {
