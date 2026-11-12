@@ -10,6 +10,45 @@ use gpui::{
 };
 use unicode_segmentation::*;
 
+pub struct ImagePasted {
+    pub content_type: &'static str,
+    pub extension: &'static str,
+    pub bytes: std::sync::Arc<Vec<u8>>,
+}
+
+enum PastePayload {
+    Text(String),
+    Image(ImagePasted),
+    Empty,
+}
+
+fn paste_payload(item: ClipboardItem, allow_image: bool) -> PastePayload {
+    let text = item.text();
+    if allow_image {
+        for entry in item.into_entries() {
+            if let gpui::ClipboardEntry::Image(image) = entry
+                && !image.bytes.is_empty()
+            {
+                let extension = match image.format {
+                    gpui::ImageFormat::Png => "png",
+                    gpui::ImageFormat::Jpeg => "jpg",
+                    gpui::ImageFormat::Webp => "webp",
+                    gpui::ImageFormat::Gif => "gif",
+                    gpui::ImageFormat::Svg => "svg",
+                    gpui::ImageFormat::Bmp => "bmp",
+                    gpui::ImageFormat::Tiff => "tiff",
+                };
+                return PastePayload::Image(ImagePasted {
+                    content_type: image.format.mime_type(),
+                    extension,
+                    bytes: std::sync::Arc::new(image.bytes),
+                });
+            }
+        }
+    }
+    text.map_or(PastePayload::Empty, PastePayload::Text)
+}
+
 actions!(
     text_input,
     [
@@ -51,6 +90,7 @@ pub struct TextInput {
     pub secret: bool,
     pub multiline: bool,
     pub chat_picker: bool,
+    pub attachment_paste: bool,
     read_only: bool,
     selection_origin: Option<Range<usize>>,
     selection_clicks: usize,
@@ -68,6 +108,8 @@ pub struct TextInput {
     preferred_x: Option<Pixels>,
 }
 
+impl gpui::EventEmitter<ImagePasted> for TextInput {}
+
 impl TextInput {
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
@@ -76,6 +118,7 @@ impl TextInput {
             secret: false,
             multiline: false,
             chat_picker: false,
+            attachment_paste: false,
             read_only: false,
             selection_origin: None,
             selection_clicks: 1,
@@ -341,8 +384,12 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text, window, cx);
+        if let Some(item) = cx.read_from_clipboard() {
+            match paste_payload(item, self.attachment_paste && !self.read_only) {
+                PastePayload::Text(text) => self.replace_text_in_range(None, &text, window, cx),
+                PastePayload::Image(image) => cx.emit(image),
+                PastePayload::Empty => {}
+            }
         }
     }
 
@@ -1255,9 +1302,37 @@ fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) 
 #[cfg(test)]
 mod tests {
     use super::{
-        grapheme_offset, logical_lines, marked_selection, normalize_insert, row_for_index,
-        selection_unit, utf16_offset, visual_ranges, word_offset,
+        PastePayload, grapheme_offset, logical_lines, marked_selection, normalize_insert,
+        paste_payload, row_for_index, selection_unit, utf16_offset, visual_ranges, word_offset,
     };
+    use gpui::ClipboardItem;
+    #[test]
+    fn clipboard_text_paste_preserves_unicode_and_newlines_with_attachment_support() {
+        let text = "one\n雪 🦀";
+        for allow_image in [false, true] {
+            match paste_payload(ClipboardItem::new_string(text.into()), allow_image) {
+                PastePayload::Text(actual) => assert_eq!(actual, text),
+                _ => panic!("text clipboard must stay text"),
+            }
+        }
+    }
+    #[test]
+    fn clipboard_image_paste_transfers_encoded_bytes_without_decoding() {
+        let encoded = vec![0, 1, 2, 3]; // Deliberately not a decodable image.
+        let item = ClipboardItem::new_image(&gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            encoded.clone(),
+        ));
+        match paste_payload(item.clone(), true) {
+            PastePayload::Image(image) => {
+                assert_eq!(image.content_type, "image/png");
+                assert_eq!(image.extension, "png");
+                assert_eq!(*image.bytes, encoded);
+            }
+            _ => panic!("composer image clipboard must emit encoded bytes"),
+        }
+        assert!(matches!(paste_payload(item, false), PastePayload::Empty));
+    }
     #[test]
     fn word_navigation_skips_whitespace_and_respects_unicode_and_emoji() {
         let text = "one  café\n👩‍💻!";
