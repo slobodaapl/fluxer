@@ -345,8 +345,7 @@ impl Fluxer {
             .shadow_sm()
             .invisible()
             .group_hover(group, |style| style.visible())
-            .when(persistent, |toolbar| toolbar.visible())
-            .occlude();
+            .when(persistent, |toolbar| toolbar.visible());
         for action in [MessageAction::React, MessageAction::Reply] {
             if actions.contains(&action) {
                 let message = message.clone();
