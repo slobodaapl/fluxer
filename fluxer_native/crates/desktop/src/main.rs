@@ -7,8 +7,8 @@ use fluxer_client::{Command, Controller, Event, VoiceStatus};
 use fluxer_core::{ChannelType, ClientState, Snowflake, VoiceParticipant};
 use fluxer_media::{
     AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
-    ParticipantAudioSettings, ScreenShareOptions, ScreenSource, SharedAudioSelection,
-    SharedAudioSettings,
+    ParticipantAudioSettings, ScreenShareOptions, ScreenSource, ScreenSourceKind,
+    SharedAudioSelection, SharedAudioSettings,
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
@@ -622,6 +622,7 @@ impl Fluxer {
                         picker.set_options(
                             sources
                                 .iter()
+                                .filter(|source| source.kind != ScreenSourceKind::SystemPicker)
                                 .map(|s| (screen_source_id(s), s.label.clone()))
                                 .collect(),
                             cx,
@@ -1467,6 +1468,14 @@ impl Fluxer {
                             .enumerate()
                             .map(|(index, participant)| {
                                 let speaking = self.participant_speaking(&participant, channel);
+                                // Availability is filtered by the worker's current call
+                                // and local connection, including own-account other devices.
+                                let stream_identity =
+                                    participant.livekit_identity.clone().filter(|identity| {
+                                        participant.self_stream
+                                            && self.state.voice.channel_id == Some(channel)
+                                            && self.available_streams.contains(identity)
+                                    });
                                 div()
                                     .id(("voice-participant-card", index))
                                     .w(px(172.))
@@ -1506,6 +1515,31 @@ impl Fluxer {
                                             )),
                                     )
                                     .child(voice_badges(&participant, false))
+                                    .when_some(stream_identity, |view, identity| {
+                                        let watching = self.watched_streams.contains(&identity);
+                                        view.child(
+                                            button(
+                                                ("watch-participant-stream", index),
+                                                if watching {
+                                                    "Stop watching"
+                                                } else {
+                                                    "Watch stream"
+                                                },
+                                            )
+                                            .when(watching, |view| view.bg(rgb(0x6650bd)))
+                                            .on_click(
+                                                cx.listener(move |this, _, _, cx| {
+                                                    this.command(
+                                                        Command::WatchStream {
+                                                            identity: identity.clone(),
+                                                            watch: !watching,
+                                                        },
+                                                        cx,
+                                                    );
+                                                }),
+                                            ),
+                                        )
+                                    })
                                     .when(speaking, |view| {
                                         view.child(
                                             div()
@@ -2188,14 +2222,19 @@ impl Fluxer {
     }
 
     fn screens(&self, cx: &mut Context<Self>) -> AnyElement {
+        let system_picker = self
+            .sources
+            .iter()
+            .find(|source| source.kind == ScreenSourceKind::SystemPicker)
+            .cloned();
         let selected = self
             .screen_picker
             .read(cx)
             .selected()
             .and_then(|id| {
-                self.sources
-                    .iter()
-                    .find(|source| screen_source_id(source) == id)
+                self.sources.iter().find(|source| {
+                    source.kind != ScreenSourceKind::SystemPicker && screen_source_id(source) == id
+                })
             })
             .cloned();
         div()
@@ -2209,10 +2248,14 @@ impl Fluxer {
             .flex_col()
             .gap_4()
             .child(heading("Share your screen"))
-            .child(muted(
-                "Select a display or window. Your desktop may open a system permission picker.",
-            ))
-            .child(self.screen_picker.clone())
+            .child(muted(if system_picker.is_some() {
+                "Choose your quality, then select a display or window in the system dialog."
+            } else {
+                "Choose a display or window and your sharing quality."
+            }))
+            .when(system_picker.is_none(), |view| {
+                view.child(self.screen_picker.clone())
+            })
             .child(self.fps_picker.clone())
             .child(self.resolution_picker.clone())
             .child(
@@ -2220,28 +2263,21 @@ impl Fluxer {
                     .flex()
                     .flex_wrap()
                     .gap_2()
+                    .when_some(system_picker, |view, source| {
+                        view.child(
+                            button("choose-screen-source", "Choose display or window…")
+                                .bg(rgb(0x6f56d7))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.start_screen_share(source.clone(), cx);
+                                })),
+                        )
+                    })
                     .when_some(selected, |view, source| {
                         view.child(
                             button("start-screen-share", "Share screen")
                                 .bg(rgb(0x6f56d7))
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.command(
-                                        Command::StartShare(ScreenShareOptions {
-                                            source: source.clone(),
-                                            fps: this.share_fps,
-                                            max_width: this.share_size.0,
-                                            max_height: this.share_size.1,
-                                            max_bitrate: if this.share_size.1 > 1080 {
-                                                8_000_000
-                                            } else if this.share_fps > 30 {
-                                                6_000_000
-                                            } else {
-                                                4_000_000
-                                            },
-                                        }),
-                                        cx,
-                                    );
-                                    this.pane = Pane::Chat;
+                                    this.start_screen_share(source.clone(), cx);
                                 })),
                         )
                     })
@@ -2261,6 +2297,27 @@ impl Fluxer {
                 },
             )))
             .into_any_element()
+    }
+
+    fn start_screen_share(&mut self, source: ScreenSource, cx: &mut Context<Self>) {
+        self.command(
+            Command::StartShare(ScreenShareOptions {
+                source,
+                fps: self.share_fps,
+                max_width: self.share_size.0,
+                max_height: self.share_size.1,
+                max_bitrate: if self.share_size.1 > 1080 {
+                    8_000_000
+                } else if self.share_fps > 30 {
+                    6_000_000
+                } else {
+                    4_000_000
+                },
+            }),
+            cx,
+        );
+        // The first captured frame, rather than this request, marks sharing active.
+        self.pane = Pane::Chat;
     }
 
     fn search(&self, cx: &mut Context<Self>) -> AnyElement {
