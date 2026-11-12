@@ -179,4 +179,5 @@ impl<'a> CaptureGraph<'a> {
 }
 
 #[cfg(test)]
+#[path = "capture_graph/tests.rs"]
 mod tests;

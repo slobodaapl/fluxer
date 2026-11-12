@@ -17,6 +17,7 @@ use std::{
 };
 use tokio::{sync::mpsc, task::JoinHandle};
 
+pub use fluxer_system_audio::{Application as AudioApplication, Selection as SharedAudioSelection};
 pub use screen::{ScreenShareOptions, ScreenSource, ScreenSourceKind};
 
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +96,20 @@ struct RuntimeState {
     remotes: HashMap<String, RemoteAudioTrack>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SharedAudioSettings {
+    pub gain: f32,
+    pub muted: bool,
+}
+impl Default for SharedAudioSettings {
+    fn default() -> Self {
+        Self {
+            gain: 1.0,
+            muted: false,
+        }
+    }
+}
+
 /// Owned by the asynchronous media worker; all native handles stay off GPUI's
 /// rendering thread. Drop aborts capture and tasks even on application shutdown.
 pub struct MediaEngine {
@@ -110,6 +125,9 @@ pub struct MediaEngine {
     screen_publication: Option<TrackSid>,
     video_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     stop: Arc<AtomicBool>,
+    shared_audio_task: Option<JoinHandle<()>>,
+    shared_audio_publication: Option<TrackSid>,
+    shared_audio_settings: Arc<Mutex<SharedAudioSettings>>,
 }
 
 impl MediaEngine {
@@ -136,6 +154,9 @@ impl MediaEngine {
             screen_publication: None,
             video_tasks: Arc::new(Mutex::new(HashMap::new())),
             stop: Arc::new(AtomicBool::new(false)),
+            shared_audio_task: None,
+            shared_audio_publication: None,
+            shared_audio_settings: Arc::new(Mutex::new(SharedAudioSettings::default())),
         })
     }
 
@@ -446,6 +467,122 @@ impl MediaEngine {
     pub fn is_sharing(&self) -> bool {
         self.screen.is_some()
     }
+    pub fn shared_audio_available() -> bool {
+        fluxer_system_audio::SystemAudio::available()
+    }
+    pub fn audio_applications() -> Result<Vec<AudioApplication>> {
+        fluxer_system_audio::SystemAudio::applications()
+            .map_err(|e| MediaError::Audio(e.to_string()))
+    }
+    pub fn configure_shared_audio(&self, settings: SharedAudioSettings) -> Result<()> {
+        if !settings.gain.is_finite() || !(0.0..=2.0).contains(&settings.gain) {
+            return Err(MediaError::InvalidSetting("shared audio gain must be 0–2"));
+        }
+        *self
+            .shared_audio_settings
+            .lock()
+            .map_err(|_| MediaError::Audio("shared audio state unavailable".into()))? = settings;
+        Ok(())
+    }
+    /// Publishes an independent screen-audio track. Linux capture reuses the
+    /// existing graph router, which excludes this process and its own sinks.
+    pub async fn start_shared_audio(&mut self, selection: SharedAudioSelection) -> Result<()> {
+        self.stop_shared_audio().await?;
+        let room = self.room.as_ref().ok_or(MediaError::NotConnected)?;
+        let capture = fluxer_system_audio::SystemAudio::start(selection)
+            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        use livekit::webrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
+        let source = NativeAudioSource::new(
+            AudioSourceOptions {
+                echo_cancellation: false,
+                noise_suppression: false,
+                auto_gain_control: false,
+            },
+            48_000,
+            2,
+            100,
+        );
+        let track = LocalAudioTrack::create_audio_track(
+            "Fluxer shared audio",
+            RtcAudioSource::Native(source.clone()),
+        );
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Audio(track),
+                TrackPublishOptions {
+                    source: TrackSource::ScreenshareAudio,
+                    dtx: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| MediaError::Audio(e.to_string()))?;
+        self.shared_audio_publication = Some(publication.sid());
+        let stop = self.stop.clone();
+        let settings = self.shared_audio_settings.clone();
+        let state = self.state.clone();
+        let events = self.events.clone();
+        self.shared_audio_task = Some(tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            while !stop.load(Ordering::Acquire) {
+                interval.tick().await;
+                let Some(frame) = capture.read() else {
+                    continue;
+                };
+                if frame.sample_rate != 48_000
+                    || frame.channels != 2
+                    || frame.samples.len() % 2 != 0
+                {
+                    continue;
+                }
+                let controls = settings.lock().map(|s| *s).unwrap_or(SharedAudioSettings {
+                    gain: 0.0,
+                    muted: true,
+                });
+                let deaf = state.lock().map(|s| s.deafened).unwrap_or(true);
+                let gain = if controls.muted || deaf {
+                    0.0
+                } else {
+                    controls.gain
+                };
+                let data: Vec<i16> = frame
+                    .samples
+                    .iter()
+                    .map(|s| float_to_pcm(*s, gain))
+                    .collect();
+                let samples_per_channel = data.len() as u32 / 2;
+                let pcm = livekit::webrtc::audio_frame::AudioFrame {
+                    data: std::borrow::Cow::Owned(data),
+                    sample_rate: 48_000,
+                    num_channels: 2,
+                    samples_per_channel,
+                };
+                if source.capture_frame(&pcm).await.is_err() {
+                    if let Some(tx) = &events {
+                        let _ =
+                            tx.try_send(MediaEvent::Error("Shared audio capture stopped".into()));
+                    }
+                    break;
+                }
+            }
+            capture.stop();
+        }));
+        Ok(())
+    }
+    pub async fn stop_shared_audio(&mut self) -> Result<()> {
+        if let Some(task) = self.shared_audio_task.take() {
+            task.abort();
+        }
+        if let (Some(room), Some(sid)) = (&self.room, self.shared_audio_publication.take()) {
+            room.local_participant()
+                .unpublish_track(&sid)
+                .await
+                .map_err(|e| MediaError::Audio(e.to_string()))?;
+        }
+        Ok(())
+    }
     pub fn screen_sources(&self) -> Result<Vec<ScreenSource>> {
         screen::sources()
     }
@@ -488,6 +625,7 @@ impl MediaEngine {
         }
     }
     pub async fn stop_screen_share(&mut self) -> Result<()> {
+        self.stop_shared_audio().await?;
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
@@ -509,6 +647,10 @@ impl MediaEngine {
             session.stop();
         }
         self.screen_publication = None;
+        self.shared_audio_publication = None;
+        if let Some(task) = self.shared_audio_task.take() {
+            task.abort();
+        }
         if let Some(mic) = self.microphone.take() {
             mic.mute();
             mic.disable();
@@ -546,6 +688,9 @@ impl MediaEngine {
 impl Drop for MediaEngine {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        if let Some(task) = self.shared_audio_task.take() {
+            task.abort();
+        }
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
@@ -562,5 +707,24 @@ impl Drop for MediaEngine {
                 task.abort();
             }
         }
+    }
+}
+
+fn float_to_pcm(sample: f32, gain: f32) -> i16 {
+    if !sample.is_finite() {
+        return 0;
+    }
+    ((sample * gain).clamp(-1.0, 1.0) * i16::MAX as f32) as i16
+}
+
+#[cfg(test)]
+mod audio_tests {
+    use super::float_to_pcm;
+    #[test]
+    fn shared_gain_mute_clipping_and_nonfinite_samples() {
+        assert_eq!(float_to_pcm(0.5, 0.0), 0);
+        assert_eq!(float_to_pcm(0.5, 2.0), i16::MAX);
+        assert_eq!(float_to_pcm(-2.0, 2.0), -i16::MAX);
+        assert_eq!(float_to_pcm(f32::NAN, 1.0), 0);
     }
 }

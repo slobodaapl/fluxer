@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media"]
+members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media", "crates/system-audio"]
 resolver = "2"
 exclude = ["compat/xattr"]
 

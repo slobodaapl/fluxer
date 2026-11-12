@@ -1,0 +1,12 @@
+[package]
+name = "fluxer-system-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.10.1"
+fluxer_rt_thread = { path = "../../../fluxer_desktop/native/rt-thread" }
