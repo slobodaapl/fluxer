@@ -44,10 +44,10 @@ impl<'a> CaptureGraph<'a> {
             if sink.get("media.class").map(String::as_str) != Some("Audio/Sink") {
                 return false;
             }
-            if let Some(output_group) = group(props) {
-                if group(sink) == Some(output_group) {
-                    return true;
-                }
+            if let Some(output_group) = group(props)
+                && group(sink) == Some(output_group)
+            {
+                return true;
             }
             // Do not admit a mix while its sibling sink's full info is still pending.
             self.pending.contains(id)

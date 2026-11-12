@@ -49,7 +49,7 @@ impl Permissions {
     pub const UPDATE_RTC_REGION: Self = Self(1 << 53);
     pub const VIEW_CHANNEL_MEMBERS: Self = Self(1 << 54);
     pub const ALL: Self = Self(
-        (1 << 19) - 1 | ((1 << 31) - (1 << 20)) | (31 << 34) | (1 << 40) | (1 << 43) | (15 << 51),
+        ((1 << 19) - 1) | ((1 << 31) - (1 << 20)) | (31 << 34) | (1 << 40) | (1 << 43) | (15 << 51),
     );
     pub const DEFAULT: Self = Self(
         (1 << 0)

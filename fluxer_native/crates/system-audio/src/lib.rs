@@ -63,6 +63,20 @@ pub struct SystemAudio {
     backend: pipewire_bridge::PipeWireDirectCapture,
 }
 
+#[cfg(target_os = "linux")]
+fn native_identity() -> routing::SelfIdentity {
+    let mut identity = routing::SelfIdentity::default();
+    self_identity::populate_self_identity(&mut identity);
+    // The shared implementation also serves Electron. This process has no
+    // Electron children; excluding that generic binary would prevent sharing
+    // unrelated Electron applications' audio from the native client.
+    identity.binaries.remove("Electron");
+    identity.binaries.remove("electron");
+    identity.add_display_name("Fluxer".to_string());
+    identity.add_display_name("fluxer-desktop".to_string());
+    identity
+}
+
 impl SystemAudio {
     pub fn available() -> bool {
         #[cfg(target_os = "linux")]
@@ -81,7 +95,7 @@ impl SystemAudio {
         #[cfg(target_os = "linux")]
         {
             let bridge = pipewire_bridge::PipeWireBridge::open().ok_or(Error::Unavailable)?;
-            let own_pid = std::process::id().to_string();
+            let identity = native_identity();
             let mut entries = std::collections::BTreeMap::new();
             for properties in bridge.inventory() {
                 if properties.get("media.class").map(String::as_str) != Some("Stream/Output/Audio")
@@ -91,7 +105,7 @@ impl SystemAudio {
                 let Some(pid) = properties.get("application.process.id") else {
                     continue;
                 };
-                if pid == &own_pid {
+                if identity.matches(&properties) {
                     continue;
                 }
                 let label = properties
@@ -117,12 +131,7 @@ impl SystemAudio {
         {
             let backend =
                 pipewire_bridge::PipeWireDirectCapture::open().ok_or(Error::Unavailable)?;
-            let mut identity = routing::SelfIdentity::default();
-            self_identity::populate_self_identity(&mut identity);
-            identity.add_pid(std::process::id().to_string());
-            identity.add_display_name("Fluxer".to_string());
-            identity.add_display_name("fluxer-desktop".to_string());
-            backend.populate_self_identity(identity);
+            backend.populate_self_identity(native_identity());
             let include_when = match selection {
                 Selection::System => vec![routing::PropPattern::new()],
                 Selection::Application { process_id } => {
@@ -176,5 +185,25 @@ impl SystemAudio {
 impl Drop for SystemAudio {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_capture_excludes_itself_but_can_share_other_electron_apps() {
+        let identity = native_identity();
+        assert!(identity.matches(&routing::PropMap::from([(
+            "application.process.id".into(),
+            std::process::id().to_string()
+        ),])));
+        assert!(!identity.matches(&routing::PropMap::from([
+            (
+                "application.name".into(),
+                "An unrelated music player".into()
+            ),
+            ("application.process.binary".into(), "electron".into()),
+        ])));
     }
 }

@@ -534,10 +534,18 @@ impl Worker {
                 if self.state.voice.channel_id.is_none() {
                     return Err("Join a voice channel first".into());
                 }
-                self.media()?
+                options.validate().map_err(error)?;
+                let started = self
+                    .media()?
                     .start_screen_share(options)
                     .await
-                    .map_err(error)?;
+                    .map_err(error);
+                self.state.voice.screen_share = false;
+                self.snapshot();
+                self.emit(Event::Media(MediaEvent::ScreenShareStopped));
+                self.emit(Event::SharedAudioStatus(false));
+                self.update_voice().await?;
+                started?;
                 // Publication can precede the OS picker or first captured
                 // frame. ScreenShareStarted is the authoritative transition.
             }
@@ -561,11 +569,16 @@ impl Worker {
                     .start_shared_audio(selection)
                     .await
                     .map_err(error)?;
+                self.emit(Event::SharedAudioStatus(true));
             }
             Command::StopSharedAudio => {
-                if let Some(media) = &mut self.media {
-                    media.stop_shared_audio().await.map_err(error)?;
-                }
+                let stopped = if let Some(media) = &mut self.media {
+                    media.stop_shared_audio().await.map_err(error)
+                } else {
+                    Ok(())
+                };
+                self.emit(Event::SharedAudioStatus(false));
+                stopped?;
             }
             Command::SetSharedAudio(settings) => self
                 .media()?
@@ -682,6 +695,7 @@ impl Worker {
             frames.clear();
         }
         self.emit(Event::VoiceStatus(VoiceStatus::Disconnected));
+        self.emit(Event::SharedAudioStatus(false));
         if notify_gateway && let (Some(target), Some(tx)) = (target, &self.gateway_commands) {
             let _ = tx
                 .send(GatewayCommand::VoiceState(
@@ -939,6 +953,7 @@ impl Worker {
             self.state.voice.screen_share = false;
             self.snapshot();
             self.emit(Event::Media(MediaEvent::ScreenShareStopped));
+            self.emit(Event::SharedAudioStatus(false));
             let gateway = self.update_voice().await;
             stopped?;
             gateway?;

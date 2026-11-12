@@ -367,6 +367,25 @@ impl MediaEngine {
                     break;
                 }
                 let outgoing = match event {
+                    RoomEvent::Connected {
+                        participants_with_tracks,
+                    } => {
+                        // The initial roster is included in Connected rather
+                        // than ParticipantConnected events for existing peers.
+                        for (participant, _) in participants_with_tracks {
+                            if tx
+                                .send(MediaEvent::ParticipantJoined {
+                                    identity: participant.identity().to_string(),
+                                    name: participant.name(),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        None
+                    }
                     RoomEvent::ParticipantConnected(p) => Some(MediaEvent::ParticipantJoined {
                         identity: p.identity().to_string(),
                         name: p.name(),
@@ -834,6 +853,7 @@ impl MediaEngine {
         }
     }
     pub async fn stop_screen_share(&mut self) -> Result<()> {
+        let had_video = self.screen.is_some() || self.screen_publication.is_some();
         // Stop hardware first even when either network unpublish fails.
         if let Some(mut session) = self.screen.take() {
             session.stop();
@@ -849,7 +869,7 @@ impl MediaEngine {
             } else {
                 Ok(())
             };
-        if let Some(tx) = &self.events {
+        if had_video && let Some(tx) = &self.events {
             let _ = tx.try_send(MediaEvent::ScreenShareStopped);
         }
         audio_result.and(video_result)

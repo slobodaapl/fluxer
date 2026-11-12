@@ -111,6 +111,7 @@ pub enum Event {
     Devices(DeviceInventory),
     ScreenSources(Vec<ScreenSource>),
     AudioApplications(Vec<fluxer_media::AudioApplication>),
+    SharedAudioStatus(bool),
     VoiceStatus(VoiceStatus),
     Media(MediaEvent),
     Video(VideoFrame),

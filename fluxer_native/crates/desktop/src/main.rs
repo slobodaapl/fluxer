@@ -204,6 +204,7 @@ impl Fluxer {
                 Event::State(state) => {
                     let old = self.state.selected_channel;
                     self.state = *state;
+                    self.sharing = self.state.voice.screen_share;
                     if self.selected_guild.is_none() {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
@@ -236,7 +237,13 @@ impl Fluxer {
                 Event::ScreenSources(sources) => self.sources = sources,
                 Event::VoiceStatus(status) => {
                     self.voice_status = match status {
-                        VoiceStatus::Disconnected => "Disconnected".into(),
+                        VoiceStatus::Disconnected => {
+                            self.video.clear();
+                            self.participants.clear();
+                            self.shared_audio = false;
+                            self.sharing = false;
+                            "Disconnected".into()
+                        }
                         VoiceStatus::Connecting { channel_id } => {
                             format!("Connecting to {}…", self.channel_name(channel_id))
                         }
@@ -247,6 +254,7 @@ impl Fluxer {
                     }
                 }
                 Event::AudioApplications(apps) => self.applications = apps,
+                Event::SharedAudioStatus(active) => self.shared_audio = active,
                 Event::MessageSent {
                     channel_id,
                     content,
@@ -1196,15 +1204,16 @@ impl Fluxer {
 
     fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         div().flex().flex_col().gap_3().child(heading("Share audio"))
+            .child(muted(if self.shared_audio { "Audio sharing is active" } else { "No audio is being shared" }))
             .child(muted("Audio sharing uses PipeWire on Linux. Fluxer's own audio is excluded to prevent feedback."))
-            .child(button("share-system-audio","Share system audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::System),cx);this.shared_audio=true;})))
-            .children(self.applications.iter().enumerate().map(|(i,app)|{let pid=app.process_id.clone();button(("share-app",i),format!("Share {} audio",app.label)).on_click(cx.listener(move |this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::Application{process_id:pid.clone()}),cx);this.shared_audio=true;}))}))
+            .child(button("share-system-audio","Share system audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::System),cx);})))
+            .children(self.applications.iter().enumerate().map(|(i,app)|{let pid=app.process_id.clone();button(("share-app",i),format!("Share {} audio",app.label)).on_click(cx.listener(move |this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::Application{process_id:pid.clone()}),cx);}))}))
             .child(button("refresh-apps","Refresh audio applications").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshAudioApplications,cx))))
             .child(div().flex().gap_3().items_center().child(muted(format!("Shared audio {:.0}%",self.shared_audio_settings.gain*100.)))
                 .child(button("share-gain-down","−").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain-0.1).max(0.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
                 .child(button("share-gain-up","+").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain+0.1).min(2.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
                 .child(button("share-audio-mute",if self.shared_audio_settings.muted{"Unmute shared audio"}else{"Mute shared audio"}).on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.muted = !this.shared_audio_settings.muted;this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);}))))
-            .child(button("stop-shared-audio","Stop sharing audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StopSharedAudio,cx);this.shared_audio=false;})))
+            .child(button("stop-shared-audio","Stop sharing audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StopSharedAudio,cx);})))
             .into_any_element()
     }
 

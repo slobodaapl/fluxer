@@ -172,7 +172,7 @@ impl Gateway {
         {
             json!({"op":6,"d":{"token":self.token.expose_secret(),"session_id":session_id,"seq":sequence}})
         } else {
-            json!({"op":2,"d":{"token":self.token.expose_secret(),"properties":self.properties,"flags":14,
+            json!({"op":2,"d":{"token":self.token.expose_secret(),"properties":self.properties,"flags":12,
                 "presence":{"status":"online","afk":false,"mobile":false}}})
         }
     }
