@@ -75,6 +75,8 @@ struct Fluxer {
     selected_input: Option<String>,
     selected_output: Option<String>,
     sources: Vec<ScreenSource>,
+    share_fps: u32,
+    share_size: (u32, u32),
     dsp: AudioSettings,
     sharing: bool,
     editing: Option<Snowflake>,
@@ -109,7 +111,11 @@ impl Fluxer {
             demo,
             pane: Pane::Chat,
             selected_guild: None,
-            composer: cx.new(|cx| TextInput::new("Message this channel…", cx)),
+            composer: cx.new(|cx| {
+                let mut input = TextInput::new("Message this channel…", cx);
+                input.multiline = true;
+                input
+            }),
             instance,
             identifier: cx.new(|cx| TextInput::new("Email or login", cx)),
             password,
@@ -123,6 +129,8 @@ impl Fluxer {
             selected_input: None,
             selected_output: None,
             sources: Vec::new(),
+            share_fps: 30,
+            share_size: (1920, 1080),
             dsp: AudioSettings::default(),
             sharing: false,
             editing: None,
@@ -159,10 +167,8 @@ impl Fluxer {
             }
         })
         .detach();
-        if demo {
-            if let Some(c) = view.controller.as_ref() {
-                let _ = c.send(Command::Demo);
-            }
+        if demo && let Some(c) = view.controller.as_ref() {
+            let _ = c.send(Command::Demo);
         }
         cx.spawn(async move |entity, cx| {
             loop {
@@ -699,6 +705,13 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_4()
+                    .when(self.state.selected_channel.is_some() && !self.demo, |v| {
+                        v.child(button("older-messages", "Load older messages").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.command(Command::LoadOlderMessages, cx)
+                            }),
+                        ))
+                    })
                     .when(messages.is_empty(), |v| {
                         v.child(muted("This conversation is ready. Send the first message."))
                     })
@@ -841,7 +854,9 @@ impl Fluxer {
                                 )),
                             ),
                     )
-                    .child(muted("Enter to send · native IME and clipboard support")),
+                    .child(muted(
+                        "Enter to send · Shift+Enter for a new line · paste multiline text",
+                    )),
             )
             .into_any_element()
     }
@@ -1188,7 +1203,7 @@ impl Fluxer {
             .child(div().flex().gap_3().items_center().child(muted(format!("Shared audio {:.0}%",self.shared_audio_settings.gain*100.)))
                 .child(button("share-gain-down","−").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain-0.1).max(0.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
                 .child(button("share-gain-up","+").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain+0.1).min(2.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
-                .child(button("share-audio-mute",if self.shared_audio_settings.muted{"Unmute shared audio"}else{"Mute shared audio"}).on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.muted=!this.shared_audio_settings.muted;this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);}))))
+                .child(button("share-audio-mute",if self.shared_audio_settings.muted{"Unmute shared audio"}else{"Mute shared audio"}).on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.muted = !this.shared_audio_settings.muted;this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);}))))
             .child(button("stop-shared-audio","Stop sharing audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StopSharedAudio,cx);this.shared_audio=false;})))
             .into_any_element()
     }
@@ -1208,6 +1223,40 @@ impl Fluxer {
             .child(muted(
                 "Select a display or window. Your desktop may open a system permission picker.",
             ))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(muted("Frame rate"))
+                    .children([15_u32, 30, 60].into_iter().map(|fps| {
+                        button(("share-fps", fps), format!("{fps} fps"))
+                            .when(self.share_fps == fps, |v| v.bg(rgb(0x6650bd)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.share_fps = fps;
+                                cx.notify();
+                            }))
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .items_center()
+                    .child(muted("Maximum resolution"))
+                    .children(
+                        [(1280_u32, 720_u32), (1920, 1080), (2560, 1440)]
+                            .into_iter()
+                            .map(|resolution| {
+                                button(("share-size", resolution.1), format!("{}p", resolution.1))
+                                    .when(self.share_size == resolution, |v| v.bg(rgb(0x6650bd)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.share_size = resolution;
+                                        cx.notify();
+                                    }))
+                            }),
+                    ),
+            )
             .children(self.sources.iter().enumerate().map(|(index, source)| {
                 let source = source.clone();
                 button(("source", index), source.label.clone()).on_click(cx.listener(
@@ -1215,7 +1264,16 @@ impl Fluxer {
                         this.command(
                             Command::StartShare(ScreenShareOptions {
                                 source: source.clone(),
-                                ..Default::default()
+                                fps: this.share_fps,
+                                max_width: this.share_size.0,
+                                max_height: this.share_size.1,
+                                max_bitrate: if this.share_size.1 > 1080 {
+                                    8_000_000
+                                } else if this.share_fps > 30 {
+                                    6_000_000
+                                } else {
+                                    4_000_000
+                                },
                             }),
                             cx,
                         );
@@ -1338,9 +1396,13 @@ fn main() {
                     ..Default::default()
                 }),
                 window_min_size: Some(size(px(880.), px(600.))),
+                app_id: Some("app.fluxer.Native".into()),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Fluxer::new(demo, window, cx)),
+            |window, cx| {
+                window.set_window_title("Fluxer · Native");
+                cx.new(|cx| Fluxer::new(demo, window, cx))
+            },
         )
         .expect("open Fluxer window");
         cx.activate(true);
