@@ -10,7 +10,11 @@ use fluxer_media::{
 };
 use gpui::{prelude::*, *};
 use input::TextInput;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 actions!(fluxer, [Submit, Quit]);
 
@@ -27,6 +31,28 @@ enum Pane {
     Settings,
     Screens,
     Search,
+}
+
+struct IpAuthorization {
+    email: String,
+    started: std::time::Instant,
+    resend_available_in: u64,
+    resend_used: bool,
+    polling_failed: bool,
+}
+
+struct BrowserLogin {
+    code: String,
+    expires_at: String,
+    browser_url: String,
+    polling_failed: bool,
+}
+
+impl IpAuthorization {
+    fn remaining(&self) -> u64 {
+        self.resend_available_in
+            .saturating_sub(self.started.elapsed().as_secs())
+    }
 }
 
 fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
@@ -68,6 +94,9 @@ struct Fluxer {
     search: Entity<TextInput>,
     mfa: Entity<TextInput>,
     mfa_ticket: Option<String>,
+    ip_authorization: Option<IpAuthorization>,
+    last_ip_countdown: u64,
+    browser_login: Option<BrowserLogin>,
     error: Option<String>,
     status: String,
     voice_status: String,
@@ -83,6 +112,8 @@ struct Fluxer {
     video: BTreeMap<String, Arc<RenderImage>>,
     mixer: AudioMixSettings,
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
+    available_streams: BTreeSet<String>,
+    watched_streams: BTreeSet<String>,
     applications: Vec<AudioApplication>,
     shared_audio: bool,
     shared_audio_settings: SharedAudioSettings,
@@ -99,7 +130,7 @@ impl Fluxer {
         let error = controller.as_ref().err().cloned();
         let controller = controller.ok();
         let instance = cx.new(|cx| TextInput::new("Instance URL", cx));
-        instance.update(cx, |v, cx| v.set("https://fluxer.app".into(), cx));
+        instance.update(cx, |v, cx| v.set("https://web.fluxer.app/api".into(), cx));
         let password = cx.new(|cx| {
             let mut v = TextInput::new("Password", cx);
             v.secret = true;
@@ -122,6 +153,9 @@ impl Fluxer {
             search: cx.new(|cx| TextInput::new("Search loaded messages…", cx)),
             mfa: cx.new(|cx| TextInput::new("Authentication code", cx)),
             mfa_ticket: None,
+            ip_authorization: None,
+            last_ip_countdown: 0,
+            browser_login: None,
             error,
             status: "Sign in to your Fluxer instance".into(),
             voice_status: "Disconnected".into(),
@@ -137,6 +171,8 @@ impl Fluxer {
             video: BTreeMap::new(),
             mixer: AudioMixSettings::default(),
             participants: BTreeMap::new(),
+            available_streams: BTreeSet::new(),
+            watched_streams: BTreeSet::new(),
             applications: Vec::new(),
             shared_audio: false,
             shared_audio_settings: SharedAudioSettings::default(),
@@ -233,6 +269,76 @@ impl Fluxer {
                     self.mfa_ticket = Some(ticket);
                     self.status = "Enter your authenticator code".into();
                 }
+                Event::IpAuthorizationRequired {
+                    email,
+                    resend_available_in,
+                } => {
+                    self.mfa_ticket = None;
+                    self.password.update(cx, |v, cx| v.set(String::new(), cx));
+                    self.ip_authorization = Some(IpAuthorization {
+                        email,
+                        started: std::time::Instant::now(),
+                        resend_available_in,
+                        resend_used: false,
+                        polling_failed: false,
+                    });
+                    self.status = "Waiting for email authorization…".into();
+                }
+                Event::IpAuthorizationPollingFailed => {
+                    if let Some(challenge) = &mut self.ip_authorization {
+                        challenge.polling_failed = true;
+                    }
+                    self.status = "Connection lost while checking authorization".into();
+                }
+                Event::IpAuthorizationPollingResumed => {
+                    if let Some(challenge) = &mut self.ip_authorization {
+                        challenge.polling_failed = false;
+                    }
+                    self.error = None;
+                    self.status = "Waiting for email authorization…".into();
+                }
+                Event::IpAuthorizationResent {
+                    resend_available_in,
+                } => {
+                    if let Some(challenge) = &mut self.ip_authorization {
+                        challenge.resend_used = true;
+                        challenge.started = std::time::Instant::now();
+                        challenge.resend_available_in = resend_available_in;
+                    }
+                }
+                Event::IpAuthorizationCleared => self.ip_authorization = None,
+                Event::BrowserLoginRequired {
+                    code,
+                    expires_at,
+                    browser_url,
+                } => {
+                    self.password.update(cx, |v, cx| v.set(String::new(), cx));
+                    self.mfa_ticket = None;
+                    self.browser_login = Some(BrowserLogin {
+                        code,
+                        expires_at,
+                        browser_url,
+                        polling_failed: false,
+                    });
+                    self.status = "Waiting for browser sign-in…".into();
+                }
+                Event::BrowserLoginPollingFailed => {
+                    if let Some(handoff) = &mut self.browser_login {
+                        handoff.polling_failed = true;
+                    }
+                    self.status = "Connection lost while checking browser sign-in".into();
+                }
+                Event::BrowserLoginPollingResumed => {
+                    if let Some(handoff) = &mut self.browser_login {
+                        handoff.polling_failed = false;
+                    }
+                    self.error = None;
+                    self.status = "Waiting for browser sign-in…".into();
+                }
+                Event::BrowserLoginCleared => self.browser_login = None,
+                Event::WatchedStreams(identities) => {
+                    self.watched_streams = identities.into_iter().collect()
+                }
                 Event::Devices(devices) => self.devices = devices,
                 Event::ScreenSources(sources) => self.sources = sources,
                 Event::VoiceStatus(status) => {
@@ -240,6 +346,8 @@ impl Fluxer {
                         VoiceStatus::Disconnected => {
                             self.video.clear();
                             self.participants.clear();
+                            self.available_streams.clear();
+                            self.watched_streams.clear();
                             self.shared_audio = false;
                             self.sharing = false;
                             "Disconnected".into()
@@ -299,6 +407,8 @@ impl Fluxer {
                         self.sharing = false;
                         self.video.clear();
                         self.participants.clear();
+                        self.available_streams.clear();
+                        self.watched_streams.clear();
                         self.shared_audio = false;
                     }
                     MediaEvent::ParticipantJoined { identity, name } => {
@@ -307,6 +417,17 @@ impl Fluxer {
                     }
                     MediaEvent::ParticipantLeft { identity } => {
                         self.participants.remove(&identity);
+                        self.available_streams.remove(&identity);
+                    }
+                    MediaEvent::ScreenStreamAvailable {
+                        identity,
+                        available,
+                    } => {
+                        if available {
+                            self.available_streams.insert(identity);
+                        } else {
+                            self.available_streams.remove(&identity);
+                        }
                     }
                     MediaEvent::AudioLevels { input, output } => self.levels = (input, output),
                     MediaEvent::Error(error) => {
@@ -316,6 +437,14 @@ impl Fluxer {
                     _ => {}
                 },
             }
+        }
+        let countdown = self
+            .ip_authorization
+            .as_ref()
+            .map_or(0, IpAuthorization::remaining);
+        if countdown != self.last_ip_countdown {
+            self.last_ip_countdown = countdown;
+            changed = true;
         }
         if changed {
             cx.notify();
@@ -360,6 +489,9 @@ impl Fluxer {
 
     fn login(&mut self, cx: &mut Context<Self>) {
         self.error = None;
+        if self.ip_authorization.is_some() || self.browser_login.is_some() {
+            return;
+        }
         if let Some(ticket) = self.mfa_ticket.clone() {
             self.command(
                 Command::LoginMfa {
@@ -390,6 +522,93 @@ impl Fluxer {
     }
 
     fn login_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(handoff) = &self.browser_login {
+            let code = handoff.code.clone();
+            let url = handoff.browser_url.clone();
+            return div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .gap_4()
+                .child(heading("Sign in with your browser"))
+                .child(muted(
+                    "Open your browser, sign in, then enter this code to link your account.",
+                ))
+                .child(heading(handoff.code.clone()))
+                .child(muted(format!("Expires {}", handoff.expires_at)))
+                .child(
+                    button("copy-handoff", "Copy code").on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()))
+                    }),
+                )
+                .child(
+                    button("open-browser", "Open browser")
+                        .bg(rgb(0x6f56d7))
+                        .on_click(move |_, _, cx| cx.open_url(&url)),
+                )
+                .when(handoff.polling_failed, |v| {
+                    v.child(button("retry-browser", "Retry").on_click(
+                        cx.listener(|this, _, _, cx| this.command(Command::RetryBrowserLogin, cx)),
+                    ))
+                })
+                .child(
+                    button("cancel-browser", "Back to sign in").on_click(
+                        cx.listener(|this, _, _, cx| this.command(Command::CancelLogin, cx)),
+                    ),
+                )
+                .child(muted(self.status.clone()))
+                .into_any_element();
+        }
+        if let Some(challenge) = &self.ip_authorization {
+            let remaining = challenge.remaining();
+            return div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .size_full()
+                .gap_4()
+                .child(heading(if challenge.polling_failed {
+                    "Connection lost"
+                } else {
+                    "Check your email"
+                }))
+                .child(muted(format!(
+                    "Check your inbox at {} for the authorization link.",
+                    challenge.email
+                )))
+                .child(muted(
+                    "Sign-in will continue here after you authorize the email link.",
+                ))
+                .when(challenge.polling_failed, |v| {
+                    v.child(
+                        button("retry-ip", "Retry").on_click(cx.listener(|this, _, _, cx| {
+                            this.command(Command::RetryIpAuthorization, cx)
+                        })),
+                    )
+                })
+                .when(!challenge.resend_used && remaining == 0, |v| {
+                    v.child(button("resend-ip", "Resend email").on_click(cx.listener(
+                        |this, _, _, cx| this.command(Command::ResendIpAuthorization, cx),
+                    )))
+                })
+                .when(!challenge.resend_used && remaining > 0, |v| {
+                    v.child(muted(format!("Resend available in {remaining}s")))
+                })
+                .when(challenge.resend_used, |v| {
+                    v.child(muted("Authorization email resent"))
+                })
+                .child(button("cancel-ip", "Back to sign in").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.mfa_ticket = None;
+                        this.command(Command::CancelLogin, cx);
+                    },
+                )))
+                .child(muted(self.status.clone()))
+                .into_any_element();
+        }
         div()
             .flex()
             .flex_col()
@@ -405,9 +624,7 @@ impl Fluxer {
                     .child("fluxer"),
             )
             .child(heading("Welcome back"))
-            .child(muted(
-                "Native Rust + GPUI client · credentials stay in memory",
-            ))
+            .child(muted("Sign in to your Fluxer account"))
             .child(
                 div()
                     .w(px(380.))
@@ -422,6 +639,20 @@ impl Fluxer {
                         button("login", "Sign in")
                             .bg(rgb(0x6f56d7))
                             .on_click(cx.listener(|this, _, _, cx| this.login(cx))),
+                    )
+                    .child(
+                        button("browser-login", "Sign in with browser").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.error = None;
+                                this.command(
+                                    Command::BrowserLogin {
+                                        instance: this.instance.read(cx).content.to_string(),
+                                        identifier: this.identifier.read(cx).content.to_string(),
+                                    },
+                                    cx,
+                                );
+                            },
+                        )),
                     )
                     .child(
                         button("demo", "Explore offline demo").on_click(
@@ -688,6 +919,44 @@ impl Fluxer {
                         })),
                     ),
             )
+            .when(!self.available_streams.is_empty(), |v| {
+                v.child(
+                    div().flex().flex_wrap().gap_3().p_3().children(
+                        self.available_streams
+                            .iter()
+                            .enumerate()
+                            .map(|(index, identity)| {
+                                let watching = self.watched_streams.contains(identity);
+                                let name = self
+                                    .participants
+                                    .get(identity)
+                                    .map(|(name, _)| name.as_str())
+                                    .filter(|name| !name.is_empty())
+                                    .unwrap_or(identity);
+                                let identity = identity.clone();
+                                button(
+                                    ("watch-stream", index),
+                                    format!(
+                                        "{} {name}'s screen",
+                                        if watching { "Stop watching" } else { "Watch" }
+                                    ),
+                                )
+                                .when(watching, |v| v.bg(rgb(0x6650bd)))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.command(
+                                            Command::WatchStream {
+                                                identity: identity.clone(),
+                                                watch: !watching,
+                                            },
+                                            cx,
+                                        )
+                                    },
+                                ))
+                            }),
+                    ),
+                )
+            })
             .when(!self.video.is_empty(), |v| {
                 v.child(
                     div()
@@ -1397,19 +1666,23 @@ fn main() {
         })
         .detach();
         let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+        let window_title = format!(
+            "Fluxer · Native · {}",
+            option_env!("FLUXER_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+        );
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Fluxer · Native".into()),
+                    title: Some(window_title.clone().into()),
                     ..Default::default()
                 }),
                 window_min_size: Some(size(px(880.), px(600.))),
                 app_id: Some("app.fluxer.Native".into()),
                 ..Default::default()
             },
-            |window, cx| {
-                window.set_window_title("Fluxer · Native");
+            move |window, cx| {
+                window.set_window_title(&window_title);
                 cx.new(|cx| Fluxer::new(demo, window, cx))
             },
         )

@@ -5,6 +5,22 @@ Fluxer client. The first release gate is community text channels, voice calls,
 screen sharing, and audio management. A working shell or demo does not satisfy
 that gate.
 
+## Client/server compatibility rule
+
+Client/server interactions must match the existing desktop client. Implement
+each flow from its current request builder, transport, gateway handler, and
+server schema; preserve endpoint selection, headers, payload omissions, request
+ordering, subscriptions, retries, and lifecycle behavior. Do not infer protocol
+behavior from endpoint names, example responses, or what another chat service
+does. Reuse existing Rust codecs and platform engines where possible.
+
+Every migrated flow needs source references and fixtures derived from those
+sources. Fixtures must reject unexpected requests and exercise actual response
+shapes, including ID-only references and error envelopes. An API accepting a
+request is insufficient evidence of parity. Record unsupported behavior as open
+work; do not replace it with an invented interaction. See
+`crates/protocol/CONTRACT.md` for the current transport evidence and gaps.
+
 ## Architecture and integration
 
 - `crates/core`: platform-independent wire models, permissions, client state,

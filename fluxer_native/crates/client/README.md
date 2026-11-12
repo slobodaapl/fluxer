@@ -6,9 +6,12 @@ and nonblocking `try_recv()` to GPUI. The worker is the sole writer of
 and screen capture stay off the rendering thread.
 
 The normal login flow discovers the instance, signs in with password or a
-session token, fetches account/community data, and starts the resumable gateway.
-TOTP challenges are surfaced as `MfaRequired` for `LoginMfa`. Account switches and
-logout clear account state, drafts, voice credentials, and active media before
+session token and starts the resumable gateway. READY supplies account/community
+state; fresh password/MFA sessions do not issue a redundant current-user fetch.
+Explicit token login validates the token before starting the gateway.
+TOTP challenges are surfaced as `MfaRequired` for `LoginMfa`. IP authorization
+continues with the desktop email polling/resend flow and can be cancelled.
+Account switches and logout clear account state, drafts, voice credentials, and active media before
 starting another session. Tokens are memory-only. `Demo` is explicitly offline;
 it never claims to transmit voice or creates an audio engine.
 
@@ -37,6 +40,12 @@ standard channel and should be drained on each UI polling tick.
 
 Tests include a real loopback HTTP/WebSocket text workflow and deterministic
 voice-correlation checks. They never open a microphone. Run `cargo test -p
-fluxer-client` with local socket permissions. Auth ceremonies beyond password/
-TOTP, persistence, rich composer features, and platform packaging remain separate
-client migration work.
+fluxer-client` with local socket permissions. Native passkey/SSO ceremonies, persistence, rich composer features, and platform
+packaging remain separate client migration work.
+
+BrowserLogin uses the existing desktop CODE handoff, with private proof storage,
+expiry, delayed polling and cancellation. The UI receives only the public code
+and browser URL. Stream reception requires explicit WatchStream intent; the
+controller synchronizes the corresponding viewer_stream_keys on all voice state
+updates and clears subscriptions on leave. Mesh calls fail explicitly before
+capture because the native mesh backend is still unimplemented.

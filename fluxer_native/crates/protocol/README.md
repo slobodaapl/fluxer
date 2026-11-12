@@ -12,11 +12,11 @@ let client = Client::new(instance)?;
 match client.login(LoginIdentifier::Email("you@example.com".into()), "password").await? {
     LoginOutcome::Authenticated { token, .. } => {
         let client = client.with_token(token);
-        let guilds = client.guilds().await?;
-        // Feed these JSON entities into the client state model.
+        // Start Gateway with this token. READY supplies communities and channels.
+        let _ = client;
     }
     LoginOutcome::Mfa { ticket, .. } => { /* prompt for TOTP, then login_mfa_totp */ }
-    LoginOutcome::IpAuthorization { .. } => { /* show the authorization requirement */ }
+    LoginOutcome::IpAuthorization { .. } => { /* display email challenge and poll_ip_authorization */ }
 }
 # Ok(())
 # }
@@ -34,7 +34,8 @@ declare its own API origin. Unknown instance codenames are rejected.
 
 `Gateway::run` owns hello/identify/resume, heartbeat acknowledgements, bounded
 socket writes, reconnect backoff, invalid-session reset, and terminal close
-handling. It negotiates uncompressed JSON. Drain its event receiver promptly.
+handling. It uses the existing desktop zstd streaming codec in both directions,
+with the desktop compression-failure fallback. Drain its event receiver promptly.
 Send user commands after `GatewayEvent::Connected`; stale commands issued while
 disconnected are discarded. Dropping the command sender or event receiver stops
 the task; `GatewayCommand::Close` disconnects explicitly. Debug output redacts
@@ -50,11 +51,15 @@ selection, and E2EE are the media engine's responsibilities. The gateway reports
 `e2ee_capable: false` by default.
 
 Authentication currently supports password login, TOTP/backup code challenges,
-and surfacing IP authorization requirements. Passkey ceremonies, browser SSO,
-registration, CAPTCHA resolution, email challenge completion, advanced uploads,
+IP authorization with email resend/poll continuation, and the desktop browser
+handoff CODE path. Passkey ceremonies, browser SSO,
+registration, CAPTCHA resolution, advanced uploads,
 and OS credential persistence need dedicated client workflows.
 
 Run `cargo test -p fluxer-protocol` from `fluxer_native`. Integration tests use
 loopback HTTP/WebSocket servers and require permission to bind local sockets.
 They verify real request headers/body routing, rate limits, redirect refusal,
 gateway authentication, heartbeat exchange, voice signaling, and session resume.
+
+See [CONTRACT.md](CONTRACT.md) for source references, tested desktop interactions,
+and remaining compatibility gaps.
