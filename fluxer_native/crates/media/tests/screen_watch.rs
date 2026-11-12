@@ -176,11 +176,14 @@ async fn engine_watch_decodes_late_metadata_unwatch_rewatch_and_republish() {
         .expect("watch first screen");
     decoded(&mut events, &first_sid, &identity).await;
     eprintln!("screen_watch: first publication decoded");
+    eprintln!("screen_watch: unwatch requested; awaiting VideoEnded");
     receiver
         .set_watched_participants(vec![])
         .expect("stop watching");
     until(&mut events,|event|matches!(event,MediaEvent::VideoEnded{track_id} if track_id==&first_sid.to_string())).await;
+    eprintln!("screen_watch: VideoEnded received; verifying no more video");
     no_video(&mut events).await;
+    eprintln!("screen_watch: no packets after unwatch; requesting same publication rewatch");
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("rewatch same publication");
