@@ -25,9 +25,15 @@ actions!(
         SelectEnd,
         DocumentHome,
         DocumentEnd,
+        SelectDocumentHome,
+        SelectDocumentEnd,
         Newline,
         SelectLeft,
         SelectRight,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
         SelectAll,
         Home,
         End,
@@ -44,6 +50,10 @@ pub struct TextInput {
     pub content: SharedString,
     pub secret: bool,
     pub multiline: bool,
+    pub chat_picker: bool,
+    read_only: bool,
+    selection_origin: Option<Range<usize>>,
+    selection_clicks: usize,
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -65,6 +75,10 @@ impl TextInput {
             content: "".into(),
             secret: false,
             multiline: false,
+            chat_picker: false,
+            read_only: false,
+            selection_origin: None,
+            selection_clicks: 1,
             placeholder: placeholder.to_owned().into(),
             selected_range: 0..0,
             selection_reversed: false,
@@ -79,9 +93,36 @@ impl TextInput {
             preferred_x: None,
         }
     }
+    /// A transparent, wrapping message body with normal selection and copy.
+    /// No text input handler is registered, so typing/IME cannot edit a message.
+    pub fn read_only(text: &str, cx: &mut Context<Self>) -> Self {
+        let mut input = Self::new("", cx);
+        input.multiline = true;
+        input.read_only = true;
+        input.content = text.to_owned().into();
+        input
+    }
+
+    /// Keep selection stable across gateway updates and unrelated UI redraws.
+    pub fn update_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.content.as_ref() != text {
+            self.content = text.to_owned().into();
+            self.selected_range = 0..0;
+            self.selection_reversed = false;
+            self.selection_origin = None;
+            self.last_layout = None;
+            cx.notify();
+        }
+    }
+
+    pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.replace_text_in_range(None, text, window, cx);
+    }
+
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
         self.content = normalize_insert(&text, self.multiline).into();
         self.selected_range = self.content.len()..self.content.len();
+        self.selection_reversed = false;
         self.marked_range = None;
         self.reveal_cursor = true;
         self.preferred_x = None;
@@ -112,6 +153,22 @@ impl TextInput {
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(word_offset(&self.content, self.cursor_offset(), false), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(word_offset(&self.content, self.cursor_offset(), true), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(word_offset(&self.content, self.cursor_offset(), false), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(word_offset(&self.content, self.cursor_offset(), true), cx);
+    }
+
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(0, cx);
         self.select_to(self.content.len(), cx)
@@ -134,6 +191,22 @@ impl TextInput {
     }
     fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(self.content.len(), cx);
+    }
+    fn select_document_home(
+        &mut self,
+        _: &SelectDocumentHome,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(0, cx);
+    }
+    fn select_document_end(
+        &mut self,
+        _: &SelectDocumentEnd,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select_to(self.content.len(), cx);
     }
     fn row_boundary(&self, end: bool) -> usize {
         self.last_layout
@@ -182,7 +255,7 @@ impl TextInput {
         }
     }
     fn scroll(&mut self, event: &gpui::ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.multiline {
+        if !self.multiline || self.read_only {
             return;
         }
         if let (Some(layout), Some(bounds)) = (&self.last_layout, self.last_bounds) {
@@ -218,11 +291,20 @@ impl TextInput {
         window.focus(&self.focus_handle);
         self.is_selecting = true;
 
+        let index = self.index_for_mouse_position(event.position);
+        self.selection_clicks = event.click_count;
+        self.selection_origin = None;
         if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            self.select_to(index, cx);
+        } else if event.click_count >= 2 {
+            let range = selection_unit(&self.content, index, event.click_count);
+            self.move_to(range.start, cx);
+            self.select_to(range.end, cx);
+            self.selection_origin = Some(range);
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx)
+            self.move_to(index, cx)
         }
+        cx.stop_propagation();
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
@@ -230,8 +312,22 @@ impl TextInput {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+        if self.is_selecting && event.pressed_button == Some(MouseButton::Left) {
+            let index = self.index_for_mouse_position(event.position);
+            if let Some(origin) = self.selection_origin.clone() {
+                let unit = selection_unit(&self.content, index, self.selection_clicks);
+                if index < origin.start {
+                    self.move_to(origin.end, cx);
+                    self.select_to(unit.start, cx);
+                } else {
+                    self.move_to(origin.start, cx);
+                    self.select_to(unit.end, cx);
+                }
+            } else {
+                self.select_to(index, cx);
+            }
+        } else if event.pressed_button != Some(MouseButton::Left) {
+            self.is_selecting = false;
         }
     }
 
@@ -258,6 +354,9 @@ impl TextInput {
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -268,6 +367,7 @@ impl TextInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        self.selection_reversed = false;
         self.reveal_cursor = true;
         self.preferred_x = None;
         cx.notify()
@@ -399,6 +499,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let new_text = normalize_insert(new_text, self.multiline);
         let new_text = new_text.as_str();
         let range = range_utf16
@@ -425,6 +528,9 @@ impl EntityInputHandler for TextInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let new_text = normalize_insert(new_text, self.multiline);
         let new_text = new_text.as_str();
         let range = range_utf16
@@ -521,6 +627,12 @@ impl DocumentLayout {
         )
     }
     fn index_for_position(&self, position: Point<Pixels>) -> usize {
+        if position.y < px(0.) {
+            return 0;
+        }
+        if position.y >= self.height() {
+            return self.lines.last().map_or(0, |line| line.range.end);
+        }
         let row = ((position.y.max(px(0.)) / self.line_height) as usize)
             .min(self.lines.len().saturating_sub(1));
         let line = &self.lines[row];
@@ -565,6 +677,42 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let input = self.input.read(cx);
+        if input.read_only {
+            let text = input.content.clone();
+            let text_style = window.text_style();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let run = text_style.to_run(text.len());
+            let mut style = Style::default();
+            style.size.width = relative(1.).into();
+            return (
+                window.request_measured_layout(style, move |known, available, window, _| {
+                    let width = known.width.or(match available.width {
+                        gpui::AvailableSpace::Definite(width) => Some(width),
+                        _ => None,
+                    });
+                    let lines = window
+                        .text_system()
+                        .shape_text(
+                            text.clone(),
+                            font_size,
+                            std::slice::from_ref(&run),
+                            width,
+                            None,
+                        )
+                        .expect("measure selectable message");
+                    let mut measured = size(px(0.), px(0.));
+                    for line in lines {
+                        let line_size = line.size(line_height);
+                        measured.width = measured.width.max(line_size.width);
+                        measured.height += line_size.height;
+                    }
+                    measured.width = width.unwrap_or(measured.width);
+                    measured
+                }),
+                (),
+            );
+        }
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         style.size.height = (window.line_height()
@@ -659,7 +807,7 @@ impl Element for TextElement {
         } else {
             scroll.y = px(0.);
         }
-        if input.reveal_cursor {
+        if input.reveal_cursor && !input.read_only {
             if position.x < scroll.x {
                 scroll.x = position.x;
             }
@@ -710,7 +858,7 @@ impl Element for TextElement {
                 }
             }
         }
-        let cursor = input.selected_range.is_empty().then(|| {
+        let cursor = (!input.read_only && input.selected_range.is_empty()).then(|| {
             fill(
                 Bounds::new(
                     point(
@@ -740,13 +888,27 @@ impl Element for TextElement {
         cx: &mut App,
     ) {
         let focus = self.input.read(cx).focus_handle.clone();
-        window.handle_input(
-            &focus,
-            ElementInputHandler::new(bounds, self.input.clone()),
-            cx,
-        );
+        if !self.input.read(cx).read_only {
+            window.handle_input(
+                &focus,
+                ElementInputHandler::new(bounds, self.input.clone()),
+                cx,
+            );
+        }
+        // Continue an active selection when the pointer leaves the text bounds.
+        let input = self.input.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Capture
+                && !bounds.contains(&event.position)
+                && input.read(cx).is_selecting
+            {
+                input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
+            }
+        });
         for selection in prepaint.selections.drain(..) {
-            window.paint_quad(selection);
+            if focus.is_focused(window) {
+                window.paint_quad(selection);
+            }
         }
         for (row, line) in prepaint.layout.lines.iter().enumerate() {
             let origin = point(
@@ -767,7 +929,7 @@ impl Element for TextElement {
         }
         self.input.update(cx, |input, cx| {
             let rows = prepaint.layout.lines.len();
-            if input.rows != rows {
+            if !input.read_only && input.rows != rows {
                 input.rows = rows;
                 cx.notify();
             }
@@ -816,7 +978,12 @@ impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
-            .key_context(if self.multiline {
+            .when(self.read_only, |view| view.w_full().min_w_0())
+            .key_context(if self.read_only {
+                "SelectableText"
+            } else if self.chat_picker {
+                "TextInput ChatPicker"
+            } else if self.multiline {
                 "TextInput MultilineInput"
             } else {
                 "TextInput"
@@ -835,10 +1002,16 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::select_end))
             .on_action(cx.listener(Self::document_home))
             .on_action(cx.listener(Self::document_end))
+            .on_action(cx.listener(Self::select_document_home))
+            .on_action(cx.listener(Self::select_document_end))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_all))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::show_character_palette))
@@ -850,23 +1023,25 @@ impl Render for TextInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::scroll))
-            .bg(rgb(0x292735))
+            .when(!self.read_only, |view| view.bg(rgb(0x292735)))
             .line_height(px(24.))
             .text_size(px(14.))
             .text_color(rgb(0xe9e7f2))
             .child(
                 div()
-                    .h(px(16.
-                        + 24.
-                            * if self.multiline {
-                                self.rows.clamp(1, 6) as f32
-                            } else {
-                                1.
-                            }))
                     .w_full()
-                    .p(px(8.))
-                    .rounded_md()
-                    .overflow_hidden()
+                    .when(!self.read_only, |view| {
+                        view.h(px(16.
+                            + 24.
+                                * if self.multiline {
+                                    self.rows.clamp(1, 6) as f32
+                                } else {
+                                    1.
+                                }))
+                        .p(px(8.))
+                        .rounded_md()
+                        .overflow_hidden()
+                    })
                     .child(TextElement { input: cx.entity() }),
             )
     }
@@ -892,9 +1067,19 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-end", SelectEnd, Some("TextInput")),
         KeyBinding::new("ctrl-home", DocumentHome, Some("TextInput")),
         KeyBinding::new("ctrl-end", DocumentEnd, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-home", SelectDocumentHome, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-end", SelectDocumentEnd, Some("TextInput")),
         KeyBinding::new("shift-enter", Newline, Some("MultilineInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("TextInput")),
+        KeyBinding::new("ctrl-right", WordRight, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("TextInput")),
+        KeyBinding::new("alt-left", WordLeft, Some("TextInput")),
+        KeyBinding::new("alt-right", WordRight, Some("TextInput")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("TextInput")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("TextInput")),
         KeyBinding::new("ctrl-a", SelectAll, Some("TextInput")),
         KeyBinding::new("ctrl-v", Paste, Some("TextInput")),
         KeyBinding::new("ctrl-c", Copy, Some("TextInput")),
@@ -905,7 +1090,94 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-x", Cut, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
+        KeyBinding::new("left", Left, Some("SelectableText")),
+        KeyBinding::new("right", Right, Some("SelectableText")),
+        KeyBinding::new("up", Up, Some("SelectableText")),
+        KeyBinding::new("down", Down, Some("SelectableText")),
+        KeyBinding::new("shift-left", SelectLeft, Some("SelectableText")),
+        KeyBinding::new("shift-right", SelectRight, Some("SelectableText")),
+        KeyBinding::new("shift-up", SelectUp, Some("SelectableText")),
+        KeyBinding::new("shift-down", SelectDown, Some("SelectableText")),
+        KeyBinding::new("home", Home, Some("SelectableText")),
+        KeyBinding::new("end", End, Some("SelectableText")),
+        KeyBinding::new("shift-home", SelectHome, Some("SelectableText")),
+        KeyBinding::new("shift-end", SelectEnd, Some("SelectableText")),
+        KeyBinding::new("ctrl-home", DocumentHome, Some("SelectableText")),
+        KeyBinding::new("ctrl-end", DocumentEnd, Some("SelectableText")),
+        KeyBinding::new(
+            "ctrl-shift-home",
+            SelectDocumentHome,
+            Some("SelectableText"),
+        ),
+        KeyBinding::new("ctrl-shift-end", SelectDocumentEnd, Some("SelectableText")),
+        KeyBinding::new("cmd-up", DocumentHome, Some("SelectableText")),
+        KeyBinding::new("cmd-down", DocumentEnd, Some("SelectableText")),
+        KeyBinding::new("cmd-shift-up", SelectDocumentHome, Some("SelectableText")),
+        KeyBinding::new("cmd-shift-down", SelectDocumentEnd, Some("SelectableText")),
+        KeyBinding::new("cmd-left", Home, Some("SelectableText")),
+        KeyBinding::new("cmd-right", End, Some("SelectableText")),
+        KeyBinding::new("cmd-shift-left", SelectHome, Some("SelectableText")),
+        KeyBinding::new("cmd-shift-right", SelectEnd, Some("SelectableText")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("SelectableText")),
+        KeyBinding::new("ctrl-right", WordRight, Some("SelectableText")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("SelectableText")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("SelectableText")),
+        KeyBinding::new("alt-left", WordLeft, Some("SelectableText")),
+        KeyBinding::new("alt-right", WordRight, Some("SelectableText")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("SelectableText")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("SelectableText")),
+        KeyBinding::new("ctrl-a", SelectAll, Some("SelectableText")),
+        KeyBinding::new("cmd-a", SelectAll, Some("SelectableText")),
+        KeyBinding::new("ctrl-c", Copy, Some("SelectableText")),
+        KeyBinding::new("cmd-c", Copy, Some("SelectableText")),
     ]);
+}
+
+fn word_offset(text: &str, offset: usize, forward: bool) -> usize {
+    let offset = grapheme_offset(text, offset);
+    let words = text
+        .split_word_bound_indices()
+        .filter(|(_, part)| !part.trim().is_empty());
+    if forward {
+        words
+            .map(|(start, part)| start + part.len())
+            .find(|end| *end > offset)
+            .unwrap_or(text.len())
+    } else {
+        words
+            .map(|(start, _)| start)
+            .take_while(|start| *start < offset)
+            .last()
+            .unwrap_or(0)
+    }
+}
+
+/// Word selection follows Unicode word boundaries; punctuation and emoji remain
+/// selectable units. Triple click selects a logical line including its newline.
+fn selection_unit(text: &str, index: usize, clicks: usize) -> Range<usize> {
+    if text.is_empty() {
+        return 0..0;
+    }
+    let index = grapheme_offset(text, index.min(text.len()));
+    if clicks >= 3 {
+        let start = text[..index].rfind('\n').map_or(0, |offset| offset + 1);
+        let end = text[index..]
+            .find('\n')
+            .map_or(text.len(), |offset| index + offset + 1);
+        return start..end;
+    }
+    let index = if index == text.len() {
+        text.grapheme_indices(true)
+            .next_back()
+            .map_or(0, |(offset, _)| offset)
+    } else {
+        index
+    };
+    text.split_word_bound_indices()
+        .find_map(|(start, word)| {
+            (index >= start && index < start + word.len()).then_some(start..start + word.len())
+        })
+        .unwrap_or(index..text.len())
 }
 
 // IME selections are relative to the newly marked text, in UTF-16 units.
@@ -984,8 +1256,49 @@ fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) 
 mod tests {
     use super::{
         grapheme_offset, logical_lines, marked_selection, normalize_insert, row_for_index,
-        utf16_offset, visual_ranges,
+        selection_unit, utf16_offset, visual_ranges, word_offset,
     };
+    #[test]
+    fn word_navigation_skips_whitespace_and_respects_unicode_and_emoji() {
+        let text = "one  café\n👩‍💻!";
+        let cafe_end = text.find('\n').unwrap();
+        let emoji_start = cafe_end + 1;
+        let emoji_end = text.len() - 1;
+        assert_eq!(word_offset(text, 0, true), 3);
+        assert_eq!(word_offset(text, 3, true), cafe_end);
+        assert_eq!(word_offset(text, cafe_end, true), emoji_end);
+        assert_eq!(word_offset(text, emoji_start + 5, true), emoji_end);
+        assert_eq!(word_offset(text, text.len(), false), emoji_end);
+        assert_eq!(word_offset(text, emoji_end, false), emoji_start);
+        assert_eq!(word_offset(text, emoji_start, false), 5);
+        assert_eq!(word_offset(text, 5, false), 0);
+        assert_eq!(word_offset("", 0, true), 0);
+        assert_eq!(word_offset("   ", 2, false), 0);
+    }
+
+    #[test]
+    fn double_click_selects_unicode_words_and_whitespace_without_splitting_emoji() {
+        let text = "Hello  café 👩‍💻!";
+        assert_eq!(&text[selection_unit(text, 2, 2)], "Hello");
+        assert_eq!(&text[selection_unit(text, 5, 2)], "  ");
+        assert_eq!(&text[selection_unit(text, 9, 2)], "café");
+        let emoji = text.find('👩').unwrap();
+        assert_eq!(&text[selection_unit(text, emoji + 5, 2)], "👩‍💻");
+        assert_eq!(&text[selection_unit(text, text.len(), 2)], "!");
+        assert_eq!(selection_unit("", 0, 2), 0..0);
+    }
+
+    #[test]
+    fn triple_click_preserves_newline_for_copy_and_handles_empty_paragraphs() {
+        let text = "first\n😀 second\n\nlast";
+        assert_eq!(&text[selection_unit(text, 2, 3)], "first\n");
+        assert_eq!(&text[selection_unit(text, 8, 3)], "😀 second\n");
+        let empty = text.find("\n\n").unwrap() + 1;
+        assert_eq!(&text[selection_unit(text, empty, 3)], "\n");
+        assert_eq!(&text[selection_unit(text, text.len(), 3)], "last");
+        assert_eq!(selection_unit("first\n", 6, 3), 6..6);
+    }
+
     #[test]
     fn hard_newlines_preserve_unicode_byte_offsets_and_trailing_empty_row() {
         let text = "a😀\né\n";

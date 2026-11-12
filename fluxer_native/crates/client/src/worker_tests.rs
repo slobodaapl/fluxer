@@ -1443,6 +1443,8 @@ async fn actual_text_workflow(login_mode: u8) {
     worker
         .command(Command::SendMessage {
             content: "hello".into(),
+            reply_to: None,
+            mention_author: false,
         })
         .await
         .unwrap();
@@ -1476,7 +1478,9 @@ async fn actual_text_workflow(login_mode: u8) {
     assert!(
         worker
             .command(Command::SendMessage {
-                content: "fail".into()
+                content: "fail".into(),
+                reply_to: None,
+                mention_author: false,
             })
             .await
             .is_err()
@@ -1699,4 +1703,245 @@ async fn wrong_account_ready_invalidates_saved_session_without_adopting_foreign_
     assert!(!retained.valid);
     assert!(worker.state.current_user.is_none());
     assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_drafts() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for step in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: fixture-secret")
+            );
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert!(body["nonce"].is_string());
+            let (status, response) = match step {
+                0 => {
+                    assert!(request.starts_with("POST /api/v1/channels/11/messages "));
+                    assert_eq!(body["content"], "reply");
+                    assert_eq!(
+                        body["message_reference"],
+                        json!({"channel_id":"11","message_id":"200","type":0})
+                    );
+                    assert_eq!(body["allowed_mentions"], json!({"replied_user":false}));
+                    (
+                        200,
+                        json!({"id":"900","channel_id":"11","author":{"id":"100","username":"you"},"content":"reply","message_reference":body["message_reference"],"type":19}),
+                    )
+                }
+                1 => {
+                    assert!(request.starts_with("POST /api/v1/channels/13/messages "));
+                    assert_eq!(body["content"], "");
+                    assert_eq!(
+                        body["message_reference"],
+                        json!({"channel_id":"11","message_id":"200","guild_id":"1","type":1})
+                    );
+                    assert!(body.get("allowed_mentions").is_none());
+                    (
+                        200,
+                        json!({"id":"901","channel_id":"13","author":{"id":"100","username":"you"},"content":"","message_reference":body["message_reference"],"message_snapshots":[{"content":"history","timestamp":"2026-01-01T00:00:00Z","type":0,"flags":0}]}),
+                    )
+                }
+                _ => {
+                    assert_eq!(body["content"], "failed reply");
+                    assert_eq!(body["allowed_mentions"], json!({"replied_user":true}));
+                    (403, json!({"code":"MISSING_PERMISSIONS"}))
+                }
+            };
+            let response = response.to_string();
+            let reason = if status == 200 { "OK" } else { "Forbidden" };
+            socket.write_all(format!("HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        }
+    });
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker.state.select_channel(11.into());
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker
+        .command(Command::SendMessage {
+            content: "reply".into(),
+            reply_to: Some(200.into()),
+            mention_author: false,
+        })
+        .await
+        .unwrap();
+    let reply = worker
+        .state
+        .channel_messages(11.into())
+        .find(|message| message.id == Snowflake(900))
+        .unwrap();
+    assert_eq!(
+        reply.message_reference.as_ref().unwrap().message_id,
+        Some(200.into())
+    );
+    worker
+        .command(Command::SetDraft("keep this draft".into()))
+        .await
+        .unwrap();
+    worker
+        .command(Command::ForwardMessage {
+            source_channel: 11.into(),
+            message_id: 200.into(),
+            destination: 13.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(worker.state.selected_channel, Some(11.into()));
+    assert_eq!(
+        worker.state.drafts.get(&11.into()).map(String::as_str),
+        Some("keep this draft")
+    );
+    assert_eq!(
+        worker
+            .state
+            .channel_messages(13.into())
+            .find(|message| message.id == Snowflake(901))
+            .unwrap()
+            .extra["message_snapshots"][0]["content"],
+        "history"
+    );
+    worker
+        .command(Command::SetDraft("failed reply".into()))
+        .await
+        .unwrap();
+    assert!(
+        worker
+            .command(Command::SendMessage {
+                content: "failed reply".into(),
+                reply_to: Some(200.into()),
+                mention_author: true
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        worker.state.drafts.get(&11.into()).map(String::as_str),
+        Some("failed reply")
+    );
+    assert_eq!(
+        events
+            .try_iter()
+            .filter(|event| matches!(event, Event::MessageSent { .. }))
+            .count(),
+        1
+    );
+    assert!(worker.media.is_none());
+    timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn demo_custom_reactions_toggle_by_id_and_forward_does_not_copy_author_identity() {
+    let (mut worker, _events) = worker();
+    worker.state = ClientState::demo();
+    worker.demo = true;
+    worker.state.select_channel(11.into());
+    let source = Message::text(
+        950.into(),
+        11.into(),
+        User {
+            id: 999.into(),
+            username: "source".into(),
+            ..User::default()
+        },
+        "Forwarded text",
+    );
+    worker.state.insert_message(source);
+    for name in ["party:42", "renamed:42"] {
+        worker
+            .command(Command::React {
+                message_id: 950.into(),
+                emoji: name.into(),
+            })
+            .await
+            .unwrap();
+    }
+    assert!(
+        worker
+            .state
+            .channel_messages(11.into())
+            .find(|message| message.id == Snowflake(950))
+            .unwrap()
+            .reactions
+            .is_empty()
+    );
+    worker
+        .command(Command::ForwardMessage {
+            source_channel: 11.into(),
+            message_id: 950.into(),
+            destination: 13.into(),
+        })
+        .await
+        .unwrap();
+    let forward = worker
+        .state
+        .channel_messages(13.into())
+        .find(|message| {
+            message
+                .message_reference
+                .as_ref()
+                .is_some_and(|reference| reference.kind == 1)
+        })
+        .unwrap();
+    assert_eq!(
+        forward.author.id,
+        worker.state.current_user.as_ref().unwrap().id
+    );
+    assert_eq!(
+        forward.extra["message_snapshots"][0]["content"],
+        "Forwarded text"
+    );
+    assert!(
+        forward.extra["message_snapshots"][0]
+            .get("message")
+            .is_none()
+    );
+    let forwarded_id = forward.id;
+    worker
+        .command(Command::ForwardMessage {
+            source_channel: 13.into(),
+            message_id: forwarded_id,
+            destination: 11.into(),
+        })
+        .await
+        .unwrap();
+    let reforward = worker
+        .state
+        .channel_messages(11.into())
+        .find(|message| {
+            message
+                .message_reference
+                .as_ref()
+                .is_some_and(|reference| reference.channel_id == Snowflake(13))
+        })
+        .unwrap();
+    assert_eq!(
+        reforward.extra["message_snapshots"][0]["content"],
+        "Forwarded text"
+    );
+    assert!(
+        worker
+            .command(Command::ForwardMessage {
+                source_channel: 11.into(),
+                message_id: 950.into(),
+                destination: 10.into()
+            })
+            .await
+            .is_err()
+    );
 }

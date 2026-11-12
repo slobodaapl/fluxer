@@ -1,5 +1,7 @@
 use crate::{Command, Event, VoiceStatus};
-use fluxer_core::{ChannelType, ClientState, Emoji, Message, Permissions, Snowflake, User};
+use fluxer_core::{
+    ChannelType, ClientState, Emoji, Message, MessageReference, Permissions, Snowflake, User,
+};
 use fluxer_media::{MediaEngine, MediaEvent, MediaEvents, VideoFrame};
 use fluxer_protocol::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus, Gateway,
@@ -238,6 +240,14 @@ impl Worker {
             self.emit(Event::Status("Sign in to your Fluxer instance".into()));
             return Ok(());
         };
+        self.emit(Event::MediaEndpoint(
+            saved
+                .instance
+                .document
+                .pointer("/endpoints/media")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ));
         self.emit(Event::SessionContext {
             instance: saved.instance.api.to_string(),
             selected_guild: saved.selected_guild,
@@ -464,6 +474,7 @@ impl Worker {
         self.clear_browser_login();
         self.client = None;
         self.media = None;
+        self.emit(Event::MediaEndpoint(None));
         self.state = ClientState::default();
         self.state.settings.locale = self.locale.clone();
         self.demo = false;
@@ -733,12 +744,22 @@ impl Worker {
                 let channel = self.selected()?;
                 self.state.set_draft(channel, content);
             }
-            Command::SendMessage { content } => {
+            Command::SendMessage {
+                content,
+                reply_to,
+                mention_author,
+            } => {
                 let channel = self.selected()?;
                 if content.trim().is_empty() {
                     return Err("Message cannot be empty".into());
                 }
-                let message = if self.demo {
+                let reference = reply_to.map(|message_id| MessageReference {
+                    channel_id: channel,
+                    message_id: Some(message_id),
+                    guild_id: None,
+                    kind: 0,
+                });
+                let mut message = if self.demo {
                     Message::text(
                         self.state.next_local_message_id(),
                         channel,
@@ -758,12 +779,21 @@ impl Worker {
                     );
                     serde_json::from_value(
                         self.client()?
-                            .send_message(&channel.to_string(), &content, Some(&nonce))
+                            .send_referenced_message(
+                                &channel.to_string(),
+                                &content,
+                                Some(&nonce),
+                                reference.as_ref(),
+                                mention_author,
+                            )
                             .await
                             .map_err(error)?,
                     )
                     .map_err(error)?
                 };
+                if self.demo {
+                    message.message_reference = reference;
+                }
                 self.state.insert_message(message);
                 self.state.set_draft(channel, String::new());
                 self.snapshot();
@@ -771,6 +801,83 @@ impl Worker {
                     channel_id: channel,
                     content,
                 });
+            }
+            Command::ForwardMessage {
+                source_channel,
+                message_id,
+                destination,
+            } => {
+                let target = self
+                    .state
+                    .channels
+                    .get(&destination)
+                    .ok_or("Destination is unavailable")?;
+                let user = self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .ok_or("No current account")?;
+                if !fluxer_core::can_send_message(
+                    target.kind,
+                    self.state.permissions_for(destination, user.id),
+                ) {
+                    return Err("You cannot send messages to that destination".into());
+                }
+                let reference = MessageReference {
+                    channel_id: source_channel,
+                    message_id: Some(message_id),
+                    guild_id: self
+                        .state
+                        .channels
+                        .get(&source_channel)
+                        .and_then(|channel| channel.guild_id),
+                    kind: 1,
+                };
+                let message = if self.demo {
+                    let source = self
+                        .state
+                        .channel_messages(source_channel)
+                        .find(|message| message.id == message_id)
+                        .cloned()
+                        .ok_or("Source message is unavailable")?;
+                    let mut message = Message::text(
+                        self.state.next_local_message_id(),
+                        destination,
+                        self.state
+                            .current_user
+                            .clone()
+                            .ok_or("No current account")?,
+                        "",
+                    );
+                    message.message_reference = Some(reference);
+                    let snapshot = source.extra.get("message_snapshots").and_then(Value::as_array).and_then(|snapshots|snapshots.first()).cloned().unwrap_or_else(||json!({"content":source.content,"timestamp":source.timestamp,"edited_timestamp":source.edited_timestamp,"attachments":source.attachments,"embeds":source.extra.get("embeds").cloned().unwrap_or_else(||json!([])),"type":source.kind,"flags":source.flags}));
+                    message
+                        .extra
+                        .insert("message_snapshots".into(), json!([snapshot]));
+                    message
+                } else {
+                    let nonce = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .to_string();
+                    serde_json::from_value(
+                        self.client()?
+                            .send_referenced_message(
+                                &destination.to_string(),
+                                "",
+                                Some(&nonce),
+                                Some(&reference),
+                                false,
+                            )
+                            .await
+                            .map_err(error)?,
+                    )
+                    .map_err(error)?
+                };
+                self.state.insert_message(message);
+                self.snapshot();
+                self.emit(Event::MessageForwarded { destination });
             }
             Command::EditMessage {
                 message_id,
@@ -810,11 +917,21 @@ impl Worker {
             }
             Command::React { message_id, emoji } => {
                 let channel = self.selected()?;
+                let reaction = emoji
+                    .rsplit_once(':')
+                    .and_then(|(name, id)| {
+                        id.parse::<Snowflake>().ok().map(|id| Emoji {
+                            id: Some(id),
+                            name: name.to_owned(),
+                            animated: false,
+                        })
+                    })
+                    .unwrap_or_else(|| Emoji::unicode(emoji.clone()));
                 let existing = self
                     .state
                     .channel_messages(channel)
                     .find(|m| m.id == message_id)
-                    .and_then(|m| m.reactions.iter().find(|r| r.emoji.name == emoji))
+                    .and_then(|m| m.reactions.iter().find(|r| r.emoji.same_as(&reaction)))
                     .is_some_and(|r| r.me);
                 if !self.demo {
                     let client = self.client()?;
@@ -831,8 +948,7 @@ impl Worker {
                     }
                 }
                 if self.demo {
-                    self.state
-                        .toggle_reaction(channel, message_id, Emoji::unicode(emoji));
+                    self.state.toggle_reaction(channel, message_id, reaction);
                     self.snapshot();
                 }
             }
@@ -1196,6 +1312,14 @@ impl Worker {
             self.emit(Event::Error(message));
         }
         self.client = Some(client.clone());
+        self.emit(Event::MediaEndpoint(
+            client
+                .instance()
+                .document
+                .pointer("/endpoints/media")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        ));
         self.emit(Event::SessionContext {
             instance: client.instance().api.to_string(),
             selected_guild: self.selected_guild,

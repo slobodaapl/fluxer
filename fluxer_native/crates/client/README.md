@@ -19,6 +19,12 @@ the saved account; explicit logout clears it before best-effort server logout.
 
 Text operations load channel history, fetch older pages, send/edit/delete,
 toggle reactions through the server, acknowledge reads, and send typing events.
+Replies use a type-0 message reference with explicit author-mention control;
+forwards use a type-1 reference and the server's immutable snapshot response.
+Forward destinations carry their own channel ID and do not switch the active
+conversation or consume its draft. Custom reactions use the API's `name:id`
+identifier and compare by emoji ID. Discovery supplies the selected instance's
+media endpoint separately from authenticated API traffic, clearing it on reset.
 Successful sends and edits have explicit confirmation events so a UI retains
 its composer on failure. REST message responses merge with gateway confirmations
 by message ID. Live reaction state comes from gateway deltas. Selecting a channel

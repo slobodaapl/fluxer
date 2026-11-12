@@ -102,7 +102,7 @@ impl Fluxer {
         cx.notify();
     }
 
-    pub(super) fn call_view(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn call_view(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(identity) = self.viewer.focused.clone() else {
             return self.chat(cx);
         };

@@ -588,10 +588,21 @@ impl Client {
         content: &str,
         nonce: Option<&str>,
     ) -> Result<Value> {
-        let mut body = json!({"content":content});
-        if let Some(nonce) = nonce {
-            body["nonce"] = nonce.into();
-        }
+        self.send_referenced_message(channel, content, nonce, None, false)
+            .await
+    }
+
+    /// SharedMessageSchemas.ts / MessageCommands.forward: type 0 replies,
+    /// type 1 asks the server to generate a forward snapshot.
+    pub async fn send_referenced_message(
+        &self,
+        channel: &str,
+        content: &str,
+        nonce: Option<&str>,
+        reference: Option<&fluxer_core::MessageReference>,
+        mention_author: bool,
+    ) -> Result<Value> {
+        let body = message_body(content, nonce, reference, mention_author);
         self.request(
             Method::POST,
             &format!("/channels/{}/messages", segment(channel)),
@@ -870,6 +881,29 @@ fn parse_login(value: Value) -> Result<LoginOutcome> {
 fn segment(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
+fn message_body(
+    content: &str,
+    nonce: Option<&str>,
+    reference: Option<&fluxer_core::MessageReference>,
+    mention_author: bool,
+) -> Value {
+    let mut body = json!({"content":content});
+    if let Some(nonce) = nonce {
+        body["nonce"] = nonce.into();
+    }
+    if let Some(reference) = reference {
+        let mut value = json!({"channel_id":reference.channel_id, "message_id":reference.message_id, "type":reference.kind});
+        if let Some(guild) = reference.guild_id {
+            value["guild_id"] = json!(guild);
+        }
+        body["message_reference"] = value;
+        if reference.kind == 0 {
+            body["allowed_mentions"] = json!({"replied_user":mention_author});
+        }
+    }
+    body
+}
+
 fn message_path(channel: &str, message: &str) -> String {
     format!(
         "/channels/{}/messages/{}",
@@ -1238,5 +1272,33 @@ mod tests {
                 .await,
             Err(Error::InvalidEndpoint(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod message_reference_tests {
+    use super::*;
+    #[test]
+    fn reply_and_forward_bodies_match_the_web_client_contract() {
+        let mut reference = fluxer_core::MessageReference {
+            channel_id: 100.into(),
+            message_id: Some(200.into()),
+            guild_id: None,
+            kind: 0,
+        };
+        assert_eq!(
+            message_body("reply", Some("nonce"), Some(&reference), false),
+            json!({"content":"reply","nonce":"nonce","message_reference":{"channel_id":"100","message_id":"200","type":0},"allowed_mentions":{"replied_user":false}})
+        );
+        reference.kind = 1;
+        reference.guild_id = Some(10.into());
+        assert_eq!(
+            message_body("", None, Some(&reference), false),
+            json!({"content":"","message_reference":{"channel_id":"100","message_id":"200","guild_id":"10","type":1}})
+        );
+        assert_eq!(
+            message_body("hello", None, None, false),
+            json!({"content":"hello"})
+        );
     }
 }

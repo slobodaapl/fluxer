@@ -37,6 +37,20 @@ build downloads GPUI/Rust dependencies and LiveKit's native WebRTC library.
 The client uses the OS portal for Wayland screen selection. Application/system
 audio capture currently uses the existing Linux PipeWire engine.
 
+Chat shows discovered-instance avatars, inline image attachments, embed cards,
+and forwarded snapshots. Audio/video attachments open externally. Message bodies
+support mouse and keyboard selection, Unicode word selection, and Ctrl/Cmd+C.
+The emoji picker searches the existing Fluxer catalog, including skin tones and
+community emoji; arrow keys select a result, Enter chooses it, and Escape closes
+the picker. Replies have a cancellable preview and author-mention control;
+forwarding has a searchable destination picker. Reply intent and unsent drafts
+survive channel switching, and editing preserves the unsent composer draft.
+
+Full markdown and inline custom-emoji rendering, attachment uploads, native
+audio/video playback, selection across messages, and selection autoscroll remain
+open. Embed text is currently plain and is not selectable. These features do not
+establish complete messaging parity with the existing client.
+
 macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
 prerequisites; their builds and capture behavior have not yet been validated by
 this migration. Full cross-platform parity remains a release gate.

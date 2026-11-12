@@ -202,6 +202,66 @@ impl ClientState {
         }
         state.toggle_reaction(11.into(), 1000.into(), Emoji::unicode("👋"));
         state.toggle_reaction(11.into(), 1002.into(), Emoji::unicode("👍"));
+        let mut rich_message = Message::text(
+            1004.into(),
+            11.into(),
+            sam.clone(),
+            "Chat selection works across wrapped lines and explicit line breaks.\nTry selecting this sentence, then copying it with Ctrl/Cmd+C. Unicode stays intact: café, 日本語, 👩🏽‍💻.",
+        );
+        rich_message.timestamp = "2026-11-12T09:34:00Z".into();
+        rich_message.extra.insert(
+            "embeds".into(),
+            serde_json::json!([{
+                "type": "rich",
+                "title": "A richer native conversation",
+                "description": "Link previews, attachments, replies and forwards now have a place in the timeline.",
+                "color": 8942574,
+                "footer": {"text": "Offline sample · no network content"}
+            }]),
+        );
+        state.insert_message(rich_message);
+        let mut reply = Message::text(
+            1005.into(),
+            11.into(),
+            river.clone(),
+            "Replying keeps the original message in view. 🎉",
+        );
+        reply.timestamp = "2026-11-12T09:35:00Z".into();
+        reply.kind = 19;
+        reply.message_reference = Some(MessageReference {
+            channel_id: 11.into(),
+            message_id: Some(1004.into()),
+            guild_id: Some(1.into()),
+            kind: 0,
+        });
+        reply.extra.insert(
+            "referenced_message".into(),
+            serde_json::to_value(&state.messages[&Snowflake::from(11)][&Snowflake::from(1004)])
+                .expect("serialize offline reply target"),
+        );
+        state.insert_message(reply);
+        let mut forwarded = Message::text(1006.into(), 11.into(), alex.clone(), "");
+        forwarded.timestamp = "2026-11-12T09:36:00Z".into();
+        forwarded.message_reference = Some(MessageReference {
+            channel_id: 21.into(),
+            message_id: Some(1030.into()),
+            guild_id: Some(2.into()),
+            kind: 1,
+        });
+        forwarded.extra.insert(
+            "message_snapshots".into(),
+            serde_json::json!([{
+                "content": "Share your latest project here.",
+                "timestamp": "2026-11-12T09:00:00Z",
+                "type": 0,
+                "flags": 0,
+                "attachments": [{
+                    "id": "9001", "filename": "native-client-notes.txt", "size": 2048,
+                    "content_type": "text/plain", "flags": 0
+                }]
+            }]),
+        );
+        state.insert_message(forwarded);
         state.relationships.insert(
             alex.id,
             Relationship {
