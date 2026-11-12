@@ -901,7 +901,7 @@ impl Worker {
                 self.update_voice().await?;
             }
             Command::RefreshDevices => {
-                let devices = self.media()?.devices();
+                let devices = self.media()?.try_devices().map_err(error)?;
                 self.emit(Event::Devices(devices));
             }
             Command::SetInputDevice(id) => self.media()?.set_input_device(&id).map_err(error)?,

@@ -68,6 +68,8 @@ cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example aud
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-media --example audio_probe -- --meter
 python3 fluxer_native/scripts/test_media_loopback.py --audio-lifecycle
 python3 fluxer_native/scripts/test_microphone_capture.py
+python3 fluxer_native/scripts/test_output_routing.py
+python3 fluxer_native/scripts/test_output_routing.py --media
 ```
 
 Unit tests cover actual SDK track PCM for input gain/PTT, arbitrary callback
@@ -76,3 +78,8 @@ callbacks, and the gain-adjusted echo reference. Mixer tests cover clipping,
 voice-activation release, participant mute/deafen, and bounded latency. Local
 LiveKit/virtual-microphone tests exercise physical capture through publication
 and reception without sending personal microphone audio to an external server.
+The output runner creates two isolated sinks and checks both monitor PCM and
+actual graph links. Its media mode decodes synthetic LiveKit audio through the
+real mixer/output, verifies gain and participant mute, switches sinks during the
+call, and checks teardown silence. No default devices or other application
+routes are changed; all temporary sinks are removed after the run.

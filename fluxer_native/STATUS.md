@@ -10,14 +10,14 @@ not individual types or controls.
 | Core state | 28 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
 | HTTP/gateway | 43 tests: source-backed discovery/Origin/headers/IP/browser handoff, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
-| Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources; 13 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
+| Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
 | GPUI | Executable builds/links; Wayland demo visually verified; 7 multiline/Unicode/IME tests pass | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
-| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, device routing and meters; 27 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
+| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 30 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 30 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, stream viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-155 tests. The opt-in LiveKit test verifies explicit microphone/screen
+163 tests. The opt-in LiveKit test verifies explicit microphone/screen
 subscription and screen unwatch while fresh microphone audio continues. The
 current run times out restoring the microphone immediately after deafen: the
 SDK's local unsubscribe event precedes wire completion, and its asynchronous
@@ -47,6 +47,17 @@ checks do not replace authenticated interoperability with the existing client.
 The user subsequently confirmed successful microphone transmission in a real
 Fluxer call. Full screen-sharing and advanced audio interoperability gates
 remain open.
+
+Linux output enumeration/playback now uses logical PipeWire sinks instead of
+ALSA backends/cards. The final inventory was checked against the supplied real
+Fluxer screenshot: Linux default, HDMI/monitor, GoXLR Chat/Game/Music/Sample/System
+and JDS DAC, in the same order. Internal Fluxer capture sinks and raw internal
+hardware nodes are excluded. Each explicit choice routes to its exact node;
+selecting one never changes the OS default or another application's route.
+Both direct and decoded LiveKit playback tests pass with two isolated virtual
+sinks: monitor PCM and graph links verify destination isolation, gain, participant
+mute, live switching and completed teardown. Refresh errors are reported rather
+than silently replacing the device list with an empty inventory.
 
 The shared build cache was moved from RAM-backed `/tmp` into the ignored
 `fluxer_native/target/gpui-shared-cache` directory. The old `/tmp` path is only a
