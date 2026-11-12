@@ -115,10 +115,10 @@ impl SystemAudio {
     pub fn applications() -> Result<Vec<Application>, Error> {
         #[cfg(target_os = "linux")]
         {
-            let bridge = pipewire_bridge::PipeWireBridge::open().ok_or(Error::Unavailable)?;
+            let nodes = microphone::enumerate_audio_nodes().map_err(|_| Error::Unavailable)?;
             let identity = native_identity();
             let mut entries = std::collections::BTreeMap::new();
-            for properties in bridge.inventory() {
+            for properties in nodes {
                 if properties.get("media.class").map(String::as_str) != Some("Stream/Output/Audio")
                 {
                     continue;
