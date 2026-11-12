@@ -1,6 +1,9 @@
 //! Serialized native client controller. Network and media handles stay on its
 //! Tokio worker; GPUI sends commands and polls coalesced presentation events.
+mod attachments;
 mod worker;
+
+pub use attachments::{AttachmentId, AttachmentPreview, AttachmentStatus, StagedAttachment};
 
 pub use fluxer_core::{ClientState, Snowflake};
 pub use fluxer_media::{
@@ -47,6 +50,36 @@ pub enum Command {
         channel_id: Snowflake,
     },
     LoadOlderMessages,
+    StageFiles {
+        channel_id: Snowflake,
+        paths: Vec<std::path::PathBuf>,
+    },
+    StageClipboardImage {
+        channel_id: Snowflake,
+        filename: String,
+        mime_type: String,
+        bytes: Arc<Vec<u8>>,
+    },
+    RemoveAttachment {
+        channel_id: Snowflake,
+        id: AttachmentId,
+    },
+    CancelAttachment {
+        channel_id: Snowflake,
+        id: AttachmentId,
+    },
+    RetryAttachment {
+        channel_id: Snowflake,
+        id: AttachmentId,
+    },
+    SetAttachmentSpoiler {
+        channel_id: Snowflake,
+        id: AttachmentId,
+        spoiler: bool,
+    },
+    CancelAttachmentSend {
+        channel_id: Snowflake,
+    },
     SendMessage {
         content: String,
         reply_to: Option<Snowflake>,
@@ -119,6 +152,17 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    Attachments {
+        channel_id: Snowflake,
+        attachments: Vec<StagedAttachment>,
+    },
+    AttachmentsCleared,
+    AttachmentLimits {
+        channel_id: Snowflake,
+        max_files: usize,
+        max_file_bytes: u64,
+        preupload: bool,
+    },
     MediaEndpoint(Option<String>),
     MessageForwarded {
         destination: Snowflake,
@@ -138,6 +182,11 @@ pub enum Event {
         channel_id: Snowflake,
         message_id: Snowflake,
         content: String,
+    },
+    MessageOperationFailed {
+        channel_id: Snowflake,
+        content: String,
+        error: String,
     },
     Error(String),
     Status(String),

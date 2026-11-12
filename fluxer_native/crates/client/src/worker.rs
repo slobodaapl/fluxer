@@ -18,6 +18,9 @@ use std::{
 };
 use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
+#[path = "worker_attachments.rs"]
+mod attachment_flow;
+
 type Result<T> = std::result::Result<T, String>;
 const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const IP_MAX_POLL_ERRORS: u8 = 3;
@@ -124,6 +127,7 @@ impl VoiceTarget {
 }
 
 pub(crate) struct Worker {
+    attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     saved_session: Option<SavedSession>,
     restore_task: Option<JoinHandle<Result<Option<SavedSession>>>>,
@@ -173,6 +177,7 @@ impl Worker {
         frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     ) -> Self {
         Self {
+            attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             saved_session: None,
             restore_task: None,
@@ -353,6 +358,7 @@ impl Worker {
         self.snapshot();
         loop {
             enum Incoming {
+                Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
                 Media(Option<MediaEvent>),
@@ -369,6 +375,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
                 event = receive_media(&mut self.media_events) => Incoming::Media(event),
@@ -380,6 +387,11 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::Attachment(Some(event)) => {
+                    self.attachment_event(event);
+                    Ok(())
+                }
+                Incoming::Attachment(None) => Ok(()),
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
                 Incoming::Command(Some(command)) => self.command(command).await,
                 Incoming::Restore(result) => {
@@ -455,6 +467,7 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        self.clear_attachments();
         if let Some(task) = self.restore_task.take() {
             task.abort();
         }
@@ -754,63 +767,51 @@ impl Worker {
                 let channel = self.selected()?;
                 self.state.set_draft(channel, content);
             }
+            Command::StageFiles { channel_id, paths } => self.stage_files(channel_id, paths)?,
+            Command::StageClipboardImage {
+                channel_id,
+                filename,
+                mime_type,
+                bytes,
+            } => self.stage_clipboard(channel_id, filename, mime_type, bytes)?,
+            Command::RemoveAttachment { channel_id, id } => {
+                self.cancel_attachment(channel_id, id, true)?
+            }
+            Command::CancelAttachment { channel_id, id } => {
+                self.cancel_attachment(channel_id, id, false)?
+            }
+            Command::RetryAttachment { channel_id, id } => self.retry_attachment(channel_id, id)?,
+            Command::SetAttachmentSpoiler {
+                channel_id,
+                id,
+                spoiler,
+            } => self.spoiler_attachment(channel_id, id, spoiler)?,
+            Command::CancelAttachmentSend { channel_id } => self.cancel_attachment_send(channel_id),
             Command::SendMessage {
                 content,
                 reply_to,
                 mention_author,
             } => {
                 let channel = self.selected()?;
-                if content.trim().is_empty() {
-                    return Err("Message cannot be empty".into());
-                }
                 let reference = reply_to.map(|message_id| MessageReference {
                     channel_id: channel,
                     message_id: Some(message_id),
                     guild_id: None,
                     kind: 0,
                 });
-                let mut message = if self.demo {
-                    Message::text(
-                        self.state.next_local_message_id(),
-                        channel,
-                        self.state
-                            .current_user
-                            .clone()
-                            .ok_or("No current account")?,
-                        content.clone(),
-                    )
-                } else {
-                    let nonce = format!(
-                        "{}",
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos()
-                    );
-                    serde_json::from_value(
-                        self.client()?
-                            .send_referenced_message(
-                                &channel.to_string(),
-                                &content,
-                                Some(&nonce),
-                                reference.as_ref(),
-                                mention_author,
-                            )
-                            .await
-                            .map_err(error)?,
-                    )
-                    .map_err(error)?
-                };
-                if self.demo {
-                    message.message_reference = reference;
+                if let Err(message) = self.request_attachment_send(
+                    channel,
+                    content.clone(),
+                    reference,
+                    mention_author,
+                ) {
+                    self.emit(Event::MessageOperationFailed {
+                        channel_id: channel,
+                        content,
+                        error: message.clone(),
+                    });
+                    return Err(message);
                 }
-                self.state.insert_message(message);
-                self.state.set_draft(channel, String::new());
-                self.snapshot();
-                self.emit(Event::MessageSent {
-                    channel_id: channel,
-                    content,
-                });
             }
             Command::ForwardMessage {
                 source_channel,
@@ -898,11 +899,14 @@ impl Worker {
                     self.state
                         .edit_message(channel, message_id, content.clone());
                 } else {
-                    let message = self
-                        .client()?
-                        .edit_message(&channel.to_string(), &message_id.to_string(), &content)
-                        .await
-                        .map_err(error)?;
+                    let result=match self.client() {
+                        Ok(client)=>client.edit_message(&channel.to_string(),&message_id.to_string(),&content).await.map_err(error),
+                        Err(message)=>Err(message),
+                    };
+                    let message=match result {Ok(message)=>message,Err(message)=>{
+                        self.emit(Event::MessageOperationFailed{channel_id:channel,content:content.clone(),error:message.clone()});
+                        return Err(message);
+                    }};
                     self.state
                         .apply_gateway("MESSAGE_UPDATE", message)
                         .map_err(error)?;
@@ -1394,6 +1398,7 @@ impl Worker {
             }
         }
         self.state.select_channel(channel);
+        self.attachment_snapshot(channel);
         self.restore_channel = None;
         self.persist_selection().await;
         self.snapshot();
@@ -1568,6 +1573,11 @@ impl Worker {
                     self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
+                    if name == "MESSAGE_CREATE"
+                        && let Ok(message) = serde_json::from_value::<Message>(data.clone())
+                    {
+                        self.reconcile_attachment_message(&message);
+                    }
                     if name == "READY" {
                         self.state.voice = previous_voice;
                         if self

@@ -40,6 +40,9 @@ pub struct ClientState {
     pub selected_channel: Option<Snowflake>,
     pub drafts: BTreeMap<Snowflake, String>,
     pub settings: ClientSettings,
+    /// Preserve the authoritative settings payload, including encoded synced
+    /// privacy preferences used by attachment preupload policy.
+    pub user_settings: Value,
     pub voice: VoiceControls,
     pub session_id: Option<String>,
     local_message_counter: u64,
@@ -359,6 +362,8 @@ impl ClientState {
                     presences: Vec<Presence>,
                     #[serde(default)]
                     session_id: Option<String>,
+                    #[serde(default)]
+                    user_settings: Value,
                 }
                 if let Some(guilds) = data.get_mut("guilds").and_then(Value::as_array_mut) {
                     for guild in guilds {
@@ -378,6 +383,7 @@ impl ClientState {
                     session_id: ready.session_id,
                     settings: self.settings.clone(),
                     drafts: self.drafts.clone(),
+                    user_settings: ready.user_settings,
                     ..Self::default()
                 };
                 next.users.insert(ready.user.id, ready.user);
@@ -648,6 +654,15 @@ impl ClientState {
                     self.current_user = Some(user.clone());
                 }
                 self.users.insert(user.id, user);
+            }
+            "USER_SETTINGS_UPDATE" => {
+                let update: serde_json::Map<String, Value> = decode(event, data)?;
+                let settings = self.user_settings.as_object_mut();
+                if let Some(settings) = settings {
+                    settings.extend(update);
+                } else {
+                    self.user_settings = Value::Object(update);
+                }
             }
             "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" => {
                 #[derive(Deserialize)]
