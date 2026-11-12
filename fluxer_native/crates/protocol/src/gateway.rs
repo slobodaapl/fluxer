@@ -100,6 +100,7 @@ pub enum GatewayEvent {
         sequence: Option<u64>,
     },
     Error(String),
+    AuthenticationFailed,
     Disconnected,
 }
 
@@ -110,6 +111,7 @@ impl fmt::Debug for GatewayEvent {
             Self::Connected => f.write_str("Connected"),
             Self::Reconnecting => f.write_str("Reconnecting"),
             Self::Disconnected => f.write_str("Disconnected"),
+            Self::AuthenticationFailed => f.write_str("AuthenticationFailed"),
             Self::Error(error) => f.debug_tuple("Error").field(error).finish(),
             Self::Dispatch { name, sequence, .. } => f
                 .debug_struct("Dispatch")
@@ -365,7 +367,12 @@ impl Gateway {
                                 if let Some(frame)=frame {
                                     let code:u16=frame.code.into();
                                     if matches!(code,4007|4009)||resume_deadline.is_some(){self.clear_session();}
-                                    if code==4004{terminal=true;}
+                                    if code==4004{
+                                        // AuthSession.ts:630-689 invalidates only
+                                        // explicit authentication-failed closes.
+                                        let _=events.send(GatewayEvent::AuthenticationFailed).await;
+                                        terminal=true;
+                                    }
                                 }
                                 break;
                             },
@@ -983,6 +990,152 @@ mod tests {
         wait_connected(&mut events).await;
         commands.send(GatewayCommand::Close).await.unwrap();
         client.await.unwrap().unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_close_4004_emits_authentication_failed_before_disconnect_not_malformed_json() {
+        // AuthSession.ts:630-650 distinguishes explicit 4004 invalidation from
+        // all ordinary connection failures; malformed wire data is not a token verdict.
+        for authentication_close in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                let mut codec = WireCodec::new(false).unwrap();
+                fixture_send(
+                    &mut socket,
+                    &mut codec,
+                    json!({"op":10,"d":{"heartbeat_interval":45000}}),
+                )
+                .await;
+                assert_eq!(receive(&mut socket, &mut codec).await["op"], 2);
+                if authentication_close {
+                    socket.send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame{code:tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4004),reason:"private-server-reason".into()}))).await.unwrap();
+                } else {
+                    socket
+                        .send(Message::Text("{malformed json".into()))
+                        .await
+                        .unwrap();
+                }
+                while let Some(Ok(message)) = socket.next().await {
+                    if matches!(message, Message::Close(_)) {
+                        break;
+                    }
+                }
+            });
+            let (tx, mut events) = mpsc::channel(32);
+            let (_commands, rx) = mpsc::channel(16);
+            let client = tokio::spawn(
+                Gateway::new(
+                    Url::parse(&format!("ws://{address}")).unwrap(),
+                    SessionToken::new("private-session-token").unwrap(),
+                )
+                .with_compression_enabled(false)
+                .run(tx, rx),
+            );
+            let captured = timeout(Duration::from_secs(5), async {
+                let mut captured = Vec::new();
+                while let Some(event) = events.recv().await {
+                    let disconnected = matches!(event, GatewayEvent::Disconnected);
+                    captured.push(event);
+                    if disconnected {
+                        break;
+                    }
+                }
+                captured
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                captured
+                    .iter()
+                    .filter(|event| matches!(event, GatewayEvent::AuthenticationFailed))
+                    .count(),
+                usize::from(authentication_close)
+            );
+            assert!(matches!(captured.last(), Some(GatewayEvent::Disconnected)));
+            if authentication_close {
+                assert!(matches!(
+                    captured.get(captured.len() - 2),
+                    Some(GatewayEvent::AuthenticationFailed)
+                ));
+            }
+            assert!(!format!("{captured:?}").contains("private-"));
+            assert!(client.await.unwrap().is_err());
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn session_timeout_4009_identifies_again_without_invalidating_authentication() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut codec = WireCodec::new(false).unwrap();
+            fixture_send(
+                &mut socket,
+                &mut codec,
+                json!({"op":10,"d":{"heartbeat_interval":45000}}),
+            )
+            .await;
+            assert_eq!(receive(&mut socket, &mut codec).await["op"], 6);
+            socket.send(Message::Close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame{code:tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Library(4009),reason:"session timed out".into()}))).await.unwrap();
+            drop(socket);
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut codec = WireCodec::new(false).unwrap();
+            fixture_send(
+                &mut socket,
+                &mut codec,
+                json!({"op":10,"d":{"heartbeat_interval":45000}}),
+            )
+            .await;
+            assert_eq!(receive(&mut socket, &mut codec).await["op"], 2);
+            fixture_send(
+                &mut socket,
+                &mut codec,
+                json!({"op":0,"t":"READY","s":1,"d":{"session_id":"new-session"}}),
+            )
+            .await;
+            while let Some(Ok(message)) = socket.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+        });
+        let (tx, mut events) = mpsc::channel(32);
+        let (commands, rx) = mpsc::channel(16);
+        let client = tokio::spawn(
+            Gateway::new(
+                Url::parse(&format!("ws://{address}")).unwrap(),
+                SessionToken::new("private-session-token").unwrap(),
+            )
+            .with_compression_enabled(false)
+            .with_resume(ResumeSession {
+                session_id: Some("old-session".into()),
+                sequence: Some(7),
+            })
+            .run(tx, rx),
+        );
+        timeout(Duration::from_secs(8), async {
+            while let Some(event) = events.recv().await {
+                assert!(!matches!(event, GatewayEvent::AuthenticationFailed));
+                if matches!(event, GatewayEvent::Connected) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        commands.send(GatewayCommand::Close).await.unwrap();
+        client.await.unwrap().unwrap();
+        while let Some(event) = events.recv().await {
+            assert!(!matches!(event, GatewayEvent::AuthenticationFailed));
+        }
         server.await.unwrap();
     }
 }

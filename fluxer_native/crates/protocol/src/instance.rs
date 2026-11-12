@@ -46,6 +46,7 @@ impl Instance {
                         last_error = "declared API origin differs from discovery origin".into();
                         declared.get_or_insert(endpoint);
                     }
+                    Err(error @ Error::UnsupportedGeneration(_)) => return Err(error),
                     Err(error) => last_error = error.to_string(),
                 }
             }
@@ -56,6 +57,30 @@ impl Instance {
             return Err(Error::Discovery(last_error));
         }
         unreachable!("second discovery attempt returns instead of following")
+    }
+
+    /// Refresh only the saved account's own authority. RuntimeConfig.ts:444-466
+    /// permits a stored snapshot when discovery is unreachable, but never moves
+    /// a saved credential to a different discovered instance or generation.
+    pub async fn refresh_saved(&self) -> Result<Self> {
+        self.resolve_saved_refresh(Self::discover(self.api.as_str()).await)
+    }
+
+    fn resolve_saved_refresh(&self, resolution: Result<Self>) -> Result<Self> {
+        let expected = canonical_api_key(&self.api)?;
+        match resolution {
+            Ok(instance) => {
+                let actual = canonical_api_key(&instance.api)?;
+                if actual != expected {
+                    return Err(Error::DiscoveryIdentityChanged { expected, actual });
+                }
+                Ok(instance)
+            }
+            // discover aggregates exhausted HTTP/JSON/network candidate errors
+            // as Discovery, like fetchInstanceDiscovery's unreachable wrapper.
+            Err(Error::Discovery(_)) => Ok(self.clone()),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn from_document(served_by: &Url, document: Value) -> Result<Self> {
@@ -128,6 +153,25 @@ impl Instance {
             document: Value::Null,
         })
     }
+}
+
+fn canonical_api_key(api: &Url) -> Result<String> {
+    if !matches!(api.scheme(), "http" | "https")
+        || api.host_str().is_none()
+        || !api.username().is_empty()
+        || api.password().is_some()
+        || api.query().is_some()
+        || api.fragment().is_some()
+    {
+        return Err(Error::InvalidEndpoint(
+            "saved account API identity is invalid".into(),
+        ));
+    }
+    Ok(format!(
+        "{}{}",
+        api.origin().ascii_serialization().to_lowercase(),
+        api.path().trim_end_matches('/')
+    ))
 }
 
 pub(crate) fn endpoint(value: &str, socket: bool) -> Result<Url> {
@@ -502,6 +546,57 @@ mod tests {
         }
     }
 
+    #[test]
+    fn saved_refresh_fallback_keeps_snapshot_but_never_changes_account_authority_or_generation() {
+        let mut saved = Instance::from_endpoints(
+            "https://CHAT.example:443/Custom/api/",
+            "wss://chat.example/gateway",
+        )
+        .unwrap();
+        saved.features = json!({"saved":true});
+        let fallback = saved
+            .resolve_saved_refresh(Err(Error::Discovery("unreachable".into())))
+            .unwrap();
+        assert_eq!(fallback.api, saved.api);
+        assert_eq!(fallback.features, saved.features);
+        let fresh = Instance::from_endpoints(
+            "https://chat.example/Custom/api",
+            "wss://new-gateway.example",
+        )
+        .unwrap();
+        assert_eq!(
+            saved
+                .resolve_saved_refresh(Ok(fresh))
+                .unwrap()
+                .gateway
+                .host_str(),
+            Some("new-gateway.example")
+        );
+        let changed = Instance::from_endpoints(
+            "https://chat.example/custom/api",
+            "wss://chat.example/gateway",
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                saved.resolve_saved_refresh(Ok(changed)),
+                Err(Error::DiscoveryIdentityChanged { .. })
+            ),
+            "API path case belongs to account identity"
+        );
+        assert!(matches!(
+            saved.resolve_saved_refresh(Err(Error::UnsupportedGeneration("future".into()))),
+            Err(Error::UnsupportedGeneration(_))
+        ));
+        assert!(matches!(
+            saved.resolve_saved_refresh(Err(Error::DiscoveryIdentityChanged {
+                expected: "old".into(),
+                actual: "new".into()
+            })),
+            Err(Error::DiscoveryIdentityChanged { .. })
+        ));
+    }
+
     async fn server<F>(
         handler: F,
     ) -> (
@@ -602,5 +697,54 @@ mod tests {
         assert!(other_requests.lock().unwrap().is_empty());
         task.abort();
         other_task.abort();
+    }
+
+    #[tokio::test]
+    async fn saved_refresh_socket_validates_same_identity_and_preserves_unreachable_snapshot() {
+        let document = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
+        let served = document.clone();
+        let (origin, requests, task) = server(move |_| served.lock().unwrap().clone()).await;
+        let mut original = runtime_document(&origin);
+        original["features"] = json!({"source":"saved"});
+        let saved = Instance::from_document(
+            &Url::parse(&format!("{origin}/.well-known/fluxer")).unwrap(),
+            original.clone(),
+        )
+        .unwrap();
+        let mut refreshed = original.clone();
+        refreshed["api_code_version"] = json!(2);
+        refreshed["features"] = json!({"source":"fresh"});
+        *document.lock().unwrap() = refreshed.clone();
+        let fresh = saved.refresh_saved().await.unwrap();
+        assert_eq!(fresh.api_version, 2);
+        assert_eq!(fresh.features["source"], "fresh");
+        *document.lock().unwrap() = json!({});
+        let fallback = saved.refresh_saved().await.unwrap();
+        assert_eq!(fallback.document, original);
+        assert_eq!(fallback.api_version, 1);
+        refreshed["endpoints"]["api_client"] = json!(format!("{origin}/different-authority"));
+        *document.lock().unwrap() = refreshed;
+        assert!(matches!(
+            saved.refresh_saved().await,
+            Err(Error::DiscoveryIdentityChanged { .. })
+        ));
+        assert_eq!(requests.lock().unwrap().len(), 4);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn discovery_socket_newer_generation_stops_immediately_without_snapshot_fallback() {
+        let (origin, requests, task) = server(|_| json!({"codename":"future-generation"})).await;
+        let saved =
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap();
+        assert!(
+            matches!(saved.refresh_saved().await,Err(Error::UnsupportedGeneration(generation)) if generation=="future-generation")
+        );
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            1,
+            "unsupported generations must not be retried as older discovery candidates"
+        );
+        task.abort();
     }
 }

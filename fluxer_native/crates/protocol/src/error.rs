@@ -11,6 +11,8 @@ pub enum Error {
     InvalidEndpoint(String),
     #[error("instance discovery failed: {0}")]
     Discovery(String),
+    #[error("instance discovery changed account authority from {expected} to {actual}")]
+    DiscoveryIdentityChanged { expected: String, actual: String },
     #[error("unsupported instance generation: {0}")]
     UnsupportedGeneration(String),
     #[error("response exceeded {0} byte limit")]
