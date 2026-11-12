@@ -16,6 +16,8 @@ impl Fluxer {
             .unwrap_or("Choose a channel".into());
         let selected = self.state.selected_channel;
         let messages = self.visible_messages();
+        self.message_actions.row_order = messages.iter().map(|message| message.id).collect();
+        let tab_entry = messages.last().map(|message| message.id);
         let visible: BTreeSet<_> = messages.iter().map(|message| message.id).collect();
         self.message_text.retain(|id, _| visible.contains(id));
         self.message_actions
@@ -26,10 +28,12 @@ impl Fluxer {
             .borrow_mut()
             .retain(|id, _| visible.contains(id));
         for id in &visible {
-            self.message_actions
+            let handle = self
+                .message_actions
                 .row_focus
                 .entry(*id)
                 .or_insert_with(|| cx.focus_handle());
+            *handle = handle.clone().tab_stop(Some(*id) == tab_entry);
         }
         for message in &messages {
             let text = chat_helpers::display_text(message);
@@ -205,6 +209,7 @@ impl Fluxer {
                             .py_2()
                             .rounded_md()
                             .hover(|row| row.bg(rgb(0x25222f)))
+                            .focus(|row| row.bg(rgb(0x2f293c)))
                             .on_mouse_down(
                                 MouseButton::Right,
                                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
@@ -220,6 +225,23 @@ impl Fluxer {
                             )
                             .on_key_down(cx.listener(
                                 move |this, event: &KeyDownEvent, window, cx| {
+                                    if matches!(event.keystroke.key.as_str(), "up" | "down")
+                                        && event.keystroke.modifiers == Modifiers::default()
+                                        && this
+                                            .message_actions
+                                            .row_focus
+                                            .get(&id)
+                                            .is_some_and(|focus| focus.is_focused(window))
+                                    {
+                                        this.move_message_focus(
+                                            id,
+                                            event.keystroke.key == "down",
+                                            window,
+                                            cx,
+                                        );
+                                        cx.stop_propagation();
+                                        return;
+                                    }
                                     if event.keystroke.key == "f10"
                                         && event.keystroke.modifiers.shift
                                     {
