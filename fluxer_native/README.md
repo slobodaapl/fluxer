@@ -76,6 +76,35 @@ meter plus decoded gain/PTT/mute behavior, then removes its temporary audio
 modules. It leaves default devices and existing application routes unchanged.
 The Rust test refuses default/hardware input IDs and non-loopback servers.
 
+## Video performance checks
+
+The offline animated viewer exercises the actual GPUI image upload/render path
+with synthetic 1920×1080 BGRA frames at 30 FPS:
+
+```sh
+FLUXER_VIDEO_PERF=1 FLUXER_VIDEO_PERF_STOP_MS=20000 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream-animated
+```
+
+Focus the fixture window. It prints frame acceptance/render rates, maximum poll
+and view-build times, tracked image counts, and scheduled Stop action/redraw
+latency. `rendered_fps` counts scenes that reached GPUI presentation, not monitor
+scanout. `stop_render_received_ms` measures when Render observes cleared pixels;
+`stop_next_frame_callback_ms` includes the next platform frame's scheduling delay.
+This fixture stays offline and does not restore an account or open capture.
+`FLUXER_VIDEO_PERF=1` can also report metadata-only counters during normal use.
+Development builds optimize the frame/rendering crates while retaining debug
+symbols and assertions.
+
+With the disposable local server running, validate actual encoded transport:
+
+```sh
+python3 fluxer_native/scripts/test_output_routing.py --screen-watch
+```
+
+Both plain and encrypted full-HD calls use the production publication policy,
+measure sustained decoded frame rate, pause the consumer to check newest-frame
+freshness, and exercise stop/rewatch without hardware capture or personal media.
+
 ## Compatibility notes
 
 The client retains existing Fluxer HTTP, gateway, and LiveKit services. Native

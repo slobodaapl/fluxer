@@ -19,8 +19,8 @@ use std::{
 };
 use tokio::time::timeout;
 
-const WIDTH: u32 = 1280;
-const HEIGHT: u32 = 720;
+const WIDTH: u32 = 1920;
+const HEIGHT: u32 = 1080;
 const FPS: u32 = 30;
 async fn until(
     events: &mut MediaEvents,
@@ -203,7 +203,7 @@ async fn sustained_video(events: &mut MediaEvents, latest: &AtomicU64, sid: &Tra
     }
     let fps = count as f64 / start.elapsed().as_secs_f64();
     eprintln!(
-        "screen_watch: production noSimulcast1280x720/FPS30 received {fps:.1}FPS ({count} frames), fresh<=8sourceframes"
+        "screen_watch: production noSimulcast{WIDTH}x{HEIGHT}/FPS{FPS} received {fps:.1}FPS ({count} frames), fresh<=8sourceframes"
     );
     assert!(
         fps >= 24.0,

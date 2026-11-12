@@ -94,3 +94,13 @@ watch intent before publication metadata. Local audio/video detach before SDK
 unsubscribe work; watch generations fence renderers from prior watch sessions. Wayland/macOS source discovery returns
 an inert system-picker descriptor; only the explicit picker button starts
 capture/consent. X11/Windows retain enumerated native source selection.
+
+Video delivery uses separate lifecycle events and a newest-frame mailbox per
+track. Stop clears that mailbox before SDK signaling; stale watch generations
+cannot refill it. Native libyuv converts decoded frames directly to BGRA, so GPUI
+can take ownership of the bytes without a pixel swap. Screen publication explicitly
+disables simulcast and selects MaintainFramerate, following the existing desktop's
+screen-share policy; the SDK default would introduce a 3 FPS low layer. Focused
+simulcast reception explicitly requests high quality. The full-HD screen fixture
+uses the same publication helper, checks sustained 30 FPS transport, and verifies
+freshness after a deliberately paused consumer in plain and encrypted calls.

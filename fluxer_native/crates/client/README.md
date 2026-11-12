@@ -37,7 +37,10 @@ system/application audio route to the media engine.
 
 Video frames are coalesced per track before delivery to the UI. Stopping a watch
 evicts cached pixels and acknowledges local intent before SDK/network work.
-Lifecycle events are drained before coalesced frames. Watch generations reject
+Lifecycle events are drained before coalesced frames. UI consumers use
+`try_recv_control` with a fixed budget, then `drain_frames` exactly once per
+presentation tick. The atomic snapshot cannot refill while frames are rendered;
+a sustained producer therefore cannot keep the UI in a 128-frame conversion loop. Watch generations reject
 frames and end events queued before a stop/rewatch, even for a reused track SID.
 Transport replacement preserves watch intent while releasing old pixels.
 `SetStreamAudio` changes share-audio gain/mute independently of participant voice. Dropping the

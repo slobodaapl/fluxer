@@ -12,12 +12,12 @@ not individual types or controls.
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
 | GPUI | Executable builds/links; Wayland demo visually verified; 13 input/viewer tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
-| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 36 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
+| Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 39 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 36 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 37 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-181 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+185 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -123,6 +123,30 @@ verified mixed voice/share audio, independent mute/gain, stop-watch silence and 
 switching. The offline `--demo-stream` fixture exercises the viewer without account
 access, calls, capture or network media. Authenticated real-client acceptance is
 still required.
+
+A subsequent real-call report exposed performance gaps in the earlier stop-only
+fixture. Under continuous 1080p video, the presentation poll could repeatedly
+consume newly arriving frames before yielding to input, and its debug RGBA-to-BGRA
+pixel loop measured about 68 ms per frame on this desktop. GPUI also requires
+explicit sprite-atlas image eviction; dropping the Rust image alone does not release
+its texture. Sustained presentation and texture lifetime checks now complement the
+local teardown tests. An animated 1080p30 GPUI run rendered about 30 FPS, kept
+one or two image IDs in flight, and dropped them all on stop. Its poll handler
+stayed below 0.1 ms in these local runs. These counters measure GPUI rendering,
+not physical display scanout. Targeted development optimization preserves debug symbols and
+assertions while optimizing the video/rendering crates.
+
+Publishing must also specify the existing desktop's screen-share layering policy.
+The SDK's default simulcast policy adds a 3 FPS screen layer for larger sources;
+`ScreenShareOptions.ts` explicitly disables simulcast. Tiny synthetic sources do not
+exercise that branch, so validation must include realistic source dimensions and
+measure decoded frame rate using the same publication policy as production.
+The full-HD plain/encrypted fixtures sustained 29.2–29.3 decoded FPS at selected
+30 FPS. After a 350 ms consumer pause the next frame was current or one source
+frame behind; storage stayed bounded to one frame. Presentation takes one atomic
+frame snapshot per tick, so continuous video cannot extend a UI poll indefinitely.
+Control events travel independently of video, and BGRA conversion happens in the
+native decoder path rather than a per-pixel loop on the UI thread.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly
