@@ -7,8 +7,10 @@ mod id;
 mod models;
 mod permissions;
 mod state;
+mod voice;
 
 pub use id::Snowflake;
 pub use models::*;
 pub use permissions::*;
 pub use state::*;
+pub use voice::*;
