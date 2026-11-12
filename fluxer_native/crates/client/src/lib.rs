@@ -197,6 +197,11 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    MessageAckResult {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        error: Option<String>,
+    },
     Search(SearchSnapshot),
     Pins(PinsSnapshot),
     History(HistorySnapshot),

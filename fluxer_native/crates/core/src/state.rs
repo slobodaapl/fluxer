@@ -666,7 +666,9 @@ impl ClientState {
                 self.remove_channel(target.id);
             }
             "GUILD_CREATE" | "GUILD_SYNC" => {
-                if event == "GUILD_CREATE" {
+                if event == "GUILD_CREATE"
+                    && data.get("unavailable").and_then(Value::as_bool) != Some(true)
+                {
                     let target: Id = decode(event, data.clone())?;
                     if data.get("threads").is_some() {
                         self.thread_guilds.insert(target.id);
@@ -1069,5 +1071,83 @@ mod attachment_preferences_tests {
             state.user_settings.is_null(),
             "fresh READY settings replace the earlier settings snapshot"
         );
+    }
+}
+
+#[cfg(test)]
+mod navigation_state_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn pin_timestamps_use_channel_latest_and_read_state_ack_without_changing_message_read_cursor() {
+        let mut state = ClientState::default();
+        state.apply_gateway("READY",json!({"session_id":"pins","user":{"id":"1","username":"fixture"},"guilds":[{"id":"10","name":"Fixture","channels":[{"id":"100","type":0,"last_message_id":"999","last_pin_timestamp":"2026-11-12T12:00:00Z"}]}],"read_states":[{"id":"100","last_message_id":"10","mention_count":3,"last_pin_timestamp":"2026-11-12T11:00:00Z"}]})).unwrap();
+        let channel = Snowflake(100);
+        assert!(state.has_unread_pins(channel));
+        assert!(state.apply_pin_ack(channel, None));
+        assert!(!state.has_unread_pins(channel));
+        assert!(
+            !state.apply_pin_ack(channel, Some("2026-11-12T13:00:00+01:00")),
+            "equivalent timestamps must not repeat the ack"
+        );
+        state
+            .apply_gateway(
+                "CHANNEL_PINS_UPDATE",
+                json!({"channel_id":"100","last_pin_timestamp":"2026-11-12T13:00:00Z"}),
+            )
+            .unwrap();
+        assert!(state.has_unread_pins(channel));
+        state
+            .apply_gateway(
+                "CHANNEL_PINS_ACK",
+                json!({"channel_id":"100","last_pin_timestamp":null}),
+            )
+            .unwrap();
+        assert!(!state.has_unread_pins(channel));
+        assert_eq!(state.read_states[&channel].last_message_id, Some(10.into()));
+        assert_eq!(state.read_states[&channel].mention_count, 3);
+        assert!(state.is_unread(channel));
+        state
+            .apply_gateway(
+                "CHANNEL_PINS_UPDATE",
+                json!({"channel_id":"100","last_pin_timestamp":null}),
+            )
+            .unwrap();
+        assert!(!state.has_unread_pins(channel));
+    }
+
+    #[test]
+    fn thread_guild_activation_preserves_empty_array_presence_and_transient_unavailability() {
+        let mut state = ClientState::default();
+        state.apply_gateway("READY",json!({"user":{"id":"1","username":"fixture"},"guilds":[{"id":"10","name":"Enabled","threads":[]},{"id":"20","name":"Disabled"}]})).unwrap();
+        assert!(state.thread_guilds.contains(&10.into()));
+        assert!(!state.thread_guilds.contains(&20.into()));
+        state
+            .apply_gateway("GUILD_DELETE", json!({"id":"10","unavailable":true}))
+            .unwrap();
+        assert!(state.thread_guilds.contains(&10.into()));
+        state
+            .apply_gateway("GUILD_CREATE", json!({"id":"10","unavailable":true}))
+            .unwrap();
+        assert!(state.thread_guilds.contains(&10.into()));
+        state
+            .apply_gateway(
+                "GUILD_CREATE",
+                json!({"id":"10","name":"Projection without threads"}),
+            )
+            .unwrap();
+        assert!(!state.thread_guilds.contains(&10.into()));
+        state
+            .apply_gateway(
+                "GUILD_CREATE",
+                json!({"id":"20","name":"Newly enabled","threads":[]}),
+            )
+            .unwrap();
+        assert!(state.thread_guilds.contains(&20.into()));
+        state
+            .apply_gateway("GUILD_DELETE", json!({"id":"20"}))
+            .unwrap();
+        assert!(!state.thread_guilds.contains(&20.into()));
     }
 }

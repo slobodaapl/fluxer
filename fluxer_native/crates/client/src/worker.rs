@@ -785,7 +785,16 @@ impl Worker {
             Command::AcknowledgeMessage {
                 channel_id,
                 message_id,
-            } => self.acknowledge_visible_message(channel_id, message_id)?,
+            } => {
+                if let Err(message) = self.acknowledge_visible_message(channel_id, message_id) {
+                    self.emit(Event::MessageAckResult {
+                        channel_id,
+                        message_id,
+                        error: Some(message.clone()),
+                    });
+                    return Err(message);
+                }
+            }
             Command::DemoSearch => self.seed_demo_search()?,
             Command::SetDraft(content) => {
                 let channel = self.selected()?;
