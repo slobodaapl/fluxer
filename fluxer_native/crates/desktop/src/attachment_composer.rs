@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Composer staging is worker-owned; this module only renders bounded previews.
 use super::*;
+use crate::controls::{Icon, icon, icon_button, quiet_button};
 use fluxer_client::{AttachmentPreview, AttachmentStatus, StagedAttachment};
 use std::{cell::RefCell, collections::BTreeMap, path::PathBuf};
 
@@ -295,13 +296,20 @@ impl Fluxer {
         let Some(channel) = self.state.selected_channel else {
             return div().into_any_element();
         };
-        let stages = self.attachments.channels.get(&channel);
+        let Some(stages) = self
+            .attachments
+            .channels
+            .get(&channel)
+            .filter(|stages| !stages.is_empty())
+        else {
+            return div().into_any_element();
+        };
         let compact = self.pane == Pane::Call;
         div()
             .flex()
             .flex_col()
             .gap_1()
-            .when(self.message_pending() && self.has_attachments(), |view| {
+            .when(self.message_pending(), |view| {
                 view.child(
                     div()
                         .flex()
@@ -316,7 +324,7 @@ impl Fluxer {
                                 .child("Sending attachments…"),
                         )
                         .child(
-                            button(
+                            quiet_button(
                                 "cancel-attachment-send",
                                 if self.attachments.cancelling.contains(&channel) {
                                     "Cancelling…"
@@ -324,9 +332,6 @@ impl Fluxer {
                                     "Cancel send"
                                 },
                             )
-                            .px_2()
-                            .py_1()
-                            .text_size(px(11.))
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     if this.attachments.cancelling.insert(channel) {
@@ -342,152 +347,127 @@ impl Fluxer {
                         ),
                 )
             })
-            .when_some(
-                stages.filter(|stages| !stages.is_empty()),
-                |view, stages| {
-                    view.child(
-                        div()
-                            .id("staged-attachments")
-                            .h(px(if compact { 110. } else { 142. }))
-                            .overflow_x_scroll()
-                            .flex()
-                            .gap_2()
-                            .children(stages.iter().map(|stage| {
-                                let id = stage.id;
-                                let spoiler = stage.spoiler;
-                                let active = matches!(
-                                    stage.status,
-                                    AttachmentStatus::Uploading
-                                        | AttachmentStatus::Queued
-                                        | AttachmentStatus::Sending
-                                        | AttachmentStatus::Preparing
-                                );
-                                let frozen = matches!(
-                                    stage.status,
-                                    AttachmentStatus::Queued | AttachmentStatus::Sending
-                                );
-                                let retry = matches!(
-                                    stage.status,
-                                    AttachmentStatus::Failed | AttachmentStatus::Cancelled
-                                );
-                                let label = status_label(stage, self.attachments.fixture);
-                                let preview = if spoiler {
-                                    None
+            .child(
+                div()
+                    .id("staged-attachments")
+                    .h(px(if compact { 114. } else { 140. }))
+                    .overflow_x_scroll()
+                    .flex()
+                    .gap_2()
+                    .children(stages.iter().map(|stage| {
+                        let id = stage.id;
+                        let spoiler = stage.spoiler;
+                        let active = matches!(
+                            stage.status,
+                            AttachmentStatus::Preparing
+                                | AttachmentStatus::Uploading
+                                | AttachmentStatus::Queued
+                                | AttachmentStatus::Sending
+                        );
+                        let frozen = matches!(
+                            stage.status,
+                            AttachmentStatus::Queued | AttachmentStatus::Sending
+                        );
+                        let retry = matches!(
+                            stage.status,
+                            AttachmentStatus::Failed | AttachmentStatus::Cancelled
+                        );
+                        let label = status_label(stage, self.attachments.fixture);
+                        let preview = if spoiler {
+                            None
+                        } else {
+                            self.attachment_preview(channel, stage, cx)
+                        };
+                        let preview_missing = preview.is_none();
+                        let spoiler_label = if frozen {
+                            "Spoiler cannot be changed while sending".to_owned()
+                        } else {
+                            format!(
+                                "{} {}",
+                                if spoiler {
+                                    "Remove spoiler from"
                                 } else {
-                                    self.attachment_preview(channel, stage, cx)
-                                };
+                                    "Mark as spoiler:"
+                                },
+                                stage.filename
+                            )
+                        };
+                        let retry_label = stage
+                            .error
+                            .as_ref()
+                            .map(|error| format!("Retry {}: {error}", stage.filename))
+                            .unwrap_or_else(|| format!("Retry {}", stage.filename));
+                        div()
+                            .id(("staged-file", id))
+                            .group("staged-attachment")
+                            .w(px(148.))
+                            .flex_shrink_0()
+                            .rounded_lg()
+                            .overflow_hidden()
+                            .bg(rgb(0x2b2835))
+                            .border_1()
+                            .border_color(rgb(if retry { 0xa54c62 } else { 0x41394d }))
+                            .flex()
+                            .flex_col()
+                            .child(
                                 div()
-                                    .id(("staged-file", id))
-                                    .w(px(160.))
+                                    .relative()
+                                    .h(px(if compact { 50. } else { 76. }))
                                     .flex_shrink_0()
-                                    .rounded_md()
-                                    .overflow_hidden()
-                                    .bg(rgb(0x302b3b))
-                                    .border_1()
-                                    .border_color(rgb(if retry { 0xa54c62 } else { 0x494053 }))
+                                    .bg(rgb(0x1a1722))
                                     .flex()
-                                    .flex_col()
-                                    .child(
-                                        div()
-                                            .h(px(if compact { 28. } else { 56. }))
-                                            .flex_shrink_0()
-                                            .bg(rgb(0x1a1722))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .when_some(preview, |view, image| {
-                                                view.child(
-                                                    img(image)
-                                                        .size_full()
-                                                        .object_fit(ObjectFit::Contain),
-                                                )
-                                            })
-                                            .when(stage.preview.is_none() || spoiler, |view| {
-                                                view.child(
-                                                    div()
-                                                        .text_size(px(if compact {
-                                                            12.
-                                                        } else {
-                                                            20.
-                                                        }))
-                                                        .text_color(rgb(MUTED))
-                                                        .child(if spoiler {
-                                                            "SPOILER"
-                                                        } else {
-                                                            "▤"
-                                                        }),
-                                                )
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .pt_1()
-                                            .text_size(px(11.))
-                                            .text_ellipsis()
-                                            .child(stage.filename.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .px_2()
-                                            .text_size(px(10.))
-                                            .text_color(rgb(MUTED))
-                                            .child(format!(
-                                                "{} · {label}",
-                                                format_bytes(stage.size)
-                                            )),
-                                    )
-                                    .when(
-                                        matches!(
-                                            stage.status,
-                                            AttachmentStatus::Uploading | AttachmentStatus::Sending
-                                        ),
-                                        |view| {
-                                            view.child(
-                                                div().h(px(3.)).w_full().bg(rgb(0x50465e)).child(
-                                                    div()
-                                                        .h_full()
-                                                        .w(relative(safe_progress(stage.progress)))
-                                                        .bg(rgb(ACCENT)),
-                                                ),
-                                            )
-                                        },
-                                    )
-                                    .when_some(stage.error.as_ref(), |view, error| {
+                                    .items_center()
+                                    .justify_center()
+                                    .when_some(preview, |view, image| {
+                                        view.child(
+                                            img(image).size_full().object_fit(ObjectFit::Contain),
+                                        )
+                                    })
+                                    .when(preview_missing, |view| {
                                         view.child(
                                             div()
-                                                .px_2()
-                                                .text_size(px(10.))
-                                                .text_color(rgb(0xf0a1b5))
-                                                .text_ellipsis()
-                                                .child(error.clone()),
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .gap_1()
+                                                .text_color(rgb(MUTED))
+                                                .child(icon(
+                                                    if spoiler { Icon::EyeOff } else { Icon::File },
+                                                    if compact { 20. } else { 28. },
+                                                ))
+                                                .when(spoiler, |view| {
+                                                    view.child(
+                                                        div().text_size(px(10.)).child("SPOILER"),
+                                                    )
+                                                }),
                                         )
                                     })
                                     .child(
                                         div()
-                                            .mt_auto()
-                                            .px_1()
-                                            .pb_1()
+                                            .absolute()
+                                            .top(px(4.))
+                                            .right(px(4.))
                                             .flex()
                                             .items_center()
                                             .gap_1()
                                             .child(
-                                                button(
+                                                icon_button(
                                                     ("attachment-spoiler", id),
-                                                    if spoiler {
-                                                        "Unmark spoiler"
-                                                    } else {
-                                                        "Mark spoiler"
-                                                    },
+                                                    if spoiler { Icon::Eye } else { Icon::EyeOff },
+                                                    spoiler_label,
                                                 )
-                                                .px_1()
-                                                .py_0()
-                                                .text_size(px(10.))
+                                                .size(px(24.))
+                                                .bg(rgba(0x1a1722ee))
+                                                .opacity(0.)
+                                                .group_hover("staged-attachment", move |style| {
+                                                    style.opacity(if frozen { 0.4 } else { 1. })
+                                                })
                                                 .when(frozen, |view| {
-                                                    view.opacity(0.4)
+                                                    view.tab_stop(false)
                                                         .cursor(CursorStyle::OperationNotAllowed)
                                                 })
                                                 .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
                                                     if !frozen {
                                                         this.attachment_spoiler(
                                                             channel, id, !spoiler, cx,
@@ -495,77 +475,141 @@ impl Fluxer {
                                                     }
                                                 })),
                                             )
-                                            .when(retry, |view| {
-                                                view.child(
-                                                    button(("attachment-retry", id), "Retry")
-                                                        .px_1()
-                                                        .py_0()
-                                                        .text_size(px(10.))
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.attachment_retry(
-                                                                    channel, id, cx,
-                                                                )
-                                                            },
-                                                        )),
-                                                )
-                                            })
                                             .when(active, |view| {
                                                 view.child(
-                                                    button(("attachment-cancel", id), "Cancel")
-                                                        .px_1()
-                                                        .py_0()
-                                                        .text_size(px(10.))
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.attachment_cancel(
-                                                                    channel, id, cx,
-                                                                )
-                                                            },
-                                                        )),
+                                                    icon_button(
+                                                        ("attachment-cancel", id),
+                                                        Icon::Stop,
+                                                        format!(
+                                                            "Cancel upload of {}",
+                                                            stage.filename
+                                                        ),
+                                                    )
+                                                    .size(px(24.))
+                                                    .bg(rgba(0x1a1722ee))
+                                                    .opacity(0.)
+                                                    .group_hover("staged-attachment", |style| {
+                                                        style.opacity(1.)
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.attachment_cancel(channel, id, cx);
+                                                    })),
+                                                )
+                                            })
+                                            .when(retry, |view| {
+                                                view.child(
+                                                    icon_button(
+                                                        ("attachment-retry", id),
+                                                        Icon::Retry,
+                                                        retry_label,
+                                                    )
+                                                    .size(px(24.))
+                                                    .bg(rgba(0x1a1722ee))
+                                                    .text_color(rgb(ACCENT))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.attachment_retry(channel, id, cx);
+                                                    })),
                                                 )
                                             })
                                             .child(
-                                                button(("attachment-remove", id), "×")
-                                                    .ml_auto()
-                                                    .px_1()
-                                                    .py_0()
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            this.attachment_remove(channel, id, cx)
-                                                        },
-                                                    )),
+                                                icon_button(
+                                                    ("attachment-remove", id),
+                                                    Icon::Close,
+                                                    format!("Remove {}", stage.filename),
+                                                )
+                                                .size(px(24.))
+                                                .bg(rgba(0x1a1722ee))
+                                                .opacity(0.)
+                                                .group_hover("staged-attachment", |style| {
+                                                    style.opacity(1.)
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    cx.stop_propagation();
+                                                    this.attachment_remove(channel, id, cx);
+                                                })),
                                             ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .pt_1()
+                                    .text_size(px(11.))
+                                    .text_ellipsis()
+                                    .child(stage.filename.clone()),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .pb_1()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(if retry { 0xf0a1b5 } else { MUTED }))
+                                    .text_ellipsis()
+                                    .child(
+                                        if stage.status == AttachmentStatus::Staged
+                                            && !self.attachments.fixture
+                                        {
+                                            format_bytes(stage.size)
+                                        } else {
+                                            format!("{} · {label}", format_bytes(stage.size))
+                                        },
+                                    ),
+                            )
+                            .when_some(stage.error.as_ref(), |view, error| {
+                                view.child(
+                                    div()
+                                        .px_2()
+                                        .pb_1()
+                                        .text_size(px(10.))
+                                        .text_color(rgb(0xf0a1b5))
+                                        .text_ellipsis()
+                                        .child(error.clone()),
+                                )
+                            })
+                            .child(div().mt_auto().h(px(3.)).w_full().bg(rgb(0x373040)).when(
+                                matches!(
+                                    stage.status,
+                                    AttachmentStatus::Uploading | AttachmentStatus::Sending
+                                ),
+                                |view| {
+                                    view.child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(safe_progress(stage.progress)))
+                                            .bg(rgb(ACCENT)),
                                     )
-                            })),
-                    )
-                },
+                                },
+                            ))
+                    })),
             )
-            .when_some(self.attachments.limits.get(&channel), |view, limits| {
-                view.child(
-                    div()
-                        .text_size(px(10.))
-                        .text_color(rgb(MUTED))
-                        .child(format!(
-                            "Up to {} files · {} each · {}",
-                            limits.max_files,
-                            format_bytes(limits.max_file_bytes),
-                            if self.attachments.fixture {
-                                "Offline: local staging only"
-                            } else if limits.preupload {
-                                "Files upload as you add them"
-                            } else {
-                                "Files upload when you send"
-                            }
-                        )),
-                )
-            })
             .into_any_element()
     }
     pub(super) fn attachment_button(&self, cx: &mut Context<Self>) -> AnyElement {
         let reason = self.attachment_block_reason();
-        button("add-attachment", "+ File")
-            .flex_shrink_0()
+        let label = reason.clone().unwrap_or_else(|| {
+            self.state
+                .selected_channel
+                .and_then(|channel| self.attachments.limits.get(&channel))
+                .map(|limits| {
+                    format!(
+                        "Add files · Up to {} files, {} per file. {}",
+                        limits.max_files,
+                        format_bytes(limits.max_file_bytes),
+                        if self.attachments.fixture {
+                            "Offline local staging"
+                        } else if limits.preupload {
+                            "Files upload as you add them"
+                        } else {
+                            "Files upload when you send"
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "Add files".into())
+        });
+        icon_button("add-attachment", Icon::Attachment, label)
+            .size(px(32.))
             .when(reason.is_some(), |view| view.opacity(0.5))
             .on_click(cx.listener(|this, _, _, cx| this.prompt_attachments(cx)))
             .into_any_element()

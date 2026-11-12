@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Server-owned search/pins/history state, kept separate from the live timeline.
 use super::*;
+use crate::{
+    controls::{Icon, icon_button, quiet_button},
+    message_actions::{MessageMenuContext, message_time},
+};
 use fluxer_client::{
     HistorySnapshot, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort, SearchStatus,
 };
@@ -634,6 +638,7 @@ impl Fluxer {
             .is_some_and(|state| state.manual_ack);
         let blocking = self.forwarding.is_some()
             || self.search_ui.confirm.is_some()
+            || self.message_actions.is_blocking()
             || self.attachments.picker_open
             || self.session_restoring;
         auto_ack_policy(active, at_bottom, latest, manual, blocking)
@@ -698,7 +703,7 @@ impl Fluxer {
     }
     fn preview_card(
         &mut self,
-        message: Message,
+        mut message: Message,
         pinned_at: Option<String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -714,11 +719,11 @@ impl Fluxer {
             .or_insert_with(|| cx.new(|cx| TextInput::read_only(&text, cx)))
             .clone();
         input.update(cx, |input, cx| input.update_read_only(&text, cx));
-        let copy = text.clone();
+        message.pinned |= pinned_at.is_some();
         let jump = message.clone();
-        let pin = message.clone();
-        let is_pinned = pinned_at.is_some() || message.pinned;
-        let can_pin = self.can_pin_message(&message);
+        let direct = message.clone();
+        let menu = message.clone();
+        let context = message.clone();
         let pending = self.search_ui.mutations.contains(&key);
         let channel = self
             .state
@@ -728,51 +733,76 @@ impl Fluxer {
             .unwrap_or_else(|| "Conversation".into());
         div()
             .id(("browse-message", message.id.0))
+            .group("message-preview")
+            .relative()
+            .focusable()
+            .tab_index(0)
             .w_full()
+            .min_w_0()
             .max_w_full()
-            .overflow_hidden()
             .px_3()
             .py_3()
-            .border_b_1()
+            .mb_2()
+            .rounded_lg()
+            .border_1()
             .border_color(rgb(0x393343))
+            .hover(|style| style.bg(rgb(0x2b2836)).border_color(rgb(0x514660)))
+            .focus(|style| style.border_color(rgb(ACCENT)))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| this.jump_message(&direct, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_message_menu(
+                        context.clone(),
+                        event.position,
+                        MessageMenuContext::Preview,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .flex()
             .flex_col()
             .gap_2()
-            .min_w_0()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
+                    .pr(px(64.))
                     .child(rich_message::avatar(
                         &message.author,
                         self.media_endpoint.as_deref(),
-                        28.,
+                        26.,
                     ))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_ellipsis()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(message.author.display_name().to_owned()),
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_ellipsis()
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(message.author.display_name().to_owned()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(MUTED))
+                                    .text_ellipsis()
+                                    .child(format!(
+                                        "#{channel} · {}",
+                                        message_time(&message.timestamp)
+                                    )),
+                            ),
                     ),
             )
-            .child(
-                div()
-                    .text_size(px(10.))
-                    .text_color(rgb(MUTED))
-                    .text_ellipsis()
-                    .child(format!("#{channel} · {}", message.timestamp)),
-            )
-            .when_some(pinned_at, |view, stamp| {
-                view.child(
-                    div()
-                        .text_size(px(10.))
-                        .text_color(rgb(MUTED))
-                        .child(format!("Pinned {stamp}")),
-                )
-            })
             .when(!text.is_empty(), |view| {
                 view.child(
                     div()
@@ -781,6 +811,7 @@ impl Fluxer {
                         .max_w_full()
                         .max_h(px(140.))
                         .overflow_hidden()
+                        .on_click(|_, _, cx| cx.stop_propagation())
                         .child(input),
                 )
             })
@@ -788,59 +819,44 @@ impl Fluxer {
                 div()
                     .max_h(px(180.))
                     .overflow_hidden()
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(rich_message::media(&message)),
             )
+            .when(pending, |view| {
+                view.child(muted("Updating pin…").text_size(px(10.)))
+            })
             .child(
                 div()
+                    .absolute()
+                    .top(px(8.))
+                    .right(px(8.))
                     .flex()
-                    .flex_wrap()
-                    .gap_2()
+                    .items_center()
+                    .gap_1()
                     .child(
-                        button(("browse-jump", message.id.0), "Jump to message")
-                            .px_2()
-                            .py_1()
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.jump_message(&jump, cx)),
-                            ),
+                        icon_button(("browse-jump", message.id.0), Icon::Jump, "Jump to message")
+                            .opacity(0.)
+                            .group_hover("message-preview", |style| style.opacity(1.))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.jump_message(&jump, cx);
+                            })),
                     )
                     .child(
-                        button(("browse-copy", message.id.0), "Copy")
-                            .px_2()
-                            .py_1()
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-                            }),
-                    )
-                    .when(can_pin, |view| {
-                        view.child(
-                            button(
-                                ("browse-pin", message.id.0),
-                                if pending {
-                                    "Updating…"
-                                } else if is_pinned {
-                                    "Unpin"
-                                } else {
-                                    "Pin"
-                                },
-                            )
-                            .px_2()
-                            .py_1()
-                            .when(pending, |view| view.opacity(0.5))
-                            .on_click(cx.listener(
-                                move |this, event: &ClickEvent, window, cx| {
-                                    if !pending {
-                                        this.request_pin(
-                                            pin.clone(),
-                                            !is_pinned,
-                                            event.modifiers().shift,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                },
-                            )),
-                        )
-                    }),
+                        icon_button(("browse-more", message.id.0), Icon::More, "Message actions")
+                            .opacity(0.)
+                            .group_hover("message-preview", |style| style.opacity(1.))
+                            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.open_message_menu(
+                                    menu.clone(),
+                                    event.position(),
+                                    MessageMenuContext::Preview,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    ),
             )
             .into_any_element()
     }
@@ -870,7 +886,7 @@ impl Fluxer {
                     .items_center()
                     .gap_2()
                     .child(
-                        button("browse-search-tab", "Search")
+                        quiet_button("browse-search-tab", "Search")
                             .px_2()
                             .py_1()
                             .when(!pins, |view| view.bg(rgb(0x57428b)))
@@ -879,16 +895,19 @@ impl Fluxer {
                             ),
                     )
                     .child(
-                        button("browse-pins-tab", "Pinned")
+                        quiet_button("browse-pins-tab", "Pinned")
                             .px_2()
                             .py_1()
                             .when(pins, |view| view.bg(rgb(0x57428b)))
                             .on_click(cx.listener(|this, _, _, cx| this.open_pins(cx))),
                     )
                     .child(div().flex_1())
-                    .child(button("close-browser", "×").px_2().py_1().on_click(
-                        cx.listener(|this, _, window, cx| this.close_browser(window, cx)),
-                    )),
+                    .child(
+                        icon_button("close-browser", Icon::Close, "Close search and pins")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.close_browser(window, cx)),
+                            ),
+                    ),
             )
             .when_some(self.search_ui.mutation_error.clone(), |view, error| {
                 view.child(
@@ -921,7 +940,7 @@ impl Fluxer {
                     body = body
                         .child(browse_state("Couldn't load pins", Some(error)))
                         .when_some(channel, |view, channel| {
-                            view.child(button("retry-pins", "Try again").m_3().on_click(
+                            view.child(quiet_button("retry-pins", "Try again").m_3().on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     this.command(
                                         Command::LoadPins {
@@ -965,7 +984,7 @@ impl Fluxer {
                     {
                         let loading = snapshot.loading;
                         body = body.child(
-                            button(
+                            quiet_button(
                                 "more-pins",
                                 if loading {
                                     "Loading…"
@@ -995,31 +1014,27 @@ impl Fluxer {
             }
         } else {
             body = body
-                .child(div().px_3().pb_2().child(self.search.clone()))
                 .child(
                     div()
                         .px_3()
                         .pb_2()
                         .flex()
-                        .gap_2()
-                        .child(div().flex_1().min_w_0().child(self.search_ui.scope.clone()))
-                        .child(div().flex_1().min_w_0().child(self.search_ui.sort.clone())),
-                )
-                .child(
-                    button("run-search", "Search")
-                        .mx_3()
-                        .mb_2()
-                        .py_1()
-                        .bg(rgb(0x6b51bd))
-                        .on_click(cx.listener(|this, _, _, cx| this.run_search(1, cx))),
+                        .items_center()
+                        .gap_1()
+                        .child(div().flex_1().min_w_0().child(self.search.clone()))
+                        .child(
+                            icon_button("run-search", Icon::Search, "Search messages")
+                                .on_click(cx.listener(|this, _, _, cx| this.run_search(1, cx))),
+                        ),
                 )
                 .child(
                     div()
                         .px_3()
-                        .pb_2()
-                        .text_size(px(10.))
-                        .text_color(rgb(MUTED))
-                        .child("Filters: from: · in: · has:image · before: · after:"),
+                        .pb_3()
+                        .flex()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(self.search_ui.scope.clone()))
+                        .child(div().flex_1().min_w_0().child(self.search_ui.sort.clone())),
                 );
             if let Some(error) = &self.search_ui.local_error {
                 body = body.child(browse_state("Check your search", Some(error.clone())));
@@ -1038,7 +1053,7 @@ impl Fluxer {
                         body = body
                             .child(browse_state("Search failed", snapshot.error.clone()))
                             .child(
-                                button("retry-search", "Try again")
+                                quiet_button("retry-search", "Try again")
                                     .m_3()
                                     .on_click(cx.listener(|this, _, _, cx| this.run_search(1, cx))),
                             )
@@ -1089,7 +1104,7 @@ impl Fluxer {
                                     .justify_between()
                                     .gap_2()
                                     .child(
-                                        button("search-previous", "Previous")
+                                        quiet_button("search-previous", "Previous")
                                             .px_2()
                                             .py_1()
                                             .when(page <= 1, |view| view.opacity(0.4))
@@ -1101,7 +1116,7 @@ impl Fluxer {
                                     )
                                     .child(muted(format!("Page {}", page)))
                                     .child(
-                                        button("search-next", "Next")
+                                        quiet_button("search-next", "Next")
                                             .px_2()
                                             .py_1()
                                             .when(!more, |view| view.opacity(0.4))
@@ -1118,7 +1133,7 @@ impl Fluxer {
             } else {
                 body = body.child(browse_state(
                     "Search messages",
-                    Some("Enter a query, choose a scope, then press Enter.".into()),
+                    Some("Search text or use filters like from:, in: or has:image. Press Enter to search.".into()),
                 ));
             }
         }
