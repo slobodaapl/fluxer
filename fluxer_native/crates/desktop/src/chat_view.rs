@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
-use crate::controls::{Icon, icon_button, quiet_button};
+use crate::controls::{Icon, icon, icon_button, quiet_button};
 
 impl Fluxer {
     pub(super) fn chat(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -96,15 +96,17 @@ impl Fluxer {
                     ),
             )
             .when(
-                self.pane == Pane::Chat && self.viewer.focused.is_some(),
+                self.pane == Pane::Chat
+                    && self.viewer.focused.is_some()
+                    && self.available_streams.is_empty(),
                 |view| {
-                    view.child(div().px_5().py_2().bg(rgb(0x30283f)).child(
-                        button("return-to-stream", "Return to stream viewer").on_click(
-                            cx.listener(|this, _, _, cx| {
+                    view.child(div().px_4().py_1().child(
+                        quiet_button("return-to-stream", "Return to stream").on_click(cx.listener(
+                            |this, _, _, cx| {
                                 this.pane = Pane::Call;
                                 cx.notify();
-                            }),
-                        ),
+                            },
+                        )),
                     ))
                 },
             )
@@ -116,11 +118,25 @@ impl Fluxer {
                 self.pane != Pane::Call && !self.available_streams.is_empty(),
                 |v| {
                     v.child(
-                        div().flex().flex_wrap().gap_3().p_3().children(
-                            self.available_streams
-                                .iter()
-                                .enumerate()
-                                .map(|(index, identity)| {
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .px_4()
+                            .py_1()
+                            .when(self.viewer.focused.is_some(), |view| {
+                                view.child(
+                                    quiet_button("return-to-stream", "Return to stream").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.pane = Pane::Call;
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
+                            })
+                            .children(self.available_streams.iter().enumerate().map(
+                                |(index, identity)| {
                                     let watching = self.viewer.desired.contains(identity);
                                     let name = self
                                         .participants
@@ -141,21 +157,40 @@ impl Fluxer {
                                         })
                                         .unwrap_or_else(|| identity.clone());
                                     let identity = identity.clone();
-                                    button(
-                                        ("watch-stream", index),
-                                        format!(
-                                            "{} {name}'s screen",
-                                            if watching { "Stop watching" } else { "Watch" }
-                                        ),
-                                    )
-                                    .when(watching, |v| v.bg(rgb(0x6650bd)))
-                                    .on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.watch_stream(identity.clone(), !watching, cx)
-                                        },
-                                    ))
-                                }),
-                        ),
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .pl_2()
+                                        .rounded_md()
+                                        .bg(rgb(PANEL))
+                                        .child(icon(Icon::ScreenShare, 14.))
+                                        .child(
+                                            div()
+                                                .max_w(px(140.))
+                                                .text_size(px(12.))
+                                                .text_ellipsis()
+                                                .child(name.clone()),
+                                        )
+                                        .child(if watching {
+                                            icon_button(
+                                                ("watch-stream", index),
+                                                Icon::Stop,
+                                                format!("Stop watching {name}'s screen"),
+                                            )
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.watch_stream(identity.clone(), false, cx)
+                                            }))
+                                            .into_any_element()
+                                        } else {
+                                            quiet_button(("watch-stream", index), "Watch")
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.watch_stream(identity.clone(), true, cx)
+                                                }))
+                                                .into_any_element()
+                                        })
+                                },
+                            )),
                     )
                 },
             )

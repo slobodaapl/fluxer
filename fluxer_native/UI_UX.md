@@ -51,7 +51,9 @@ Controls use consistent geometry and named tooltips rather than platform emoji.
 2. A unified modal/popover system: focus trapping, dismissal, anchoring, screen
    bounds, accessible names and consistent confirmations across all surfaces.
 3. Responsive behavior at short/minimum window sizes, larger text, long names,
-   many participants and multiple streams. Navigation should remain reachable
+   many participants, multiple streams and moves between monitors. A blank-content
+   redraw was observed after moving the offline preview between outputs; this
+   remains an explicit review item. Navigation should remain reachable
    without crowding the conversation.
 4. Settings navigation and full preference migration. Current voice settings are
    clearer, but the rest of Fluxer's settings, locale/hour-cycle preferences,
