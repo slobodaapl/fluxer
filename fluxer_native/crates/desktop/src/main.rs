@@ -2,7 +2,7 @@
 mod input;
 
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
-use fluxer_core::{ChannelType, ClientState, Snowflake};
+use fluxer_core::{ChannelType, ClientState, Snowflake, VoiceParticipant};
 use fluxer_media::{
     AudioApplication, AudioMixSettings, AudioSettings, DeviceInventory, InputMode, MediaEvent,
     ParticipantAudioSettings, ScreenShareOptions, ScreenSource, SharedAudioSelection,
@@ -55,7 +55,7 @@ impl IpAuthorization {
     }
 }
 
-fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+fn button_base(id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .px_3()
@@ -64,9 +64,95 @@ fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<
         .bg(rgb(0x353142))
         .cursor_pointer()
         .text_size(px(13.))
-        .child(label.into())
-        .hover(|s| s.bg(rgb(0x484054)))
+        .hover(|style| style.bg(rgb(0x484054)))
 }
+fn button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Stateful<Div> {
+    button_base(id).child(label.into())
+}
+
+fn voice_avatar(name: &str, user: Snowflake, speaking: bool, size: f32) -> AnyElement {
+    let initials = name
+        .split_whitespace()
+        .take(2)
+        .filter_map(|part| part.chars().next())
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
+    let palette = [0x7360b4, 0x436d86, 0x8a5f80, 0x4c7a68, 0x836747];
+    div()
+        .size(px(size))
+        .flex_shrink_0()
+        .rounded_full()
+        .border_2()
+        .border_color(if speaking { rgb(0x4fc58a) } else { rgb(PANEL) })
+        .bg(rgb(palette[(user.0 % palette.len() as u64) as usize]))
+        .text_color(rgb(TEXT))
+        .text_size(px(if size < 30. { 10. } else { 20. }))
+        .font_weight(FontWeight::SEMIBOLD)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(if initials.is_empty() {
+            "?".into()
+        } else {
+            initials
+        })
+        .into_any_element()
+}
+fn voice_badges(participant: &VoiceParticipant, compact: bool) -> AnyElement {
+    let muted = participant.self_mute || participant.mute || participant.suppress;
+    let deafened = participant.self_deaf || participant.deaf;
+    let badge = |label: &'static str, color: u32| {
+        div()
+            .px_1()
+            .rounded_sm()
+            .text_size(px(if compact { 9. } else { 10. }))
+            .text_color(rgb(color))
+            .bg(rgb(0x292633))
+            .child(label)
+    };
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .flex_shrink_0()
+        .gap_1()
+        .when(muted, |view| {
+            view.child(badge(
+                if participant.mute && !compact {
+                    "Server muted"
+                } else if participant.suppress && !compact {
+                    "No speak"
+                } else if compact {
+                    "Mic off"
+                } else {
+                    "Muted"
+                },
+                if participant.mute || participant.suppress {
+                    0xe8919e
+                } else {
+                    MUTED
+                },
+            ))
+        })
+        .when(deafened, |view| {
+            view.child(badge(
+                if participant.deaf && !compact {
+                    "Server deafened"
+                } else {
+                    "Deaf"
+                },
+                if participant.deaf { 0xe8919e } else { MUTED },
+            ))
+        })
+        .when(participant.self_video, |view| {
+            view.child(badge(if compact { "Cam" } else { "Camera" }, 0xb5a8ee))
+        })
+        .when(participant.self_stream, |view| {
+            view.child(badge("LIVE", 0x66d4a0))
+        })
+        .into_any_element()
+}
+
 fn heading(text: impl Into<SharedString>) -> Div {
     div()
         .text_color(rgb(TEXT))
@@ -115,6 +201,7 @@ struct Fluxer {
     video: BTreeMap<String, Arc<RenderImage>>,
     mixer: AudioMixSettings,
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
+    active_speakers: BTreeSet<String>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
     applications: Vec<AudioApplication>,
@@ -182,6 +269,7 @@ impl Fluxer {
             video: BTreeMap::new(),
             mixer: AudioMixSettings::default(),
             participants: BTreeMap::new(),
+            active_speakers: BTreeSet::new(),
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
             applications: Vec::new(),
@@ -404,6 +492,7 @@ impl Fluxer {
                         VoiceStatus::Disconnected => {
                             self.video.clear();
                             self.participants.clear();
+                            self.active_speakers.clear();
                             self.available_streams.clear();
                             self.watched_streams.clear();
                             self.shared_audio = false;
@@ -416,7 +505,10 @@ impl Fluxer {
                         VoiceStatus::Connected { channel_id } => {
                             format!("Voice connected · {}", self.channel_name(channel_id))
                         }
-                        VoiceStatus::Reconnecting => "Reconnecting voice…".into(),
+                        VoiceStatus::Reconnecting => {
+                            self.active_speakers.clear();
+                            "Reconnecting voice…".into()
+                        }
                     }
                 }
                 Event::AudioApplications(apps) => self.applications = apps,
@@ -462,6 +554,7 @@ impl Fluxer {
                         self.video.remove(&track_id);
                     }
                     MediaEvent::Disconnected => {
+                        self.active_speakers.clear();
                         self.sharing = false;
                         self.video.clear();
                         self.participants.clear();
@@ -474,6 +567,7 @@ impl Fluxer {
                             .insert(identity, (name, ParticipantAudioSettings::default()));
                     }
                     MediaEvent::ParticipantLeft { identity } => {
+                        self.active_speakers.remove(&identity);
                         self.participants.remove(&identity);
                         self.available_streams.remove(&identity);
                     }
@@ -486,6 +580,9 @@ impl Fluxer {
                         } else {
                             self.available_streams.remove(&identity);
                         }
+                    }
+                    MediaEvent::Speakers(identities) => {
+                        self.active_speakers = identities.into_iter().collect()
                     }
                     MediaEvent::AudioLevels { input, output } => self.levels = (input, output),
                     MediaEvent::Error(error) => {
@@ -578,10 +675,12 @@ impl Fluxer {
     }
 
     fn select(&mut self, id: Snowflake, cx: &mut Context<Self>) {
-        self.command(
-            Command::SetDraft(self.composer.read(cx).content.to_string()),
-            cx,
-        );
+        if self.state.selected_channel.is_some() {
+            self.command(
+                Command::SetDraft(self.composer.read(cx).content.to_string()),
+                cx,
+            );
+        }
         self.command(Command::SelectChannel { channel_id: id }, cx);
         self.pane = Pane::Chat;
     }
@@ -869,7 +968,6 @@ impl Fluxer {
                     .gap_1()
                     .children(channels.into_iter().map(|channel| {
                         let id = channel.id;
-                        let guild = channel.guild_id;
                         let voice = channel.kind.is_voice();
                         if channel.kind == ChannelType::Category {
                             return div()
@@ -881,33 +979,109 @@ impl Fluxer {
                                 .child(channel.name.to_uppercase())
                                 .into_any_element();
                         }
-                        let label = if voice {
-                            format!("◉  {}", channel.name)
+                        let label = format!("{}  {}", if voice { "◉" } else { "#" }, channel.name);
+                        let roster = if voice {
+                            self.voice_sidebar_participants(id)
                         } else {
-                            format!("#  {}", channel.name)
+                            Vec::new()
                         };
-                        button(("channel", id.0), label)
-                            .bg(rgb(if self.state.selected_channel == Some(id) {
-                                0x3b344f
-                            } else {
-                                PANEL
-                            }))
-                            .when(self.state.is_unread(id), |v| {
-                                v.text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD)
+                        let count = if voice {
+                            self.state.voice_participants(id).len()
+                        } else {
+                            0
+                        };
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                button_base(("channel", id.0))
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .bg(rgb(if self.state.selected_channel == Some(id) {
+                                        0x3b344f
+                                    } else {
+                                        PANEL
+                                    }))
+                                    .when(self.state.is_unread(id), |view| {
+                                        view.text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD)
+                                    })
+                                    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+                                    .when(voice, |view| {
+                                        view.child(
+                                            div()
+                                                .px_1()
+                                                .rounded_md()
+                                                .text_size(px(11.))
+                                                .bg(rgb(0x34303f))
+                                                .text_color(rgb(MUTED))
+                                                .child(count.to_string()),
+                                        )
+                                    })
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.select(id, cx)),
+                                    ),
+                            )
+                            .when(!roster.is_empty(), |view| {
+                                view.child(div().ml_5().mb_1().flex().flex_col().gap_1().children(
+                                    roster.into_iter().map(|(participant, speaking)| {
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "voice-row-{}-{}",
+                                                id, participant.user_id
+                                            )))
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .px_2()
+                                            .py_1()
+                                            .rounded_md()
+                                            .bg(rgb(if speaking { 0x302e3d } else { PANEL }))
+                                            .child(voice_avatar(
+                                                &participant.display_name,
+                                                participant.user_id,
+                                                speaking,
+                                                24.,
+                                            ))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_size(px(12.))
+                                                    .text_color(rgb(
+                                                        if speaking || participant.is_current_user {
+                                                            TEXT
+                                                        } else {
+                                                            MUTED
+                                                        },
+                                                    ))
+                                                    .text_ellipsis()
+                                                    .child(format!(
+                                                        "{}{}",
+                                                        participant.display_name,
+                                                        if participant.is_current_user {
+                                                            " (you)"
+                                                        } else {
+                                                            ""
+                                                        }
+                                                    )),
+                                            )
+                                            .when(participant.connection_count > 1, |view| {
+                                                view.child(
+                                                    div()
+                                                        .text_size(px(10.))
+                                                        .text_color(rgb(MUTED))
+                                                        .child(format!(
+                                                            "×{}",
+                                                            participant.connection_count
+                                                        )),
+                                                )
+                                            })
+                                            .child(voice_badges(&participant, true))
+                                    }),
+                                ))
                             })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if voice {
-                                    this.command(
-                                        Command::JoinVoice {
-                                            guild_id: guild,
-                                            channel_id: id,
-                                        },
-                                        cx,
-                                    );
-                                } else {
-                                    this.select(id, cx);
-                                }
-                            }))
                             .into_any_element()
                     })),
             )
@@ -1010,13 +1184,200 @@ impl Fluxer {
             .into_any_element()
     }
 
+    fn participant_speaking(&self, participant: &VoiceParticipant, channel: Snowflake) -> bool {
+        self.state.voice.channel_id == Some(channel)
+            && !participant.self_mute
+            && !participant.mute
+            && !participant.suppress
+            && !participant.self_deaf
+            && !participant.deaf
+            && participant
+                .livekit_identity
+                .as_ref()
+                .is_some_and(|identity| self.active_speakers.contains(identity))
+    }
+
+    fn voice_sidebar_participants(&self, channel: Snowflake) -> Vec<(VoiceParticipant, bool)> {
+        // VoiceParticipantsList groups multiple connections by account; self
+        // mute/deaf aggregates across all devices, while live/camera/speaking
+        // flags are shown when any connection has them.
+        let mut grouped = Vec::<(VoiceParticipant, bool)>::new();
+        for participant in self.state.voice_participants(channel) {
+            let speaking = self.participant_speaking(&participant, channel);
+            if let Some((entry, any_speaking)) = grouped
+                .iter_mut()
+                .find(|(entry, _)| entry.user_id == participant.user_id)
+            {
+                entry.self_mute &= participant.self_mute;
+                entry.self_deaf &= participant.self_deaf;
+                entry.mute |= participant.mute;
+                entry.deaf |= participant.deaf;
+                entry.suppress |= participant.suppress;
+                entry.self_video |= participant.self_video;
+                entry.self_stream |= participant.self_stream;
+                *any_speaking |= speaking;
+            } else {
+                grouped.push((participant, speaking));
+            }
+        }
+        grouped
+    }
+
+    fn voice_participant_pane(&self, channel: Snowflake, cx: &mut Context<Self>) -> AnyElement {
+        let participants = self.state.voice_participants(channel);
+        let count = participants.len();
+        let connected = self.state.voice.channel_id == Some(channel);
+        let guild = self
+            .state
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.guild_id);
+        div()
+            .flex_shrink_0()
+            .bg(rgb(0x211e2b))
+            .border_b_1()
+            .border_color(rgb(0x363140))
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .px_5()
+                    .py_3()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Voice participants"),
+                            )
+                            .child(
+                                div()
+                                    .px_2()
+                                    .rounded_md()
+                                    .bg(rgb(0x393248))
+                                    .text_size(px(12.))
+                                    .child(count.to_string()),
+                            ),
+                    )
+                    .child(
+                        button(
+                            ("viewed-voice-call", channel.0),
+                            if connected {
+                                "Leave voice"
+                            } else {
+                                "Join voice"
+                            },
+                        )
+                        .bg(rgb(if connected { 0x613342 } else { 0x6f56d7 }))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if connected {
+                                this.command(Command::LeaveVoice, cx);
+                            } else {
+                                this.command(
+                                    Command::JoinVoice {
+                                        guild_id: guild,
+                                        channel_id: channel,
+                                    },
+                                    cx,
+                                );
+                            }
+                        })),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("voice-participants", channel.0))
+                    .max_h(px(250.))
+                    .overflow_y_scroll()
+                    .px_5()
+                    .pb_4()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .when(participants.is_empty(), |view| {
+                        view.child(
+                            div()
+                                .py_5()
+                                .text_color(rgb(MUTED))
+                                .child("No one is in this voice channel."),
+                        )
+                    })
+                    .children(
+                        participants
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, participant)| {
+                                let speaking = self.participant_speaking(&participant, channel);
+                                div()
+                                    .id(("voice-participant-card", index))
+                                    .w(px(172.))
+                                    .min_h(px(134.))
+                                    .p_3()
+                                    .rounded_lg()
+                                    .border_2()
+                                    .border_color(rgb(if speaking { 0x4fc58a } else { 0x373140 }))
+                                    .bg(rgb(0x2b2638))
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_2()
+                                    .child(voice_avatar(
+                                        &participant.display_name,
+                                        participant.user_id,
+                                        speaking,
+                                        48.,
+                                    ))
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .min_w_0()
+                                            .text_center()
+                                            .text_size(px(13.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_ellipsis()
+                                            .child(format!(
+                                                "{}{}",
+                                                participant.display_name,
+                                                if participant.is_current_user {
+                                                    " (you)"
+                                                } else {
+                                                    ""
+                                                }
+                                            )),
+                                    )
+                                    .child(voice_badges(&participant, false))
+                                    .when(speaking, |view| {
+                                        view.child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(0x66d4a0))
+                                                .child("Speaking"),
+                                        )
+                                    })
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn chat(&self, cx: &mut Context<Self>) -> AnyElement {
         let channel = self
             .state
             .selected_channel
             .and_then(|id| self.state.channels.get(&id));
+        let voice_channel = channel
+            .filter(|channel| channel.kind.is_voice())
+            .map(|channel| channel.id);
         let title = channel
-            .map(|c| format!("# {}", c.name))
+            .map(|c| format!("{} {}", if c.kind.is_voice() { "◉" } else { "#" }, c.name))
             .unwrap_or("Choose a channel".into());
         let selected = self.state.selected_channel;
         let messages = selected
@@ -1045,6 +1406,9 @@ impl Fluxer {
                         })),
                     ),
             )
+            .when_some(voice_channel, |view, channel| {
+                view.child(self.voice_participant_pane(channel, cx))
+            })
             .when(!self.available_streams.is_empty(), |v| {
                 v.child(
                     div().flex().flex_wrap().gap_3().p_3().children(
@@ -1095,6 +1459,17 @@ impl Fluxer {
                                 .h(px(236.))
                                 .object_fit(ObjectFit::Contain)
                         })),
+                )
+            })
+            .when(voice_channel.is_some(), |view| {
+                view.child(
+                    div()
+                        .px_5()
+                        .pt_3()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(rgb(MUTED))
+                        .child("CHANNEL CHAT"),
                 )
             })
             .child(
