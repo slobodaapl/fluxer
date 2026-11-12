@@ -44,6 +44,9 @@ client's decoded PCM, including proportional gain, PTT, mute/unmute and meter
 teardown. Its generated tone uses a local disposable server and temporary audio
 modules; no personal microphone audio is sent by this integration test. These
 checks do not replace authenticated interoperability with the existing client.
+The user subsequently confirmed successful microphone transmission in a real
+Fluxer call. Full screen-sharing and advanced audio interoperability gates
+remain open.
 
 The shared build cache was moved from RAM-backed `/tmp` into the ignored
 `fluxer_native/target/gpui-shared-cache` directory. The old `/tmp` path is only a
@@ -60,6 +63,16 @@ video with explicit Watch/Stop controls, and display/window plus
 system/application audio sharing. Screen selection
 includes frame-rate and resolution choices. Live behavior remains subject to the
 acceptance checks above; a button or transport test does not establish parity.
+
+Input/output devices, input mode, display/window source, share frame rate,
+resolution and shared-audio source now use one compact dropdown component.
+Popups are bounded, scrollable and fitted to the window; arrows, Home/End,
+type-ahead, Enter, Escape and Tab support keyboard selection. Device refresh
+preserves exact IDs, including unavailable selections, without switching inputs.
+Sharing starts through an explicit action after choosing its source. Offline
+Wayland preview verified layout, Enter selection/dismissal, Escape, Tab and
+Home/End navigation; strict checks cover the compiled UI. Ctrl/Cmd+, opens audio
+settings. Complete accessibility and platform UI parity remain pending.
 
 On this Umbriel Wayland session, a newly created window can remain in a hidden
 tab/workspace and retain its first frame until focused. Focusing the explicitly

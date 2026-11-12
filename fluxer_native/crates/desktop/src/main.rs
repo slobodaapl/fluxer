@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+mod dropdown;
 mod input;
 
+use dropdown::{Dropdown, Selected};
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
 use fluxer_core::{ChannelType, ClientState, Snowflake, VoiceParticipant};
 use fluxer_media::{
-    AudioApplication, AudioMixSettings, AudioSettings, DeviceInventory, InputMode, MediaEvent,
+    AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
     ParticipantAudioSettings, ScreenShareOptions, ScreenSource, SharedAudioSelection,
     SharedAudioSettings,
 };
@@ -16,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-actions!(fluxer, [Submit, Quit]);
+actions!(fluxer, [Submit, Quit, OpenSettings]);
 
 const BG: u32 = 0x1d1b26;
 const PANEL: u32 = 0x252330;
@@ -167,7 +169,26 @@ fn muted(text: impl Into<SharedString>) -> Div {
         .child(text.into())
 }
 
+fn picker(
+    label: &'static str,
+    options: &[(&str, &str)],
+    selected: Option<&str>,
+    window: &mut Window,
+    cx: &mut Context<Fluxer>,
+) -> Entity<Dropdown> {
+    let options = options
+        .iter()
+        .map(|(id, label)| ((*id).into(), (*label).into()))
+        .collect();
+    cx.new(|cx| Dropdown::new(label, options, selected.map(String::from), window, cx))
+}
+
+fn screen_source_id(source: &ScreenSource) -> String {
+    format!("{:?}:{}", source.kind, source.id)
+}
+
 struct Fluxer {
+    focus: FocusHandle,
     controller: Option<Controller>,
     state: ClientState,
     demo: bool,
@@ -189,9 +210,13 @@ struct Fluxer {
     error: Option<String>,
     status: String,
     voice_status: String,
-    devices: DeviceInventory,
-    selected_input: Option<String>,
-    selected_output: Option<String>,
+    input_picker: Entity<Dropdown>,
+    output_picker: Entity<Dropdown>,
+    mode_picker: Entity<Dropdown>,
+    fps_picker: Entity<Dropdown>,
+    resolution_picker: Entity<Dropdown>,
+    screen_picker: Entity<Dropdown>,
+    share_audio_picker: Entity<Dropdown>,
     sources: Vec<ScreenSource>,
     share_fps: u32,
     share_size: (u32, u32),
@@ -228,6 +253,7 @@ impl Fluxer {
             v
         });
         let mut view = Self {
+            focus: cx.focus_handle(),
             controller,
             state: ClientState::default(),
             demo,
@@ -257,9 +283,41 @@ impl Fluxer {
                 "Sign in to your Fluxer instance".into()
             },
             voice_status: "Disconnected".into(),
-            devices: DeviceInventory::default(),
-            selected_input: None,
-            selected_output: None,
+            input_picker: picker("Input device", &[], Some("input:default"), window, cx),
+            output_picker: picker("Output device", &[], Some("output:default"), window, cx),
+            mode_picker: picker(
+                "Input mode",
+                &[
+                    ("open", "Open microphone"),
+                    ("activity", "Voice activity"),
+                    ("ptt", "Push to talk"),
+                ],
+                Some("open"),
+                window,
+                cx,
+            ),
+            fps_picker: picker(
+                "Frame rate",
+                &[("15", "15 fps"), ("30", "30 fps"), ("60", "60 fps")],
+                Some("30"),
+                window,
+                cx,
+            ),
+            resolution_picker: picker(
+                "Maximum resolution",
+                &[("720", "720p"), ("1080", "1080p"), ("1440", "1440p")],
+                Some("1080"),
+                window,
+                cx,
+            ),
+            screen_picker: picker("Display or window", &[], None, window, cx),
+            share_audio_picker: picker(
+                "Audio source",
+                &[("system", "System audio")],
+                Some("system"),
+                window,
+                cx,
+            ),
             sources: Vec::new(),
             share_fps: 30,
             share_size: (1920, 1080),
@@ -281,6 +339,47 @@ impl Fluxer {
             timeline: ScrollHandle::new(),
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
+        window.focus(&view.focus);
+        cx.subscribe(&view.input_picker, |this, _, selected: &Selected, cx| {
+            this.command(Command::SetInputDevice(selected.0.clone()), cx);
+        })
+        .detach();
+        cx.subscribe(&view.output_picker, |this, _, selected: &Selected, cx| {
+            this.command(Command::SetOutputDevice(selected.0.clone()), cx);
+        })
+        .detach();
+        cx.subscribe(&view.mode_picker, |this, _, selected: &Selected, cx| {
+            this.mixer.input_mode = match selected.0.as_str() {
+                "activity" => InputMode::VoiceActivity,
+                "ptt" => InputMode::PushToTalk,
+                _ => InputMode::OpenMic,
+            };
+            this.command(Command::SetMixer(this.mixer.clone()), cx);
+        })
+        .detach();
+        cx.subscribe(&view.fps_picker, |this, _, selected: &Selected, cx| {
+            if let Ok(fps) = selected.0.parse() {
+                this.share_fps = fps;
+            }
+            cx.notify();
+        })
+        .detach();
+        cx.subscribe(
+            &view.resolution_picker,
+            |this, _, selected: &Selected, cx| {
+                this.share_size = match selected.0.as_str() {
+                    "720" => (1280, 720),
+                    "1440" => (2560, 1440),
+                    _ => (1920, 1080),
+                };
+                cx.notify();
+            },
+        )
+        .detach();
+        for dropdown in [&view.screen_picker, &view.share_audio_picker] {
+            cx.subscribe(dropdown, |_, _, _: &Selected, cx| cx.notify())
+                .detach();
+        }
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
         cx.observe(&view.composer, |this, _, cx| {
             let content = this.composer.read(cx).content.to_string();
@@ -299,6 +398,17 @@ impl Fluxer {
         cx.observe_window_activation(window, |this, window, cx| {
             if !window.is_window_active() {
                 this.command(Command::SetPushToTalkPressed(false), cx);
+                for picker in [
+                    &this.input_picker,
+                    &this.output_picker,
+                    &this.mode_picker,
+                    &this.fps_picker,
+                    &this.resolution_picker,
+                    &this.screen_picker,
+                    &this.share_audio_picker,
+                ] {
+                    picker.update(cx, |picker, cx| picker.dismiss(cx));
+                }
             }
         })
         .detach();
@@ -485,8 +595,40 @@ impl Fluxer {
                 Event::WatchedStreams(identities) => {
                     self.watched_streams = identities.into_iter().collect()
                 }
-                Event::Devices(devices) => self.devices = devices,
-                Event::ScreenSources(sources) => self.sources = sources,
+                Event::Devices(devices) => {
+                    self.input_picker.update(cx, |picker, cx| {
+                        picker.set_options(
+                            devices
+                                .inputs
+                                .iter()
+                                .map(|d| (d.id.clone(), d.label.clone()))
+                                .collect(),
+                            cx,
+                        )
+                    });
+                    self.output_picker.update(cx, |picker, cx| {
+                        picker.set_options(
+                            devices
+                                .outputs
+                                .iter()
+                                .map(|d| (d.id.clone(), d.label.clone()))
+                                .collect(),
+                            cx,
+                        )
+                    });
+                }
+                Event::ScreenSources(sources) => {
+                    self.screen_picker.update(cx, |picker, cx| {
+                        picker.set_options(
+                            sources
+                                .iter()
+                                .map(|s| (screen_source_id(s), s.label.clone()))
+                                .collect(),
+                            cx,
+                        )
+                    });
+                    self.sources = sources;
+                }
                 Event::VoiceStatus(status) => {
                     self.voice_status = match status {
                         VoiceStatus::Disconnected => {
@@ -511,7 +653,17 @@ impl Fluxer {
                         }
                     }
                 }
-                Event::AudioApplications(apps) => self.applications = apps,
+                Event::AudioApplications(apps) => {
+                    let options = std::iter::once(("system".into(), "System audio".into()))
+                        .chain(
+                            apps.iter()
+                                .map(|app| (format!("app:{}", app.process_id), app.label.clone())),
+                        )
+                        .collect();
+                    self.share_audio_picker
+                        .update(cx, |picker, cx| picker.set_options(options, cx));
+                    self.applications = apps;
+                }
                 Event::SharedAudioStatus(active) => self.shared_audio = active,
                 Event::MessageSent {
                     channel_id,
@@ -1640,7 +1792,6 @@ impl Fluxer {
     }
 
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
-        let dsp = self.dsp.clone();
         div()
             .id("settings-body")
             .flex_1()
@@ -1656,74 +1807,61 @@ impl Fluxer {
                 "Choose devices and configure microphone processing. Changes apply immediately.",
             ))
             .child(
-                button("refresh-devices", "Refresh audio devices").on_click(
-                    cx.listener(|this, _, _, cx| this.command(Command::RefreshDevices, cx)),
-                ),
+                button("refresh-devices", "Refresh audio devices")
+                    .max_w(px(180.))
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.command(Command::RefreshDevices, cx)),
+                    ),
             )
+            .child(self.input_picker.clone())
+            .child(self.output_picker.clone())
             .child(self.audio_controls(cx))
-            .child(heading("Input device"))
-            .children(self.devices.inputs.iter().map(|device| {
-                let id = device.id.clone();
-                button(
-                    SharedString::from(format!("input-{id}")),
-                    device.label.clone(),
-                )
-                .when(self.selected_input.as_ref() == Some(&id), |v| {
-                    v.bg(rgb(0x6650bd))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.selected_input = Some(id.clone());
-                    this.command(Command::SetInputDevice(id.clone()), cx);
-                }))
-            }))
-            .child(heading("Output device"))
-            .children(self.devices.outputs.iter().map(|device| {
-                let id = device.id.clone();
-                button(
-                    SharedString::from(format!("output-{id}")),
-                    device.label.clone(),
-                )
-                .when(self.selected_output.as_ref() == Some(&id), |v| {
-                    v.bg(rgb(0x6650bd))
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.selected_output = Some(id.clone());
-                    this.command(Command::SetOutputDevice(id.clone()), cx);
-                }))
-            }))
-            .child(
-                button(
-                    "aec",
-                    format!("Echo cancellation: {}", dsp.echo_cancellation),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.dsp.echo_cancellation = !this.dsp.echo_cancellation;
-                    this.command(Command::SetDsp(this.dsp.clone()), cx);
-                })),
+            .child(heading("Microphone processing"))
+            .children(
+                [
+                    ("aec", "Echo cancellation", self.dsp.echo_cancellation),
+                    ("ns", "Noise suppression", self.dsp.noise_suppression),
+                    ("agc", "Automatic gain", self.dsp.auto_gain_control),
+                ]
+                .into_iter()
+                .map(|(id, label, enabled)| {
+                    div()
+                        .w_full()
+                        .max_w(px(520.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(label)
+                        .child(
+                            button(id, if enabled { "On" } else { "Off" })
+                                .w(px(64.))
+                                .text_center()
+                                .when(enabled, |view| view.bg(rgb(0x6650bd)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    match id {
+                                        "aec" => {
+                                            this.dsp.echo_cancellation = !this.dsp.echo_cancellation
+                                        }
+                                        "ns" => {
+                                            this.dsp.noise_suppression = !this.dsp.noise_suppression
+                                        }
+                                        _ => {
+                                            this.dsp.auto_gain_control = !this.dsp.auto_gain_control
+                                        }
+                                    }
+                                    this.command(Command::SetDsp(this.dsp.clone()), cx);
+                                })),
+                        )
+                }),
             )
             .child(
-                button(
-                    "ns",
-                    format!("Noise suppression: {}", dsp.noise_suppression),
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.dsp.noise_suppression = !this.dsp.noise_suppression;
-                    this.command(Command::SetDsp(this.dsp.clone()), cx);
-                })),
-            )
-            .child(
-                button("agc", format!("Automatic gain: {}", dsp.auto_gain_control)).on_click(
-                    cx.listener(|this, _, _, cx| {
-                        this.dsp.auto_gain_control = !this.dsp.auto_gain_control;
-                        this.command(Command::SetDsp(this.dsp.clone()), cx);
-                    }),
-                ),
-            )
-            .child(
-                button("back-chat", "Back to chat").on_click(cx.listener(|this, _, _, cx| {
-                    this.pane = Pane::Chat;
-                    cx.notify();
-                })),
+                button("back-chat", "Back to chat")
+                    .max_w(px(180.))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.pane = Pane::Chat;
+                        cx.notify();
+                    })),
             )
             .into_any_element()
     }
@@ -1731,6 +1869,9 @@ impl Fluxer {
     fn audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let mode = self.mixer.input_mode;
         div()
+            .w_full()
+            .max_w(px(520.))
+            .flex_shrink_0()
             .flex()
             .flex_col()
             .gap_3()
@@ -1779,25 +1920,7 @@ impl Fluxer {
                         })),
                     ),
             )
-            .child(
-                div().flex().gap_2().children(
-                    [
-                        (InputMode::OpenMic, "Open microphone"),
-                        (InputMode::VoiceActivity, "Voice activity"),
-                        (InputMode::PushToTalk, "Push to talk"),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (value, label))| {
-                        button(("mode", i), label)
-                            .when(mode == value, |v| v.bg(rgb(0x6650bd)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.mixer.input_mode = value;
-                                this.command(Command::SetMixer(this.mixer.clone()), cx);
-                            }))
-                    }),
-                ),
-            )
+            .child(self.mode_picker.clone())
             .when(mode == InputMode::VoiceActivity, |v| {
                 v.child(
                     div()
@@ -1973,21 +2096,108 @@ impl Fluxer {
     }
 
     fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        div().flex().flex_col().gap_3().child(heading("Share audio"))
-            .child(muted(if self.shared_audio { "Audio sharing is active" } else { "No audio is being shared" }))
-            .child(muted("Audio sharing uses PipeWire on Linux. Fluxer's own audio is excluded to prevent feedback."))
-            .child(button("share-system-audio","Share system audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::System),cx);})))
-            .children(self.applications.iter().enumerate().map(|(i,app)|{let pid=app.process_id.clone();button(("share-app",i),format!("Share {} audio",app.label)).on_click(cx.listener(move |this,_,_,cx|{this.command(Command::StartSharedAudio(SharedAudioSelection::Application{process_id:pid.clone()}),cx);}))}))
-            .child(button("refresh-apps","Refresh audio applications").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshAudioApplications,cx))))
-            .child(div().flex().gap_3().items_center().child(muted(format!("Shared audio {:.0}%",self.shared_audio_settings.gain*100.)))
-                .child(button("share-gain-down","−").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain-0.1).max(0.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
-                .child(button("share-gain-up","+").on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.gain=(this.shared_audio_settings.gain+0.1).min(2.);this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);})))
-                .child(button("share-audio-mute",if self.shared_audio_settings.muted{"Unmute shared audio"}else{"Mute shared audio"}).on_click(cx.listener(|this,_,_,cx|{this.shared_audio_settings.muted = !this.shared_audio_settings.muted;this.command(Command::SetSharedAudio(this.shared_audio_settings),cx);}))))
-            .child(button("stop-shared-audio","Stop sharing audio").on_click(cx.listener(|this,_,_,cx|{this.command(Command::StopSharedAudio,cx);})))
+        let selection = self.share_audio_picker.read(cx).selected().and_then(|id| {
+            if id == "system" {
+                Some(SharedAudioSelection::System)
+            } else {
+                id.strip_prefix("app:")
+                    .filter(|pid| self.applications.iter().any(|app| app.process_id == *pid))
+                    .map(|pid| SharedAudioSelection::Application {
+                        process_id: pid.into(),
+                    })
+            }
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(heading("Share audio"))
+            .child(muted(if self.shared_audio {
+                "Audio sharing is active"
+            } else {
+                "No audio is being shared"
+            }))
+            .child(self.share_audio_picker.clone())
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .when_some(selection, |view, selection| {
+                        view.child(button("start-shared-audio", "Share audio").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.command(Command::StartSharedAudio(selection.clone()), cx);
+                            }),
+                        ))
+                    })
+                    .child(
+                        button("refresh-apps", "Refresh applications").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.command(Command::RefreshAudioApplications, cx);
+                            },
+                        )),
+                    )
+                    .when(self.shared_audio, |view| {
+                        view.child(button("stop-shared-audio", "Stop sharing audio").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.command(Command::StopSharedAudio, cx);
+                            }),
+                        ))
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .items_center()
+                    .child(muted(format!(
+                        "Shared audio {:.0}%",
+                        self.shared_audio_settings.gain * 100.
+                    )))
+                    .child(button("share-gain-down", "−").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            this.shared_audio_settings.gain =
+                                (this.shared_audio_settings.gain - 0.1).max(0.);
+                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                        },
+                    )))
+                    .child(
+                        button("share-gain-up", "+").on_click(cx.listener(|this, _, _, cx| {
+                            this.shared_audio_settings.gain =
+                                (this.shared_audio_settings.gain + 0.1).min(2.);
+                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                        })),
+                    )
+                    .child(
+                        button(
+                            "share-audio-mute",
+                            if self.shared_audio_settings.muted {
+                                "Unmute shared audio"
+                            } else {
+                                "Mute shared audio"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shared_audio_settings.muted = !this.shared_audio_settings.muted;
+                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                        })),
+                    ),
+            )
             .into_any_element()
     }
 
     fn screens(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .screen_picker
+            .read(cx)
+            .selected()
+            .and_then(|id| {
+                self.sources
+                    .iter()
+                    .find(|source| screen_source_id(source) == id)
+            })
+            .cloned();
         div()
             .id("screen-sources")
             .flex_1()
@@ -2002,67 +2212,47 @@ impl Fluxer {
             .child(muted(
                 "Select a display or window. Your desktop may open a system permission picker.",
             ))
+            .child(self.screen_picker.clone())
+            .child(self.fps_picker.clone())
+            .child(self.resolution_picker.clone())
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
-                    .items_center()
-                    .child(muted("Frame rate"))
-                    .children([15_u32, 30, 60].into_iter().map(|fps| {
-                        button(("share-fps", fps), format!("{fps} fps"))
-                            .when(self.share_fps == fps, |v| v.bg(rgb(0x6650bd)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.share_fps = fps;
-                                cx.notify();
-                            }))
-                    })),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(muted("Maximum resolution"))
-                    .children(
-                        [(1280_u32, 720_u32), (1920, 1080), (2560, 1440)]
-                            .into_iter()
-                            .map(|resolution| {
-                                button(("share-size", resolution.1), format!("{}p", resolution.1))
-                                    .when(self.share_size == resolution, |v| v.bg(rgb(0x6650bd)))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.share_size = resolution;
-                                        cx.notify();
-                                    }))
-                            }),
+                    .when_some(selected, |view, source| {
+                        view.child(
+                            button("start-screen-share", "Share screen")
+                                .bg(rgb(0x6f56d7))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.command(
+                                        Command::StartShare(ScreenShareOptions {
+                                            source: source.clone(),
+                                            fps: this.share_fps,
+                                            max_width: this.share_size.0,
+                                            max_height: this.share_size.1,
+                                            max_bitrate: if this.share_size.1 > 1080 {
+                                                8_000_000
+                                            } else if this.share_fps > 30 {
+                                                6_000_000
+                                            } else {
+                                                4_000_000
+                                            },
+                                        }),
+                                        cx,
+                                    );
+                                    this.pane = Pane::Chat;
+                                })),
+                        )
+                    })
+                    .child(
+                        button("refresh-sources", "Refresh sources").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.command(Command::RefreshScreenSources, cx);
+                            },
+                        )),
                     ),
             )
-            .children(self.sources.iter().enumerate().map(|(index, source)| {
-                let source = source.clone();
-                button(("source", index), source.label.clone()).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        this.command(
-                            Command::StartShare(ScreenShareOptions {
-                                source: source.clone(),
-                                fps: this.share_fps,
-                                max_width: this.share_size.0,
-                                max_height: this.share_size.1,
-                                max_bitrate: if this.share_size.1 > 1080 {
-                                    8_000_000
-                                } else if this.share_fps > 30 {
-                                    6_000_000
-                                } else {
-                                    4_000_000
-                                },
-                            }),
-                            cx,
-                        );
-                        this.pane = Pane::Chat;
-                    },
-                ))
-            }))
-            .child(button("refresh-sources", "Refresh sources").on_click(
-                cx.listener(|this, _, _, cx| this.command(Command::RefreshScreenSources, cx)),
-            ))
             .child(self.shared_audio_controls(cx))
             .child(button("cancel-share", "Back to chat").on_click(cx.listener(
                 |this, _, _, cx| {
@@ -2139,8 +2329,18 @@ impl Render for Fluxer {
                 .into_any_element()
         };
         div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Inter").text_size(px(14.))
+            .track_focus(&self.focus)
             .on_action(cx.listener(Self::submit))
-            .on_key_down(cx.listener(|this,event:&KeyDownEvent,_,cx|{
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                this.pane = Pane::Settings;
+                this.command(Command::RefreshDevices, cx);
+                this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
+            }))
+            .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key == "tab" {
+                    if event.keystroke.modifiers.shift { window.focus_prev(); } else { window.focus_next(); }
+                    cx.stop_propagation();
+                }
                 if event.keystroke.key=="f8" && !event.is_held && this.mixer.input_mode==InputMode::PushToTalk {this.command(Command::SetPushToTalkPressed(true),cx);}
             }))
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
@@ -2160,6 +2360,8 @@ fn main() {
             KeyBinding::new("enter", Submit, Some("TextInput")),
             KeyBinding::new("ctrl-q", Quit, None),
             KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("ctrl-,", OpenSettings, None),
+            KeyBinding::new("cmd-,", OpenSettings, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.on_window_closed(|cx| {
