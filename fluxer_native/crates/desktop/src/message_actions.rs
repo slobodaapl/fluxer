@@ -66,6 +66,7 @@ pub(super) struct MessageActions {
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     pub row_focus: BTreeMap<Snowflake, FocusHandle>,
+    pub row_order: Vec<Snowflake>,
     pub row_bounds: Rc<RefCell<BTreeMap<Snowflake, Bounds<Pixels>>>>,
 }
 impl MessageActions {
@@ -76,6 +77,7 @@ impl MessageActions {
             focus: cx.focus_handle(),
             previous_focus: None,
             row_focus: BTreeMap::new(),
+            row_order: Vec::new(),
             row_bounds: Rc::default(),
         }
     }
@@ -90,6 +92,7 @@ impl MessageActions {
         self.deleting = None;
         self.previous_focus = None;
         self.row_focus.clear();
+        self.row_order.clear();
         self.row_bounds.borrow_mut().clear();
     }
     pub fn active_message(&self) -> Option<Snowflake> {
@@ -101,6 +104,33 @@ impl MessageActions {
 }
 
 impl Fluxer {
+    pub(super) fn move_message_focus(
+        &mut self,
+        id: Snowflake,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self
+            .message_actions
+            .row_order
+            .iter()
+            .position(|candidate| *candidate == id)
+        else {
+            return;
+        };
+        let target = adjacent_row_index(index, self.message_actions.row_order.len(), down);
+        if let Some(focus) = self
+            .message_actions
+            .row_order
+            .get(target)
+            .and_then(|id| self.message_actions.row_focus.get(id))
+        {
+            focus.focus(window);
+            self.timeline.scroll_to_item(target);
+            cx.notify();
+        }
+    }
     pub(super) fn message_bounds_marker(&self, id: Snowflake) -> AnyElement {
         let bounds = self.message_actions.row_bounds.clone();
         canvas(
@@ -601,6 +631,13 @@ fn menu_selection(current: usize, count: usize, key: &str) -> usize {
         _ => current.min(count - 1),
     }
 }
+fn adjacent_row_index(current: usize, count: usize, down: bool) -> usize {
+    if down {
+        current.saturating_add(1).min(count.saturating_sub(1))
+    } else {
+        current.saturating_sub(1)
+    }
+}
 // ChannelConstants.ts MESSAGE_TYPE_DELETABLE: service/system events which the
 // original client disallows cannot acquire Delete through the overflow menu.
 fn deletable_message_type(kind: u16) -> bool {
@@ -638,7 +675,7 @@ pub(super) fn message_time(timestamp: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{deletable_message_type, menu_origin, menu_selection};
+    use super::{adjacent_row_index, deletable_message_type, menu_origin, menu_selection};
     use gpui::{point, px, size};
     #[test]
     fn menu_keyboard_wraps_and_handles_empty() {
@@ -663,5 +700,13 @@ mod tests {
         for kind in [1, 2, 3, 4, 5, 21, 99, 65535] {
             assert!(!deletable_message_type(kind));
         }
+    }
+    #[test]
+    fn timeline_arrows_keep_edges_and_move_one_row() {
+        assert_eq!(adjacent_row_index(0, 4, false), 0);
+        assert_eq!(adjacent_row_index(3, 4, true), 3);
+        assert_eq!(adjacent_row_index(2, 4, false), 1);
+        assert_eq!(adjacent_row_index(1, 4, true), 2);
+        assert_eq!(adjacent_row_index(0, 0, true), 0);
     }
 }
