@@ -1,11 +1,9 @@
 use crate::{Command, Event, VoiceStatus};
-use fluxer_core::{
-    Channel, ChannelType, ClientState, Emoji, Guild, Message, Permissions, Snowflake, User,
-};
+use fluxer_core::{ChannelType, ClientState, Emoji, Message, Permissions, Snowflake, User};
 use fluxer_media::{MediaEngine, MediaEvent, VideoFrame};
 use fluxer_protocol::{
-    Client, Gateway, GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome,
-    SessionToken, VoiceServerUpdate, VoiceStateUpdate,
+    AuthSession, Client, Gateway, GatewayCommand, GatewayEvent, Instance, LoginIdentifier,
+    LoginOutcome, SessionToken, VoiceServerUpdate, VoiceStateUpdate,
 };
 use serde_json::{Value, json};
 use std::{
@@ -17,6 +15,8 @@ use std::{
 use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 type Result<T> = std::result::Result<T, String>;
+const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
+const IP_MAX_POLL_ERRORS: u8 = 3;
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -26,6 +26,15 @@ struct VoiceTarget {
     guild_id: Option<Snowflake>,
     channel_id: Snowflake,
     connection_id: Option<String>,
+}
+
+struct PendingIpAuthorization {
+    client: Client,
+    ticket: String,
+    resend_deadline: tokio::time::Instant,
+    resend_used: bool,
+    consecutive_errors: u8,
+    next_poll: Option<tokio::time::Instant>,
 }
 
 impl VoiceTarget {
@@ -73,6 +82,8 @@ pub(crate) struct Worker {
     state: ClientState,
     client: Option<Client>,
     pending_mfa: Option<Client>,
+    pending_ip: Option<PendingIpAuthorization>,
+    ip_poll_task: Option<JoinHandle<fluxer_protocol::Result<Option<AuthSession>>>>,
     events: mpsc::Sender<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     gateway_commands: Option<async_mpsc::Sender<GatewayCommand>>,
@@ -84,11 +95,15 @@ pub(crate) struct Worker {
     media_events: Option<async_mpsc::Receiver<MediaEvent>>,
     voice_target: Option<VoiceTarget>,
     pending_voice_server: Option<VoiceServerUpdate>,
-    voice_endpoint: Option<String>,
+    voice_credentials: Option<VoiceServerUpdate>,
     voice_join_deadline: Option<tokio::time::Instant>,
     server_muted: bool,
     server_deafened: bool,
     demo: bool,
+    locale: String,
+    expected_user_id: Option<Snowflake>,
+    selected_guild: Option<Snowflake>,
+    synced_guilds: BTreeMap<Snowflake, String>,
 }
 
 impl Worker {
@@ -100,6 +115,8 @@ impl Worker {
             state: ClientState::default(),
             client: None,
             pending_mfa: None,
+            pending_ip: None,
+            ip_poll_task: None,
             events,
             frames,
             gateway_commands: None,
@@ -111,11 +128,15 @@ impl Worker {
             media_events: None,
             voice_target: None,
             pending_voice_server: None,
-            voice_endpoint: None,
+            voice_credentials: None,
             voice_join_deadline: None,
             server_muted: false,
             server_deafened: false,
             demo: false,
+            locale: ClientState::default().settings.locale,
+            expected_user_id: None,
+            selected_guild: None,
+            synced_guilds: BTreeMap::new(),
         }
     }
     fn emit(&self, event: Event) {
@@ -149,12 +170,21 @@ impl Worker {
                 Gateway(Option<GatewayEvent>),
                 Media(Option<MediaEvent>),
                 VoiceTimeout,
+                BeginIpPoll,
+                IpPoll(
+                    std::result::Result<
+                        fluxer_protocol::Result<Option<AuthSession>>,
+                        tokio::task::JoinError,
+                    >,
+                ),
             }
             let incoming = tokio::select! {
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
                 event = receive_optional(&mut self.media_events) => Incoming::Media(event),
                 _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
+                _ = voice_timeout(self.pending_ip.as_ref().and_then(|pending|pending.next_poll)) => Incoming::BeginIpPoll,
+                result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
             };
             let result = match incoming {
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
@@ -173,6 +203,19 @@ impl Worker {
                 Incoming::VoiceTimeout => {
                     let _ = self.leave_voice(true).await;
                     Err("Voice server did not complete the connection; try joining again".into())
+                }
+                Incoming::BeginIpPoll => {
+                    self.begin_ip_poll();
+                    Ok(())
+                }
+                Incoming::IpPoll(result) => {
+                    self.ip_poll_task = None;
+                    self.finish_ip_poll(
+                        result
+                            .map_err(error)
+                            .and_then(|result| result.map_err(error)),
+                    )
+                    .await
                 }
             };
             if let Err(message) = result {
@@ -193,10 +236,19 @@ impl Worker {
         self.gateway_events = None;
         self.gateway_ready = false;
         self.last_sequence = None;
+        self.expected_user_id = None;
+        self.selected_guild = None;
+        self.synced_guilds.clear();
         self.pending_mfa = None;
+        self.pending_ip = None;
+        if let Some(task) = self.ip_poll_task.take() {
+            task.abort();
+        }
+        self.emit(Event::IpAuthorizationCleared);
         self.client = None;
         self.media = None;
         self.state = ClientState::default();
+        self.state.settings.locale = self.locale.clone();
         self.demo = false;
         if let Ok(mut frames) = self.frames.lock() {
             frames.clear();
@@ -215,16 +267,23 @@ impl Worker {
                 self.snapshot();
                 self.emit(Event::Status("Discovering instance…".into()));
                 let client = Client::new(Instance::discover(&instance).await.map_err(error)?)
+                    .map_err(error)?
+                    .with_auth_locale(self.locale.clone())
                     .map_err(error)?;
-                let identifier = if identifier.contains('@') {
-                    LoginIdentifier::Email(identifier)
-                } else {
-                    LoginIdentifier::Login(identifier)
-                };
+                let identifier = login_identifier(client.instance(), identifier);
                 match client.login(identifier, &password).await.map_err(error)? {
-                    LoginOutcome::Authenticated { token, .. } => {
-                        self.authenticate(client.with_token(token.clone()), token)
-                            .await?
+                    LoginOutcome::Authenticated {
+                        token,
+                        user_id,
+                        user,
+                    } => {
+                        self.authenticate(
+                            client.with_token(token.clone()),
+                            token,
+                            Some(user_id),
+                            user,
+                        )
+                        .await?
                     }
                     LoginOutcome::Mfa {
                         ticket,
@@ -239,10 +298,25 @@ impl Worker {
                             webauthn,
                         });
                     }
-                    LoginOutcome::IpAuthorization { email, .. } => {
-                        return Err(format!(
-                            "Authorize this sign-in using the email sent to {email}"
-                        ));
+                    LoginOutcome::IpAuthorization {
+                        email,
+                        ticket,
+                        resend_available_in,
+                    } => {
+                        self.pending_ip = Some(PendingIpAuthorization {
+                            client,
+                            ticket,
+                            resend_deadline: tokio::time::Instant::now()
+                                .checked_add(Duration::from_secs(resend_available_in))
+                                .ok_or("Invalid authorization resend cooldown")?,
+                            resend_used: false,
+                            consecutive_errors: 0,
+                            next_poll: Some(tokio::time::Instant::now()),
+                        });
+                        self.emit(Event::IpAuthorizationRequired {
+                            email,
+                            resend_available_in,
+                        });
                     }
                 }
             }
@@ -253,15 +327,57 @@ impl Worker {
                 let token = SessionToken::new(token).map_err(error)?;
                 let client = Client::new(Instance::discover(&instance).await.map_err(error)?)
                     .map_err(error)?
+                    .with_auth_locale(self.locale.clone())
+                    .map_err(error)?
                     .with_token(token.clone());
-                self.authenticate(client, token).await?;
+                self.authenticate(client, token, None, None).await?;
             }
             Command::LoginMfa { ticket, code } => {
                 let client = self.pending_mfa.clone().ok_or("Start a sign-in first")?;
                 let session = client.login_mfa_totp(&ticket, &code).await.map_err(error)?;
                 self.pending_mfa = None;
-                self.authenticate(client.with_token(session.token.clone()), session.token)
-                    .await?;
+                self.authenticate(
+                    client.with_token(session.token.clone()),
+                    session.token,
+                    Some(session.user_id),
+                    session.user,
+                )
+                .await?;
+            }
+            Command::ResendIpAuthorization => {
+                let Some(pending) = &self.pending_ip else {
+                    return Ok(());
+                };
+                if pending.resend_used || tokio::time::Instant::now() < pending.resend_deadline {
+                    return Ok(());
+                }
+                pending
+                    .client
+                    .resend_ip_authorization(&pending.ticket)
+                    .await
+                    .map_err(error)?;
+                if let Some(pending) = &mut self.pending_ip {
+                    pending.resend_used = true;
+                    pending.resend_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                }
+                self.emit(Event::IpAuthorizationResent {
+                    resend_available_in: 30,
+                });
+            }
+            Command::RetryIpAuthorization => {
+                if let Some(pending) = &mut self.pending_ip
+                    && pending.consecutive_errors >= IP_MAX_POLL_ERRORS
+                {
+                    pending.consecutive_errors = 0;
+                    pending.next_poll = Some(tokio::time::Instant::now());
+                    self.emit(Event::IpAuthorizationPollingResumed);
+                }
+            }
+            Command::CancelLogin => {
+                self.reset().await;
+                self.emit(Event::Demo(false));
+                self.snapshot();
+                self.emit(Event::Status("Sign in to your Fluxer instance".into()));
             }
             Command::Logout => {
                 let client = self.client.clone();
@@ -280,19 +396,32 @@ impl Worker {
                 self.emit(Event::Demo(true));
                 self.snapshot();
             }
-            Command::SelectGuild { guild_id } => {
-                if !self.demo {
-                    let channels = self
-                        .client()?
-                        .guild_channels(&guild_id.to_string())
-                        .await
+            Command::SetLocale(locale) => {
+                if locale.is_empty() || locale.bytes().any(|byte| byte < 32 || byte == 127) {
+                    return Err("Invalid client locale".into());
+                }
+                if let Some(client) = self.client.clone() {
+                    self.client = Some(client.with_auth_locale(locale.clone()).map_err(error)?);
+                }
+                if let Some(client) = self.pending_mfa.clone() {
+                    self.pending_mfa =
+                        Some(client.with_auth_locale(locale.clone()).map_err(error)?);
+                }
+                if let Some(pending) = &mut self.pending_ip {
+                    pending.client = pending
+                        .client
+                        .clone()
+                        .with_auth_locale(locale.clone())
                         .map_err(error)?;
-                    for mut channel in values(channels, "channels")? {
-                        channel["guild_id"] = json!(guild_id);
-                        self.state
-                            .apply_gateway("CHANNEL_CREATE", channel)
-                            .map_err(error)?;
-                    }
+                }
+                self.locale = locale.clone();
+                self.state.settings.locale = locale;
+                self.snapshot();
+            }
+            Command::SelectGuild { guild_id } => {
+                self.selected_guild = Some(guild_id);
+                if !self.demo {
+                    self.sync_selected_guild().await?;
                 }
                 self.snapshot();
             }
@@ -589,36 +718,102 @@ impl Worker {
         Ok(())
     }
 
-    async fn authenticate(&mut self, client: Client, token: SessionToken) -> Result<()> {
-        let user: User =
-            serde_json::from_value(client.current_user().await.map_err(error)?).map_err(error)?;
-        self.state.current_user = Some(user.clone());
-        self.state.users.insert(user.id, user);
-        for result in [client.guilds().await, client.private_channels().await]
-            .into_iter()
-            .enumerate()
-        {
-            match result {
-                (0, Ok(value)) => {
-                    for guild in values(value, "guilds")? {
-                        let guild: Guild = serde_json::from_value(guild).map_err(error)?;
-                        self.state.guilds.insert(guild.id, guild);
-                    }
-                }
-                (_, Ok(value)) => {
-                    for channel in values(value, "channels")? {
-                        let channel: Channel = serde_json::from_value(channel).map_err(error)?;
-                        self.state.channels.insert(channel.id, channel);
-                    }
-                }
-                (_, Err(message)) => self.emit(Event::Error(message.to_string())),
+    fn begin_ip_poll(&mut self) {
+        if self.ip_poll_task.is_some() {
+            return;
+        }
+        let Some(pending) = &mut self.pending_ip else {
+            return;
+        };
+        if pending.consecutive_errors >= IP_MAX_POLL_ERRORS {
+            return;
+        }
+        pending.next_poll = None;
+        let client = pending.client.clone();
+        let ticket = pending.ticket.clone();
+        self.ip_poll_task = Some(tokio::spawn(async move {
+            client.poll_ip_authorization(&ticket).await
+        }));
+    }
+
+    async fn finish_ip_poll(&mut self, result: Result<Option<AuthSession>>) -> Result<()> {
+        let Some(pending) = &mut self.pending_ip else {
+            return Ok(());
+        };
+        match result {
+            Ok(Some(session)) => {
+                let pending = self
+                    .pending_ip
+                    .take()
+                    .ok_or("Authorization challenge was cancelled")?;
+                self.emit(Event::IpAuthorizationCleared);
+                self.authenticate(
+                    pending.client.with_token(session.token.clone()),
+                    session.token,
+                    Some(session.user_id),
+                    session.user,
+                )
+                .await?;
             }
+            Ok(None) => {
+                pending.consecutive_errors = 0;
+                pending.next_poll = Some(tokio::time::Instant::now() + IP_POLL_INTERVAL);
+            }
+            Err(_) => {
+                pending.consecutive_errors = pending.consecutive_errors.saturating_add(1);
+                if pending.consecutive_errors >= IP_MAX_POLL_ERRORS {
+                    pending.next_poll = None;
+                    self.emit(Event::IpAuthorizationPollingFailed);
+                } else {
+                    pending.next_poll = Some(tokio::time::Instant::now() + IP_POLL_INTERVAL);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn authenticate(
+        &mut self,
+        client: Client,
+        token: SessionToken,
+        user_id: Option<String>,
+        user: Option<Value>,
+    ) -> Result<()> {
+        // Fresh password/MFA login already authenticates the token. As in
+        // AuthSessionLifecycle.login, READY supplies the account/guild/channel
+        // snapshot. Explicit token entry follows AuthSession.validateToken's
+        // GET /users/@me path; it does not list guilds or private channels.
+        let user = if user_id.is_none() {
+            Some(client.current_user().await.map_err(error)?)
+        } else {
+            user
+        };
+        let user = user
+            .map(serde_json::from_value::<User>)
+            .transpose()
+            .map_err(error)?;
+        self.expected_user_id = user_id
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(error)?
+            .or_else(|| user.as_ref().map(|user| user.id));
+        if let Some(user) = user {
+            if self.expected_user_id != Some(user.id) {
+                return Err("Authentication user differs from the expected account".into());
+            }
+            self.state.current_user = Some(user.clone());
+            self.state.users.insert(user.id, user);
         }
         self.client = Some(client.clone());
         self.snapshot();
         let gateway = Gateway::new(client.instance().gateway.clone(), token)
-            .with_api_version(client.instance().api_version)
-            .with_e2ee_capable(true);
+            // PooledGatewayConnection.ts:474 uses DEFAULT_API_VERSION (1).
+            // HTTP routing separately uses discovery's api_code_version.
+            .with_api_version(1)
+            .with_e2ee_capable(true)
+            .with_initial_guild(self.selected_guild.map(|guild| guild.to_string()))
+            .with_locale(self.locale.clone());
         let (tx, rx) = async_mpsc::channel(128);
         let (commands, command_rx) = async_mpsc::channel(64);
         self.gateway_events = Some(rx);
@@ -638,6 +833,12 @@ impl Worker {
             return Err("Unknown channel".into());
         }
         if !self.demo {
+            self.selected_guild = self
+                .state
+                .channels
+                .get(&channel)
+                .and_then(|channel| channel.guild_id);
+            self.sync_selected_guild().await?;
             let history = self
                 .client()?
                 .messages(&channel.to_string(), None, 50)
@@ -662,6 +863,34 @@ impl Worker {
         Ok(())
     }
 
+    async fn sync_selected_guild(&mut self) -> Result<()> {
+        if !self.gateway_ready {
+            return Ok(());
+        }
+        let Some(guild) = self.selected_guild else {
+            return Ok(());
+        };
+        let Some(session) = self.state.session_id.clone() else {
+            return Ok(());
+        };
+        if self.synced_guilds.get(&guild) == Some(&session) {
+            return Ok(());
+        }
+        let Some(tx) = &self.gateway_commands else {
+            return Ok(());
+        };
+        // GatewayGuildSubscriptionSynchronizer.ts:43-49. The existing selected
+        // guild path leaves previously synced guilds active in this session.
+        tx.send(GatewayCommand::Send {
+            op: 14,
+            data: json!({"subscriptions":{guild.to_string():{"active":true,"sync":true}}}),
+        })
+        .await
+        .map_err(|_| "Gateway is disconnected".to_owned())?;
+        self.synced_guilds.insert(guild, session);
+        Ok(())
+    }
+
     async fn update_voice(&self) -> Result<()> {
         if let Some(target) = &self.voice_target {
             self.gateway_commands
@@ -679,7 +908,7 @@ impl Worker {
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
         let target = self.voice_target.take();
         self.pending_voice_server = None;
-        self.voice_endpoint = None;
+        self.voice_credentials = None;
         self.voice_join_deadline = None;
         self.server_muted = false;
         self.server_deafened = false;
@@ -717,10 +946,12 @@ impl Worker {
             GatewayEvent::Connected => {
                 self.gateway_ready = true;
                 self.emit(Event::Status("Connected".into()));
+                self.sync_selected_guild().await?;
             }
             GatewayEvent::Error(message) => self.emit(Event::Error(message)),
             GatewayEvent::Disconnected => {
                 self.gateway_ready = false;
+                self.synced_guilds.clear();
                 self.leave_voice(false).await?;
                 self.emit(Event::Status("Gateway disconnected".into()));
             }
@@ -729,6 +960,18 @@ impl Worker {
                 data,
                 sequence,
             } => {
+                if name == "READY"
+                    && self.expected_user_id.is_some_and(|expected| {
+                        data.get("user")
+                            .and_then(|user| user.get("id"))
+                            .and_then(Value::as_str)
+                            != Some(expected.to_string().as_str())
+                    })
+                {
+                    self.reset().await;
+                    self.snapshot();
+                    return Err("Gateway READY user differs from the authenticated account".into());
+                }
                 if sequence
                     .is_some_and(|sequence| self.last_sequence.is_some_and(|last| sequence <= last))
                     && name != "READY"
@@ -760,6 +1003,24 @@ impl Worker {
                         .map_err(error)?;
                     if name == "READY" {
                         self.state.voice = previous_voice;
+                        if self
+                            .selected_guild
+                            .is_none_or(|guild| !self.state.guilds.contains_key(&guild))
+                        {
+                            // The current native UI initially selects the first
+                            // listed guild. Subscribe to that same selection.
+                            self.selected_guild = self.state.guilds.keys().next().copied();
+                        }
+                    }
+                    if name == "GUILD_SYNC"
+                        && let (Some(guild), Some(session)) = (
+                            data.get("id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| id.parse::<Snowflake>().ok()),
+                            self.state.session_id.clone(),
+                        )
+                    {
+                        self.synced_guilds.insert(guild, session);
                     }
                     if name == "VOICE_STATE_UPDATE"
                         && data.get("user_id").and_then(Value::as_str)
@@ -840,19 +1101,34 @@ impl Worker {
             .voice_target
             .as_mut()
             .ok_or("Voice join was cancelled")?;
-        if self.voice_endpoint.as_deref() == Some(update.endpoint.as_str())
-            && target.connection_id.as_deref() == Some(update.connection_id.as_str())
+        if self
+            .voice_credentials
+            .as_ref()
+            .is_some_and(|previous| same_voice_credentials(previous, &update))
             && self.state.voice.channel_id == Some(target.channel_id)
         {
             return Ok(());
         }
         target.connection_id = Some(update.connection_id.clone());
         let channel = target.channel_id;
+        let bitrate = voice_channel_bitrate(&self.state, channel);
         let muted = self.state.voice.muted || self.server_muted;
         let deafened = self.state.voice.deafened || self.server_deafened;
+        self.media_events = None;
+        self.state.voice.disconnect();
+        self.emit(Event::Media(MediaEvent::Disconnected));
+        self.emit(Event::VoiceStatus(VoiceStatus::Connecting {
+            channel_id: channel,
+        }));
         let result = async {
             let media = self.media()?;
             media.stop_microphone_test().map_err(error)?;
+            // Publishing parameters are immutable for an active room. Teardown
+            // also releases the old microphone before any replacement attempt.
+            media.disconnect().await.map_err(error)?;
+            media
+                .configure_microphone_publish(Some(bitrate as f64), false)
+                .map_err(error)?;
             media.set_muted(muted).map_err(error)?;
             media.set_deafened(deafened).map_err(error)?;
             tokio::time::timeout(
@@ -871,7 +1147,7 @@ impl Worker {
         match result {
             Ok(events) => {
                 self.media_events = Some(events);
-                self.voice_endpoint = Some(update.endpoint);
+                self.voice_credentials = Some(update);
                 self.voice_join_deadline = None;
                 self.state.voice.join(channel);
                 self.emit(Event::VoiceStatus(VoiceStatus::Connected {
@@ -968,6 +1244,14 @@ async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> 
         None => pending().await,
     }
 }
+async fn ip_poll_result(
+    task: &mut Option<JoinHandle<fluxer_protocol::Result<Option<AuthSession>>>>,
+) -> std::result::Result<fluxer_protocol::Result<Option<AuthSession>>, tokio::task::JoinError> {
+    match task {
+        Some(task) => task.await,
+        None => pending().await,
+    }
+}
 async fn voice_timeout(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -980,6 +1264,57 @@ fn values(value: Value, key: &str) -> Result<Vec<Value>> {
         .or_else(|| value.get(key).and_then(Value::as_array))
         .cloned()
         .ok_or_else(|| format!("Server response omitted {key} list"))
+}
+
+// AccountSignInIdentifier.ts:10-11 and AccountIdentityFeatures.ts:13-18 select
+// the request field from discovery, independently of the entered text.
+fn login_identifier(instance: &Instance, identifier: String) -> LoginIdentifier {
+    if instance
+        .features
+        .get("account_identity")
+        .and_then(Value::as_str)
+        == Some("username")
+    {
+        LoginIdentifier::Login(identifier)
+    } else {
+        LoginIdentifier::Email(identifier)
+    }
+}
+
+fn same_voice_credentials(previous: &VoiceServerUpdate, next: &VoiceServerUpdate) -> bool {
+    previous.endpoint == next.endpoint
+        && previous.connection_id == next.connection_id
+        && previous.guild_id == next.guild_id
+        && previous.channel_id == next.channel_id
+        && previous.token.expose_secret() == next.token.expose_secret()
+        && previous.e2ee_key == next.e2ee_key
+        && previous.ice_servers == next.ice_servers
+}
+
+fn voice_channel_bitrate(state: &ClientState, id: Snowflake) -> u64 {
+    let Some(channel) = state.channels.get(&id) else {
+        return 64_000;
+    };
+    if channel.guild_id.is_none() {
+        return 64_000;
+    }
+    let features = channel
+        .guild_id
+        .and_then(|id| state.guilds.get(&id))
+        .and_then(|guild| guild.extra.get("features"))
+        .and_then(Value::as_array)
+        .map(|features| {
+            features
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    fluxer_media::resolve_voice_channel_bitrate(
+        channel.extra.get("bitrate").and_then(Value::as_f64),
+        &features,
+    )
 }
 
 #[cfg(test)]
