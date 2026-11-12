@@ -4,6 +4,7 @@
 
 mod audio;
 mod microphone;
+mod microphone_device;
 mod playback;
 mod publish;
 mod screen;
@@ -19,7 +20,7 @@ use livekit::webrtc::{
     video_frame::VideoFormatType,
     video_stream::native::NativeVideoStream,
 };
-use livekit::{AudioProcessingOptions, options::TrackPublishOptions, prelude::*};
+use livekit::{options::TrackPublishOptions, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -50,19 +51,6 @@ pub enum MediaError {
 }
 
 pub type Result<T> = std::result::Result<T, MediaError>;
-
-/// PlatformAudio::stop_recording forwards directly to the ADM. Some native
-/// backends reject StopRecording after the room has already released recording.
-/// Match PlatformAudio::switch_recording_device's initialized-state guard so
-/// fresh/idle setup and repeated teardown are valid. Genuine stop failures for
-/// initialized recording still propagate to callers.
-fn stop_recording_if_initialized(audio: &PlatformAudio) -> livekit::AudioResult<()> {
-    if audio.is_recording_initialized() {
-        audio.stop_recording()
-    } else {
-        Ok(())
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioDevice {
@@ -141,7 +129,7 @@ impl Default for SharedAudioSettings {
 /// Owned by the asynchronous media worker; all native handles stay off GPUI's
 /// rendering thread. Drop aborts capture and tasks even on application shutdown.
 pub struct MediaEngine {
-    audio: PlatformAudio,
+    input_device: Mutex<Option<String>>,
     room: Option<Room>,
     microphone: Option<LocalAudioTrack>,
     microphone_publish: publish::MicrophonePublishSettings,
@@ -167,14 +155,10 @@ pub struct MediaEngine {
 
 impl MediaEngine {
     pub fn new() -> Result<Self> {
-        let audio = PlatformAudio::new().map_err(|e| MediaError::Audio(e.to_string()))?;
-        // Creating/enumerating the device manager does not grant permission to
-        // transmit. Recording remains stopped until an unmuted call is joined.
-        stop_recording_if_initialized(&audio).map_err(|e| MediaError::Audio(e.to_string()))?;
         let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
         let output = playback::PlaybackOutput::new(mixer.clone());
         Ok(Self {
-            audio,
+            input_device: Mutex::new(None),
             room: None,
             microphone: None,
             microphone_publish: publish::MicrophonePublishSettings::default(),
@@ -204,41 +188,22 @@ impl MediaEngine {
 
     pub fn devices(&self) -> DeviceInventory {
         DeviceInventory {
-            inputs: self
-                .audio
-                .recording_devices()
-                .map(|d| AudioDevice {
-                    id: d.id.as_str().into(),
-                    label: d.name,
-                })
-                .collect(),
+            inputs: microphone_device::devices().unwrap_or_default(),
             outputs: playback::devices(),
         }
     }
 
     pub fn set_input_device(&self, id: &str) -> Result<()> {
-        let device = self
-            .audio
-            .recording_devices()
-            .find(|d| d.id.as_str() == id)
-            .ok_or(MediaError::UnknownDevice("input"))?;
-        let testing = self
-            .input_controls
-            .lock()
-            .map(|c| c.testing)
-            .unwrap_or(false);
-        // switch_recording_device restarts any initialized ADM even after mute.
-        // Explicit stop/set/start avoids briefly recording in muted/settings-only
-        // flows and leaves the device stopped if selecting a replacement fails.
-        stop_recording_if_initialized(&self.audio).map_err(|e| MediaError::Audio(e.to_string()))?;
-        self.audio
-            .set_recording_device(&device.id)
-            .map_err(|e| MediaError::Audio(e.to_string()))?;
-        if testing || (!self.muted && !self.deafened && self.is_connected()) {
-            self.audio
-                .start_recording()
-                .map_err(|e| MediaError::Audio(e.to_string()))?;
+        if !microphone_device::devices()?.iter().any(|d| d.id == id) {
+            return Err(MediaError::UnknownDevice("input"));
         }
+        if let Some(capture) = &self.input_capture {
+            capture.set_device(id)?;
+        }
+        *self
+            .input_device
+            .lock()
+            .map_err(|_| MediaError::Audio("Input settings unavailable".into()))? = Some(id.into());
         Ok(())
     }
 
@@ -247,14 +212,11 @@ impl MediaEngine {
     }
 
     pub fn configure(&self, settings: AudioSettings) -> Result<()> {
-        self.audio
-            .configure_audio_processing(AudioProcessingOptions {
-                echo_cancellation: settings.echo_cancellation,
-                noise_suppression: settings.noise_suppression,
-                auto_gain_control: settings.auto_gain_control,
-                prefer_hardware_processing: false,
-            })
-            .map_err(|e| MediaError::Audio(e.to_string()))
+        self.input_controls
+            .lock()
+            .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?
+            .processing = settings;
+        Ok(())
     }
 
     /// Set the next call's microphone publishing policy. Resolve guild caps
@@ -322,7 +284,7 @@ impl MediaEngine {
             .await
             .map_err(|_| MediaError::Call("Unable to connect to the voice server".into()))?;
         // Turn off WebRTC's direct speaker path before enabling our gain mixer.
-        // The public runtime factory owns the same ADM as PlatformAudio.
+        // Physical microphone input is separate from WebRTC's synthetic ADM.
         livekit::rtc_engine::lk_runtime::LkRuntime::instance()
             .pc_factory()
             .set_adm_playout_enabled(false);
@@ -339,13 +301,24 @@ impl MediaEngine {
             controls.testing = false;
             controls.blocked = self.muted || self.deafened;
         }
-        let (capture, mic) = microphone::MicrophoneCapture::start(
-            &self.audio,
+        let capture_result = microphone::MicrophoneCapture::start(
+            self.input_device
+                .lock()
+                .map_err(|_| MediaError::Audio("Input settings unavailable".into()))?
+                .as_deref(),
             self.input_controls.clone(),
             self.mixer.clone(),
             tx.clone(),
             self.microphone_publish.channels(),
         );
+        let (capture, mic) = match capture_result {
+            Ok(capture) => capture,
+            Err(error) => {
+                self.output.stop();
+                let _ = room.close().await;
+                return Err(error);
+            }
+        };
         if self.muted || self.deafened {
             mic.mute();
             mic.disable();
@@ -360,23 +333,8 @@ impl MediaEngine {
         {
             drop(capture);
             self.output.stop();
-            let _ = stop_recording_if_initialized(&self.audio);
             let _ = room.close().await;
             return Err(MediaError::Call(error.to_string()));
-        }
-        let recording = if self.muted || self.deafened {
-            stop_recording_if_initialized(&self.audio)
-        } else {
-            self.audio.start_recording()
-        };
-        if let Err(error) = recording {
-            drop(capture);
-            mic.mute();
-            mic.disable();
-            let _ = stop_recording_if_initialized(&self.audio);
-            self.output.stop();
-            let _ = room.close().await;
-            return Err(MediaError::Audio(error.to_string()));
         }
         self.room = Some(room);
         self.microphone = Some(mic);
@@ -388,7 +346,10 @@ impl MediaEngine {
         let state = self.state.clone();
         let stop = self.stop.clone();
         let video_tasks = self.video_tasks.clone();
-        let audio = self.audio.clone();
+        let capture_control = self
+            .input_capture
+            .as_ref()
+            .map(|capture| capture.controller());
         let microphone = self.microphone.clone();
         let mixer = self.mixer.clone();
         let audio_tasks = self.audio_tasks.clone();
@@ -571,7 +532,9 @@ impl MediaEngine {
                             mic.mute();
                             mic.disable();
                         }
-                        let _ = stop_recording_if_initialized(&audio);
+                        if let Some(capture) = &capture_control {
+                            capture.stop();
+                        }
                         if let Ok(mut m) = mixer.lock() {
                             m.clear();
                         }
@@ -775,7 +738,9 @@ impl MediaEngine {
                 mic.mute();
                 mic.disable();
             }
-            let _ = stop_recording_if_initialized(&audio);
+            if let Some(capture) = &capture_control {
+                capture.stop();
+            }
             if let Ok(mut m) = mixer.lock() {
                 m.clear();
             }
@@ -834,16 +799,14 @@ impl MediaEngine {
         if let Ok(mut controls) = self.input_controls.lock() {
             controls.blocked = self.muted || self.deafened;
         }
+        if let Some(capture) = &self.input_capture {
+            capture.set_enabled(!self.muted && !self.deafened)?;
+        }
         if let Some(mic) = &self.microphone {
             if self.muted || self.deafened {
                 mic.mute();
                 mic.disable();
-                stop_recording_if_initialized(&self.audio)
-                    .map_err(|e| MediaError::Audio(e.to_string()))?;
             } else {
-                self.audio
-                    .start_recording()
-                    .map_err(|e| MediaError::Audio(e.to_string()))?;
                 mic.enable();
                 mic.unmute();
             }
@@ -904,20 +867,25 @@ impl MediaEngine {
             .lock()
             .map_err(|_| MediaError::Audio("Input processor unavailable".into()))?
             .testing = true;
-        let (capture, _unpublished) = microphone::MicrophoneCapture::start(
-            &self.audio,
+        let capture_result = microphone::MicrophoneCapture::start(
+            self.input_device
+                .lock()
+                .map_err(|_| MediaError::Audio("Input settings unavailable".into()))?
+                .as_deref(),
             self.input_controls.clone(),
             self.mixer.clone(),
             tx,
             self.microphone_publish.channels(),
         );
-        if let Err(error) = self.audio.start_recording() {
-            drop(capture);
-            if let Ok(mut c) = self.input_controls.lock() {
-                c.testing = false;
+        let (capture, _unpublished) = match capture_result {
+            Ok(capture) => capture,
+            Err(error) => {
+                if let Ok(mut c) = self.input_controls.lock() {
+                    c.testing = false;
+                }
+                return Err(error);
             }
-            return Err(MediaError::Audio(error.to_string()));
-        }
+        };
         self.input_capture = Some(capture);
         Ok(rx)
     }
@@ -929,8 +897,6 @@ impl MediaEngine {
         if controls.testing {
             controls.testing = false;
             self.input_capture.take();
-            stop_recording_if_initialized(&self.audio)
-                .map_err(|e| MediaError::Audio(e.to_string()))?;
         }
         Ok(())
     }
@@ -1151,8 +1117,6 @@ impl MediaEngine {
             mic.mute();
             mic.disable();
         }
-        let audio_result = stop_recording_if_initialized(&self.audio)
-            .map_err(|e| MediaError::Audio(e.to_string()));
         if let Some(task) = self.room_task.take() {
             task.abort();
         }
@@ -1175,7 +1139,7 @@ impl MediaEngine {
         if let Some(tx) = self.events.take() {
             let _ = tx.try_send(MediaEvent::Disconnected);
         }
-        audio_result.and(room_result)
+        room_result
     }
 }
 
@@ -1239,7 +1203,6 @@ impl Drop for MediaEngine {
             mic.mute();
             mic.disable();
         }
-        let _ = stop_recording_if_initialized(&self.audio);
         if let Some(task) = self.room_task.take() {
             task.abort();
         }
