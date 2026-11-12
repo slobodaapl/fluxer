@@ -246,11 +246,11 @@ fn attachment_url(attachment: &Attachment, preview: bool) -> Option<String> {
     }
 }
 
-fn dimensions(width: Option<u32>, height: Option<u32>) -> (f32, f32) {
+fn dimensions(width: Option<u32>, height: Option<u32>, bounds: (f32, f32)) -> (f32, f32) {
     let width = width.filter(|n| *n > 0).unwrap_or(400) as f32;
     let height = height.filter(|n| *n > 0).unwrap_or(240) as f32;
-    let ratio = (400. / width).min(280. / height).min(1.);
-    ((width * ratio).max(24.), (height * ratio).max(24.))
+    let ratio = (bounds.0 / width).min(bounds.1 / height).min(1.);
+    ((width * ratio).max(1.), (height * ratio).max(1.))
 }
 
 fn byte_size(bytes: u64) -> String {
@@ -296,14 +296,30 @@ fn open_card(id: String, label: String, detail: String, url: Option<String>) -> 
         .into_any_element()
 }
 
+struct MediaTooltip(String);
+impl Render for MediaTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .max_w(px(320.))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(0x15121c))
+            .text_size(px(12.))
+            .text_color(rgb(TEXT))
+            .child(self.0.clone())
+    }
+}
+
 fn preview(
     id: String,
     url: String,
     target: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    max_size: (f32, f32),
 ) -> AnyElement {
-    let (width, height) = dimensions(width, height);
+    let (width, height) = dimensions(width, height, max_size);
     div()
         .id(SharedString::from(id))
         .max_w_full()
@@ -326,7 +342,7 @@ fn preview(
                     div()
                         .text_size(px(12.))
                         .text_color(rgb(MUTED))
-                        .child("Preview unavailable · open original below")
+                        .child("Preview unavailable · click to open original")
                         .into_any_element()
                 }),
         )
@@ -395,18 +411,29 @@ fn media_parts(message: &Message, namespace: &str) -> AnyElement {
     let attachments = message.attachments.iter().map(|attachment| {
         let kind = attachment_kind(attachment);
         let original = attachment_url(attachment, false);
-        let mut view = div().flex().flex_col().gap_1().min_w_0();
         if kind == MediaKind::Image
             && let Some(url) = attachment_url(attachment, true)
         {
-            view = view.child(preview(
-                format!("image-{namespace}-{}", attachment.id),
-                url,
-                original.clone(),
-                attachment.width,
-                attachment.height,
-            ));
+            let tooltip = format!("{} · {}", attachment.filename, byte_size(attachment.size));
+            return div()
+                .id(SharedString::from(format!(
+                    "attachment-image-{namespace}-{}",
+                    attachment.id
+                )))
+                .max_w_full()
+                .min_w_0()
+                .tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
+                .child(preview(
+                    format!("image-{namespace}-{}", attachment.id),
+                    url,
+                    original,
+                    attachment.width,
+                    attachment.height,
+                    (550., 350.),
+                ))
+                .into_any_element();
         }
+        let view = div().flex().flex_col().gap_1().min_w_0();
         let prefix =
             if attachment.flags & (1 << 3) != 0 || attachment.filename.starts_with("SPOILER_") {
                 "Spoiler · "
@@ -567,6 +594,7 @@ fn render_embed(message: &str, index: usize, embed: &Value) -> AnyElement {
                 .get("height")
                 .and_then(Value::as_u64)
                 .and_then(|n| n.try_into().ok()),
+            (400., 300.),
         ));
     }
     if let Some(video) = embed
@@ -694,8 +722,11 @@ mod tests {
     }
     #[test]
     fn preview_dimensions_and_response_reads_are_bounded() {
-        assert_eq!(dimensions(Some(4000), Some(2000)), (400., 200.));
-        assert_eq!(dimensions(Some(0), Some(0)), (400., 240.));
+        assert_eq!(
+            dimensions(Some(4000), Some(2000), (550., 350.)),
+            (550., 275.)
+        );
+        assert_eq!(dimensions(Some(0), Some(0), (550., 350.)), (400., 240.));
         assert_eq!(read_bounded(&b"1234"[..], 4).unwrap(), b"1234");
         assert!(read_bounded(&b"12345"[..], 4).is_err());
     }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::controls::{Icon, icon, icon_button, quiet_button};
+use crate::message_grouping::{message_layouts, COZY_AVATAR_SIZE, COZY_GUTTER, COZY_LINE_HEIGHT, COZY_SPACING_Y};
 
 impl Fluxer {
     pub(super) fn chat(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {

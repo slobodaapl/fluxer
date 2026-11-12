@@ -18,3 +18,4 @@ smallvec = "1"
 futures = "0.3"
 reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 chrono = "=0.4.45"
+fluxer_markdown_parser = { path = "../../../packages/markdown_parser/rust" }

@@ -2125,6 +2125,7 @@ dependencies = [
  "fluxer-core",
  "fluxer-media",
  "fluxer-protocol",
+ "fluxer_markdown_parser",
  "futures",
  "gpui",
  "image",
@@ -2191,6 +2192,14 @@ dependencies = [
  "fluxer_rt_thread",
  "pipewire",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "fluxer_markdown_parser"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

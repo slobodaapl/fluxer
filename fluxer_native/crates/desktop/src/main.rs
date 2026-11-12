@@ -10,6 +10,8 @@ mod emoji_picker;
 mod emoji_sprites;
 mod input;
 mod message_actions;
+mod message_demo;
+mod message_grouping;
 mod rich_message;
 mod search_browser;
 mod stream_view;
@@ -237,6 +239,7 @@ struct Fluxer {
     controller: Option<Controller>,
     state: ClientState,
     demo: bool,
+    message_demo_started: bool,
     session_restoring: bool,
     session_restore_failed: bool,
     session_context_loaded: bool,
@@ -327,6 +330,7 @@ impl Fluxer {
             controller,
             state: ClientState::default(),
             demo,
+            message_demo_started: false,
             session_restoring,
             session_restore_failed: false,
             session_context_loaded: false,
@@ -727,6 +731,7 @@ impl Fluxer {
                         self.install_attachment_fixture(cx);
                     }
                     self.maybe_demo_search(None, cx);
+                    self.maybe_demo_messages(cx);
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
@@ -761,6 +766,7 @@ impl Fluxer {
                     self.demo = demo;
                     if demo {
                         self.maybe_demo_search(None, cx);
+                        self.maybe_demo_messages(cx);
                         if std::env::args().any(|arg| arg == "--demo-attachments") {
                             self.install_attachment_fixture(cx);
                         }
@@ -2037,6 +2043,7 @@ fn main() {
                 || v == "--demo-emoji"
                 || v == "--demo-attachments"
                 || v == "--demo-search"
+                || v == "--demo-messages"
         });
     Application::new()
         .with_assets(controls::Assets)
