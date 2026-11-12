@@ -187,3 +187,34 @@ impl Drop for Controller {
         }
     }
 }
+
+#[cfg(test)]
+mod controller_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn public_controller_demo_roundtrip_delivers_populated_state() {
+        let controller = Controller::spawn().expect("spawn client worker");
+        controller.send(Command::Demo).expect("send demo command");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_demo = false;
+        while Instant::now() < deadline {
+            match controller.try_recv() {
+                Some(Event::Demo(true)) => saw_demo = true,
+                Some(Event::State(state)) if state.current_user.is_some() => {
+                    assert!(saw_demo, "demo event precedes populated state");
+                    assert!(!state.guilds.is_empty());
+                    assert!(state.selected_channel.is_some());
+                    return;
+                }
+                Some(Event::Error(message)) => panic!("controller error: {message}"),
+                Some(_) => {}
+                None => thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        panic!(
+            "public controller failed to deliver populated demo state (saw Demo event: {saw_demo})"
+        );
+    }
+}
