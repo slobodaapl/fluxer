@@ -17,6 +17,7 @@ members = [
 ]
 exclude = [
 	"packages/markdown_parser/rust/fuzz",
+	"fluxer_native",
 ]
 resolver = "2"
 
