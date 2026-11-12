@@ -16,6 +16,7 @@ impl Fluxer {
             .unwrap_or("Choose a channel".into());
         let selected = self.state.selected_channel;
         let messages = self.visible_messages();
+        let layouts = message_layouts(&messages);
         self.message_actions.row_order = messages.iter().map(|message| message.id).collect();
         let tab_entry = messages.last().map(|message| message.id);
         let visible: BTreeSet<_> = messages.iter().map(|message| message.id).collect();
@@ -213,15 +214,15 @@ impl Fluxer {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_3()
+                    .px_0()
                     .py_3()
                     .flex()
                     .flex_col()
-                    .gap_1()
+                    .gap_0()
                     .when(messages.is_empty(), |v| {
                         v.child(muted("This conversation is ready. Send the first message."))
                     })
-                    .children(messages.into_iter().map(|message| {
+                    .children(messages.into_iter().zip(layouts).map(|(message, layout)| {
                         let id = message.id;
                         let has_text = !chat_helpers::display_text(&message).is_empty();
                         let row_focus = self
@@ -235,13 +236,50 @@ impl Fluxer {
                         let context_message = message.clone();
                         let keyboard_message = message.clone();
                         let group = SharedString::from(format!("message-{id}"));
-                        div()
+                        let timestamp_label = layout.short_time.clone();
+                        let timestamp_tooltip = message.timestamp.clone();
+                        let gutter = if layout.starts_group {
+                            div()
+                                .w(px(COZY_AVATAR_SIZE))
+                                .flex_shrink_0()
+                                .pt(px(2.))
+                                .child(rich_message::avatar(
+                                    &message.author,
+                                    self.media_endpoint.as_deref(),
+                                    COZY_AVATAR_SIZE,
+                                ))
+                                .into_any_element()
+                        } else {
+                            div()
+                                .id(("grouped-message-time", id.0))
+                                .w(px(COZY_AVATAR_SIZE))
+                                .h(px(COZY_LINE_HEIGHT))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .text_size(px(11.))
+                                .text_color(rgb(MUTED))
+                                .invisible()
+                                .group_hover(group.clone(), |style| style.visible())
+                                .when(
+                                    focused || self.message_actions.active_message() == Some(id),
+                                    |label| label.visible(),
+                                )
+                                .tooltip(move |_, cx| {
+                                    cx.new(|_| MessageTimestampTooltip(timestamp_tooltip.clone()))
+                                        .into()
+                                })
+                                .child(timestamp_label)
+                                .into_any_element()
+                        };
+                        let row = div()
                             .id(("message", id.0))
                             .relative()
                             .group(group)
                             .track_focus(&row_focus)
-                            .px_2()
-                            .py_2()
+                            .px(px(16.))
+                            .py(px(COZY_SPACING_Y))
                             .rounded_md()
                             .hover(|row| row.bg(rgb(0x25222f)))
                             .focus(|row| row.bg(rgb(0x2f293c)))
@@ -307,46 +345,46 @@ impl Fluxer {
                             .min_w_0()
                             .flex_shrink_0()
                             .flex()
-                            .gap_3()
-                            .child(rich_message::avatar(
-                                &message.author,
-                                self.media_endpoint.as_deref(),
-                                36.,
-                            ))
+                            .gap(px(COZY_GUTTER))
+                            .line_height(px(COZY_LINE_HEIGHT))
+                            .child(gutter)
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
                                     .flex()
                                     .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .gap_3()
-                                            .items_center()
-                                            .child(
-                                                div().font_weight(FontWeight::SEMIBOLD).child(
-                                                    message.author.display_name().to_string(),
-                                                ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(rgb(MUTED))
-                                                    .child(message_actions::message_time(
-                                                        &message.timestamp,
-                                                    )),
-                                            )
-                                            .when(message.edited_timestamp.is_some(), |row| {
-                                                row.child(
-                                                    div()
-                                                        .text_size(px(10.))
-                                                        .text_color(rgb(MUTED))
-                                                        .child("(edited)"),
+                                    .gap_0()
+                                    .when(layout.starts_group, |body| {
+                                        body.child(
+                                            div()
+                                                .h(px(COZY_LINE_HEIGHT))
+                                                .flex()
+                                                .gap_2()
+                                                .items_center()
+                                                .child(
+                                                    div().font_weight(FontWeight::SEMIBOLD).child(
+                                                        message.author.display_name().to_string(),
+                                                    ),
                                                 )
-                                            }),
-                                    )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.))
+                                                        .text_color(rgb(MUTED))
+                                                        .child(message_actions::message_time(
+                                                            &message.timestamp,
+                                                        )),
+                                                )
+                                                .when(message.edited_timestamp.is_some(), |row| {
+                                                    row.child(
+                                                        div()
+                                                            .text_size(px(10.))
+                                                            .text_color(rgb(MUTED))
+                                                            .child("(edited)"),
+                                                    )
+                                                }),
+                                        )
+                                    })
                                     .when_some(
                                         chat_helpers::reference_summary(&self.state, &message),
                                         |view, summary| {
@@ -355,10 +393,37 @@ impl Fluxer {
                                     )
                                     .when(has_text, |view| {
                                         view.child(
-                                            self.message_text
-                                                .get(&id)
-                                                .expect("cached message")
-                                                .clone(),
+                                            div()
+                                                .flex()
+                                                .items_end()
+                                                .gap_1()
+                                                .w_full()
+                                                .min_w_0()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .line_height(px(COZY_LINE_HEIGHT))
+                                                        .child(
+                                                            self.message_text
+                                                                .get(&id)
+                                                                .expect("cached message")
+                                                                .clone(),
+                                                        ),
+                                                )
+                                                .when(
+                                                    !layout.starts_group
+                                                        && message.edited_timestamp.is_some(),
+                                                    |body| {
+                                                        body.child(
+                                                            div()
+                                                                .pb(px(2.))
+                                                                .text_size(px(10.))
+                                                                .text_color(rgb(MUTED))
+                                                                .child("(edited)"),
+                                                        )
+                                                    },
+                                                ),
                                         )
                                     })
                                     .child(rich_message::media(&message))
@@ -411,7 +476,41 @@ impl Fluxer {
                                             ),
                                         ))
                                     }),
-                            )
+                            );
+                        // Keep exactly one scroll child per message. Dividers and
+                        // inter-group spacing live INSIDE this wrapper, so history
+                        // centering and roving keyboard indices remain unchanged.
+                        div()
+                            .id(("timeline-entry", id.0))
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .when_some(layout.date_divider, |entry, label| {
+                                entry.child(
+                                    div()
+                                        .h(px(20.))
+                                        .my(px(16.))
+                                        .px(px(20.))
+                                        .flex()
+                                        .items_center()
+                                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c)))
+                                        .child(
+                                            div()
+                                                .px_3()
+                                                .text_size(px(12.))
+                                                .text_color(rgb(MUTED))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .child(label),
+                                        )
+                                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c))),
+                                )
+                            })
+                            .when(layout.space_before > 0, |entry| {
+                                entry.child(div().h(px(layout.space_before as f32)).flex_shrink_0())
+                            })
+                            .child(row)
                     })),
             )
             .when(self.forwarding.is_some(), |view| {
@@ -560,5 +659,19 @@ impl Fluxer {
                     }),
             )
             .into_any_element()
+    }
+}
+
+struct MessageTimestampTooltip(String);
+impl Render for MessageTimestampTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgb(RAIL))
+            .text_color(rgb(TEXT))
+            .text_size(px(12.))
+            .child(self.0.clone())
     }
 }
