@@ -2,6 +2,7 @@
 mod call_view;
 mod chat_helpers;
 mod dropdown;
+mod emoji_picker;
 mod input;
 mod rich_message;
 mod stream_view;
@@ -9,6 +10,7 @@ mod video_perf;
 
 use call_view::{StreamFrame, Viewer};
 use dropdown::{Dropdown, Selected};
+use emoji_picker::EmojiPickerState;
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
 use fluxer_core::{
     ChannelType, ClientState, Message, Snowflake, VoiceParticipant, can_send_message,
@@ -236,7 +238,8 @@ struct Fluxer {
     emoji_search: Entity<TextInput>,
     emoji_category: String,
     emoji_index: usize,
-    emoji_scroll: ScrollHandle,
+    emoji_scroll: UniformListScrollHandle,
+    emoji_picker: EmojiPickerState,
     forwarding: Option<Message>,
     forward_search: Entity<TextInput>,
     forward_pending: bool,
@@ -327,9 +330,10 @@ impl Fluxer {
                 input.chat_picker = true;
                 input
             }),
-            emoji_category: "all".into(),
+            emoji_category: "people".into(),
             emoji_index: 0,
-            emoji_scroll: ScrollHandle::new(),
+            emoji_scroll: UniformListScrollHandle::new(),
+            emoji_picker: EmojiPickerState::new(),
             forwarding: None,
             forward_search: cx.new(|cx| {
                 let mut input = TextInput::new("Search destinations…", cx);
@@ -460,9 +464,7 @@ impl Fluxer {
         }
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
         cx.observe(&view.emoji_search, |this, _, cx| {
-            this.emoji_index = 0;
-            this.emoji_scroll.scroll_to_item(0);
-            cx.notify();
+            this.refresh_emoji_results(cx);
         })
         .detach();
         cx.observe(&view.forward_search, |this, _, cx| {
@@ -659,6 +661,7 @@ impl Fluxer {
                         self.emoji_target = None;
                         self.forwarding = None;
                     }
+                    self.refresh_open_emoji_catalog(cx);
                     let latest = self.state.selected_channel.and_then(|channel| {
                         self.state
                             .channel_messages(channel)
@@ -716,6 +719,9 @@ impl Fluxer {
                         self.session_restoring = false;
                         self.session_restore_failed = false;
                         self.session_context_loaded = false;
+                        if std::env::args().any(|arg| arg == "--demo-emoji") {
+                            self.schedule_emoji_demo(cx);
+                        }
                         if self.demo_stream {
                             self.install_stream_fixture(cx);
                             if self.animation.is_some() {
@@ -1858,20 +1864,6 @@ impl Fluxer {
             .into_any_element()
     }
 
-    fn open_emoji(&mut self, target: EmojiTarget, window: &mut Window, cx: &mut Context<Self>) {
-        if self.emoji_target == Some(target) {
-            self.emoji_target = None;
-        } else {
-            self.emoji_target = Some(target);
-            self.emoji_index = 0;
-            self.forwarding = None;
-            self.emoji_search
-                .update(cx, |input, cx| input.set(String::new(), cx));
-            self.emoji_search.focus_handle(cx).focus(window);
-        }
-        cx.notify();
-    }
-
     fn pick_emoji(
         &mut self,
         choice: &chat_helpers::EmojiChoice,
@@ -1943,12 +1935,7 @@ impl Fluxer {
             }
             self.composer.focus_handle(cx).focus(window);
         } else if self.emoji_target.is_some() {
-            let choices = chat_helpers::emoji_choices(
-                &self.state,
-                self.state.selected_channel,
-                &self.emoji_search.read(cx).content,
-                &self.emoji_category,
-            );
+            let choices = self.emoji_picker.choices.clone();
             self.emoji_index = self.emoji_index.min(choices.len().saturating_sub(1));
             if key == "enter" {
                 if let Some(choice) = choices.get(self.emoji_index) {
@@ -1961,7 +1948,10 @@ impl Fluxer {
                     "up" => self.emoji_index.saturating_sub(8),
                     _ => (self.emoji_index + 8).min(choices.len().saturating_sub(1)),
                 };
-                self.emoji_scroll.scroll_to_item(self.emoji_index);
+                self.emoji_scroll.scroll_to_item(
+                    self.emoji_index / emoji_picker::COLUMNS,
+                    ScrollStrategy::Top,
+                );
             }
         } else {
             let destinations = self.forward_destinations(cx);
@@ -1980,114 +1970,6 @@ impl Fluxer {
             }
         }
         cx.notify();
-    }
-
-    fn emoji_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.emoji_search.read(cx).content.to_string();
-        let choices = chat_helpers::emoji_choices(
-            &self.state,
-            self.state.selected_channel,
-            &query,
-            &self.emoji_category,
-        );
-        div()
-            .p_3()
-            .bg(rgb(PANEL))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(muted(
-                        if matches!(self.emoji_target, Some(EmojiTarget::Reaction(_))) {
-                            "Add a reaction"
-                        } else {
-                            "Insert emoji"
-                        },
-                    ))
-                    .child(button("close-emoji", "Close").on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.emoji_target = None;
-                            this.composer.focus_handle(cx).focus(window);
-                            cx.notify();
-                        },
-                    ))),
-            )
-            .child(self.emoji_search.clone())
-            .child(
-                div().flex().flex_wrap().gap_1().children(
-                    chat_helpers::categories()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, category)| {
-                            button(("emoji-category", index), category)
-                                .py_1()
-                                .px_2()
-                                .when(self.emoji_category == category, |view| {
-                                    view.bg(rgb(0x56438b))
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.emoji_category = category.to_owned();
-                                    this.emoji_index = 0;
-                                    this.emoji_scroll.scroll_to_item(0);
-                                    cx.notify();
-                                }))
-                        }),
-                ),
-            )
-            .child(
-                div()
-                    .id("emoji-grid")
-                    .track_scroll(&self.emoji_scroll)
-                    .w(px(332.))
-                    .max_w_full()
-                    .h(px(180.))
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_wrap()
-                    .content_start()
-                    .gap_1()
-                    .when(choices.is_empty(), |view| {
-                        view.child(muted("No matching emoji"))
-                    })
-                    .children(choices.into_iter().enumerate().map(|(index, choice)| {
-                        let label = choice.label.clone();
-                        let mut tile = button_base(("emoji-choice", index))
-                            .px_2()
-                            .py_1()
-                            .h(px(38.))
-                            .w(px(38.))
-                            .overflow_hidden()
-                            .text_size(px(24.))
-                            .when(index == self.emoji_index, |view| {
-                                view.bg(rgb(0x56438b)).border_1().border_color(rgb(ACCENT))
-                            });
-                        if let Some(id) = choice.id {
-                            if let Some(endpoint) = self.media_endpoint.as_deref() {
-                                tile = tile.child(
-                                    img(SharedString::from(format!(
-                                        "{}/emojis/{id}.webp?size=48",
-                                        endpoint.trim_end_matches('/')
-                                    )))
-                                    .size(px(28.))
-                                    .object_fit(ObjectFit::Contain),
-                                );
-                            }
-                            if self.media_endpoint.is_none() {
-                                tile = tile.child(div().text_size(px(11.)).child(label));
-                            }
-                        } else {
-                            tile = tile.child(label);
-                        }
-                        tile.on_click(cx.listener(move |this, _, window, cx| {
-                            this.pick_emoji(&choice, window, cx);
-                        }))
-                    })),
-            )
-            .into_any_element()
     }
 
     fn forward_panel(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2380,15 +2262,17 @@ impl Fluxer {
                                             .gap_2()
                                             .flex_wrap()
                                             .child(
-                                                button(("react", id.0), "Add reaction").on_click(
-                                                    cx.listener(move |this, _, window, cx| {
+                                                button(("react", id.0), "Add reaction")
+                                                    .on_click(cx.listener(
+                                                    move |this, event: &ClickEvent, window, cx| {
                                                         this.open_emoji(
                                                             EmojiTarget::Reaction(id),
+                                                            event.position(),
                                                             window,
                                                             cx,
                                                         );
-                                                    }),
-                                                ),
+                                                    },
+                                                )),
                                             )
                                             .child(button(("reply", id.0), "Reply").on_click(
                                                 cx.listener(move |this, _, window, cx| {
@@ -2520,9 +2404,6 @@ impl Fluxer {
                             )
                     })),
             )
-            .when(self.emoji_target.is_some(), |view| {
-                view.child(self.emoji_panel(cx))
-            })
             .when(self.forwarding.is_some(), |view| {
                 view.child(self.forward_panel(cx))
             })
@@ -2614,8 +2495,13 @@ impl Fluxer {
                             .gap_3()
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .child(button("composer-emoji", "☺").on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    this.open_emoji(EmojiTarget::Composer, window, cx)
+                                |this, event: &ClickEvent, window, cx| {
+                                    this.open_emoji(
+                                        EmojiTarget::Composer,
+                                        event.position(),
+                                        window,
+                                        cx,
+                                    )
                                 },
                             )))
                             .child(
@@ -3287,7 +3173,8 @@ impl Render for Fluxer {
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().p_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(self.error.clone().unwrap_or_default()).child(button("dismiss-error","Dismiss").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
-            .child(content);
+            .child(content)
+            .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)));
         self.video_stats.render_built(render_started.elapsed());
         rendered
     }
@@ -3296,7 +3183,7 @@ impl Render for Fluxer {
 fn main() {
     let demo_stream =
         std::env::args().any(|v| v == "--demo-stream" || v == "--demo-stream-animated");
-    let demo = demo_stream || std::env::args().any(|v| v == "--demo");
+    let demo = demo_stream || std::env::args().any(|v| v == "--demo" || v == "--demo-emoji");
     Application::new()
         .with_http_client(rich_message::http_client())
         .run(move |cx: &mut App| {
