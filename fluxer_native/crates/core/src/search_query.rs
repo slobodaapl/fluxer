@@ -849,6 +849,9 @@ fn iso_date(value: &str) -> Option<NaiveDate> {
         } else {
             (week, "1")
         };
+        if week.len() != 2 || day.len() != 1 {
+            return None;
+        }
         let day = match day.parse::<u8>().ok()? {
             1 => Weekday::Mon,
             2 => Weekday::Tue,
@@ -861,19 +864,39 @@ fn iso_date(value: &str) -> Option<NaiveDate> {
         };
         return NaiveDate::from_isoywd_opt(year.parse().ok()?, week.parse().ok()?, day);
     }
-    let compact = value.replace('-', "");
-    if !compact.bytes().all(|b| b.is_ascii_digit()) {
+    let signed = value.starts_with(['+', '-']);
+    let year_len = if signed { 7 } else { 4 };
+    let year_text = value.get(..year_len)?;
+    if !year_text
+        .bytes()
+        .skip(usize::from(signed))
+        .all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
+    let year = year_text.parse::<i32>().ok()?;
+    let suffix = value.get(year_len..)?;
+    let mut compact = String::new();
+    let mut separator = false;
+    for (index, byte) in suffix.bytes().enumerate() {
+        if byte.is_ascii_digit() {
+            compact.push(byte as char);
+            separator = false;
+        } else if byte == b'-'
+            && [0, 2].contains(&compact.len())
+            && !separator
+            && index + 1 < suffix.len()
+        {
+            separator = true;
+        } else {
+            return None;
+        }
+    }
     match compact.len() {
-        4 => NaiveDate::from_ymd_opt(compact.parse().ok()?, 1, 1),
-        6 => NaiveDate::from_ymd_opt(compact[..4].parse().ok()?, compact[4..].parse().ok()?, 1),
-        7 => NaiveDate::from_yo_opt(compact[..4].parse().ok()?, compact[4..].parse().ok()?),
-        8 => NaiveDate::from_ymd_opt(
-            compact[..4].parse().ok()?,
-            compact[4..6].parse().ok()?,
-            compact[6..].parse().ok()?,
-        ),
+        0 => NaiveDate::from_ymd_opt(year, 1, 1),
+        2 => NaiveDate::from_ymd_opt(year, compact.parse().ok()?, 1),
+        3 => NaiveDate::from_yo_opt(year, compact.parse().ok()?),
+        4 => NaiveDate::from_ymd_opt(year, compact[..2].parse().ok()?, compact[2..].parse().ok()?),
         _ => None,
     }
 }
@@ -894,7 +917,11 @@ fn parse_iso(input: &str, clock: &Clock) -> Option<(DateTime<FixedOffset>, DateZ
     } else {
         (Some(text), None)
     };
+    let has_time = time.is_some();
     let mut time = time.unwrap_or("");
+    if (has_time && time.is_empty()) || (has_named && !has_time) {
+        return None;
+    }
     if time.ends_with(['Z', 'z']) {
         if !has_named {
             zone = DateZone::Fixed(FixedOffset::east_opt(0)?);
@@ -902,6 +929,9 @@ fn parse_iso(input: &str, clock: &Clock) -> Option<(DateTime<FixedOffset>, DateZ
         time = &time[..time.len() - 1];
     } else if let Some(index) = time.rfind(['+', '-']) {
         let offset = &time[index + 1..];
+        if offset.contains(':') && (offset.len() != 5 || offset.as_bytes()[2] != b':') {
+            return None;
+        }
         let compact = offset.replace(':', "");
         if ![2, 4].contains(&compact.len()) || !compact.bytes().all(|v| v.is_ascii_digit()) {
             return None;
@@ -930,8 +960,30 @@ fn parse_iso(input: &str, clock: &Clock) -> Option<(DateTime<FixedOffset>, DateZ
     } else {
         zone.instant(clock.now).date_naive()
     };
-    let (integer, fraction) = time.split_once(['.', ',']).unwrap_or((time, ""));
-    let compact = integer.replace(':', "");
+    if has_time && time.is_empty() {
+        return None;
+    }
+    let fraction_parts = time.split_once(['.', ',']);
+    let (integer, fraction) = fraction_parts.unwrap_or((time, ""));
+    if fraction_parts.is_some() && fraction.is_empty() {
+        return None;
+    }
+    let mut compact = String::new();
+    let mut colon = false;
+    for (index, byte) in integer.bytes().enumerate() {
+        if byte.is_ascii_digit() {
+            compact.push(byte as char);
+            colon = false;
+        } else if byte == b':'
+            && [2, 4].contains(&compact.len())
+            && !colon
+            && index + 1 < integer.len()
+        {
+            colon = true;
+        } else {
+            return None;
+        }
+    }
     if ![0, 2, 4, 6].contains(&compact.len())
         || !compact.bytes().all(|b| b.is_ascii_digit())
         || !fraction.bytes().all(|b| b.is_ascii_digit())
@@ -975,28 +1027,65 @@ fn parse_js_date_fallback(input: &str, clock: &Clock) -> Option<DateTime<FixedOf
     } else {
         input
     };
+    if let Ok(instant) = DateTime::parse_from_rfc2822(input) {
+        return Some(zone.instant(instant));
+    }
+    for date in [
+        "%b %d %Y",
+        "%B %d %Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%m/%d/%Y",
+        "%Y/%m/%d",
+    ] {
+        for time in ["%H:%M", "%H:%M:%S", "%I:%M %p", "%I:%M:%S %p"] {
+            // V8 rejects an ASCII closing quote immediately after a numeric
+            // clock, but accepts the same quoted legacy format ending AM/PM.
+            if quoted && !time.contains("%p") {
+                continue;
+            }
+            if let Ok(instant) = NaiveDateTime::parse_from_str(input, &format!("{date} {time}")) {
+                let date = legacy_year(instant.date())?;
+                return zone.at(date.and_time(instant.time()), clock.now);
+            }
+        }
+    }
     let raw = input
         .strip_suffix('Z')
         .or_else(|| input.strip_suffix('z'))
         .unwrap_or(input);
     let dash = raw.split('-').collect::<Vec<_>>();
-    if dash.len() == 3 && dash[0].len() == 4 && dash[1].len() == 2 && dash[2].len() == 2 {
+    if (dash.len() == 2 || dash.len() == 3)
+        && dash[0].len() == 4
+        && (1..=2).contains(&dash[1].len())
+        && (dash.len() == 2 || (1..=2).contains(&dash[2].len()))
+    {
         let year = dash[0].parse().ok()?;
         let month = dash[1].parse().ok()?;
-        let day = dash[2].parse::<u64>().ok()?;
+        let day = if dash.len() == 3 {
+            dash[2].parse::<u64>().ok()?
+        } else {
+            1
+        };
         if !(1..=31).contains(&day) {
             return None;
         }
         let date = NaiveDate::from_ymd_opt(year, month, 1)?.checked_add_days(Days::new(day - 1))?;
-        if quoted {
+        let canonical = dash.len() == 3 && dash[1].len() == 2 && dash[2].len() == 2;
+        if quoted || !canonical {
+            // V8 does not treat a leading zero-padded small number as a
+            // four-digit year in its legacy numeric grammar (e.g. quoted0026).
+            if year < 100 {
+                return None;
+            }
             return zone.at(date.and_hms_opt(0, 0, 0)?, clock.now);
         }
-        // ECMAScript date-only ISO is UTC; fromJSDate projects into local zone.
         let instant = FixedOffset::east_opt(0)?
             .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
             .single()?;
         return Some(zone.instant(instant));
     }
+
     [
         "%m/%d/%Y",
         "%Y/%m/%d",
@@ -1011,7 +1100,16 @@ fn parse_js_date_fallback(input: &str, clock: &Clock) -> Option<DateTime<FixedOf
     ]
     .iter()
     .find_map(|format| NaiveDate::parse_from_str(input, format).ok())
-    .and_then(|date| zone.at(date.and_hms_opt(0, 0, 0)?, clock.now))
+    .and_then(|date| zone.at(legacy_year(date)?.and_hms_opt(0, 0, 0)?, clock.now))
+}
+fn legacy_year(date: NaiveDate) -> Option<NaiveDate> {
+    // V8 legacy Date parsing uses 2000..2049 / 1950..1999 for numeric years
+    // below 100; this is separate from ISO's literal four/six-digit year.
+    if (0..100).contains(&date.year()) {
+        date.with_year(date.year() + if date.year() < 50 { 2000 } else { 1900 })
+    } else {
+        Some(date)
+    }
 }
 fn system_week_start() -> u32 {
     // ICU's host-locale environment priority, verified by isolated actual-Intl

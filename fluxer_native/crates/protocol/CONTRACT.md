@@ -229,3 +229,40 @@ retain the source's zero overall timeout; responses are bounded by the native
 retry delays. Fixtures verify actual loopback requests, finite retry exhaustion,
 status/body preservation and cancellation of a stalled search response. Tests
 use synthetic messages and never mutate a production pin.
+
+## Query parser date coverage and limits
+
+The core query parser is checked against the actual checked-in
+`SearchQueryParser.ts` plus pinned Luxon 3.7.2, executed by
+`generate_search_query_fixtures.mjs --dates <verified-luxon-cjs>`. Its 1,728
+asserted date cases cover four frozen clocks, UTC/Chicago, US/GB week rules,
+ISO calendar/ordinal/week dates, signed six-digit years within Chrono's range,
+compact clocks and offsets, comma fractions, valid 24:00, named zones, DST gaps
+and overlaps, date words/ranges/durations, standard RFC2822, supported English
+AM/PM dates, and selected V8 legacy date fallbacks. Malformed trailing T/colon,
+clock widths, empty fractions and incomplete offsets are rejected when the
+source rejects them. The source's explicit-clock regex is mirrored separately
+from timestamp validity: a successfully parsed timestamp need not denote a
+point period. Fixed-offset and named/local zones retain their calendar behavior.
+
+The source's ASCII-quoted legacy handling is not assumed to equal ISO parsing.
+For example, actual V8 rejects `during:"November 12, 2026 14:30"` while accepting
+`during:"Nov 12 2026 2:30 PM"` and standard quoted RFC2822 with a timezone.
+Two-digit legacy years use V8's 00–49 / 50–99 window; ISO years remain literal.
+The original 78 non-date query fixtures remain unchanged. Week projection also
+has 49 locale and 15 isolated host-environment fixtures, with exhaustive
+comparison of the compact non-Monday two-letter territory/language tables.
+
+This does **not** establish all V8 `new Date(string)` fallback compatibility.
+The generator records six source-executed residual examples separately under
+`legacy_fallback_residuals`; these are deliberately not counted as passing
+native goldens. In both tested zones, the existing parser accepts these query
+values while the current native fallback does not:
+
+- `during:11-12-2026` (numeric month-first hyphen date).
+- `during:2026.11.12` (dotted date).
+- `during:"Nov 12 2026 14:30 GMT"` (month-first numeric clock with zone).
+
+Other implementation-defined legacy forms and dates outside Chrono's supported
+calendar range require separate source-executed fixtures before being claimed
+compatible. The native parser does not embed a general natural-language parser.
