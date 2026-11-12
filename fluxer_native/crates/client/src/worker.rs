@@ -2,12 +2,13 @@ use crate::{Command, Event, VoiceStatus};
 use fluxer_core::{ChannelType, ClientState, Emoji, Message, Permissions, Snowflake, User};
 use fluxer_media::{MediaEngine, MediaEvent, VideoFrame};
 use fluxer_protocol::{
-    AuthSession, Client, Gateway, GatewayCommand, GatewayEvent, Instance, LoginIdentifier,
-    LoginOutcome, SessionToken, VoiceServerUpdate, VoiceStateUpdate,
+    AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus, Gateway,
+    GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome, SessionToken,
+    VoiceServerUpdate, VoiceStateUpdate,
 };
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     future::pending,
     sync::{Arc, Mutex, mpsc},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -36,6 +37,23 @@ struct PendingIpAuthorization {
     consecutive_errors: u8,
     next_poll: Option<tokio::time::Instant>,
 }
+struct PendingBrowserLogin {
+    client: Client,
+    session: Option<DesktopHandoffSession>,
+    consecutive_errors: u8,
+    next_poll: Option<tokio::time::Instant>,
+}
+type BrowserPollTask = JoinHandle<(
+    DesktopHandoffSession,
+    fluxer_protocol::Result<DesktopHandoffPoll>,
+)>;
+type BrowserPollResult = std::result::Result<
+    (
+        DesktopHandoffSession,
+        fluxer_protocol::Result<DesktopHandoffPoll>,
+    ),
+    tokio::task::JoinError,
+>;
 
 impl VoiceTarget {
     fn accepts(&self, update: &VoiceServerUpdate) -> bool {
@@ -65,7 +83,12 @@ impl VoiceTarget {
         update.channel_id.is_some()
             || self.connection_id.as_deref() == Some(update.connection_id.as_str())
     }
-    fn payload(&self, state: &ClientState, leave: bool) -> VoiceStateUpdate {
+    fn payload(
+        &self,
+        state: &ClientState,
+        leave: bool,
+        watched: &BTreeSet<String>,
+    ) -> VoiceStateUpdate {
         VoiceStateUpdate {
             guild_id: self.guild_id.map(|id| id.to_string()),
             channel_id: (!leave).then(|| self.channel_id.to_string()),
@@ -73,8 +96,23 @@ impl VoiceTarget {
             self_mute: state.voice.muted,
             self_deaf: state.voice.deafened,
             self_stream: state.voice.screen_share,
+            viewer_stream_keys: if leave {
+                Vec::new()
+            } else {
+                self.viewer_stream_keys(watched)
+            },
             ..VoiceStateUpdate::default()
         }
+    }
+
+    fn viewer_stream_keys(&self, watched: &BTreeSet<String>) -> Vec<String> {
+        let mut keys = watched
+            .iter()
+            .filter_map(|identity| stream_key(self, identity))
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 }
 
@@ -84,6 +122,8 @@ pub(crate) struct Worker {
     pending_mfa: Option<Client>,
     pending_ip: Option<PendingIpAuthorization>,
     ip_poll_task: Option<JoinHandle<fluxer_protocol::Result<Option<AuthSession>>>>,
+    pending_browser: Option<PendingBrowserLogin>,
+    browser_poll_task: Option<BrowserPollTask>,
     events: mpsc::Sender<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     gateway_commands: Option<async_mpsc::Sender<GatewayCommand>>,
@@ -104,6 +144,8 @@ pub(crate) struct Worker {
     expected_user_id: Option<Snowflake>,
     selected_guild: Option<Snowflake>,
     synced_guilds: BTreeMap<Snowflake, String>,
+    available_streams: BTreeSet<String>,
+    watched_streams: BTreeSet<String>,
 }
 
 impl Worker {
@@ -117,6 +159,8 @@ impl Worker {
             pending_mfa: None,
             pending_ip: None,
             ip_poll_task: None,
+            pending_browser: None,
+            browser_poll_task: None,
             events,
             frames,
             gateway_commands: None,
@@ -137,6 +181,8 @@ impl Worker {
             expected_user_id: None,
             selected_guild: None,
             synced_guilds: BTreeMap::new(),
+            available_streams: BTreeSet::new(),
+            watched_streams: BTreeSet::new(),
         }
     }
     fn emit(&self, event: Event) {
@@ -177,6 +223,8 @@ impl Worker {
                         tokio::task::JoinError,
                     >,
                 ),
+                BeginBrowserPoll,
+                BrowserPoll(Box<BrowserPollResult>),
             }
             let incoming = tokio::select! {
                 command = commands.recv() => Incoming::Command(command),
@@ -185,6 +233,8 @@ impl Worker {
                 _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
                 _ = voice_timeout(self.pending_ip.as_ref().and_then(|pending|pending.next_poll)) => Incoming::BeginIpPoll,
                 result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
+                _ = voice_timeout(self.pending_browser.as_ref().and_then(|pending|pending.next_poll))=>Incoming::BeginBrowserPoll,
+                result=browser_poll_result(&mut self.browser_poll_task)=>Incoming::BrowserPoll(Box::new(result)),
             };
             let result = match incoming {
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
@@ -217,6 +267,25 @@ impl Worker {
                     )
                     .await
                 }
+                Incoming::BeginBrowserPoll => {
+                    self.begin_browser_poll();
+                    Ok(())
+                }
+                Incoming::BrowserPoll(result) => {
+                    self.browser_poll_task = None;
+                    match *result {
+                        Ok((session, result)) => {
+                            if let Some(pending) = &mut self.pending_browser {
+                                pending.session = Some(session);
+                            }
+                            self.finish_browser_poll(result.map_err(error)).await
+                        }
+                        Err(message) => {
+                            self.clear_browser_login();
+                            Err(message.to_string())
+                        }
+                    }
+                }
             };
             if let Err(message) = result {
                 self.emit(Event::Error(message));
@@ -245,6 +314,7 @@ impl Worker {
             task.abort();
         }
         self.emit(Event::IpAuthorizationCleared);
+        self.clear_browser_login();
         self.client = None;
         self.media = None;
         self.state = ClientState::default();
@@ -331,6 +401,50 @@ impl Worker {
                     .map_err(error)?
                     .with_token(token.clone());
                 self.authenticate(client, token, None, None).await?;
+            }
+            Command::BrowserLogin {
+                instance,
+                identifier,
+            } => {
+                self.reset().await;
+                self.emit(Event::Demo(false));
+                self.snapshot();
+                let client = Client::new(Instance::discover(&instance).await.map_err(error)?)
+                    .map_err(error)?;
+                let session = client.initiate_desktop_handoff().await.map_err(error)?;
+                let prefill = (!identifier.trim().is_empty())
+                    .then(|| login_identifier(client.instance(), identifier.trim().to_owned()));
+                let url = client
+                    .desktop_handoff_url(&session.code, prefill.as_ref())
+                    .map_err(error)?;
+                self.emit(Event::BrowserLoginRequired {
+                    code: session.code.clone(),
+                    expires_at: session.expires_at.clone(),
+                    browser_url: url.to_string(),
+                });
+                self.pending_browser = Some(PendingBrowserLogin {
+                    client,
+                    session: Some(session),
+                    consecutive_errors: 0,
+                    next_poll: Some(tokio::time::Instant::now() + IP_POLL_INTERVAL),
+                });
+            }
+            Command::RetryBrowserLogin => {
+                if let Some(pending) = &mut self.pending_browser
+                    && pending.consecutive_errors >= IP_MAX_POLL_ERRORS
+                {
+                    if pending
+                        .session
+                        .as_ref()
+                        .is_some_and(DesktopHandoffSession::is_expired)
+                    {
+                        self.clear_browser_login();
+                        return Err("Browser sign-in code expired; request a new code".into());
+                    }
+                    pending.consecutive_errors = 0;
+                    pending.next_poll = Some(tokio::time::Instant::now() + IP_POLL_INTERVAL);
+                    self.emit(Event::BrowserLoginPollingResumed);
+                }
             }
             Command::LoginMfa { ticket, code } => {
                 let client = self.pending_mfa.clone().ok_or("Start a sign-in first")?;
@@ -641,6 +755,10 @@ impl Worker {
                 .media()?
                 .set_participant_audio(&identity, settings)
                 .map_err(error)?,
+            Command::WatchStream { identity, watch } => {
+                let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
+                self.set_watch(identity, watch, connected).await?;
+            }
             Command::StartMicrophoneTest => {
                 if self.voice_target.is_some() {
                     return Err("Leave voice before testing the microphone".into());
@@ -736,6 +854,89 @@ impl Worker {
         }));
     }
 
+    fn clear_browser_login(&mut self) {
+        self.pending_browser = None;
+        if let Some(task) = self.browser_poll_task.take() {
+            task.abort();
+        }
+        self.emit(Event::BrowserLoginCleared);
+    }
+    fn begin_browser_poll(&mut self) {
+        if self.browser_poll_task.is_some() {
+            return;
+        }
+        let Some(pending) = &mut self.pending_browser else {
+            return;
+        };
+        if pending.consecutive_errors >= IP_MAX_POLL_ERRORS {
+            return;
+        }
+        let Some(mut session) = pending.session.take() else {
+            return;
+        };
+        pending.next_poll = None;
+        let client = pending.client.clone();
+        self.browser_poll_task = Some(tokio::spawn(async move {
+            let result = client.poll_desktop_handoff(&mut session).await;
+            (session, result)
+        }));
+    }
+    async fn finish_browser_poll(&mut self, result: Result<DesktopHandoffPoll>) -> Result<()> {
+        let Some(pending) = &mut self.pending_browser else {
+            return Ok(());
+        };
+        match result {
+            Ok(result) => {
+                pending.consecutive_errors = 0;
+                match result.status {
+                    DesktopHandoffStatus::Pending => {
+                        pending.next_poll = Some(tokio::time::Instant::now() + IP_POLL_INTERVAL)
+                    }
+                    DesktopHandoffStatus::Completed => {
+                        let pending = self
+                            .pending_browser
+                            .take()
+                            .ok_or("Browser sign-in was cancelled")?;
+                        self.emit(Event::BrowserLoginCleared);
+                        let token = result
+                            .token
+                            .ok_or("Browser sign-in omitted its session token")?;
+                        self.authenticate(
+                            pending.client.with_token(token.clone()),
+                            token,
+                            Some(
+                                result
+                                    .user_id
+                                    .ok_or("Browser sign-in omitted its user ID")?,
+                            ),
+                            result.user,
+                        )
+                        .await?;
+                    }
+                    DesktopHandoffStatus::Denied | DesktopHandoffStatus::Expired => {
+                        self.clear_browser_login();
+                        return Err(if result.status == DesktopHandoffStatus::Denied {
+                            "Browser sign-in was denied"
+                        } else {
+                            "Browser sign-in code expired; request a new code"
+                        }
+                        .into());
+                    }
+                }
+            }
+            Err(_) => {
+                pending.consecutive_errors = pending.consecutive_errors.saturating_add(1);
+                if pending.consecutive_errors >= IP_MAX_POLL_ERRORS {
+                    pending.next_poll = None;
+                    self.emit(Event::BrowserLoginPollingFailed);
+                } else {
+                    pending.next_poll = Some(tokio::time::Instant::now() + IP_POLL_INTERVAL);
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn finish_ip_poll(&mut self, result: Result<Option<AuthSession>>) -> Result<()> {
         let Some(pending) = &mut self.pending_ip else {
             return Ok(());
@@ -788,10 +989,7 @@ impl Worker {
         } else {
             user
         };
-        let user = user
-            .map(serde_json::from_value::<User>)
-            .transpose()
-            .map_err(error)?;
+        let user = authentication_user(user, user_id.as_deref())?;
         self.expected_user_id = user_id
             .as_deref()
             .map(str::parse)
@@ -896,9 +1094,11 @@ impl Worker {
             self.gateway_commands
                 .as_ref()
                 .ok_or("Gateway is disconnected")?
-                .send(GatewayCommand::VoiceState(
-                    target.payload(&self.state, false),
-                ))
+                .send(GatewayCommand::VoiceState(target.payload(
+                    &self.state,
+                    false,
+                    &self.watched_streams,
+                )))
                 .await
                 .map_err(|_| "Gateway is disconnected".to_owned())?;
         }
@@ -912,10 +1112,15 @@ impl Worker {
         self.voice_join_deadline = None;
         self.server_muted = false;
         self.server_deafened = false;
+        self.available_streams.clear();
+        self.watched_streams.clear();
+        self.emit(Event::WatchedStreams(Vec::new()));
         self.media_events = None;
         // Stop capture before awaiting any network writes, including failures.
         let disconnected = if let Some(media) = &mut self.media {
-            media.disconnect().await.map_err(error)
+            let watch = media.set_watched_participants(Vec::new()).map_err(error);
+            let disconnect = media.disconnect().await.map_err(error);
+            watch.and(disconnect)
         } else {
             Ok(())
         };
@@ -927,9 +1132,11 @@ impl Worker {
         self.emit(Event::SharedAudioStatus(false));
         if notify_gateway && let (Some(target), Some(tx)) = (target, &self.gateway_commands) {
             let _ = tx
-                .send(GatewayCommand::VoiceState(
-                    target.payload(&self.state, true),
-                ))
+                .send(GatewayCommand::VoiceState(target.payload(
+                    &self.state,
+                    true,
+                    &self.watched_streams,
+                )))
                 .await;
         }
         self.snapshot();
@@ -1097,6 +1304,19 @@ impl Worker {
     }
 
     async fn connect_voice(&mut self, update: VoiceServerUpdate) -> Result<()> {
+        // The existing HostAdapter selects mesh for this payload. Native only
+        // implements SFU rooms; do not send mesh credentials into LiveKit or
+        // begin capture for a backend this client cannot execute yet.
+        if !update.ice_servers.is_empty() {
+            if let Some(target) = &mut self.voice_target {
+                target.connection_id = Some(update.connection_id.clone());
+            }
+            let _ = self.leave_voice(true).await;
+            return Err(
+                "This call requires mesh voice, which the native client does not support yet"
+                    .into(),
+            );
+        }
         let target = self
             .voice_target
             .as_mut()
@@ -1165,6 +1385,31 @@ impl Worker {
 
     async fn media_event(&mut self, event: MediaEvent) -> Result<()> {
         match event {
+            MediaEvent::ScreenStreamAvailable {
+                identity,
+                available,
+            } => {
+                if parse_participant_identity(&identity).is_none() {
+                    return Ok(());
+                }
+                if available {
+                    self.available_streams.insert(identity.clone());
+                } else {
+                    self.available_streams.remove(&identity);
+                    self.set_watch(identity.clone(), false, false).await?;
+                }
+                self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
+                    identity,
+                    available,
+                }));
+            }
+            MediaEvent::ParticipantLeft { identity } => {
+                self.available_streams.remove(&identity);
+                if parse_participant_identity(&identity).is_some() {
+                    self.set_watch(identity.clone(), false, false).await?;
+                }
+                self.emit(Event::Media(MediaEvent::ParticipantLeft { identity }));
+            }
             MediaEvent::Video(frame) => {
                 if let Ok(mut frames) = self.frames.lock() {
                     frames.insert(frame.track_id.clone(), frame);
@@ -1198,6 +1443,43 @@ impl Worker {
             event => self.emit(Event::Media(event)),
         }
         Ok(())
+    }
+
+    async fn set_watch(&mut self, identity: String, watch: bool, connected: bool) -> Result<()> {
+        if parse_participant_identity(&identity).is_none() {
+            return Err("Invalid voice participant identity".into());
+        }
+        if watch
+            && (!connected
+                || self
+                    .voice_target
+                    .as_ref()
+                    .is_none_or(|target| self.state.voice.channel_id != Some(target.channel_id)))
+        {
+            return Err("Join a voice channel before watching a stream".into());
+        }
+        if watch && !self.available_streams.contains(&identity) {
+            return Err("This participant is not sharing a screen".into());
+        }
+        let mut next = self.watched_streams.clone();
+        if watch {
+            next.insert(identity);
+        } else {
+            next.remove(&identity);
+        }
+        if next == self.watched_streams {
+            return Ok(());
+        }
+        if let Some(media) = &mut self.media {
+            media
+                .set_watched_participants(next.iter().cloned().collect())
+                .map_err(error)?;
+        }
+        self.watched_streams = next;
+        self.emit(Event::WatchedStreams(
+            self.watched_streams.iter().cloned().collect(),
+        ));
+        self.update_voice().await
     }
 
     // Capture-session liveness is supplied separately so lifecycle races can be
@@ -1252,6 +1534,20 @@ async fn ip_poll_result(
         None => pending().await,
     }
 }
+async fn browser_poll_result(
+    task: &mut Option<BrowserPollTask>,
+) -> std::result::Result<
+    (
+        DesktopHandoffSession,
+        fluxer_protocol::Result<DesktopHandoffPoll>,
+    ),
+    tokio::task::JoinError,
+> {
+    match task {
+        Some(task) => task.await,
+        None => pending().await,
+    }
+}
 async fn voice_timeout(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -1279,6 +1575,20 @@ fn login_identifier(instance: &Instance, identifier: String) -> LoginIdentifier 
     } else {
         LoginIdentifier::Email(identifier)
     }
+}
+
+fn authentication_user(user: Option<Value>, user_id: Option<&str>) -> Result<Option<User>> {
+    // AuthenticationCommands.authResponseUserToUserData and the desktop IPC
+    // handoff omit id from profile data; user_id is authoritative separately.
+    user.map(|mut user| {
+        if let (Some(fields), Some(id)) = (user.as_object_mut(), user_id) {
+            fields
+                .entry("id")
+                .or_insert_with(|| Value::String(id.to_owned()));
+        }
+        serde_json::from_value(user).map_err(error)
+    })
+    .transpose()
 }
 
 fn same_voice_credentials(previous: &VoiceServerUpdate, next: &VoiceServerUpdate) -> bool {
@@ -1315,6 +1625,29 @@ fn voice_channel_bitrate(state: &ClientState, id: Snowflake) -> u64 {
         channel.extra.get("bitrate").and_then(Value::as_f64),
         &features,
     )
+}
+
+// VoiceParticipantIdentity.ts:9. Connection IDs may themselves contain underscores.
+fn parse_participant_identity(identity: &str) -> Option<(&str, &str)> {
+    let (user, connection) = identity.strip_prefix("user_")?.split_once('_')?;
+    if user.is_empty()
+        || !user.bytes().all(|byte| byte.is_ascii_digit())
+        || connection.is_empty()
+        || connection
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\u{2028}' | '\u{2029}'))
+    {
+        None
+    } else {
+        Some((user, connection))
+    }
+}
+fn stream_key(target: &VoiceTarget, identity: &str) -> Option<String> {
+    let (_, connection) = parse_participant_identity(identity)?;
+    Some(match target.guild_id {
+        Some(guild) => format!("{guild}:{}:{connection}", target.channel_id),
+        None => format!("dm:{}:{connection}", target.channel_id),
+    })
 }
 
 #[cfg(test)]

@@ -61,6 +61,131 @@ fn discovery_identity_selects_the_login_field_independently_of_input_text() {
     ));
 }
 
+#[test]
+fn auth_profile_without_id_uses_separate_authoritative_user_id_and_keeps_private_fields() {
+    let user=authentication_user(Some(json!({"username":"alice","discriminator":"0000","email":"alice@example.com","global_name":"Alice"})),Some("1")).unwrap().unwrap();
+    assert_eq!(user.id, Snowflake(1));
+    assert_eq!(user.extra.get("email"), Some(&json!("alice@example.com")));
+}
+
+#[test]
+fn watched_stream_keys_follow_existing_identity_and_stream_key_source() {
+    let target = VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("local".into()),
+    };
+    assert_eq!(
+        parse_participant_identity("user_123_connection_with_underscores"),
+        Some(("123", "connection_with_underscores"))
+    );
+    assert_eq!(
+        stream_key(&target, "user_123_connection_with_underscores"),
+        Some("10:100:connection_with_underscores".into())
+    );
+    let dm = VoiceTarget {
+        guild_id: None,
+        ..target.clone()
+    };
+    assert_eq!(
+        stream_key(&dm, "user_123_connection"),
+        Some("dm:100:connection".into())
+    );
+    for invalid in [
+        "user_no_connection",
+        "user_123_",
+        "user__id",
+        "user_1_line\nbreak",
+        "invalid",
+    ] {
+        assert!(parse_participant_identity(invalid).is_none());
+    }
+}
+
+#[tokio::test]
+async fn watch_intent_is_explicit_in_every_voice_payload_and_pruned_without_capture() {
+    let (mut worker, events) = worker();
+    let (tx, mut outgoing) = async_mpsc::channel(16);
+    worker.gateway_commands = Some(tx);
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("local".into()),
+    });
+    worker.state.voice.join(100.into());
+    let identity = "user_123_remote_connection".to_owned();
+    assert!(
+        worker
+            .command(Command::WatchStream {
+                identity: identity.clone(),
+                watch: true
+            })
+            .await
+            .is_err()
+    );
+    assert!(
+        worker.media.is_none(),
+        "watching cannot create an audio engine"
+    );
+    worker
+        .media_event(MediaEvent::ScreenStreamAvailable {
+            identity: identity.clone(),
+            available: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        worker.watched_streams.is_empty(),
+        "availability does not automatically watch streams"
+    );
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("expected voice state");
+    };
+    assert_eq!(payload.viewer_stream_keys, ["10:100:remote_connection"]);
+    worker.command(Command::SetMute(true)).await.unwrap();
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("expected voice state");
+    };
+    assert!(payload.self_mute);
+    assert_eq!(payload.viewer_stream_keys, ["10:100:remote_connection"]);
+    worker
+        .media_event(MediaEvent::ScreenStreamAvailable {
+            identity: identity.clone(),
+            available: false,
+        })
+        .await
+        .unwrap();
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("expected voice state");
+    };
+    assert!(payload.viewer_stream_keys.is_empty());
+    assert!(worker.watched_streams.is_empty());
+    assert!(events.try_iter().any(|event|matches!(event,Event::WatchedStreams(ref streams) if streams==&vec![identity.clone()])));
+    worker
+        .media_event(MediaEvent::ScreenStreamAvailable {
+            identity: identity.clone(),
+            available: true,
+        })
+        .await
+        .unwrap();
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    worker
+        .media_event(MediaEvent::ParticipantLeft { identity })
+        .await
+        .unwrap();
+    assert!(worker.watched_streams.is_empty());
+    worker.leave_voice(true).await.unwrap();
+    assert!(worker.available_streams.is_empty());
+    assert!(worker.media.is_none());
+}
+
 #[tokio::test]
 async fn selected_guild_sync_matches_desktop_payload_and_session_deduplication() {
     // GatewayGuildSubscriptionSynchronizer.ts:29-51,90-95; GuildSync.ts:8-11.
@@ -242,6 +367,78 @@ async fn ip_authorization_cooldown_once_only_and_cancellation_do_not_make_networ
     assert!(worker.media.is_none());
 }
 
+#[tokio::test]
+async fn browser_poll_error_pause_retry_delay_and_cancellation_match_handoff_flow() {
+    let (mut worker, events) = worker();
+    worker.pending_browser = Some(PendingBrowserLogin {
+        client: ip_challenge().client,
+        session: None,
+        consecutive_errors: 0,
+        next_poll: Some(tokio::time::Instant::now() + IP_POLL_INTERVAL),
+    });
+    for _ in 0..3 {
+        worker
+            .finish_browser_poll(Err("network".into()))
+            .await
+            .unwrap();
+    }
+    assert!(worker.pending_browser.as_ref().unwrap().next_poll.is_none());
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::BrowserLoginPollingFailed))
+    );
+    let before = tokio::time::Instant::now();
+    worker.command(Command::RetryBrowserLogin).await.unwrap();
+    assert!(
+        worker.pending_browser.as_ref().unwrap().next_poll.unwrap() >= before + IP_POLL_INTERVAL
+    );
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::BrowserLoginPollingResumed))
+    );
+    worker.browser_poll_task = Some(tokio::spawn(pending()));
+    let abort = worker.browser_poll_task.as_ref().unwrap().abort_handle();
+    worker.command(Command::CancelLogin).await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(abort.is_finished());
+    assert!(worker.pending_browser.is_none());
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn denied_and_expired_handoff_clear_private_state_without_authenticating() {
+    for status in [DesktopHandoffStatus::Denied, DesktopHandoffStatus::Expired] {
+        let (mut worker, events) = worker();
+        worker.pending_browser = Some(PendingBrowserLogin {
+            client: ip_challenge().client,
+            session: None,
+            consecutive_errors: 0,
+            next_poll: None,
+        });
+        assert!(
+            worker
+                .finish_browser_poll(Ok(DesktopHandoffPoll {
+                    status,
+                    token: None,
+                    user_id: None,
+                    user: None
+                }))
+                .await
+                .is_err()
+        );
+        assert!(worker.pending_browser.is_none());
+        assert!(worker.state.current_user.is_none());
+        assert!(worker.media.is_none());
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::BrowserLoginCleared))
+        );
+    }
+}
+
 #[test]
 fn voice_credentials_require_the_requested_channel_and_current_connection() {
     let mut target = VoiceTarget {
@@ -270,6 +467,39 @@ fn only_identical_full_voice_credentials_are_deduplicated() {
     let mut changed = previous.clone();
     changed.ice_servers = vec![json!({"urls":["turn:relay.example"]})];
     assert!(!same_voice_credentials(&previous, &changed));
+}
+
+#[tokio::test]
+async fn mesh_credentials_leave_the_server_without_initializing_capture_or_livekit() {
+    let (mut worker, _) = worker();
+    let (tx, mut outgoing) = async_mpsc::channel(8);
+    worker.gateway_commands = Some(tx);
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: None,
+    });
+    let mut update = voice_update(Some("100"), "server-mesh-connection");
+    update.ice_servers = vec![json!({"urls":["turn:relay.example"]})];
+    assert!(
+        worker
+            .connect_voice(update)
+            .await
+            .unwrap_err()
+            .contains("mesh voice")
+    );
+    assert!(worker.media.is_none());
+    assert!(worker.voice_target.is_none());
+    assert!(worker.state.voice.channel_id.is_none());
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("expected leave state");
+    };
+    assert_eq!(payload.guild_id.as_deref(), Some("10"));
+    assert!(payload.channel_id.is_none());
+    assert_eq!(
+        payload.connection_id.as_deref(),
+        Some("server-mesh-connection")
+    );
 }
 
 #[test]
@@ -429,10 +659,16 @@ async fn actual_ip_authorization_resend_and_poll_completion_bootstrap_ready_with
     actual_text_workflow(2).await;
 }
 
+#[tokio::test]
+async fn actual_browser_handoff_code_and_poll_bootstrap_without_exposing_secrets_or_capture() {
+    actual_text_workflow(3).await;
+}
+
 #[allow(clippy::result_large_err)] // tungstenite's required handshake callback return type
 async fn actual_text_workflow(login_mode: u8) {
-    let password_login = login_mode != 0;
+    let password_login = matches!(login_mode, 1 | 2);
     let ip_authorization = login_mode == 2;
+    let browser_login = login_mode == 3;
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", http.local_addr().unwrap());
@@ -494,6 +730,7 @@ async fn actual_text_workflow(login_mode: u8) {
         }
     });
     let advertised_api = format!("{origin}/api");
+    let advertised_webapp = origin.clone();
     let ws_endpoint = gateway.clone();
     let rest_sent = sent.clone();
     let http_server = tokio::spawn(async move {
@@ -508,7 +745,7 @@ async fn actual_text_workflow(login_mode: u8) {
             let (status, body) = match (method, path) {
                 ("GET", "/.well-known/fluxer") => (
                     200,
-                    json!({"codename":"tungsten","api_code_version":1,"features":{"account_identity":"username"},"endpoints":{"api":advertised_api,"api_client":advertised_api,"api_public":advertised_api,"media":advertised_api,"static_cdn":advertised_api,"marketing":advertised_api,"admin":advertised_api,"invite":advertised_api,"gift":advertised_api,"webapp":advertised_api,"gateway":ws_endpoint}}),
+                    json!({"codename":"tungsten","api_code_version":1,"features":{"account_identity":"username"},"endpoints":{"api":advertised_api,"api_client":advertised_api,"api_public":advertised_api,"media":advertised_api,"static_cdn":advertised_api,"marketing":advertised_api,"admin":advertised_api,"invite":advertised_api,"gift":advertised_api,"webapp":advertised_webapp,"gateway":ws_endpoint}}),
                 ),
                 ("POST", "/api/v1/auth/login") => {
                     assert!(password_login);
@@ -529,7 +766,37 @@ async fn actual_text_workflow(login_mode: u8) {
                             json!({"code":"IP_AUTHORIZATION_REQUIRED","details":{"context":{"ticket":"pending-ticket","email":"alice@example.com","resend_available_in":0}}}),
                         )
                     } else {
-                        (200, json!({"token":"secret","user_id":"1"}))
+                        (
+                            200,
+                            json!({"token":"secret","user_id":"1","user":{"username":"alice","discriminator":"0000","email":"alice@example.com"}}),
+                        )
+                    }
+                }
+                ("POST", "/api/v1/auth/handoff/initiate") => {
+                    assert!(browser_login);
+                    let headers = request.to_ascii_lowercase();
+                    assert!(!headers.contains("accept-language:"));
+                    assert!(!headers.contains("authorization:"));
+                    assert!(!headers.contains("x-fluxer-features:"));
+                    (
+                        200,
+                        json!({"code":"ABCDEFGH","expires_at":"2100-01-01T00:00:00Z","poll_secret":"private-proof"}),
+                    )
+                }
+                ("POST", "/api/v1/auth/handoff/ABCDEFGH/status") => {
+                    assert!(browser_login);
+                    poll_count += 1;
+                    let body: Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    assert_eq!(body, json!({"poll_secret":"private-proof"}));
+                    assert!(!request.to_ascii_lowercase().contains("accept-language:"));
+                    if poll_count == 1 {
+                        (200, json!({"status":"pending"}))
+                    } else {
+                        (
+                            200,
+                            json!({"status":"completed","token":"secret","user_id":"1","user":{"username":"alice","discriminator":"0000","email":"alice@example.com"}}),
+                        )
                     }
                 }
                 ("POST", "/api/v1/auth/ip-authorization/resend") => {
@@ -557,13 +824,13 @@ async fn actual_text_workflow(login_mode: u8) {
                     } else {
                         (
                             200,
-                            json!({"completed":true,"token":"secret","user_id":"1"}),
+                            json!({"completed":true,"token":"secret","user_id":"1","user":{"username":"alice","discriminator":"0000","email":"alice@example.com"}}),
                         )
                     }
                 }
                 ("GET", "/api/v1/users/@me") => {
                     assert!(
-                        !password_login,
+                        !password_login && !browser_login,
                         "fresh desktop login trusts auth response then READY"
                     );
                     (200, user.clone())
@@ -612,7 +879,12 @@ async fn actual_text_workflow(login_mode: u8) {
         .await
         .unwrap();
     worker
-        .command(if password_login {
+        .command(if browser_login {
+            Command::BrowserLogin {
+                instance: origin,
+                identifier: "alice@example.com".into(),
+            }
+        } else if password_login {
             Command::Login {
                 instance: origin,
                 identifier: "alice@example.com".into(),
@@ -626,6 +898,35 @@ async fn actual_text_workflow(login_mode: u8) {
         })
         .await
         .unwrap();
+    if browser_login {
+        assert!(worker.pending_browser.is_some());
+        assert!(worker.state.current_user.is_none());
+        assert!(events.try_iter().any(|event|matches!(event,Event::BrowserLoginRequired{ref code,ref browser_url,..}if code=="ABCDEFGH" && browser_url.contains("login=alice%40example.com") && !browser_url.contains("private-proof"))));
+        for _ in 0..2 {
+            tokio::time::sleep_until(worker.pending_browser.as_ref().unwrap().next_poll.unwrap())
+                .await;
+            worker.begin_browser_poll();
+            let (session, result) = timeout(
+                Duration::from_secs(5),
+                browser_poll_result(&mut worker.browser_poll_task),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            worker.browser_poll_task = None;
+            worker.pending_browser.as_mut().unwrap().session = Some(session);
+            worker
+                .finish_browser_poll(result.map_err(error))
+                .await
+                .unwrap();
+        }
+        assert!(worker.pending_browser.is_none());
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::BrowserLoginCleared))
+        );
+    }
     if ip_authorization {
         assert!(worker.pending_ip.is_some());
         assert!(worker.state.current_user.is_none());
