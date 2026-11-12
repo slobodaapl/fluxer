@@ -5,6 +5,7 @@
 mod audio;
 mod microphone;
 mod microphone_device;
+mod pipewire_runtime;
 mod playback;
 mod publish;
 mod screen;
@@ -155,6 +156,7 @@ pub struct MediaEngine {
 
 impl MediaEngine {
     pub fn new() -> Result<Self> {
+        pipewire_runtime::ensure()?;
         let mixer = Arc::new(Mutex::new(audio::PlaybackMixer::new()));
         let output = playback::PlaybackOutput::new(mixer.clone());
         Ok(Self {
@@ -921,9 +923,13 @@ impl MediaEngine {
             .is_some_and(|screen| !screen.is_stopped())
     }
     pub fn shared_audio_available() -> bool {
+        if pipewire_runtime::ensure().is_err() {
+            return false;
+        }
         fluxer_system_audio::SystemAudio::available()
     }
     pub fn audio_applications() -> Result<Vec<AudioApplication>> {
+        pipewire_runtime::ensure()?;
         fluxer_system_audio::SystemAudio::applications()
             .map_err(|e| MediaError::Audio(e.to_string()))
     }
