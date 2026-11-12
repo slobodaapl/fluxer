@@ -137,6 +137,7 @@ pub(crate) fn start(
     config: ScreenShareOptions,
     source: NativeVideoSource,
     tx: mpsc::Sender<MediaEvent>,
+    call_stopped: Arc<AtomicBool>,
 ) -> Result<ScreenSession> {
     config.validate()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -172,10 +173,13 @@ pub(crate) fn start(
             };
             let start = Instant::now();
             let stopped_callback = stop_thread.clone();
+            let call_stopped_callback = call_stopped.clone();
             let tx_callback = tx.clone();
             let mut first_frame = true;
             capturer.start_capture(selected, move |result| {
-                if stopped_callback.load(Ordering::Acquire) {
+                if stopped_callback.load(Ordering::Acquire)
+                    || call_stopped_callback.load(Ordering::Acquire)
+                {
                     return;
                 }
                 match result {
@@ -216,7 +220,10 @@ pub(crate) fn start(
                 }
             });
             let interval = Duration::from_secs_f64(1.0 / config.fps as f64);
-            while !stop_thread.load(Ordering::Acquire) && !tx.is_closed() {
+            while !stop_thread.load(Ordering::Acquire)
+                && !call_stopped.load(Ordering::Acquire)
+                && !tx.is_closed()
+            {
                 let tick = Instant::now();
                 capturer.capture_frame();
                 thread::sleep(interval.saturating_sub(tick.elapsed()));

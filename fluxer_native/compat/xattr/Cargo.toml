@@ -1,0 +1,14 @@
+[package]
+name = "xattr"
+version = "0.2.3"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+description = "Compatibility adapter for GPUI's legacy xattr dependency"
+
+[features]
+default = ["unsupported"]
+unsupported = ["xattr-current/unsupported"]
+
+[dependencies]
+xattr-current = { package = "xattr", version = "1.6", default-features = false }

@@ -272,13 +272,16 @@ impl MediaEngine {
         }
         self.room = Some(room);
         self.microphone = Some(mic);
-        self.stop.store(false, Ordering::Release);
+        // Each call owns its cancellation flag. A previous capture thread must
+        // never resume when a new call starts.
+        self.stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel(32);
         self.events = Some(tx.clone());
         let state = self.state.clone();
         let stop = self.stop.clone();
         let video_tasks = self.video_tasks.clone();
         let audio = self.audio.clone();
+        let microphone = self.microphone.clone();
         let _ = tx.try_send(MediaEvent::Connected);
         self.room_task = Some(tokio::spawn(async move {
             while let Some(event) = room_events.recv().await {
@@ -299,7 +302,17 @@ impl MediaEngine {
                     RoomEvent::Reconnecting => Some(MediaEvent::Reconnecting),
                     RoomEvent::Reconnected => Some(MediaEvent::Connected),
                     RoomEvent::Disconnected { .. } => {
+                        stop.store(true, Ordering::Release);
+                        if let Some(mic) = &microphone {
+                            mic.mute();
+                            mic.disable();
+                        }
                         let _ = audio.stop_recording();
+                        if let Ok(mut tasks) = video_tasks.lock() {
+                            for (_, task) in tasks.drain() {
+                                task.abort();
+                            }
+                        }
                         Some(MediaEvent::Disconnected)
                     }
                     RoomEvent::TrackSubscribed {
@@ -463,7 +476,7 @@ impl MediaEngine {
             .await
             .map_err(|e| MediaError::Screen(e.to_string()))?;
         self.screen_publication = Some(publication.sid());
-        match screen::start(options, source, tx) {
+        match screen::start(options, source, tx, self.stop.clone()) {
             Ok(session) => {
                 self.screen = Some(session);
                 Ok(())

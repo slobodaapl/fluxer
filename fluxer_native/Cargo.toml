@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media"]
 resolver = "2"
+exclude = ["compat/xattr"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,4 +15,9 @@ thiserror = "2"
 fluxer-core = { path = "crates/core" }
 fluxer-protocol = { path = "crates/protocol" }
 fluxer-media = { path = "crates/media" }
+
+# GPUI 0.2.2's zed-async-tar dependency requests xattr 0.2.3, which uses
+# libc::ENOATTR removed on Linux. Forward its public API to maintained xattr.
+[patch.crates-io]
+xattr = { path = "compat/xattr" }
 
