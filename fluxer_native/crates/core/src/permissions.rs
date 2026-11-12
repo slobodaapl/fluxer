@@ -1,4 +1,4 @@
-use crate::{Guild, Member, PermissionOverwrite, Snowflake};
+use crate::{ChannelType, Guild, Member, PermissionOverwrite, Snowflake};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::ops::{BitAnd, BitOr, BitOrAssign, Not};
 
@@ -163,6 +163,29 @@ pub fn resolve_permissions(
     permissions
 }
 
+/// Whether an existing channel can accept a direct message send. Forum/media
+/// containers require creating a post, while existing threads use their own
+/// send permission. The server still enforces membership and thread lifecycle.
+pub fn can_send_message(kind: ChannelType, permissions: Permissions) -> bool {
+    let send = match kind {
+        ChannelType::AnnouncementThread
+        | ChannelType::PublicThread
+        | ChannelType::PrivateThread => Permissions::SEND_MESSAGES_IN_THREADS,
+        ChannelType::Text
+        | ChannelType::Dm
+        | ChannelType::Voice
+        | ChannelType::GroupDm
+        | ChannelType::Announcement
+        | ChannelType::PersonalNotes => Permissions::SEND_MESSAGES,
+        ChannelType::Category
+        | ChannelType::Forum
+        | ChannelType::Media
+        | ChannelType::Link
+        | ChannelType::Unknown(_) => return false,
+    };
+    permissions.contains(Permissions::VIEW_CHANNEL | send)
+}
+
 /// Gate the voice controls using effective channel permissions and timeout.
 /// These are UI affordances; the server remains authoritative.
 pub fn can_join_voice(permissions: Permissions, timed_out: bool) -> bool {
@@ -183,6 +206,48 @@ pub fn role_is_higher(a_position: i32, a_id: Snowflake, b_position: i32, b_id: S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_send_requires_visible_writable_channel_and_uses_thread_permission() {
+        let ordinary = Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES;
+        let thread = Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES_IN_THREADS;
+        for kind in [
+            ChannelType::Text,
+            ChannelType::Dm,
+            ChannelType::GroupDm,
+            ChannelType::Voice,
+            ChannelType::Announcement,
+            ChannelType::PersonalNotes,
+        ] {
+            assert!(can_send_message(kind, ordinary));
+            assert!(!can_send_message(kind, thread));
+            assert!(!can_send_message(kind, Permissions::VIEW_CHANNEL));
+            assert!(!can_send_message(kind, Permissions::SEND_MESSAGES));
+        }
+        for kind in [
+            ChannelType::AnnouncementThread,
+            ChannelType::PublicThread,
+            ChannelType::PrivateThread,
+        ] {
+            assert!(can_send_message(kind, thread));
+            assert!(!can_send_message(kind, ordinary));
+            assert!(!can_send_message(
+                kind,
+                Permissions::SEND_MESSAGES_IN_THREADS
+            ));
+            assert!(can_send_message(kind, Permissions::ALL));
+        }
+        for kind in [
+            ChannelType::Category,
+            ChannelType::Forum,
+            ChannelType::Media,
+            ChannelType::Link,
+            ChannelType::Unknown(1000),
+        ] {
+            assert!(!can_send_message(kind, Permissions::ALL));
+        }
+    }
+
     use crate::{Role, User};
     fn fixture() -> (Guild, Member) {
         (

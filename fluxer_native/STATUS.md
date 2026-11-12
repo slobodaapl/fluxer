@@ -7,17 +7,17 @@ not individual types or controls.
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
-| Core state | 28 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
-| HTTP/gateway | 43 tests: source-backed discovery/Origin/headers/IP/browser handoff, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
+| Core state | 29 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
+| HTTP/gateway | 44 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, uploads and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 7 multiline/Unicode/IME tests pass | Interactive keyboard/accessibility review, rich messages, attachments, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 24 input/emoji/media tests pass | Full markdown/custom emoji rendering, uploads, native audio/video playback, accessibility and complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 33 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
-| Client orchestration | 33 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys and capture-state races | Actual two-account Fluxer login/chat/call/share validation |
+| Client orchestration | 35 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-169 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+the workspace tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -74,6 +74,33 @@ video with explicit Watch/Stop controls, and display/window plus
 system/application audio sharing. Screen selection
 includes frame-rate and resolution choices. Live behavior remains subject to the
 acceptance checks above; a button or transport test does not establish parity.
+
+Chat now renders discovered-instance avatar images with initials on failure,
+inline image attachments, file/audio/video cards, embeds, reply previews and
+flat forwarded snapshots (text and media). The GPUI image loader uses a separate
+credential-free HTTP client with four workers, pooled connections, bounded
+response bytes and timeouts. Spoiler/sensitive images remain hidden; expired
+attachments are unavailable. Native audio/video playback is still pending.
+
+Message bodies wrap at the window width and support mouse drag, Unicode word
+double-click, line triple-click, keyboard selection, and Ctrl/Cmd+C without
+becoming editable. The full bundled emoji catalog includes aliases, categories,
+skin variants and community emoji; the picker supports keyboard selection and
+reaction chips toggle the exact emoji. Replies retain per-channel intent and
+allow author mentions to be toggled. Forwarding searches writable destinations
+and asks the server to construct the snapshot. Editing preserves the unsent
+draft, while failed sends retain text and reply intent. Initial history opens
+at the latest messages; incoming messages follow only while near the bottom.
+
+Wayland offline checks exercised multiline Unicode copy, double-click copy,
+emoji search and keyboard insertion, reply/draft channel switching, edit/cancel
+draft recovery, and forwarding via the keyboard destination picker. A loopback
+HTTP fixture verifies actual reply/forward request bodies and failed-reply draft
+retention without capture. Another fixture serves and decodes a PNG through the
+image worker. Live authenticated rich-chat interoperability remains unverified.
+Full markdown/custom emoji rendering, uploads, native audio/video playback,
+cross-message selection, selection autoscroll and selectable embed text remain
+open; the parity ledger stays partial.
 
 Input/output devices, input mode, share frame rate, resolution and shared-audio
 source now use one compact dropdown component. Wayland/macOS screen sharing has

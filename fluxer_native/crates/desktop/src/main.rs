@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+mod chat_helpers;
 mod dropdown;
 mod input;
+mod rich_message;
 
 use dropdown::{Dropdown, Selected};
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
-use fluxer_core::{ChannelType, ClientState, Snowflake, VoiceParticipant};
+use fluxer_core::{
+    ChannelType, ClientState, Message, Snowflake, VoiceParticipant, can_send_message,
+};
 use fluxer_media::{
     AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
     ParticipantAudioSettings, ScreenShareOptions, ScreenSource, ScreenSourceKind,
@@ -18,7 +22,20 @@ use std::{
     time::Duration,
 };
 
-actions!(fluxer, [Submit, Quit, OpenSettings]);
+actions!(
+    fluxer,
+    [
+        Submit,
+        Quit,
+        OpenSettings,
+        PickerLeft,
+        PickerRight,
+        PickerUp,
+        PickerDown,
+        PickerConfirm,
+        PickerDismiss
+    ]
+);
 
 const BG: u32 = 0x1d1b26;
 const PANEL: u32 = 0x252330;
@@ -187,6 +204,12 @@ fn screen_source_id(source: &ScreenSource) -> String {
     format!("{:?}:{}", source.kind, source.id)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum EmojiTarget {
+    Composer,
+    Reaction(Snowflake),
+}
+
 struct Fluxer {
     focus: FocusHandle,
     controller: Option<Controller>,
@@ -198,6 +221,20 @@ struct Fluxer {
     pane: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
+    message_text: BTreeMap<Snowflake, Entity<TextInput>>,
+    media_endpoint: Option<String>,
+    replies: BTreeMap<Snowflake, (Message, bool)>,
+    pending_reply: Option<(Snowflake, Snowflake)>,
+    emoji_target: Option<EmojiTarget>,
+    emoji_search: Entity<TextInput>,
+    emoji_category: String,
+    emoji_index: usize,
+    emoji_scroll: ScrollHandle,
+    forwarding: Option<Message>,
+    forward_search: Entity<TextInput>,
+    forward_pending: bool,
+    forward_index: usize,
+    forward_scroll: ScrollHandle,
     instance: Entity<TextInput>,
     identifier: Entity<TextInput>,
     password: Entity<TextInput>,
@@ -223,6 +260,7 @@ struct Fluxer {
     dsp: AudioSettings,
     sharing: bool,
     editing: Option<Snowflake>,
+    edit_draft: Option<String>,
     video: BTreeMap<String, Arc<RenderImage>>,
     mixer: AudioMixSettings,
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
@@ -267,6 +305,28 @@ impl Fluxer {
                 input.multiline = true;
                 input
             }),
+            message_text: BTreeMap::new(),
+            media_endpoint: None,
+            replies: BTreeMap::new(),
+            pending_reply: None,
+            emoji_target: None,
+            emoji_search: cx.new(|cx| {
+                let mut input = TextInput::new("Search emoji…", cx);
+                input.chat_picker = true;
+                input
+            }),
+            emoji_category: "all".into(),
+            emoji_index: 0,
+            emoji_scroll: ScrollHandle::new(),
+            forwarding: None,
+            forward_search: cx.new(|cx| {
+                let mut input = TextInput::new("Search destinations…", cx);
+                input.chat_picker = true;
+                input
+            }),
+            forward_pending: false,
+            forward_index: 0,
+            forward_scroll: ScrollHandle::new(),
             instance,
             identifier: cx.new(|cx| TextInput::new("Email or login", cx)),
             password,
@@ -324,6 +384,7 @@ impl Fluxer {
             dsp: AudioSettings::default(),
             sharing: false,
             editing: None,
+            edit_draft: None,
             video: BTreeMap::new(),
             mixer: AudioMixSettings::default(),
             participants: BTreeMap::new(),
@@ -381,9 +442,21 @@ impl Fluxer {
                 .detach();
         }
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
+        cx.observe(&view.emoji_search, |this, _, cx| {
+            this.emoji_index = 0;
+            this.emoji_scroll.scroll_to_item(0);
+            cx.notify();
+        })
+        .detach();
+        cx.observe(&view.forward_search, |this, _, cx| {
+            this.forward_index = 0;
+            this.forward_scroll.scroll_to_item(0);
+            cx.notify();
+        })
+        .detach();
         cx.observe(&view.composer, |this, _, cx| {
             let content = this.composer.read(cx).content.to_string();
-            if this.state.selected_channel.is_some() {
+            if this.state.selected_channel.is_some() && this.editing.is_none() {
                 this.command(Command::SetDraft(content), cx);
             }
             if !this.demo
@@ -454,8 +527,26 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
+                Event::MessageForwarded { destination } => {
+                    self.forwarding = None;
+                    self.forward_pending = false;
+                    self.status =
+                        format!("Message forwarded to {}", self.channel_name(destination));
+                }
                 Event::State(state) => {
                     let old = self.state.selected_channel;
+                    let was_empty = old.is_none_or(|channel| {
+                        self.state.channel_messages(channel).next().is_none()
+                    });
+                    let previous_latest = old.and_then(|channel| {
+                        self.state
+                            .channel_messages(channel)
+                            .next_back()
+                            .map(|message| message.id)
+                    });
+                    let near_bottom =
+                        self.timeline.max_offset().height + self.timeline.offset().y <= px(48.);
                     self.state = *state;
                     self.sharing = self.state.voice.screen_share;
                     if self.state.current_user.is_none() && self.state.guilds.is_empty() {
@@ -465,6 +556,11 @@ impl Fluxer {
                         if !self.session_restoring {
                             self.selected_guild = None;
                             self.session_context_loaded = false;
+                            self.replies.clear();
+                            self.message_text.clear();
+                            self.media_endpoint = None;
+                            self.forwarding = None;
+                            self.emoji_target = None;
                         }
                     } else if self.selected_guild.is_none() && !self.session_context_loaded {
                         self.selected_guild = self.state.guilds.keys().next().copied();
@@ -478,6 +574,24 @@ impl Fluxer {
                             .unwrap_or_default();
                         self.composer.update(cx, |input, cx| input.set(draft, cx));
                         self.editing = None;
+                        self.edit_draft = None;
+                        self.emoji_target = None;
+                        self.forwarding = None;
+                    }
+                    let latest = self.state.selected_channel.and_then(|channel| {
+                        self.state
+                            .channel_messages(channel)
+                            .next_back()
+                            .map(|message| message.id)
+                    });
+                    if (old != self.state.selected_channel
+                        || was_empty
+                        || (near_bottom && previous_latest != latest))
+                        && self.state.selected_channel.is_some_and(|channel| {
+                            self.state.channel_messages(channel).next().is_some()
+                        })
+                    {
+                        self.timeline.scroll_to_bottom();
                     }
                     if self.state.current_user.is_some() {
                         self.mfa_ticket = None;
@@ -509,6 +623,8 @@ impl Fluxer {
                     self.pane = Pane::Chat;
                 }
                 Event::Error(error) => {
+                    self.forward_pending = false;
+                    self.pending_reply = None;
                     self.error = Some(error);
                     self.pending_message = None;
                 }
@@ -666,16 +782,32 @@ impl Fluxer {
                     self.applications = apps;
                 }
                 Event::SharedAudioStatus(active) => self.shared_audio = active,
-                Event::MessageSent {
-                    channel_id,
-                    content,
-                }
-                | Event::MessageEdited {
+                Event::MessageEdited {
                     channel_id,
                     content,
                     ..
                 } => {
                     self.pending_message = None;
+                    if self.state.selected_channel == Some(channel_id)
+                        && self.composer.read(cx).content.as_ref() == content
+                    {
+                        self.cancel_edit(cx);
+                    }
+                }
+                Event::MessageSent {
+                    channel_id,
+                    content,
+                } => {
+                    self.pending_message = None;
+                    if let Some((pending_channel, message)) = self.pending_reply.take()
+                        && pending_channel == channel_id
+                        && self
+                            .replies
+                            .get(&channel_id)
+                            .is_some_and(|(reply, _)| reply.id == message)
+                    {
+                        self.replies.remove(&channel_id);
+                    }
                     if self.state.selected_channel == Some(channel_id)
                         && self.composer.read(cx).content.as_ref() == content
                     {
@@ -767,7 +899,11 @@ impl Fluxer {
             self.login(cx);
             return;
         }
-        if self.pane != Pane::Chat || self.pending_message.is_some() {
+        if self.pane != Pane::Chat
+            || self.pending_message.is_some()
+            || self.emoji_target.is_some()
+            || self.forwarding.is_some()
+        {
             return;
         }
         let content = self.composer.read(cx).content.to_string();
@@ -786,7 +922,21 @@ impl Fluxer {
                 cx,
             );
         } else {
-            self.command(Command::SendMessage { content }, cx);
+            let reply = self
+                .state
+                .selected_channel
+                .and_then(|channel| self.replies.get(&channel));
+            let reply_to = reply.map(|(message, _)| message.id);
+            let mention_author = reply.is_some_and(|(_, mention)| *mention);
+            self.pending_reply = self.state.selected_channel.zip(reply_to);
+            self.command(
+                Command::SendMessage {
+                    content,
+                    reply_to,
+                    mention_author,
+                },
+                cx,
+            );
         }
     }
 
@@ -796,6 +946,13 @@ impl Fluxer {
             .get(&id)
             .map(|c| c.name.clone())
             .unwrap_or_else(|| "voice channel".into())
+    }
+
+    fn cancel_edit(&mut self, cx: &mut Context<Self>) {
+        if self.editing.take().is_some() {
+            let draft = self.edit_draft.take().unwrap_or_default();
+            self.composer.update(cx, |input, cx| input.set(draft, cx));
+        }
     }
 
     fn login(&mut self, cx: &mut Context<Self>) {
@@ -828,6 +985,11 @@ impl Fluxer {
     }
 
     fn select(&mut self, id: Snowflake, cx: &mut Context<Self>) {
+        if self.state.selected_channel == Some(id) {
+            self.pane = Pane::Chat;
+            return;
+        }
+        self.cancel_edit(cx);
         if self.state.selected_channel.is_some() {
             self.command(
                 Command::SetDraft(self.composer.read(cx).content.to_string()),
@@ -1554,7 +1716,315 @@ impl Fluxer {
             .into_any_element()
     }
 
-    fn chat(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn open_emoji(&mut self, target: EmojiTarget, window: &mut Window, cx: &mut Context<Self>) {
+        if self.emoji_target == Some(target) {
+            self.emoji_target = None;
+        } else {
+            self.emoji_target = Some(target);
+            self.emoji_index = 0;
+            self.forwarding = None;
+            self.emoji_search
+                .update(cx, |input, cx| input.set(String::new(), cx));
+            self.emoji_search.focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+
+    fn pick_emoji(
+        &mut self,
+        choice: &chat_helpers::EmojiChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(target) = self.emoji_target.take() {
+            match target {
+                EmojiTarget::Composer => self.composer.update(cx, |input, cx| {
+                    input.insert_text(&choice.insert, window, cx)
+                }),
+                EmojiTarget::Reaction(message_id) => self.command(
+                    Command::React {
+                        message_id,
+                        emoji: choice.reaction.clone(),
+                    },
+                    cx,
+                ),
+            }
+        }
+        self.composer.focus_handle(cx).focus(window);
+        cx.notify();
+    }
+
+    fn forward_destinations(&self, cx: &App) -> Vec<Snowflake> {
+        let query = self.forward_search.read(cx).content.to_lowercase();
+        let me = self.state.current_user.as_ref().map(|user| user.id);
+        self.state
+            .channels
+            .values()
+            .filter(|channel| {
+                channel.display_name().to_lowercase().contains(&query)
+                    && me.is_some_and(|me| {
+                        can_send_message(channel.kind, self.state.permissions_for(channel.id, me))
+                    })
+            })
+            .map(|channel| channel.id)
+            .collect()
+    }
+
+    fn pick_forward(&mut self, destination: Snowflake, cx: &mut Context<Self>) {
+        if self.forward_pending {
+            return;
+        }
+        if let Some(source) = self.forwarding.as_ref() {
+            let source_channel = source.channel_id;
+            let message_id = source.id;
+            self.forward_pending = true;
+            self.command(
+                Command::ForwardMessage {
+                    source_channel,
+                    message_id,
+                    destination,
+                },
+                cx,
+            );
+        }
+    }
+
+    fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.emoji_target.is_none() && self.forwarding.is_none() {
+            return;
+        }
+        cx.stop_propagation();
+        if key == "escape" {
+            self.emoji_target = None;
+            if !self.forward_pending {
+                self.forwarding = None;
+            }
+            self.composer.focus_handle(cx).focus(window);
+        } else if self.emoji_target.is_some() {
+            let choices = chat_helpers::emoji_choices(
+                &self.state,
+                self.state.selected_channel,
+                &self.emoji_search.read(cx).content,
+                &self.emoji_category,
+            );
+            self.emoji_index = self.emoji_index.min(choices.len().saturating_sub(1));
+            if key == "enter" {
+                if let Some(choice) = choices.get(self.emoji_index) {
+                    self.pick_emoji(choice, window, cx);
+                }
+            } else {
+                self.emoji_index = match key {
+                    "left" => self.emoji_index.saturating_sub(1),
+                    "right" => (self.emoji_index + 1).min(choices.len().saturating_sub(1)),
+                    "up" => self.emoji_index.saturating_sub(8),
+                    _ => (self.emoji_index + 8).min(choices.len().saturating_sub(1)),
+                };
+                self.emoji_scroll.scroll_to_item(self.emoji_index);
+            }
+        } else {
+            let destinations = self.forward_destinations(cx);
+            self.forward_index = self.forward_index.min(destinations.len().saturating_sub(1));
+            if key == "enter" {
+                if let Some(destination) = destinations.get(self.forward_index) {
+                    self.pick_forward(*destination, cx);
+                }
+            } else {
+                self.forward_index = if matches!(key, "up" | "left") {
+                    self.forward_index.saturating_sub(1)
+                } else {
+                    (self.forward_index + 1).min(destinations.len().saturating_sub(1))
+                };
+                self.forward_scroll.scroll_to_item(self.forward_index);
+            }
+        }
+        cx.notify();
+    }
+
+    fn emoji_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.emoji_search.read(cx).content.to_string();
+        let choices = chat_helpers::emoji_choices(
+            &self.state,
+            self.state.selected_channel,
+            &query,
+            &self.emoji_category,
+        );
+        div()
+            .p_3()
+            .bg(rgb(PANEL))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(muted(
+                        if matches!(self.emoji_target, Some(EmojiTarget::Reaction(_))) {
+                            "Add a reaction"
+                        } else {
+                            "Insert emoji"
+                        },
+                    ))
+                    .child(button("close-emoji", "Close").on_click(cx.listener(
+                        |this, _, window, cx| {
+                            this.emoji_target = None;
+                            this.composer.focus_handle(cx).focus(window);
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .child(self.emoji_search.clone())
+            .child(
+                div().flex().flex_wrap().gap_1().children(
+                    chat_helpers::categories()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, category)| {
+                            button(("emoji-category", index), category)
+                                .py_1()
+                                .px_2()
+                                .when(self.emoji_category == category, |view| {
+                                    view.bg(rgb(0x56438b))
+                                })
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.emoji_category = category.to_owned();
+                                    this.emoji_index = 0;
+                                    this.emoji_scroll.scroll_to_item(0);
+                                    cx.notify();
+                                }))
+                        }),
+                ),
+            )
+            .child(
+                div()
+                    .id("emoji-grid")
+                    .track_scroll(&self.emoji_scroll)
+                    .w(px(332.))
+                    .max_w_full()
+                    .h(px(180.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_wrap()
+                    .content_start()
+                    .gap_1()
+                    .when(choices.is_empty(), |view| {
+                        view.child(muted("No matching emoji"))
+                    })
+                    .children(choices.into_iter().enumerate().map(|(index, choice)| {
+                        let label = choice.label.clone();
+                        let mut tile = button_base(("emoji-choice", index))
+                            .px_2()
+                            .py_1()
+                            .h(px(38.))
+                            .w(px(38.))
+                            .overflow_hidden()
+                            .text_size(px(24.))
+                            .when(index == self.emoji_index, |view| {
+                                view.bg(rgb(0x56438b)).border_1().border_color(rgb(ACCENT))
+                            });
+                        if let Some(id) = choice.id {
+                            if let Some(endpoint) = self.media_endpoint.as_deref() {
+                                tile = tile.child(
+                                    img(SharedString::from(format!(
+                                        "{}/emojis/{id}.webp?size=48",
+                                        endpoint.trim_end_matches('/')
+                                    )))
+                                    .size(px(28.))
+                                    .object_fit(ObjectFit::Contain),
+                                );
+                            }
+                            if self.media_endpoint.is_none() {
+                                tile = tile.child(div().text_size(px(11.)).child(label));
+                            }
+                        } else {
+                            tile = tile.child(label);
+                        }
+                        tile.on_click(cx.listener(move |this, _, window, cx| {
+                            this.pick_emoji(&choice, window, cx);
+                        }))
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn forward_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(source) = self.forwarding.as_ref() else {
+            return div().into_any_element();
+        };
+        let destinations = self.forward_destinations(cx);
+        div()
+            .p_3()
+            .bg(rgb(PANEL))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(heading(if self.forward_pending {
+                        "Forwarding…"
+                    } else {
+                        "Forward message"
+                    }))
+                    .child(button("cancel-forward", "Cancel").on_click(cx.listener(
+                        |this, _, _, cx| {
+                            if !this.forward_pending {
+                                this.forwarding = None;
+                            }
+                            cx.notify();
+                        },
+                    ))),
+            )
+            .child(muted(format!(
+                "{}: {}",
+                source.author.display_name(),
+                chat_helpers::preview(source)
+            )))
+            .child(self.forward_search.clone())
+            .child(muted("Choose a destination to forward this message"))
+            .child(
+                div()
+                    .id("forward-destinations")
+                    .track_scroll(&self.forward_scroll)
+                    .h(px(150.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .when(destinations.is_empty(), |view| {
+                        view.child(muted("No writable destinations match"))
+                    })
+                    .children(
+                        destinations
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, destination)| {
+                                let channel = &self.state.channels[&destination];
+                                let community = channel
+                                    .guild_id
+                                    .and_then(|guild| self.state.guilds.get(&guild))
+                                    .map(|guild| format!("{} / ", guild.name))
+                                    .unwrap_or_default();
+                                button(
+                                    ("forward-destination", destination.0),
+                                    format!("{community}{}", channel.display_name()),
+                                )
+                                .when(index == self.forward_index, |view| view.bg(rgb(0x56438b)))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.pick_forward(destination, cx);
+                                    },
+                                ))
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn chat(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let channel = self
             .state
             .selected_channel
@@ -1569,6 +2039,17 @@ impl Fluxer {
         let messages = selected
             .map(|id| self.state.channel_messages(id).cloned().collect::<Vec<_>>())
             .unwrap_or_default();
+        let visible: BTreeSet<_> = messages.iter().map(|message| message.id).collect();
+        self.message_text.retain(|id, _| visible.contains(id));
+        for message in &messages {
+            let text = chat_helpers::display_text(message);
+            if let Some(input) = self.message_text.get(&message.id) {
+                input.update(cx, |input, cx| input.update_read_only(&text, cx));
+            } else {
+                self.message_text
+                    .insert(message.id, cx.new(|cx| TextInput::read_only(&text, cx)));
+            }
+        }
         div()
             .flex_1()
             .min_w_0()
@@ -1694,7 +2175,8 @@ impl Fluxer {
                     .children(messages.into_iter().map(|message| {
                         let id = message.id;
                         let content = message.content.clone();
-                        let copy_content = content.clone();
+                        let copy_content = chat_helpers::display_text(&message);
+                        let has_text = !copy_content.is_empty();
                         let own = self
                             .state
                             .current_user
@@ -1702,25 +2184,16 @@ impl Fluxer {
                             .is_some_and(|u| u.id == message.author.id);
                         div()
                             .id(("message", id.0))
+                            .w_full()
+                            .min_w_0()
+                            .flex_shrink_0()
                             .flex()
                             .gap_3()
-                            .child(
-                                div()
-                                    .size(px(34.))
-                                    .rounded_full()
-                                    .bg(rgb(0x514174))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(
-                                        message
-                                            .author
-                                            .display_name()
-                                            .chars()
-                                            .take(1)
-                                            .collect::<String>(),
-                                    ),
-                            )
+                            .child(rich_message::avatar(
+                                &message.author,
+                                self.media_endpoint.as_deref(),
+                                36.,
+                            ))
                             .child(
                                 div()
                                     .flex_1()
@@ -1744,20 +2217,83 @@ impl Fluxer {
                                                 message.timestamp.clone()
                                             })),
                                     )
-                                    .child(div().text_size(px(14.)).child(message.content))
+                                    .when_some(
+                                        chat_helpers::reference_summary(&self.state, &message),
+                                        |view, summary| {
+                                            view.child(muted(summary).w_full().min_w_0())
+                                        },
+                                    )
+                                    .when(has_text, |view| {
+                                        view.child(
+                                            self.message_text
+                                                .get(&id)
+                                                .expect("cached message")
+                                                .clone(),
+                                        )
+                                    })
+                                    .child(rich_message::media(&message))
                                     .child(
                                         div()
                                             .flex()
                                             .gap_2()
-                                            .child(button(("react", id.0), "👍").on_click(
-                                                cx.listener(move |this, _, _, cx| {
-                                                    this.command(
-                                                        Command::React {
-                                                            message_id: id,
-                                                            emoji: "👍".into(),
-                                                        },
-                                                        cx,
-                                                    )
+                                            .flex_wrap()
+                                            .child(
+                                                button(("react", id.0), "Add reaction").on_click(
+                                                    cx.listener(move |this, _, window, cx| {
+                                                        this.open_emoji(
+                                                            EmojiTarget::Reaction(id),
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }),
+                                                ),
+                                            )
+                                            .child(button(("reply", id.0), "Reply").on_click(
+                                                cx.listener(move |this, _, window, cx| {
+                                                    if this.pending_message.is_some() {
+                                                        return;
+                                                    }
+                                                    if let Some(message) = this
+                                                        .state
+                                                        .selected_channel
+                                                        .and_then(|channel| {
+                                                            this.state
+                                                                .channel_messages(channel)
+                                                                .find(|message| message.id == id)
+                                                        })
+                                                        .cloned()
+                                                    {
+                                                        this.replies.insert(
+                                                            message.channel_id,
+                                                            (message, false),
+                                                        );
+                                                        this.cancel_edit(cx);
+                                                        this.composer
+                                                            .focus_handle(cx)
+                                                            .focus(window);
+                                                        cx.notify();
+                                                    }
+                                                }),
+                                            ))
+                                            .child(button(("forward", id.0), "Forward").on_click(
+                                                cx.listener(move |this, _, window, cx| {
+                                                    this.forwarding = this
+                                                        .state
+                                                        .selected_channel
+                                                        .and_then(|channel| {
+                                                            this.state
+                                                                .channel_messages(channel)
+                                                                .find(|message| message.id == id)
+                                                        })
+                                                        .cloned();
+                                                    this.forward_search.update(cx, |input, cx| {
+                                                        input.set(String::new(), cx)
+                                                    });
+                                                    this.forward_search
+                                                        .focus_handle(cx)
+                                                        .focus(window);
+                                                    this.emoji_target = None;
+                                                    cx.notify();
                                                 }),
                                             ))
                                             .child(button(("copy", id.0), "Copy").on_click(
@@ -1769,12 +2305,54 @@ impl Fluxer {
                                                     );
                                                 }),
                                             ))
-                                            .children(message.reactions.iter().map(|r| {
-                                                muted(format!("{} ×{}", r.emoji.name, r.count))
-                                            }))
+                                            .children(message.reactions.iter().enumerate().map(
+                                                |(index, r)| {
+                                                    let emoji =
+                                                        chat_helpers::reaction_key(&r.emoji);
+                                                    button(
+                                                        SharedString::from(format!(
+                                                            "reaction-chip-{id}-{index}"
+                                                        )),
+                                                        format!(
+                                                            "{} {}",
+                                                            if r.emoji.id.is_some() {
+                                                                format!(":{}:", r.emoji.name)
+                                                            } else {
+                                                                r.emoji.name.clone()
+                                                            },
+                                                            r.count
+                                                        ),
+                                                    )
+                                                    .when(r.me, |view| {
+                                                        view.bg(rgb(0x56438b))
+                                                            .border_1()
+                                                            .border_color(rgb(ACCENT))
+                                                    })
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.command(
+                                                            Command::React {
+                                                                message_id: id,
+                                                                emoji: emoji.clone(),
+                                                            },
+                                                            cx,
+                                                        )
+                                                    }))
+                                                },
+                                            ))
                                             .when(own, |v| {
                                                 v.child(button(("edit", id.0), "Edit").on_click(
                                                     cx.listener(move |this, _, window, cx| {
+                                                        if this.pending_message.is_some() {
+                                                            return;
+                                                        }
+                                                        if this.editing.is_none() {
+                                                            this.edit_draft = Some(
+                                                                this.composer
+                                                                    .read(cx)
+                                                                    .content
+                                                                    .to_string(),
+                                                            );
+                                                        }
                                                         this.editing = Some(id);
                                                         this.composer.update(cx, |v, cx| {
                                                             v.set(content.clone(), cx)
@@ -1800,21 +2378,99 @@ impl Fluxer {
                             )
                     })),
             )
+            .when(self.emoji_target.is_some(), |view| {
+                view.child(self.emoji_panel(cx))
+            })
+            .when(self.forwarding.is_some(), |view| {
+                view.child(self.forward_panel(cx))
+            })
             .child(
                 div()
                     .p_4()
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(self.editing.is_none(), |view| {
+                        view.when_some(
+                            selected.and_then(|channel| self.replies.get(&channel)),
+                            |view, (message, mention)| {
+                                let mention = *mention;
+                                view.child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(
+                                            muted(format!(
+                                                "Replying to {} · {}",
+                                                message.author.display_name(),
+                                                chat_helpers::preview(message)
+                                            ))
+                                            .flex_1()
+                                            .min_w_0(),
+                                        )
+                                        .child(
+                                            button(
+                                                "reply-mention",
+                                                if mention { "Mention on" } else { "Mention off" },
+                                            )
+                                            .flex_shrink_0()
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| {
+                                                    if let Some((_, mention)) = this
+                                                        .state
+                                                        .selected_channel
+                                                        .and_then(|channel| {
+                                                            this.replies.get_mut(&channel)
+                                                        })
+                                                    {
+                                                        *mention = !*mention;
+                                                    }
+                                                    cx.notify();
+                                                }),
+                                            ),
+                                        )
+                                        .child(
+                                            button("cancel-reply", "Cancel reply")
+                                                .flex_shrink_0()
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    if let Some(channel) =
+                                                        this.state.selected_channel
+                                                    {
+                                                        this.replies.remove(&channel);
+                                                    }
+                                                    cx.notify();
+                                                })),
+                                        ),
+                                )
+                            },
+                        )
+                    })
                     .when(self.editing.is_some(), |v| {
-                        v.child(muted("Editing message · press Enter to save"))
+                        v.child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(muted("Editing message · press Enter to save"))
+                                .child(button("cancel-edit", "Cancel edit").on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.cancel_edit(cx);
+                                        cx.notify();
+                                    },
+                                ))),
+                        )
                     })
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_3()
-                            .child(div().flex_1().child(self.composer.clone()))
+                            .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                            .child(button("composer-emoji", "☺").on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.open_emoji(EmojiTarget::Composer, window, cx)
+                                },
+                            )))
                             .child(
                                 button(
                                     "send",
@@ -2399,6 +3055,12 @@ impl Render for Fluxer {
         };
         div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Inter").text_size(px(14.))
             .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
+            .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
+            .on_action(cx.listener(|this, _: &PickerUp, window, cx| this.picker_key("up", window, cx)))
+            .on_action(cx.listener(|this, _: &PickerDown, window, cx| this.picker_key("down", window, cx)))
+            .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
+            .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.pane = Pane::Settings;
@@ -2406,6 +3068,12 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key == "escape" && (this.emoji_target.is_some() || this.forwarding.is_some()) {
+                    this.emoji_target=None;
+                    if !this.forward_pending { this.forwarding=None; }
+                    this.composer.focus_handle(cx).focus(window);
+                    cx.notify();
+                }
                 if event.keystroke.key == "tab" {
                     if event.keystroke.modifiers.shift { window.focus_prev(); } else { window.focus_next(); }
                     cx.stop_propagation();
@@ -2423,44 +3091,52 @@ impl Render for Fluxer {
 
 fn main() {
     let demo = std::env::args().any(|v| v == "--demo");
-    Application::new().run(move |cx: &mut App| {
-        input::init(cx);
-        cx.bind_keys([
-            KeyBinding::new("enter", Submit, Some("TextInput")),
-            KeyBinding::new("ctrl-q", Quit, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("ctrl-,", OpenSettings, None),
-            KeyBinding::new("cmd-,", OpenSettings, None),
-        ]);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
-        let window_title = format!(
-            "Fluxer · Native · {}",
-            option_env!("FLUXER_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
-        );
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some(window_title.clone().into()),
+    Application::new()
+        .with_http_client(rich_message::http_client())
+        .run(move |cx: &mut App| {
+            input::init(cx);
+            cx.bind_keys([
+                KeyBinding::new("enter", Submit, Some("TextInput")),
+                KeyBinding::new("left", PickerLeft, Some("ChatPicker")),
+                KeyBinding::new("right", PickerRight, Some("ChatPicker")),
+                KeyBinding::new("up", PickerUp, Some("ChatPicker")),
+                KeyBinding::new("down", PickerDown, Some("ChatPicker")),
+                KeyBinding::new("enter", PickerConfirm, Some("ChatPicker")),
+                KeyBinding::new("escape", PickerDismiss, Some("ChatPicker")),
+                KeyBinding::new("ctrl-q", Quit, None),
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("ctrl-,", OpenSettings, None),
+                KeyBinding::new("cmd-,", OpenSettings, None),
+            ]);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+            let window_title = format!(
+                "Fluxer · Native · {}",
+                option_env!("FLUXER_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+            );
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some(window_title.clone().into()),
+                        ..Default::default()
+                    }),
+                    window_min_size: Some(size(px(880.), px(600.))),
+                    app_id: Some("app.fluxer.Native".into()),
                     ..Default::default()
-                }),
-                window_min_size: Some(size(px(880.), px(600.))),
-                app_id: Some("app.fluxer.Native".into()),
-                ..Default::default()
-            },
-            move |window, cx| {
-                window.set_window_title(&window_title);
-                cx.new(|cx| Fluxer::new(demo, window, cx))
-            },
-        )
-        .expect("open Fluxer window");
-        cx.activate(true);
-    });
+                },
+                move |window, cx| {
+                    window.set_window_title(&window_title);
+                    cx.new(|cx| Fluxer::new(demo, window, cx))
+                },
+            )
+            .expect("open Fluxer window");
+            cx.activate(true);
+        });
 }

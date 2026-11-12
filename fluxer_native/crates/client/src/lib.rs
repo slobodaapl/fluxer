@@ -49,6 +49,13 @@ pub enum Command {
     LoadOlderMessages,
     SendMessage {
         content: String,
+        reply_to: Option<Snowflake>,
+        mention_author: bool,
+    },
+    ForwardMessage {
+        source_channel: Snowflake,
+        message_id: Snowflake,
+        destination: Snowflake,
     },
     EditMessage {
         message_id: Snowflake,
@@ -105,6 +112,10 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    MediaEndpoint(Option<String>),
+    MessageForwarded {
+        destination: Snowflake,
+    },
     SessionRestoring(bool),
     SessionRestoreFailed,
     SessionContext {
