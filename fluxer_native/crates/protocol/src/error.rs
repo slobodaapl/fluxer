@@ -5,6 +5,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("upload plan omitted an attachment ID")]
+    AttachmentPlanMissing,
+    #[error("unable to finalize multipart attachment upload: {0}")]
+    AttachmentCompletion(Box<Error>),
+    #[error("attachment upload cancelled")]
+    UploadCancelled,
+    #[error("invalid attachment upload: {0}")]
+    InvalidUpload(&'static str),
+    #[error("unable to read attachment")]
+    AttachmentIo(#[source] std::io::Error),
+    #[error("storage upload failed (HTTP {status})")]
+    StorageUpload { status: u16 },
+    #[error("presigned attachment upload failed and multipart message fallback exceeds 25 MiB")]
+    UploadFallbackUnavailable,
     #[error("operating system randomness is unavailable for the client installation ID")]
     InstallationIdUnavailable,
     #[error("invalid endpoint: {0}")]

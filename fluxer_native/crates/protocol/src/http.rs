@@ -202,17 +202,25 @@ impl Client {
         .map_err(|_| Error::InvalidEndpoint("invalid API route".into()))
     }
 
-    async fn request_inner(
+    pub(crate) fn upload_api_request(
         &self,
+        http: &reqwest::Client,
         method: Method,
         path: &str,
-        body: Option<&Value>,
+    ) -> Result<reqwest::RequestBuilder> {
+        self.api_request_using(http, method, path, true)
+    }
+
+    fn api_request_using(
+        &self,
+        http: &reqwest::Client,
+        method: Method,
+        path: &str,
         authenticated: bool,
-    ) -> Result<Value> {
+    ) -> Result<reqwest::RequestBuilder> {
         let url = self.route_url(path)?;
         let requires_origin = method != Method::GET && method != Method::HEAD;
-        let mut request = self
-            .http
+        let mut request = http
             .request(method, url)
             .header(header::ACCEPT, "application/json")
             // RestTransport.assembleHeaders, same-origin first-party API calls.
@@ -246,10 +254,28 @@ impl Client {
             // Fluxer uses the raw session token, not an OAuth Bearer prefix.
             request = request.header(header::AUTHORIZATION, authorization);
         }
+        Ok(request.header(
+            header::USER_AGENT,
+            concat!("Fluxer-Native/", env!("CARGO_PKG_VERSION")),
+        ))
+    }
+
+    async fn request_inner(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+        authenticated: bool,
+    ) -> Result<Value> {
+        let mut request = self.api_request_using(&self.http, method, path, authenticated)?;
         if let Some(body) = body {
             request = request.json(body);
         }
         let response = request.send().await?;
+        Self::parse_api_response(response).await
+    }
+
+    pub(crate) async fn parse_api_response(response: reqwest::Response) -> Result<Value> {
         let status = response.status();
         let retry_header = response
             .headers()
@@ -878,10 +904,10 @@ fn parse_login(value: Value) -> Result<LoginOutcome> {
     })
 }
 
-fn segment(value: &str) -> String {
+pub(crate) fn segment(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
 }
-fn message_body(
+pub(crate) fn message_body(
     content: &str,
     nonce: Option<&str>,
     reference: Option<&fluxer_core::MessageReference>,
