@@ -1,5 +1,7 @@
 use crate::{Command, Event, VoiceStatus};
-use fluxer_core::{Channel, ChannelType, ClientState, Emoji, Guild, Message, Snowflake, User};
+use fluxer_core::{
+    Channel, ChannelType, ClientState, Emoji, Guild, Message, Permissions, Snowflake, User,
+};
 use fluxer_media::{MediaEngine, MediaEvent, VideoFrame};
 use fluxer_protocol::{
     Client, Gateway, GatewayCommand, GatewayEvent, Instance, LoginIdentifier, LoginOutcome,
@@ -10,7 +12,7 @@ use std::{
     collections::BTreeMap,
     future::pending,
     sync::{Arc, Mutex, mpsc},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
@@ -28,6 +30,13 @@ struct VoiceTarget {
 
 impl VoiceTarget {
     fn accepts(&self, update: &VoiceServerUpdate) -> bool {
+        if self
+            .connection_id
+            .as_ref()
+            .is_some_and(|id| id != &update.connection_id)
+        {
+            return false;
+        }
         if update
             .channel_id
             .as_deref()
@@ -74,6 +83,11 @@ pub(crate) struct Worker {
     media: Option<MediaEngine>,
     media_events: Option<async_mpsc::Receiver<MediaEvent>>,
     voice_target: Option<VoiceTarget>,
+    pending_voice_server: Option<VoiceServerUpdate>,
+    voice_endpoint: Option<String>,
+    voice_join_deadline: Option<tokio::time::Instant>,
+    server_muted: bool,
+    server_deafened: bool,
     demo: bool,
 }
 
@@ -96,6 +110,11 @@ impl Worker {
             media: None,
             media_events: None,
             voice_target: None,
+            pending_voice_server: None,
+            voice_endpoint: None,
+            voice_join_deadline: None,
+            server_muted: false,
+            server_deafened: false,
             demo: false,
         }
     }
@@ -129,11 +148,13 @@ impl Worker {
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
                 Media(Option<MediaEvent>),
+                VoiceTimeout,
             }
             let incoming = tokio::select! {
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
                 event = receive_optional(&mut self.media_events) => Incoming::Media(event),
+                _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
             };
             let result = match incoming {
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
@@ -148,6 +169,10 @@ impl Worker {
                 Incoming::Media(None) => {
                     self.media_events = None;
                     Ok(())
+                }
+                Incoming::VoiceTimeout => {
+                    let _ = self.leave_voice(true).await;
+                    Err("Voice server did not complete the connection; try joining again".into())
                 }
             };
             if let Err(message) = result {
@@ -271,6 +296,28 @@ impl Worker {
                 self.snapshot();
             }
             Command::SelectChannel { channel_id } => self.select_channel(channel_id).await?,
+            Command::LoadOlderMessages => {
+                if !self.demo {
+                    let channel = self.selected()?;
+                    let before = self
+                        .state
+                        .channel_messages(channel)
+                        .next()
+                        .map(|m| m.id.to_string());
+                    let history = self
+                        .client()?
+                        .messages(&channel.to_string(), before.as_deref(), 50)
+                        .await
+                        .map_err(error)?;
+                    let messages = values(history, "messages")?
+                        .into_iter()
+                        .map(serde_json::from_value)
+                        .collect::<std::result::Result<Vec<Message>, _>>()
+                        .map_err(error)?;
+                    self.state.load_history(channel, messages);
+                    self.snapshot();
+                }
+            }
             Command::SetDraft(content) => {
                 let channel = self.selected()?;
                 self.state.set_draft(channel, content);
@@ -288,7 +335,7 @@ impl Worker {
                             .current_user
                             .clone()
                             .ok_or("No current account")?,
-                        content,
+                        content.clone(),
                     )
                 } else {
                     let nonce = format!(
@@ -309,6 +356,10 @@ impl Worker {
                 self.state.insert_message(message);
                 self.state.set_draft(channel, String::new());
                 self.snapshot();
+                self.emit(Event::MessageSent {
+                    channel_id: channel,
+                    content,
+                });
             }
             Command::EditMessage {
                 message_id,
@@ -316,7 +367,8 @@ impl Worker {
             } => {
                 let channel = self.selected()?;
                 if self.demo {
-                    self.state.edit_message(channel, message_id, content);
+                    self.state
+                        .edit_message(channel, message_id, content.clone());
                 } else {
                     let message = self
                         .client()?
@@ -328,6 +380,11 @@ impl Worker {
                         .map_err(error)?;
                 }
                 self.snapshot();
+                self.emit(Event::MessageEdited {
+                    channel_id: channel,
+                    message_id,
+                    content,
+                });
             }
             Command::DeleteMessage { message_id } => {
                 let channel = self.selected()?;
@@ -362,9 +419,11 @@ impl Worker {
                             .map_err(error)?;
                     }
                 }
-                self.state
-                    .toggle_reaction(channel, message_id, Emoji::unicode(emoji));
-                self.snapshot();
+                if self.demo {
+                    self.state
+                        .toggle_reaction(channel, message_id, Emoji::unicode(emoji));
+                    self.snapshot();
+                }
             }
             Command::Typing => {
                 if !self.demo {
@@ -398,7 +457,12 @@ impl Worker {
                     channel_id,
                     connection_id: None,
                 });
-                self.update_voice().await?;
+                self.voice_join_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(15));
+                if let Err(message) = self.update_voice().await {
+                    let _ = self.leave_voice(false).await;
+                    return Err(message);
+                }
                 self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
             }
             Command::LeaveVoice => self.leave_voice(true).await?,
@@ -406,7 +470,9 @@ impl Worker {
                 let mut next = self.state.voice.clone();
                 next.set_muted(muted);
                 if let Some(media) = &mut self.media {
-                    media.set_muted(next.muted).map_err(error)?;
+                    media
+                        .set_muted(next.muted || self.server_muted)
+                        .map_err(error)?;
                 }
                 self.state.voice = next;
                 self.snapshot();
@@ -416,8 +482,12 @@ impl Worker {
                 let mut next = self.state.voice.clone();
                 next.set_deafened(deafened);
                 if let Some(media) = &mut self.media {
-                    media.set_deafened(next.deafened).map_err(error)?;
-                    media.set_muted(next.muted).map_err(error)?;
+                    media
+                        .set_deafened(next.deafened || self.server_deafened)
+                        .map_err(error)?;
+                    media
+                        .set_muted(next.muted || self.server_muted)
+                        .map_err(error)?;
                 }
                 self.state.voice = next;
                 self.snapshot();
@@ -430,6 +500,31 @@ impl Worker {
             Command::SetInputDevice(id) => self.media()?.set_input_device(&id).map_err(error)?,
             Command::SetOutputDevice(id) => self.media()?.set_output_device(&id).map_err(error)?,
             Command::SetDsp(settings) => self.media()?.configure(settings).map_err(error)?,
+            Command::SetMixer(settings) => {
+                self.media()?.configure_mixer(settings).map_err(error)?
+            }
+            Command::SetPushToTalkPressed(pressed) => self
+                .media()?
+                .set_push_to_talk_pressed(pressed)
+                .map_err(error)?,
+            Command::SetParticipantAudio { identity, settings } => self
+                .media()?
+                .set_participant_audio(&identity, settings)
+                .map_err(error)?,
+            Command::StartMicrophoneTest => {
+                if self.voice_target.is_some() {
+                    return Err("Leave voice before testing the microphone".into());
+                }
+                self.media_events = Some(self.media()?.start_microphone_test().map_err(error)?);
+            }
+            Command::StopMicrophoneTest => {
+                if self.voice_target.is_none() {
+                    if let Some(media) = &mut self.media {
+                        media.stop_microphone_test().map_err(error)?;
+                    }
+                    self.media_events = None;
+                }
+            }
             Command::RefreshScreenSources => {
                 let sources = self.media()?.screen_sources().map_err(error)?;
                 self.emit(Event::ScreenSources(sources));
@@ -570,6 +665,11 @@ impl Worker {
 
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
         let target = self.voice_target.take();
+        self.pending_voice_server = None;
+        self.voice_endpoint = None;
+        self.voice_join_deadline = None;
+        self.server_muted = false;
+        self.server_deafened = false;
         self.media_events = None;
         // Stop capture before awaiting any network writes, including failures.
         let disconnected = if let Some(media) = &mut self.media {
@@ -623,44 +723,21 @@ impl Worker {
                 }
                 if name == "VOICE_SERVER_UPDATE" {
                     let update: VoiceServerUpdate = serde_json::from_value(data).map_err(error)?;
-                    if !self
+                    if self
                         .voice_target
                         .as_ref()
                         .is_some_and(|target| target.accepts(&update))
                     {
-                        return Ok(());
-                    }
-                    let target = self
-                        .voice_target
-                        .as_mut()
-                        .ok_or("Voice join was cancelled")?;
-                    target.connection_id = Some(update.connection_id.clone());
-                    let channel = target.channel_id;
-                    let muted = self.state.voice.muted;
-                    let deafened = self.state.voice.deafened;
-                    let media = self.media()?;
-                    media.set_muted(muted).map_err(error)?;
-                    media.set_deafened(deafened).map_err(error)?;
-                    match media
-                        .connect_encrypted(
-                            &update.endpoint,
-                            update.token.expose_secret(),
-                            update.e2ee_key.as_deref(),
-                        )
-                        .await
+                        self.connect_voice(update).await?;
+                    } else if update.channel_id.is_none()
+                        && self
+                            .voice_target
+                            .as_ref()
+                            .is_some_and(|target| target.connection_id.is_none())
                     {
-                        Ok(events) => {
-                            self.media_events = Some(events);
-                            self.state.voice.join(channel);
-                            self.emit(Event::VoiceStatus(VoiceStatus::Connected {
-                                channel_id: channel,
-                            }));
-                            self.snapshot();
-                        }
-                        Err(message) => {
-                            self.leave_voice(true).await?;
-                            return Err(message.to_string());
-                        }
+                        // The server can issue credentials before our own state.
+                        // Keep one bounded candidate and await a matching connection ID.
+                        self.pending_voice_server = Some(update);
                     }
                 } else {
                     let previous_voice = self.state.voice.clone();
@@ -684,11 +761,55 @@ impl Worker {
                             let connection = data.get("connection_id").and_then(Value::as_str);
                             if channel == Some(target.channel_id.to_string().as_str()) {
                                 target.connection_id = connection.map(str::to_owned);
+                                self.server_muted = data
+                                    .get("mute")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(self.server_muted);
+                                self.server_deafened = data
+                                    .get("deaf")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(self.server_deafened);
+                                if let Some(media) = &mut self.media {
+                                    media
+                                        .set_deafened(
+                                            self.state.voice.deafened || self.server_deafened,
+                                        )
+                                        .map_err(error)?;
+                                    media
+                                        .set_muted(self.state.voice.muted || self.server_muted)
+                                        .map_err(error)?;
+                                }
                             } else if connection.is_some()
                                 && connection == target.connection_id.as_deref()
                             {
                                 self.leave_voice(false).await?;
                             }
+                        }
+                        if let Some(update) = self.pending_voice_server.take() {
+                            if self
+                                .voice_target
+                                .as_ref()
+                                .is_some_and(|target| target.accepts(&update))
+                            {
+                                self.connect_voice(update).await?;
+                            }
+                        }
+                    }
+                    if let Some(target) = &self.voice_target {
+                        let removed = !self.state.channels.contains_key(&target.channel_id);
+                        let lost = target
+                            .guild_id
+                            .zip(self.state.current_user.as_ref().map(|u| u.id))
+                            .is_some_and(|(guild, user)| {
+                                self.state.members.contains_key(&(guild, user))
+                                    && !self
+                                        .state
+                                        .permissions_for(target.channel_id, user)
+                                        .contains(Permissions::VIEW_CHANNEL | Permissions::CONNECT)
+                            });
+                        if removed || lost {
+                            self.leave_voice(true).await?;
+                            self.emit(Event::Error("Voice channel is no longer available".into()));
                         }
                     }
                     self.snapshot();
@@ -699,6 +820,58 @@ impl Worker {
             }
         }
         Ok(())
+    }
+
+    async fn connect_voice(&mut self, update: VoiceServerUpdate) -> Result<()> {
+        let target = self
+            .voice_target
+            .as_mut()
+            .ok_or("Voice join was cancelled")?;
+        if self.voice_endpoint.as_deref() == Some(update.endpoint.as_str())
+            && target.connection_id.as_deref() == Some(update.connection_id.as_str())
+            && self.state.voice.channel_id == Some(target.channel_id)
+        {
+            return Ok(());
+        }
+        target.connection_id = Some(update.connection_id.clone());
+        let channel = target.channel_id;
+        let muted = self.state.voice.muted || self.server_muted;
+        let deafened = self.state.voice.deafened || self.server_deafened;
+        let result = async {
+            let media = self.media()?;
+            media.stop_microphone_test().map_err(error)?;
+            media.set_muted(muted).map_err(error)?;
+            media.set_deafened(deafened).map_err(error)?;
+            tokio::time::timeout(
+                Duration::from_secs(20),
+                media.connect_encrypted(
+                    &update.endpoint,
+                    update.token.expose_secret(),
+                    update.e2ee_key.as_deref(),
+                ),
+            )
+            .await
+            .map_err(|_| "Voice media connection timed out".to_owned())?
+            .map_err(error)
+        }
+        .await;
+        match result {
+            Ok(events) => {
+                self.media_events = Some(events);
+                self.voice_endpoint = Some(update.endpoint);
+                self.voice_join_deadline = None;
+                self.state.voice.join(channel);
+                self.emit(Event::VoiceStatus(VoiceStatus::Connected {
+                    channel_id: channel,
+                }));
+                self.snapshot();
+                Ok(())
+            }
+            Err(message) => {
+                let _ = self.leave_voice(true).await;
+                Err(message)
+            }
+        }
     }
 
     async fn media_event(&mut self, event: MediaEvent) -> Result<()> {
@@ -739,6 +912,12 @@ impl Worker {
 async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> Option<T> {
     match receiver {
         Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+async fn voice_timeout(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
         None => pending().await,
     }
 }
