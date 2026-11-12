@@ -69,6 +69,30 @@ impl UploadAttachment {
         value
     }
 }
+/// One file from a shared planning request. Capability URLs remain private;
+/// each handle can be transferred and completed using an independent token.
+#[derive(Clone)]
+pub struct PlannedAttachment {
+    file: PreparedFile,
+    plan: Option<Plan>,
+    channel: String,
+    instance_api: url::Url,
+}
+impl PlannedAttachment {
+    pub fn id(&self) -> &str {
+        &self.file.attachment.id
+    }
+}
+impl std::fmt::Debug for PlannedAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlannedAttachment")
+            .field("id", &self.id())
+            .field("file_size", &self.file.size)
+            .field("has_plan", &self.plan.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct UploadCancellation {
     cancelled: watch::Sender<bool>,
@@ -119,6 +143,7 @@ pub struct UploadProgress {
 }
 pub type UploadProgressCallback = Arc<dyn Fn(UploadProgress) + Send + Sync>;
 struct Progress {
+    monotonic: bool,
     state: Mutex<ProgressState>,
     callback: UploadProgressCallback,
 }
@@ -131,6 +156,7 @@ struct ProgressState {
 impl Progress {
     fn new(files: &[PreparedFile], callback: UploadProgressCallback) -> Self {
         Self {
+            monotonic: true,
             state: Mutex::new(ProgressState {
                 phase: UploadPhase::Planning,
                 loaded: vec![0; files.len()],
@@ -165,7 +191,12 @@ impl Progress {
                 state.phase = phase;
             }
             if let Some((index, loaded)) = file {
-                state.loaded[index] = state.loaded[index].max(loaded.min(state.sizes[index]));
+                let loaded = loaded.min(state.sizes[index]);
+                state.loaded[index] = if self.monotonic {
+                    state.loaded[index].max(loaded)
+                } else {
+                    loaded
+                };
             }
             (self.callback)(UploadProgress {
                 phase: state.phase,
@@ -423,6 +454,79 @@ impl Client {
             .json(&body);
         Self::parse_api_response(request.send().await?).await
     }
+    /// Request all plans for one staged batch, exactly once. The controller
+    /// retains the shared cancellation token until its last batch member leaves.
+    /// A missing response ID fails only that file when its handle is transferred.
+    pub async fn plan_attachments(
+        &self,
+        channel: &str,
+        files: &[UploadAttachment],
+        cancel: &UploadCancellation,
+        callback: UploadProgressCallback,
+    ) -> Result<Vec<PlannedAttachment>> {
+        if !self.supports_presigned_attachment_uploads() {
+            return Err(Error::InvalidUpload(
+                "presigned attachment uploads are disabled",
+            ));
+        }
+        let files = prepare(files, cancel).await?;
+        let progress = Arc::new(Progress::new(&files, callback));
+        let transport = upload_transport()?;
+        let plans = self
+            .request_attachment_plans(channel, &files, &transport.api, cancel, &progress)
+            .await?;
+        let indexed = plans
+            .into_iter()
+            .map(|plan| Ok((plan.id()?, plan)))
+            .collect::<Result<HashMap<_, _>>>()?;
+        Ok(files
+            .into_iter()
+            .map(|file| PlannedAttachment {
+                plan: indexed.get(&file.attachment.id).cloned(),
+                file,
+                channel: channel.into(),
+                instance_api: self.instance().api.clone(),
+            })
+            .collect())
+    }
+    /// Transfer and, for multipart, complete one staged file. No message or
+    /// fallback is sent. Callers may run siblings concurrently and cancel each
+    /// independently after the single shared planning request has resolved.
+    pub async fn upload_planned_attachment(
+        &self,
+        planned: &PlannedAttachment,
+        cancel: &UploadCancellation,
+        callback: UploadProgressCallback,
+    ) -> Result<Value> {
+        cancel.check()?;
+        if planned.instance_api != self.instance().api {
+            return Err(Error::InvalidUpload(
+                "upload plan belongs to a different instance",
+            ));
+        }
+        let plan = planned.plan.as_ref().ok_or(Error::AttachmentPlanMissing)?;
+        validate_plan(plan, &planned.file)?;
+        let files = std::slice::from_ref(&planned.file);
+        let mut progress = Progress::new(files, callback);
+        // Textarea upload reports part retry resets directly. Full-message
+        // AttachmentUploadPlan uses a monotonic outer per-file maximum instead.
+        progress.monotonic = false;
+        let progress = Arc::new(progress);
+        let transport = upload_transport()?;
+        let mut values = self
+            .transfer_plans(
+                &planned.channel,
+                files,
+                std::slice::from_ref(plan),
+                &transport,
+                cancel,
+                &progress,
+            )
+            .await?;
+        progress.report(Some(UploadPhase::Complete), None, false);
+        Ok(values.remove(0))
+    }
+
     /// Background preupload never falls back to posting a message. The caller
     /// alone decides whether the user's privacy preference permits this work.
     pub async fn preupload_attachments(
@@ -543,7 +647,7 @@ impl Client {
         progress.report(Some(UploadPhase::Complete), None, false);
         Ok(result)
     }
-    async fn attachment_plans(
+    async fn request_attachment_plans(
         &self,
         channel: &str,
         files: &[PreparedFile],
@@ -571,6 +675,22 @@ impl Client {
                 .unwrap_or_else(|| json!([])),
         )
         .map_err(|_| Error::InvalidUpload("invalid presigned upload response"))?;
+        for plan in &plans {
+            validate_plan_response(plan)?;
+        }
+        Ok(plans)
+    }
+    async fn attachment_plans(
+        &self,
+        channel: &str,
+        files: &[PreparedFile],
+        transport: &reqwest::Client,
+        cancel: &UploadCancellation,
+        progress: &Arc<Progress>,
+    ) -> Result<Vec<Plan>> {
+        let plans = self
+            .request_attachment_plans(channel, files, transport, cancel, progress)
+            .await?;
         // Source maps response IDs instead of assuming the server's array order.
         let indexed = plans
             .iter()
@@ -736,6 +856,24 @@ fn endpoint_unreachable(error: &Error) -> bool {
                 ..
             }
     )
+}
+// AttachmentUploadPlan.requestPresignedAttachmentUploads validates basic
+// response metadata before distributing independent textarea upload promises.
+fn validate_plan_response(plan: &Plan) -> Result<()> {
+    if plan.upload_filename().is_empty() || plan.filename().is_empty() {
+        return Err(Error::InvalidUpload("invalid upload plan metadata"));
+    }
+    match plan {
+        Plan::Single { upload_url, .. } if upload_url.is_empty() => {
+            Err(Error::InvalidUpload("missing singlepart URL"))
+        }
+        Plan::Multipart {
+            upload_id, parts, ..
+        } if upload_id.is_empty() || parts.is_empty() => {
+            Err(Error::InvalidUpload("missing multipart metadata"))
+        }
+        _ => Ok(()),
+    }
 }
 fn validate_plan(plan: &Plan, file: &PreparedFile) -> Result<()> {
     if plan.upload_filename().is_empty()

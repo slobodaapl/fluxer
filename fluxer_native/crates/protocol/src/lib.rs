@@ -20,5 +20,6 @@ pub use reqwest::Method;
 pub use url::Url;
 
 pub use attachments::{
-    UploadAttachment, UploadCancellation, UploadPhase, UploadProgress, UploadProgressCallback,
+    PlannedAttachment, UploadAttachment, UploadCancellation, UploadPhase, UploadProgress,
+    UploadProgressCallback,
 };
