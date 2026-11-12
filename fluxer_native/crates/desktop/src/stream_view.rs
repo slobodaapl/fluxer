@@ -572,7 +572,8 @@ impl Fluxer {
             .into_any_element()
     }
 
-    pub(super) fn install_stream_fixture(&mut self) {
+    pub(super) fn install_stream_fixture(&mut self, cx: &mut Context<Self>) {
+        self.clear_viewer(cx);
         self.state = ClientState::demo();
         for (index, name) in ["Alex", "Morgan"].into_iter().enumerate() {
             let identity = format!("preview-{index}");
