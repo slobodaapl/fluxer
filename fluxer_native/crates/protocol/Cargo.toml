@@ -18,3 +18,4 @@ zstd = { version = "=0.14.0", default-features = false }
 fastrand = "2"
 getrandom = "0.3"
 dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
