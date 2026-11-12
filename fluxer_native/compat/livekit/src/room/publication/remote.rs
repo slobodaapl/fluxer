@@ -80,7 +80,11 @@ impl RemoteTrackPublication {
         Self {
             inner: super::new_inner(info, track.map(Into::into)),
             remote: Arc::new(RemoteInner {
-                info: RwLock::new(RemoteInfo { subscribed: auto_subscribe, allowed: true, retained_track: None }),
+                info: RwLock::new(RemoteInfo {
+                    subscribed: auto_subscribe,
+                    allowed: true,
+                    retained_track: None,
+                }),
                 events: Default::default(),
             }),
         }
@@ -121,8 +125,12 @@ impl RemoteTrackPublication {
 
     pub(crate) fn emit_subscription_update(&self, old_subscription_state: SubscriptionStatus) {
         if old_subscription_state != self.subscription_status() {
-            if let Some(subscription_status_changed) =
-                self.remote.events.subscription_status_changed.lock().as_ref()
+            if let Some(subscription_status_changed) = self
+                .remote
+                .events
+                .subscription_status_changed
+                .lock()
+                .as_ref()
             {
                 subscription_status_changed(
                     self.clone(),
@@ -153,7 +161,11 @@ impl RemoteTrackPublication {
     }
 
     pub(crate) fn update_info(&self, new_info: proto::TrackInfo) {
-        super::update_info(&self.inner, &TrackPublication::Remote(self.clone()), new_info.clone());
+        super::update_info(
+            &self.inner,
+            &TrackPublication::Remote(self.clone()),
+            new_info.clone(),
+        );
 
         let mut info = self.inner.info.write();
         let muted = info.muted;
@@ -211,7 +223,9 @@ impl RemoteTrackPublication {
 
     pub(crate) fn clear_retained_track(&self) {
         let retained = self.remote.info.write().retained_track.take();
-        if let Some(track) = retained { track.disable(); }
+        if let Some(track) = retained {
+            track.disable();
+        }
     }
 
     pub(crate) fn on_subscription_update_needed_if_unset(
@@ -270,7 +284,9 @@ impl RemoteTrackPublication {
             // Preserve it privately while keeping the Rust unsubscribed event
             // contract (including normal E2EE teardown/recreation). Resuming an
             // existing MID need not fire another WebRTC onTrack callback.
-            let retained = self.track().or_else(|| self.remote.info.read().retained_track.clone());
+            let retained = self
+                .track()
+                .or_else(|| self.remote.info.read().retained_track.clone());
             self.set_track(None);
             self.remote.info.write().retained_track = retained;
         } else {
@@ -281,8 +297,12 @@ impl RemoteTrackPublication {
         }
 
         // Request to send an update to the SFU
-        if let Some(subscription_update_needed) =
-            self.remote.events.subscription_update_needed.lock().as_ref()
+        if let Some(subscription_update_needed) = self
+            .remote
+            .events
+            .subscription_update_needed
+            .lock()
+            .as_ref()
         {
             subscription_update_needed(self.clone(), subscribed);
         }
@@ -406,7 +426,12 @@ impl RemoteTrackPublication {
     }
 
     pub fn track(&self) -> Option<RemoteTrack> {
-        self.inner.info.read().track.clone().map(|track| track.try_into().unwrap())
+        self.inner
+            .info
+            .read()
+            .track
+            .clone()
+            .map(|track| track.try_into().unwrap())
     }
 
     pub fn mime_type(&self) -> String {
@@ -437,49 +462,99 @@ impl RemoteTrackPublication {
 #[cfg(test)]
 mod fluxer_compat_tests {
     use super::*;
+    use libwebrtc::video_source::{native::NativeVideoSource, RtcVideoSource, VideoResolution};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use libwebrtc::video_source::{native::NativeVideoSource,RtcVideoSource,VideoResolution};
 
-    fn publication() -> (RemoteTrackPublication,RemoteVideoTrack) {
-        let source=NativeVideoSource::new(VideoResolution {width:16,height:16},true);
-        let local=LocalVideoTrack::create_video_track("fixture",RtcVideoSource::Native(source));
-        let track=RemoteVideoTrack::new("TR_fixture".to_owned().try_into().unwrap(),"screen".into(),local.rtc_track());
-        let publication=RemoteTrackPublication::new(proto::TrackInfo {
-            sid:"TR_fixture".into(),name:"screen".into(),r#type:proto::TrackType::Video as i32,source:proto::TrackSource::ScreenShare as i32,..Default::default()
-        },Some(RemoteTrack::Video(track.clone())),true);
-        (publication,track)
+    fn publication() -> (RemoteTrackPublication, RemoteVideoTrack) {
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: 16,
+                height: 16,
+            },
+            true,
+        );
+        let local = LocalVideoTrack::create_video_track("fixture", RtcVideoSource::Native(source));
+        let track = RemoteVideoTrack::new(
+            "TR_fixture".to_owned().try_into().unwrap(),
+            "screen".into(),
+            local.rtc_track(),
+        );
+        let publication = RemoteTrackPublication::new(
+            proto::TrackInfo {
+                sid: "TR_fixture".into(),
+                name: "screen".into(),
+                r#type: proto::TrackType::Video as i32,
+                source: proto::TrackSource::ScreenShare as i32,
+                ..Default::default()
+            },
+            Some(RemoteTrack::Video(track.clone())),
+            true,
+        );
+        (publication, track)
     }
-    #[test]
-    fn unsubscribe_resume_preserves_receiver_and_normal_subscription_hooks() {
-        let (publication,track)=publication();
-        let subscribed=Arc::new(AtomicUsize::new(0));let unsubscribed=Arc::new(AtomicUsize::new(0));
-        let counter=subscribed.clone();publication.on_subscribed(move|_,_|{counter.fetch_add(1,Ordering::Relaxed);});
-        let counter=unsubscribed.clone();publication.on_unsubscribed(move|_,_|{counter.fetch_add(1,Ordering::Relaxed);});
-        publication.set_subscribed(false);publication.set_subscribed(false);
-        assert!(!publication.is_desired());assert!(publication.track().is_none());
+    #[tokio::test]
+    async fn unsubscribe_resume_preserves_receiver_and_normal_subscription_hooks() {
+        let (publication, track) = publication();
+        let subscribed = Arc::new(AtomicUsize::new(0));
+        let unsubscribed = Arc::new(AtomicUsize::new(0));
+        let counter = subscribed.clone();
+        publication.on_subscribed(move |_, _| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        let counter = unsubscribed.clone();
+        publication.on_unsubscribed(move |_, _| {
+            counter.fetch_add(1, Ordering::Relaxed);
+        });
+        publication.set_subscribed(false);
+        publication.set_subscribed(false);
+        assert!(!publication.is_desired());
+        assert!(publication.track().is_none());
         assert!(publication.remote.info.read().retained_track.is_some());
-        assert_eq!(unsubscribed.load(Ordering::Relaxed),1);
-        publication.set_subscribed(true);publication.set_subscribed(true);
-        assert!(publication.is_subscribed());assert!(publication.remote.info.read().retained_track.is_none());
-        assert_eq!(subscribed.load(Ordering::Relaxed),1,"normal hook recreates renderer/decryptor once");
-        track.disable();assert!(!publication.is_enabled(),"resumed publication owns same RTC handle");
+        assert_eq!(unsubscribed.load(Ordering::Relaxed), 1);
+        publication.set_subscribed(true);
+        publication.set_subscribed(true);
+        assert!(publication.is_subscribed());
+        assert!(publication.remote.info.read().retained_track.is_none());
+        assert_eq!(
+            subscribed.load(Ordering::Relaxed),
+            1,
+            "normal hook recreates renderer/decryptor once"
+        );
+        track.disable();
+        assert!(
+            !publication.is_enabled(),
+            "resumed publication owns same RTC handle"
+        );
     }
-    #[test]
-    fn final_unpublication_releases_retained_handle_and_cannot_resurrect_it() {
-        let (publication,track)=publication();publication.set_subscribed(false);
-        publication.clear_retained_track();publication.set_track(None);
-        assert!(!track.is_enabled());assert!(publication.remote.info.read().retained_track.is_none());
-        publication.set_subscribed(true);assert!(publication.track().is_none());
+    #[tokio::test]
+    async fn final_unpublication_releases_retained_handle_and_cannot_resurrect_it() {
+        let (publication, track) = publication();
+        publication.set_subscribed(false);
+        publication.clear_retained_track();
+        publication.set_track(None);
+        assert!(!track.is_enabled());
+        assert!(publication.remote.info.read().retained_track.is_none());
+        publication.set_subscribed(true);
+        assert!(publication.track().is_none());
     }
-    #[test]
-    fn publication_reregistration_keeps_one_ordered_subscription_handler() {
-        let (publication,_track)=publication();let requests=Arc::new(Mutex::new(Vec::new()));let queue=requests.clone();
-        publication.on_subscription_update_needed_if_unset(||Box::new(move|_,subscribed|queue.lock().push(subscribed)));
-        publication.on_subscription_update_needed_if_unset(||panic!("must not replace publication queue"));
-        for requested in [false,true,false,true] {publication.set_subscribed(requested);}
-        assert_eq!(*requests.lock(),[false,true,false,true]);
+    #[tokio::test]
+    async fn publication_reregistration_keeps_one_ordered_subscription_handler() {
+        let (publication, _track) = publication();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let queue = requests.clone();
+        publication.on_subscription_update_needed_if_unset(|| {
+            Box::new(move |_, subscribed| queue.lock().push(subscribed))
+        });
+        publication.on_subscription_update_needed_if_unset(|| {
+            panic!("must not replace publication queue")
+        });
+        for requested in [false, true, false, true] {
+            publication.set_subscribed(requested);
+        }
+        assert_eq!(*requests.lock(), [false, true, false, true]);
         // Final removal drops the real sender by replacing this handler.
-        publication.on_subscription_update_needed(|_,_|{});publication.set_subscribed(false);
-        assert_eq!(requests.lock().len(),4);
+        publication.on_subscription_update_needed(|_, _| {});
+        publication.set_subscribed(false);
+        assert_eq!(requests.lock().len(), 4);
     }
 }

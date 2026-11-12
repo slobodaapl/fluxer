@@ -104,7 +104,10 @@ impl RemoteParticipant {
                 client_protocol,
                 capabilities,
             ),
-            remote: Arc::new(RemoteInfo { events: Default::default(), auto_subscribe }),
+            remote: Arc::new(RemoteInfo {
+                events: Default::default(),
+                auto_subscribe,
+            }),
         }
     }
 
@@ -210,7 +213,11 @@ impl RemoteParticipant {
     }
 
     pub(crate) fn update_info(&self, info: proto::ParticipantInfo) {
-        super::update_info(&self.inner, &Participant::Remote(self.clone()), info.clone());
+        super::update_info(
+            &self.inner,
+            &Participant::Remote(self.clone()),
+            info.clone(),
+        );
 
         let mut valid_tracks = HashSet::<TrackSid>::new();
         for track in info.tracks {
@@ -372,9 +379,11 @@ impl RemoteParticipant {
                             track_sids: vec![tsid],
                         }],
                     };
-                    let _ = rtc_engine.send_request(
-                        proto::signal_request::Message::Subscription(update_subscription),
-                    ).await;
+                    let _ = rtc_engine
+                        .send_request(proto::signal_request::Message::Subscription(
+                            update_subscription,
+                        ))
+                        .await;
                 }
             });
             Box::new(move |publication, subscribed| {
