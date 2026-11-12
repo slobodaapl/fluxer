@@ -1,0 +1,45 @@
+{
+  "session_id": "fixture-session",
+  "user": {
+    "id": "100",
+    "username": "self",
+    "discriminator": "0001",
+    "global_name": "Private Self",
+    "email": "fixture@example.test",
+    "mfa_enabled": true
+  },
+  "users": [
+    {"id": "100", "username": "self", "global_name": "Public Self"},
+    {"id": "101", "username": "alex", "global_name": "Alex", "avatar": "avatar-hash"},
+    {"id": "102", "username": "river", "global_name": "River"}
+  ],
+  "guilds": [
+    {
+      "id": "1",
+      "properties": {"id": "1", "name": "Reference Community", "owner_id": "101", "mfa_level": 0},
+      "channels": [
+        {"id": "11", "name": "general", "type": 0, "permission_overwrites": []},
+        {"id": "14", "name": "Lounge", "type": 2, "permission_overwrites": []}
+      ],
+      "roles": [{"id": "1", "name": "@everyone", "permissions": "3148800", "position": 0, "color": 0, "hoist": false}],
+      "members": [
+        {"user": {"id": "100"}, "roles": [], "joined_at": "2026-11-12T00:00:00Z", "mute": false, "deaf": false},
+        {"user": {"id": "101"}, "roles": [], "joined_at": "2026-11-12T00:00:00Z", "mute": false, "deaf": false}
+      ],
+      "member_count": 3,
+      "presences": [],
+      "voice_states": [
+        {"user_id": "101", "channel_id": "14", "guild_id": "1", "connection_id": "connection-a", "session_id": "session-a", "self_mute": false, "self_deaf": false, "member": {"user": {"id": "101"}, "roles": []}}
+      ],
+      "joined_at": "2026-11-12T00:00:00Z"
+    },
+    {"id": "2", "unavailable": true}
+  ],
+  "private_channels": [
+    {"id": "40", "type": 1, "name": null, "recipients": [{"id": "101"}]},
+    {"id": "41", "type": 3, "name": null, "recipients": [{"id": "101"}, {"id": "102"}]}
+  ],
+  "relationships": [{"id": "101", "type": 1, "nickname": null}],
+  "presences": [{"user": {"id": "101"}, "status": "online"}],
+  "read_states": [{"id": "11", "last_message_id": null, "mention_count": 0}]
+}
