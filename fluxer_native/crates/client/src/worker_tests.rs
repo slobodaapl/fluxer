@@ -209,7 +209,7 @@ async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_captu
             let (status, body) = match (method, path) {
                 ("GET", "/.well-known/fluxer") => (
                     200,
-                    json!({"codename":"tungsten","api_code_version":1,"endpoints":{"api":advertised_api,"gateway":ws_endpoint}}),
+                    json!({"codename":"tungsten","api_code_version":1,"endpoints":{"api":advertised_api,"api_client":advertised_api,"webapp":advertised_api,"gateway":ws_endpoint}}),
                 ),
                 ("GET", "/api/v1/users/@me") => (200, user.clone()),
                 ("GET", "/api/v1/users/@me/guilds") => (200, json!([guild.clone()])),

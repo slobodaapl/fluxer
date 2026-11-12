@@ -131,10 +131,20 @@ impl Client {
         authenticated: bool,
     ) -> Result<Value> {
         let url = self.route_url(path)?;
+        let requires_origin = method != Method::GET && method != Method::HEAD;
         let mut request = self
             .http
             .request(method, url)
             .header(header::ACCEPT, "application/json");
+        if requires_origin {
+            // Match LocalAppAPIProxyRequestHandler.forward and
+            // LocalAppProxyHTTPPolicy.buildAPIRequestHeaders: use the discovered
+            // web app's origin, and omit Origin for GET and HEAD.
+            request = request.header(
+                header::ORIGIN,
+                self.instance.web_app.origin().ascii_serialization(),
+            );
+        }
         if authenticated && let Some(token) = &self.token {
             let mut authorization = header::HeaderValue::from_str(token.expose_secret())
                 .map_err(|_| Error::InvalidAuthResponse)?;

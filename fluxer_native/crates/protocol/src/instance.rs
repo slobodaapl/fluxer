@@ -10,6 +10,7 @@ const DISCOVERY_LIMIT: usize = 1024 * 1024;
 pub struct Instance {
     pub api: Url,
     pub gateway: Url,
+    pub web_app: Url,
     pub api_version: u32,
     pub features: Value,
     pub document: Value,
@@ -78,13 +79,9 @@ impl Instance {
         let client_api = endpoints
             .get("api_client")
             .and_then(Value::as_str)
-            .map(|value| endpoint(value, false))
-            .transpose()?;
-        if api.origin() != served_by.origin()
-            || client_api
-                .as_ref()
-                .is_some_and(|url| url.origin() != served_by.origin())
-        {
+            .ok_or_else(|| Error::Discovery("missing endpoints.api_client".into()))
+            .and_then(|value| endpoint(value, false))?;
+        if api.origin() != served_by.origin() || client_api.origin() != served_by.origin() {
             return Err(Error::Discovery(
                 "declared API origin differs from discovery origin".into(),
             ));
@@ -96,6 +93,13 @@ impl Instance {
                 .unwrap_or(""),
             true,
         )?;
+        // ClientRuntimeDiscovery.projectEndpoints requires this endpoint, and
+        // the desktop proxy uses its origin for API mutations.
+        let web_app = endpoints
+            .get("webapp")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Discovery("missing endpoints.webapp".into()))
+            .and_then(|value| endpoint(value, false))?;
         let api_version = match document.get("api_code_version") {
             None | Some(Value::Null) => 1,
             Some(value) => value
@@ -105,8 +109,9 @@ impl Instance {
                 .ok_or_else(|| Error::Discovery("invalid api_code_version".into()))?,
         };
         Ok(Self {
-            api: client_api.unwrap_or(api),
+            api: client_api,
             gateway,
+            web_app,
             api_version,
             features: document.get("features").cloned().unwrap_or_default(),
             document,
@@ -118,6 +123,9 @@ impl Instance {
         Ok(Self {
             api: endpoint(api, false)?,
             gateway: endpoint(gateway, true)?,
+            // This explicit local-test helper configures a same-origin web app.
+            // Discovery never substitutes the API for a missing webapp endpoint.
+            web_app: endpoint(api, false)?,
             api_version: 1,
             features: Value::Null,
             document: Value::Null,

@@ -14,8 +14,18 @@ use tokio::{
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 async fn http_server(responses: Vec<String>) -> (String, mpsc::Receiver<String>) {
+    http_server_with_origin_policy(responses, false, None).await
+}
+
+async fn http_server_with_origin_policy(
+    responses: Vec<String>,
+    require_origin: bool,
+    web_app_origin: Option<&str>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let origin = format!("http://{address}");
+    let expected_origin = web_app_origin.unwrap_or(&origin).to_owned();
     let (requests_tx, requests) = mpsc::channel(16);
     tokio::spawn(async move {
         for response in responses {
@@ -43,12 +53,27 @@ async fn http_server(responses: Vec<String>) -> (String, mpsc::Receiver<String>)
                     }
                 }
             }
-            let _ = requests_tx.send(String::from_utf8(request).unwrap()).await;
+            let request = String::from_utf8(request).unwrap();
+            let method = request.split_whitespace().next().unwrap();
+            let request_origin = request.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("origin").then(|| value.trim())
+            });
+            // Mirror the production web-host gate in MiddlewarePipeline.ts.
+            let response = if require_origin
+                && method != "GET"
+                && request_origin != Some(expected_origin.as_str())
+            {
+                self::response("403 Forbidden", json!({"code":"INVALID_API_ORIGIN"}))
+            } else {
+                response
+            };
+            let _ = requests_tx.send(request).await;
             socket.write_all(response.as_bytes()).await.unwrap();
             socket.shutdown().await.unwrap();
         }
     });
-    (format!("http://{address}"), requests)
+    (origin, requests)
 }
 
 fn response(status: &str, body: Value) -> String {
@@ -57,6 +82,97 @@ fn response(status: &str, body: Value) -> String {
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
+}
+
+#[tokio::test]
+async fn login_and_bodyless_mutations_satisfy_the_production_origin_gate() {
+    let (origin, mut requests) = http_server_with_origin_policy(
+        vec![
+            response("200 OK", json!({"token":"account-secret","user_id":"123"})),
+            response("200 OK", json!({"id":"123"})),
+            response("200 OK", json!({"content":"edited"})),
+            response("200 OK", Value::Null),
+            response("200 OK", Value::Null),
+            response("200 OK", Value::Null),
+        ],
+        true,
+        None,
+    )
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/custom/api"), "ws://127.0.0.1/gateway")
+            .unwrap(),
+    )
+    .unwrap();
+    let LoginOutcome::Authenticated { token, .. } = client
+        .login(
+            LoginIdentifier::Email("test@example.com".into()),
+            "password",
+        )
+        .await
+        .expect("login must pass the production Origin gate")
+    else {
+        panic!("expected authenticated login");
+    };
+    let client = client.with_token(token);
+    client.current_user().await.unwrap();
+    client.edit_message("1", "2", "edited").await.unwrap();
+    client.add_reaction("1", "2", "👍").await.unwrap();
+    client.delete_message("1", "2").await.unwrap();
+    client.typing("1").await.unwrap();
+    for method in ["POST", "GET", "PATCH", "PUT", "DELETE", "POST"] {
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(method));
+        let header = request.to_ascii_lowercase();
+        if method == "GET" {
+            assert!(!header.contains("\r\norigin:"));
+        } else {
+            assert!(header.contains(&format!("\r\norigin: {origin}\r\n")));
+        }
+    }
+}
+
+#[tokio::test]
+async fn desktop_origin_comes_from_discovered_webapp_and_excludes_get_and_head() {
+    // Reference: LocalAppAPIProxyRequestHandler.ts forward() and
+    // LocalAppProxyHTTPPolicy.ts buildAPIRequestHeaders()/requestHasBody().
+    // Different API/webapp authorities catch an accidental API-origin fallback.
+    let web_app = "https://client.example.test:8443/client";
+    let web_app_origin = "https://client.example.test:8443";
+    let (origin, mut requests) = http_server_with_origin_policy(
+        vec![response("200 OK", json!({})); 5],
+        false,
+        Some(web_app_origin),
+    )
+    .await;
+    let api = format!("{origin}/api");
+    let instance = Instance::from_document(
+        &Url::parse(&format!("{origin}/.well-known/fluxer")).unwrap(),
+        json!({"api_code_version":1,"endpoints":{
+            "api":api,"api_client":api,"webapp":web_app,"gateway":"ws://127.0.0.1/gateway"
+        }}),
+    )
+    .unwrap();
+    let client = Client::new(instance).unwrap();
+    for method in [
+        fluxer_protocol::Method::GET,
+        fluxer_protocol::Method::HEAD,
+        fluxer_protocol::Method::POST,
+        fluxer_protocol::Method::PUT,
+        fluxer_protocol::Method::DELETE,
+    ] {
+        client
+            .request(method.clone(), "/contract", None)
+            .await
+            .unwrap();
+        let request = requests.recv().await.unwrap().to_ascii_lowercase();
+        if method == fluxer_protocol::Method::GET || method == fluxer_protocol::Method::HEAD {
+            assert!(!request.contains("\r\norigin:"));
+        } else {
+            assert!(request.contains(&format!("\r\norigin: {web_app_origin}\r\n")));
+            assert!(!request.contains(&format!("\r\norigin: {origin}\r\n")));
+        }
+    }
 }
 
 #[tokio::test]
