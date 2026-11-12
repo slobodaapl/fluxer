@@ -58,6 +58,16 @@ async fn no_video(events: &mut mpsc::Receiver<MediaEvent>) {
         .is_err()
     );
 }
+async fn full_video_queue(events: &mpsc::Receiver<MediaEvent>) {
+    timeout(Duration::from_secs(4), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        while events.capacity() != 0 {
+            poll.tick().await;
+        }
+    })
+    .await
+    .expect("fixture fills media queue with real decoded video");
+}
 async fn publish(
     room: &Room,
     name: &str,
@@ -132,10 +142,11 @@ async fn decoded(
     sid: &TrackSid,
     identity: &str,
     green: bool,
+    generation: u64,
 ) {
     let event = until(
         events,
-        |event| matches!(event,MediaEvent::Video(frame) if frame.track_id==sid.to_string() && has_color(frame,green)),
+        |event| matches!(event,MediaEvent::Video(frame) if frame.track_id==sid.to_string() && frame.watch_generation==generation && has_color(frame,green)),
     )
     .await;
     let MediaEvent::Video(frame) = event else {
@@ -207,13 +218,36 @@ async fn watch_lifecycle(encrypted: bool) {
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("watch first screen");
-    decoded(&mut events, &first_sid, &identity, false).await;
+    decoded(
+        &mut events,
+        &first_sid,
+        &identity,
+        false,
+        receiver.watch_generation(&identity),
+    )
+    .await;
     eprintln!("screen_watch: first publication decoded");
-    eprintln!("screen_watch: unwatch requested; awaiting VideoEnded");
+    // Fill the bounded video channel intentionally to exercise stop delivery
+    // under backpressure, rather than testing only an empty event queue.
+    full_video_queue(&events).await;
+    let first_generation = receiver.watch_generation(&identity);
+    let stop_started = std::time::Instant::now();
+    eprintln!("screen_watch: unwatch requested under full media queue; awaiting VideoEnded");
     receiver
         .set_watched_participants(vec![])
         .expect("stop watching");
-    until(&mut events,|event|matches!(event,MediaEvent::VideoEnded{track_id} if track_id==&first_sid.to_string())).await;
+    let ended=until(&mut events,|event|matches!(event,MediaEvent::VideoEnded{track_id,..} if track_id==&first_sid.to_string())).await;
+    let local_stop = stop_started.elapsed();
+    eprintln!(
+        "screen_watch: encrypted={encrypted} stop call and local VideoEnded took {local_stop:?}"
+    );
+    assert!(
+        local_stop < Duration::from_millis(250),
+        "local stop must not wait for network or decryptor teardown: {local_stop:?}"
+    );
+    assert!(
+        matches!(ended,MediaEvent::VideoEnded{participant,watch_generation,..} if participant==identity && watch_generation==first_generation)
+    );
     eprintln!("screen_watch: VideoEnded received; verifying no more video");
     no_video(&mut events).await;
     eprintln!("screen_watch: no packets after unwatch; requesting same publication rewatch");
@@ -221,8 +255,28 @@ async fn watch_lifecycle(encrypted: bool) {
     receiver
         .set_watched_participants(vec![identity.clone()])
         .expect("rewatch same publication");
-    decoded(&mut events, &first_sid, &identity, true).await;
+    decoded(
+        &mut events,
+        &first_sid,
+        &identity,
+        true,
+        receiver.watch_generation(&identity),
+    )
+    .await;
     eprintln!("screen_watch: same publication rewatch decoded");
+    full_video_queue(&events).await;
+    let old_generation = receiver.watch_generation(&identity);
+    receiver
+        .set_watched_participants(vec![])
+        .expect("rapid stop");
+    first_green.store(false, Ordering::Release);
+    receiver
+        .set_watched_participants(vec![identity.clone()])
+        .expect("rapid sameSID rewatch without draining old frames/ends");
+    let current = receiver.watch_generation(&identity);
+    assert_ne!(old_generation, current);
+    decoded(&mut events, &first_sid, &identity, false, current).await;
+    eprintln!("screen_watch: rapid rewatch fenced old queued frames and lifecycle ends");
     // Replacement SID must be observed while explicit participant watch intent
     // remains. This is not a blanket auto-subscribe to all room video.
     first_stop.store(true, Ordering::Release);
@@ -237,7 +291,14 @@ async fn watch_lifecycle(encrypted: bool) {
         publish(&publisher, "fixture republished screen").await;
     assert_ne!(first_sid, second_sid);
     until(&mut events,|event|matches!(event,MediaEvent::ScreenStreamAvailable {identity:id,available:true} if id==&identity)).await;
-    decoded(&mut events, &second_sid, &identity, false).await;
+    decoded(
+        &mut events,
+        &second_sid,
+        &identity,
+        false,
+        receiver.watch_generation(&identity),
+    )
+    .await;
     eprintln!("screen_watch: replacement SID decoded");
     // Also prove pending watch intent works before any publication metadata.
     second_stop.store(true, Ordering::Release);
@@ -256,7 +317,14 @@ async fn watch_lifecycle(encrypted: bool) {
         .expect("watch before metadata exists");
     let (late_sid, _late_source, late_task, late_stop, _) =
         publish(&publisher, "fixture late screen").await;
-    decoded(&mut events, &late_sid, &identity, false).await;
+    decoded(
+        &mut events,
+        &late_sid,
+        &identity,
+        false,
+        receiver.watch_generation(&identity),
+    )
+    .await;
     eprintln!("screen_watch: pending watch before metadata decoded");
     late_stop.store(true, Ordering::Release);
     late_task.abort();

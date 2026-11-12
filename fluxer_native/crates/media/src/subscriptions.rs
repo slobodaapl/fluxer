@@ -60,8 +60,27 @@ pub(crate) struct Registry {
     participants: HashMap<String, RemoteParticipant>,
     publications: HashMap<String, Publication>,
     available: BTreeSet<String>,
+    watch_generations: HashMap<String, u64>,
 }
 impl Registry {
+    pub fn replace_watched(&mut self, identities: Vec<String>) -> Plan {
+        let next = identities
+            .into_iter()
+            .filter(|id| !id.is_empty())
+            .collect::<BTreeSet<_>>();
+        for identity in self.policy.watched.symmetric_difference(&next) {
+            let generation = self.watch_generations.entry(identity.clone()).or_default();
+            *generation = generation.wrapping_add(1);
+        }
+        self.policy.watched = next;
+        self.plan()
+    }
+    pub fn watch_generation(&self, identity: &str) -> u64 {
+        self.watch_generations.get(identity).copied().unwrap_or(0)
+    }
+    pub fn watch_is_current(&self, identity: &str, generation: u64) -> bool {
+        self.policy.watched.contains(identity) && self.watch_generation(identity) == generation
+    }
     pub fn observe_participant(&mut self, participant: RemoteParticipant) -> Plan {
         let identity = participant.identity().to_string();
         for publication in participant.track_publications().into_values() {
@@ -154,6 +173,18 @@ impl Registry {
             publication.kind() == TrackKind::Audio && is_screen_audio_label(&publication.name()),
         )
     }
+    pub fn desired_track_at(&self, sid: &str, generation: u64) -> bool {
+        self.publications.get(sid).is_some_and(|entry| {
+            let publication = &entry.publication;
+            let watched_media = matches!(
+                publication.source(),
+                TrackSource::Screenshare | TrackSource::ScreenshareAudio
+            ) || (publication.kind() == TrackKind::Audio
+                && is_screen_audio_label(&publication.name()));
+            self.decision(&entry.identity, publication).subscribe
+                && (!watched_media || self.watch_is_current(&entry.identity, generation))
+        })
+    }
     pub fn desired_track(&self, sid: &str) -> bool {
         self.publications
             .get(sid)
@@ -170,7 +201,7 @@ fn availability_changes(
         .chain(next.difference(previous).map(|id| (id.clone(), true)))
         .collect()
 }
-fn is_screen_audio_label(label: &str) -> bool {
+pub(crate) fn is_screen_audio_label(label: &str) -> bool {
     let label = label
         .chars()
         .filter(|c| c.is_ascii_alphanumeric())
@@ -185,6 +216,28 @@ fn is_screen_audio_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn watch_epochs_reject_old_same_sid_frames_without_disturbing_other_watchers() {
+        let mut registry = Registry::default();
+        registry.replace_watched(vec!["alice".into(), "bob".into()]);
+        let alice = registry.watch_generation("alice");
+        let bob = registry.watch_generation("bob");
+        assert!(registry.watch_is_current("alice", alice));
+        registry.replace_watched(vec!["bob".into()]);
+        assert!(!registry.watch_is_current("alice", alice));
+        registry.replace_watched(vec!["alice".into(), "bob".into()]);
+        assert!(!registry.watch_is_current("alice", alice));
+        assert!(registry.watch_is_current("bob", bob));
+        let current = registry.watch_generation("alice");
+        registry.replace_watched(vec!["alice".into(), "bob".into()]);
+        assert_eq!(
+            registry.watch_generation("alice"),
+            current,
+            "unchanged intent never invalidates active renderer"
+        );
+        registry.clear_publications();
+        assert!(registry.watch_is_current("alice", current));
+    }
     #[test]
     fn microphone_deafen_never_auto_subscribes_video_or_stream_audio() {
         let mut policy = Policy::default();
