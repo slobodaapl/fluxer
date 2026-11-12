@@ -9,6 +9,7 @@ impl Fluxer {
             self.pane = Pane::Call;
         } else {
             // Drop pixels and desired intent before any transport round trip.
+            self.retire_stream_image(&identity, cx);
             self.viewer.stop(&identity);
             if self.viewer.focused.is_none() {
                 self.pane = Pane::Chat;
@@ -23,15 +24,45 @@ impl Fluxer {
                 .filter(|index| *index < 2)
         {
             self.fixture_generation += 1;
-            self.viewer.receive(
-                identity.clone(),
-                fixture_frame(index, self.fixture_generation),
-            );
+            let frame = fixture_frame(index, self.fixture_generation);
+            self.video_stats.image_added(frame.image.id.0);
+            self.viewer.receive(identity.clone(), frame);
+        }
+        if let Some(animation) = &self.animation
+            && identity == "preview-0"
+        {
+            animation.set_active(watch, self.fixture_generation);
         }
         if !self.demo_stream && changed {
             self.command(Command::WatchStream { identity, watch }, cx);
         }
         cx.notify();
+    }
+
+    pub(super) fn stop_focused_stream(&mut self, cx: &mut Context<Self>) {
+        self.video_stats.stopped();
+        if let Some(identity) = self.viewer.focused.clone() {
+            self.watch_stream(identity, false, cx);
+        }
+    }
+    pub(super) fn schedule_perf_stop(&self, window: &Window, cx: &mut Context<Self>) {
+        let Some(delay) = std::env::var("FLUXER_VIDEO_PERF_STOP_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return;
+        };
+        let delay = Duration::from_millis(delay);
+        let deadline = std::time::Instant::now() + delay;
+        self.video_stats.request_stop(deadline);
+        let window = window.window_handle();
+        cx.spawn(async move |_, cx| {
+            Timer::after(delay).await;
+            let _ = window.update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(StopWatching), cx)
+            });
+        })
+        .detach();
     }
 
     fn stream_name(&self, identity: &str) -> String {
@@ -115,7 +146,6 @@ impl Fluxer {
                 })
                 .collect()
         };
-        let stop_identity = identity.clone();
         let retry_identity = identity.clone();
         let mute_identity = identity.clone();
         let down_identity = identity.clone();
@@ -221,7 +251,7 @@ impl Fluxer {
                         button("viewer-stop", "Stop watching")
                             .bg(rgb(0xb92e50))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.watch_stream(stop_identity.clone(), false, cx);
+                                this.stop_focused_stream(cx);
                             })),
                     ),
             )
@@ -532,7 +562,7 @@ impl Fluxer {
                             button("viewer-leave", "Leave voice")
                                 .bg(rgb(0x68303c))
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.viewer.clear();
+                                    this.clear_viewer(cx);
                                     this.pane = Pane::Chat;
                                     this.command(Command::LeaveVoice, cx);
                                 })),
@@ -552,8 +582,9 @@ impl Fluxer {
             );
             self.available_streams.insert(identity.clone());
             self.viewer.watch(identity.clone());
-            self.viewer
-                .receive(identity, fixture_frame(index, self.fixture_generation));
+            let frame = fixture_frame(index, self.fixture_generation);
+            self.video_stats.image_added(frame.image.id.0);
+            self.viewer.receive(identity, frame);
         }
         self.viewer.focused = Some("preview-0".into());
         self.pane = Pane::Call;
