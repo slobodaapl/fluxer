@@ -7,6 +7,7 @@ mod microphone;
 mod playback;
 mod publish;
 mod screen;
+mod subscriptions;
 
 pub use audio::{AudioMixSettings, InputMode, ParticipantAudioSettings};
 pub use publish::resolve_voice_channel_bitrate;
@@ -95,6 +96,7 @@ pub enum MediaEvent {
     Reconnecting,
     ParticipantJoined { identity: String, name: String },
     ParticipantLeft { identity: String },
+    ScreenStreamAvailable { identity: String, available: bool },
     Speakers(Vec<String>),
     Video(VideoFrame),
     VideoEnded { track_id: String },
@@ -147,6 +149,7 @@ pub struct MediaEngine {
     input_controls: Arc<Mutex<microphone::InputRuntime>>,
     input_capture: Option<microphone::MicrophoneCapture>,
     audio_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    subscriptions: Arc<Mutex<subscriptions::Registry>>,
 }
 
 impl MediaEngine {
@@ -184,6 +187,7 @@ impl MediaEngine {
             input_controls: Arc::new(Mutex::new(microphone::InputRuntime::default())),
             input_capture: None,
             audio_tasks: Arc::new(Mutex::new(HashMap::new())),
+            subscriptions: Arc::new(Mutex::new(subscriptions::Registry::default())),
         })
     }
 
@@ -290,6 +294,8 @@ impl MediaEngine {
         }
         let mut options = RoomOptions::default();
         options.single_peer_connection = false;
+        options.auto_subscribe = false;
+        options.dynacast = true;
         if let Some(key) = shared_key {
             if key.is_empty() {
                 return Err(MediaError::InvalidSetting("empty E2EE key"));
@@ -377,6 +383,7 @@ impl MediaEngine {
         let microphone = self.microphone.clone();
         let mixer = self.mixer.clone();
         let audio_tasks = self.audio_tasks.clone();
+        let subscriptions = self.subscriptions.clone();
         let _ = tx.try_send(MediaEvent::Connected);
         self.room_task = Some(tokio::spawn(async move {
             loop {
@@ -394,6 +401,29 @@ impl MediaEngine {
                         // The initial roster is included in Connected rather
                         // than ParticipantConnected events for existing peers.
                         for (participant, _) in participants_with_tracks {
+                            let plan = subscriptions.lock().ok().map(|mut registry| {
+                                registry.observe_participant(participant.clone())
+                            });
+                            if let Some(plan) = plan {
+                                apply_subscription_actions(
+                                    &plan,
+                                    &mixer,
+                                    &audio_tasks,
+                                    &video_tasks,
+                                );
+                                for (identity, available) in plan.availability {
+                                    if tx
+                                        .send(MediaEvent::ScreenStreamAvailable {
+                                            identity,
+                                            available,
+                                        })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
                             if tx
                                 .send(MediaEvent::ParticipantJoined {
                                     identity: participant.identity().to_string(),
@@ -407,18 +437,125 @@ impl MediaEngine {
                         }
                         None
                     }
-                    RoomEvent::ParticipantConnected(p) => Some(MediaEvent::ParticipantJoined {
-                        identity: p.identity().to_string(),
-                        name: p.name(),
-                    }),
-                    RoomEvent::ParticipantDisconnected(p) => Some(MediaEvent::ParticipantLeft {
-                        identity: p.identity().to_string(),
-                    }),
+                    RoomEvent::ParticipantConnected(p) => {
+                        let plan = subscriptions
+                            .lock()
+                            .ok()
+                            .map(|mut registry| registry.observe_participant(p.clone()));
+                        if let Some(plan) = plan {
+                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            for (identity, available) in plan.availability {
+                                if tx
+                                    .send(MediaEvent::ScreenStreamAvailable {
+                                        identity,
+                                        available,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Some(MediaEvent::ParticipantJoined {
+                            identity: p.identity().to_string(),
+                            name: p.name(),
+                        })
+                    }
+                    RoomEvent::ParticipantDisconnected(p) => {
+                        let plan = subscriptions.lock().ok().map(|mut registry| {
+                            registry.remove_participant(&p.identity().to_string())
+                        });
+                        if let Some(plan) = plan {
+                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            for (identity, available) in plan.availability {
+                                if tx
+                                    .send(MediaEvent::ScreenStreamAvailable {
+                                        identity,
+                                        available,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Some(MediaEvent::ParticipantLeft {
+                            identity: p.identity().to_string(),
+                        })
+                    }
+                    RoomEvent::TrackPublished {
+                        publication,
+                        participant,
+                    } => {
+                        let plan = subscriptions.lock().ok().map(|mut registry| {
+                            registry.observe_publication(participant, publication)
+                        });
+                        if let Some(plan) = plan {
+                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            for (identity, available) in plan.availability {
+                                if tx
+                                    .send(MediaEvent::ScreenStreamAvailable {
+                                        identity,
+                                        available,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        None
+                    }
+                    RoomEvent::TrackUnpublished { publication, .. } => {
+                        let plan = subscriptions.lock().ok().map(|mut registry| {
+                            registry.remove_publication(&publication.sid().to_string())
+                        });
+                        if let Some(plan) = plan {
+                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            for (identity, available) in plan.availability {
+                                if tx
+                                    .send(MediaEvent::ScreenStreamAvailable {
+                                        identity,
+                                        available,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        None
+                    }
                     RoomEvent::ActiveSpeakersChanged { speakers } => Some(MediaEvent::Speakers(
                         speakers.iter().map(|p| p.identity().to_string()).collect(),
                     )),
                     RoomEvent::Reconnecting => Some(MediaEvent::Reconnecting),
-                    RoomEvent::Reconnected => Some(MediaEvent::Connected),
+                    RoomEvent::Reconnected => {
+                        let plan = subscriptions
+                            .lock()
+                            .ok()
+                            .map(|mut registry| registry.reconcile());
+                        if let Some(plan) = plan {
+                            apply_subscription_actions(&plan, &mixer, &audio_tasks, &video_tasks);
+                            for (identity, available) in plan.availability {
+                                if tx
+                                    .send(MediaEvent::ScreenStreamAvailable {
+                                        identity,
+                                        available,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        Some(MediaEvent::Connected)
+                    }
                     RoomEvent::Disconnected { .. } => {
                         stop.store(true, Ordering::Release);
                         if let Some(mic) = &microphone {
@@ -439,13 +576,45 @@ impl MediaEngine {
                                 task.abort();
                             }
                         }
+                        let availability = subscriptions
+                            .lock()
+                            .ok()
+                            .map(|mut registry| registry.clear_publications().availability)
+                            .unwrap_or_default();
+                        for (identity, available) in availability {
+                            if tx
+                                .send(MediaEvent::ScreenStreamAvailable {
+                                    identity,
+                                    available,
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         Some(MediaEvent::Disconnected)
                     }
                     RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Audio(track),
                         participant,
-                        ..
+                        publication,
                     } => {
+                        let desired = subscriptions
+                            .lock()
+                            .map(|registry| {
+                                registry.decision(&participant.identity().to_string(), &publication)
+                            })
+                            .unwrap_or(subscriptions::Decision {
+                                subscribe: false,
+                                enabled: false,
+                            });
+                        if !desired.subscribe {
+                            track.disable();
+                            publication.set_subscribed(false);
+                            continue;
+                        }
+                        publication.set_enabled(desired.enabled);
                         let id = track.sid().to_string();
                         let identity = participant.identity().to_string();
                         let mut stream = NativeAudioStream::with_options(
@@ -461,8 +630,15 @@ impl MediaEngine {
                         }
                         let frame_id = id.clone();
                         let track_mixer = mixer.clone();
+                        let track_subscriptions = subscriptions.clone();
                         let task = tokio::spawn(async move {
                             while let Some(frame) = stream.next().await {
+                                if !track_subscriptions
+                                    .lock()
+                                    .is_ok_and(|registry| registry.desired_track(&frame_id))
+                                {
+                                    break;
+                                }
                                 if let Ok(mut m) = track_mixer.lock() {
                                     m.push(&frame_id, &frame.data, frame.num_channels);
                                 }
@@ -500,15 +676,37 @@ impl MediaEngine {
                     RoomEvent::TrackSubscribed {
                         track: RemoteTrack::Video(track),
                         participant,
-                        ..
+                        publication,
                     } => {
+                        let desired = subscriptions
+                            .lock()
+                            .map(|registry| {
+                                registry.decision(&participant.identity().to_string(), &publication)
+                            })
+                            .unwrap_or(subscriptions::Decision {
+                                subscribe: false,
+                                enabled: false,
+                            });
+                        if !desired.subscribe {
+                            track.disable();
+                            publication.set_subscribed(false);
+                            continue;
+                        }
+                        publication.set_enabled(desired.enabled);
                         let id = track.sid().to_string();
                         let identity = participant.identity().to_string();
                         let mut stream = NativeVideoStream::new(track.rtc_track());
                         let sender = tx.clone();
                         let frame_id = id.clone();
+                        let track_subscriptions = subscriptions.clone();
                         let task = tokio::spawn(async move {
                             while let Some(frame) = stream.next().await {
+                                if !track_subscriptions
+                                    .lock()
+                                    .is_ok_and(|registry| registry.desired_track(&frame_id))
+                                {
+                                    break;
+                                }
                                 let w = frame.buffer.width();
                                 let h = frame.buffer.height();
                                 if w == 0 || h == 0 || w > 8192 || h > 8192 {
@@ -590,8 +788,31 @@ impl MediaEngine {
         self.muted = muted;
         self.apply_microphone_state()
     }
+    /// Explicit screen watch intent, retained before joining/reconnecting.
+    /// Pass an empty list when leaving a call or switching accounts.
+    pub fn set_watched_participants(&mut self, identities: Vec<String>) -> Result<()> {
+        let plan = {
+            let mut registry = self
+                .subscriptions
+                .lock()
+                .map_err(|_| MediaError::Audio("Subscription registry unavailable".into()))?;
+            registry.policy.watched = identities.into_iter().filter(|id| !id.is_empty()).collect();
+            registry.plan()
+        };
+        apply_subscription_actions(&plan, &self.mixer, &self.audio_tasks, &self.video_tasks);
+        Ok(())
+    }
     pub fn set_deafened(&mut self, deafened: bool) -> Result<()> {
         self.deafened = deafened;
+        let plan = {
+            let mut registry = self
+                .subscriptions
+                .lock()
+                .map_err(|_| MediaError::Audio("Subscription registry unavailable".into()))?;
+            registry.policy.deafened = deafened;
+            registry.plan()
+        };
+        apply_subscription_actions(&plan, &self.mixer, &self.audio_tasks, &self.video_tasks);
         if let Ok(mut state) = self.state.lock() {
             state.deafened = deafened;
         }
@@ -891,6 +1112,9 @@ impl MediaEngine {
     }
     pub async fn disconnect(&mut self) -> Result<()> {
         // Release capture before network operations, including failed teardown.
+        if let Ok(mut registry) = self.subscriptions.lock() {
+            registry.clear_publications();
+        }
         self.stop.store(true, Ordering::Release);
         self.input_capture.take();
         self.output.stop();
@@ -947,6 +1171,42 @@ impl MediaEngine {
             let _ = tx.try_send(MediaEvent::Disconnected);
         }
         audio_result.and(room_result)
+    }
+}
+
+// Never hold the registry mutex while invoking SDK subscription callbacks.
+fn apply_subscription_actions(
+    plan: &subscriptions::Plan,
+    mixer: &Arc<Mutex<audio::PlaybackMixer>>,
+    audio_tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+    video_tasks: &Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
+) {
+    for action in &plan.actions {
+        let publication = &action.publication;
+        if !action.decision.enabled && publication.is_subscribed() {
+            publication.set_enabled(false);
+        }
+        if action.force || publication.is_desired() != action.decision.subscribe {
+            publication.set_subscribed(action.decision.subscribe);
+        }
+        if action.decision.subscribe {
+            publication.set_enabled(action.decision.enabled);
+        } else {
+            let sid = publication.sid().to_string();
+            if let Ok(mut mixer) = mixer.lock() {
+                mixer.tracks.remove(&sid);
+            }
+            if let Ok(mut tasks) = audio_tasks.lock()
+                && let Some(task) = tasks.remove(&sid)
+            {
+                task.abort();
+            }
+            if let Ok(mut tasks) = video_tasks.lock()
+                && let Some(task) = tasks.remove(&sid)
+            {
+                task.abort();
+            }
+        }
     }
 }
 
