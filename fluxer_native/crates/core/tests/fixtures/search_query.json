@@ -1,0 +1,766 @@
+{
+  "source": "fluxer_app/src/features/search/utils/SearchQueryParser.ts",
+  "fixtures": [
+    {
+      "query": "",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "  ",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "ordinary words",
+      "unique": false,
+      "params": {
+        "content": "ordinary words"
+      }
+    },
+    {
+      "query": "  whitespace\t and\ntext  ",
+      "unique": false,
+      "params": {
+        "content": "whitespace and text"
+      }
+    },
+    {
+      "query": "word﻿",
+      "unique": false,
+      "params": {
+        "content": "word"
+      }
+    },
+    {
+      "query": "\"exact phrase\" loose words",
+      "unique": false,
+      "params": {
+        "content": "loose words",
+        "exact_phrases": [
+          "exact phrase"
+        ]
+      }
+    },
+    {
+      "query": "«curly phrase» “two words”",
+      "unique": false,
+      "params": {
+        "exact_phrases": [
+          "curly phrase",
+          "two words"
+        ]
+      }
+    },
+    {
+      "query": "\"unterminated phrase",
+      "unique": false,
+      "params": {
+        "exact_phrases": [
+          "unterminated phrase"
+        ]
+      }
+    },
+    {
+      "query": "\"escaped \\\"quote\\\"\"",
+      "unique": false,
+      "params": {
+        "exact_phrases": [
+          "escaped \"quote\""
+        ]
+      }
+    },
+    {
+      "query": "unknown:value tail",
+      "unique": false,
+      "params": {
+        "content": "unknown:value tail"
+      }
+    },
+    {
+      "query": "begin:general tail",
+      "unique": false,
+      "params": {
+        "content": "beg tail",
+        "channel_id": [
+          "200"
+        ]
+      }
+    },
+    {
+      "query": "from:100 from:100,101 -from:101",
+      "unique": false,
+      "params": {
+        "author_id": [
+          "100",
+          "101"
+        ],
+        "exclude_author_id": [
+          "101"
+        ]
+      }
+    },
+    {
+      "query": "from:@me mentions:here -mentions:everyone",
+      "unique": false,
+      "params": {
+        "author_id": [
+          "100"
+        ],
+        "mention_everyone": true
+      }
+    },
+    {
+      "query": "from:alice#0001 from:ALICE#0001 from:Bob",
+      "unique": false,
+      "params": {
+        "author_id": [
+          "100"
+        ]
+      }
+    },
+    {
+      "query": "from:+100 from:0x64 from:+0x64 from:000100",
+      "unique": false,
+      "params": {
+        "author_id": [
+          "+100",
+          "0x64",
+          "000100"
+        ]
+      }
+    },
+    {
+      "query": "from:0 from:-100 from:not-a-user",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "from: arbitrary from:100",
+      "unique": false,
+      "params": {
+        "author_id": [
+          "100"
+        ]
+      }
+    },
+    {
+      "query": "from: has:image text",
+      "unique": false,
+      "params": {
+        "content": "text",
+        "has": [
+          "image"
+        ]
+      }
+    },
+    {
+      "query": "in:general in:photos -in:general-chat",
+      "unique": false,
+      "params": {
+        "channel_id": [
+          "200",
+          "202"
+        ],
+        "exclude_channel_id": [
+          "201"
+        ]
+      }
+    },
+    {
+      "query": "in:other in:unknown",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "in:general-ch",
+      "unique": false,
+      "params": {
+        "channel_id": [
+          "201"
+        ]
+      }
+    },
+    {
+      "query": "has:image,file,forward -has:link,video,forward",
+      "unique": false,
+      "params": {
+        "has": [
+          "image",
+          "file",
+          "snapshot"
+        ],
+        "exclude_has": [
+          "link",
+          "video",
+          "snapshot"
+        ]
+      }
+    },
+    {
+      "query": "has:IMAGE,unknown -author-type:bot author-type:USER,webhook",
+      "unique": false,
+      "params": {
+        "author_type": [
+          "bot",
+          "user",
+          "webhook"
+        ],
+        "has": [
+          "image"
+        ]
+      }
+    },
+    {
+      "query": "has:\"image,file\" pinned:\"true\"",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "pinned:yes pinned:no mature:true mature:false",
+      "unique": false,
+      "params": {
+        "pinned": false,
+        "include_nsfw": false
+      }
+    },
+    {
+      "query": "pinned:0 pinned:1 -pinned:false mature:yes",
+      "unique": false,
+      "params": {
+        "pinned": false
+      }
+    },
+    {
+      "query": "sort:relevance order:asc sort:timestamp order:desc",
+      "unique": false,
+      "params": {
+        "sort_by": "timestamp",
+        "sort_order": "desc"
+      }
+    },
+    {
+      "query": "sort:invalid order:random",
+      "unique": false,
+      "params": {}
+    },
+    {
+      "query": "scope:unknown,all_dms scope:all_guilds",
+      "unique": false,
+      "params": {
+        "scope": "all_guilds"
+      }
+    },
+    {
+      "query": "scope:current scope:\"all_dms\"",
+      "unique": false,
+      "params": {
+        "scope": "all_dms"
+      }
+    },
+    {
+      "query": "embed-type:IMAGE,article -embed-type:sound",
+      "unique": false,
+      "params": {
+        "embed_type": [
+          "image",
+          "article"
+        ],
+        "exclude_embed_type": [
+          "sound"
+        ]
+      }
+    },
+    {
+      "query": "embed-provider:YouTube,Twitch -embed-provider:\"Other Provider\"",
+      "unique": false,
+      "params": {
+        "embed_provider": [
+          "YouTube",
+          "Twitch"
+        ],
+        "exclude_embed_provider": [
+          "Other Provider"
+        ]
+      }
+    },
+    {
+      "query": "link:example.com -link:spam.example filename:\"my photo.png\" -filename:secret",
+      "unique": false,
+      "params": {
+        "link_hostname": [
+          "example.com"
+        ],
+        "exclude_link_hostname": [
+          "spam.example"
+        ],
+        "attachment_filename": [
+          "my photo.png"
+        ],
+        "exclude_attachment_filename": [
+          "secret"
+        ]
+      }
+    },
+    {
+      "query": "ext:.png,.WEBP -ext:txt any:\"first phrase\",second any:second,third",
+      "unique": false,
+      "params": {
+        "contents": [
+          "first phrase",
+          "second",
+          "third"
+        ],
+        "attachment_extension": [
+          "png",
+          "WEBP"
+        ],
+        "exclude_attachment_extension": [
+          "txt"
+        ]
+      }
+    },
+    {
+      "query": "beforeid:9007199254740993123 afterid:9007199254740993000",
+      "unique": false,
+      "params": {
+        "max_id": "9007199254740993123",
+        "min_id": "9007199254740993000"
+      }
+    },
+    {
+      "query": "beforeid:abc afterid:invalid",
+      "unique": false,
+      "params": {
+        "max_id": "abc",
+        "min_id": "invalid"
+      }
+    },
+    {
+      "query": "-any:one,two -scope:all",
+      "unique": false,
+      "params": {
+        "contents": [
+          "one",
+          "two"
+        ],
+        "scope": "all"
+      }
+    },
+    {
+      "query": "from:100 in:general \"quoted phrase\" loose has:forward pinned:false sort:relevance",
+      "unique": false,
+      "params": {
+        "content": "loose",
+        "exact_phrases": [
+          "quoted phrase"
+        ],
+        "channel_id": [
+          "200"
+        ],
+        "author_id": [
+          "100"
+        ],
+        "pinned": false,
+        "has": [
+          "snapshot"
+        ],
+        "sort_by": "relevance"
+      }
+    },
+    {
+      "query": "any:\"escaped\\,comma\",tail filename:\"a\\\"b.png\"",
+      "unique": false,
+      "params": {
+        "contents": [
+          "escaped,comma",
+          "tail"
+        ],
+        "attachment_filename": [
+          "a\"b.png"
+        ]
+      }
+    },
+    {
+      "query": "",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "  ",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "ordinary words",
+      "unique": true,
+      "params": {
+        "content": "ordinary words"
+      }
+    },
+    {
+      "query": "  whitespace\t and\ntext  ",
+      "unique": true,
+      "params": {
+        "content": "whitespace and text"
+      }
+    },
+    {
+      "query": "word﻿",
+      "unique": true,
+      "params": {
+        "content": "word"
+      }
+    },
+    {
+      "query": "\"exact phrase\" loose words",
+      "unique": true,
+      "params": {
+        "content": "loose words",
+        "exact_phrases": [
+          "exact phrase"
+        ]
+      }
+    },
+    {
+      "query": "«curly phrase» “two words”",
+      "unique": true,
+      "params": {
+        "exact_phrases": [
+          "curly phrase",
+          "two words"
+        ]
+      }
+    },
+    {
+      "query": "\"unterminated phrase",
+      "unique": true,
+      "params": {
+        "exact_phrases": [
+          "unterminated phrase"
+        ]
+      }
+    },
+    {
+      "query": "\"escaped \\\"quote\\\"\"",
+      "unique": true,
+      "params": {
+        "exact_phrases": [
+          "escaped \"quote\""
+        ]
+      }
+    },
+    {
+      "query": "unknown:value tail",
+      "unique": true,
+      "params": {
+        "content": "unknown:value tail"
+      }
+    },
+    {
+      "query": "begin:general tail",
+      "unique": true,
+      "params": {
+        "content": "beg tail",
+        "channel_id": [
+          "200"
+        ]
+      }
+    },
+    {
+      "query": "from:100 from:100,101 -from:101",
+      "unique": true,
+      "params": {
+        "author_id": [
+          "100",
+          "101"
+        ],
+        "exclude_author_id": [
+          "101"
+        ]
+      }
+    },
+    {
+      "query": "from:@me mentions:here -mentions:everyone",
+      "unique": true,
+      "params": {
+        "author_id": [
+          "100"
+        ],
+        "mention_everyone": true
+      }
+    },
+    {
+      "query": "from:alice#0001 from:ALICE#0001 from:Bob",
+      "unique": true,
+      "params": {
+        "author_id": [
+          "100",
+          "101"
+        ]
+      }
+    },
+    {
+      "query": "from:+100 from:0x64 from:+0x64 from:000100",
+      "unique": true,
+      "params": {
+        "author_id": [
+          "+100",
+          "0x64",
+          "000100"
+        ]
+      }
+    },
+    {
+      "query": "from:0 from:-100 from:not-a-user",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "from: arbitrary from:100",
+      "unique": true,
+      "params": {
+        "author_id": [
+          "100"
+        ]
+      }
+    },
+    {
+      "query": "from: has:image text",
+      "unique": true,
+      "params": {
+        "content": "text",
+        "has": [
+          "image"
+        ]
+      }
+    },
+    {
+      "query": "in:general in:photos -in:general-chat",
+      "unique": true,
+      "params": {
+        "channel_id": [
+          "200",
+          "202"
+        ],
+        "exclude_channel_id": [
+          "201"
+        ]
+      }
+    },
+    {
+      "query": "in:other in:unknown",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "in:general-ch",
+      "unique": true,
+      "params": {
+        "channel_id": [
+          "201"
+        ]
+      }
+    },
+    {
+      "query": "has:image,file,forward -has:link,video,forward",
+      "unique": true,
+      "params": {
+        "has": [
+          "image",
+          "file",
+          "snapshot"
+        ],
+        "exclude_has": [
+          "link",
+          "video",
+          "snapshot"
+        ]
+      }
+    },
+    {
+      "query": "has:IMAGE,unknown -author-type:bot author-type:USER,webhook",
+      "unique": true,
+      "params": {
+        "author_type": [
+          "bot",
+          "user",
+          "webhook"
+        ],
+        "has": [
+          "image"
+        ]
+      }
+    },
+    {
+      "query": "has:\"image,file\" pinned:\"true\"",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "pinned:yes pinned:no mature:true mature:false",
+      "unique": true,
+      "params": {
+        "pinned": false,
+        "include_nsfw": false
+      }
+    },
+    {
+      "query": "pinned:0 pinned:1 -pinned:false mature:yes",
+      "unique": true,
+      "params": {
+        "pinned": false
+      }
+    },
+    {
+      "query": "sort:relevance order:asc sort:timestamp order:desc",
+      "unique": true,
+      "params": {
+        "sort_by": "timestamp",
+        "sort_order": "desc"
+      }
+    },
+    {
+      "query": "sort:invalid order:random",
+      "unique": true,
+      "params": {}
+    },
+    {
+      "query": "scope:unknown,all_dms scope:all_guilds",
+      "unique": true,
+      "params": {
+        "scope": "all_guilds"
+      }
+    },
+    {
+      "query": "scope:current scope:\"all_dms\"",
+      "unique": true,
+      "params": {
+        "scope": "all_dms"
+      }
+    },
+    {
+      "query": "embed-type:IMAGE,article -embed-type:sound",
+      "unique": true,
+      "params": {
+        "embed_type": [
+          "image",
+          "article"
+        ],
+        "exclude_embed_type": [
+          "sound"
+        ]
+      }
+    },
+    {
+      "query": "embed-provider:YouTube,Twitch -embed-provider:\"Other Provider\"",
+      "unique": true,
+      "params": {
+        "embed_provider": [
+          "YouTube",
+          "Twitch"
+        ],
+        "exclude_embed_provider": [
+          "Other Provider"
+        ]
+      }
+    },
+    {
+      "query": "link:example.com -link:spam.example filename:\"my photo.png\" -filename:secret",
+      "unique": true,
+      "params": {
+        "link_hostname": [
+          "example.com"
+        ],
+        "exclude_link_hostname": [
+          "spam.example"
+        ],
+        "attachment_filename": [
+          "my photo.png"
+        ],
+        "exclude_attachment_filename": [
+          "secret"
+        ]
+      }
+    },
+    {
+      "query": "ext:.png,.WEBP -ext:txt any:\"first phrase\",second any:second,third",
+      "unique": true,
+      "params": {
+        "contents": [
+          "first phrase",
+          "second",
+          "third"
+        ],
+        "attachment_extension": [
+          "png",
+          "WEBP"
+        ],
+        "exclude_attachment_extension": [
+          "txt"
+        ]
+      }
+    },
+    {
+      "query": "beforeid:9007199254740993123 afterid:9007199254740993000",
+      "unique": true,
+      "params": {
+        "max_id": "9007199254740993123",
+        "min_id": "9007199254740993000"
+      }
+    },
+    {
+      "query": "beforeid:abc afterid:invalid",
+      "unique": true,
+      "params": {
+        "max_id": "abc",
+        "min_id": "invalid"
+      }
+    },
+    {
+      "query": "-any:one,two -scope:all",
+      "unique": true,
+      "params": {
+        "contents": [
+          "one",
+          "two"
+        ],
+        "scope": "all"
+      }
+    },
+    {
+      "query": "from:100 in:general \"quoted phrase\" loose has:forward pinned:false sort:relevance",
+      "unique": true,
+      "params": {
+        "content": "loose",
+        "exact_phrases": [
+          "quoted phrase"
+        ],
+        "channel_id": [
+          "200"
+        ],
+        "author_id": [
+          "100"
+        ],
+        "pinned": false,
+        "has": [
+          "snapshot"
+        ],
+        "sort_by": "relevance"
+      }
+    },
+    {
+      "query": "any:\"escaped\\,comma\",tail filename:\"a\\\"b.png\"",
+      "unique": true,
+      "params": {
+        "contents": [
+          "escaped,comma",
+          "tail"
+        ],
+        "attachment_filename": [
+          "a\"b.png"
+        ]
+      }
+    }
+  ]
+}

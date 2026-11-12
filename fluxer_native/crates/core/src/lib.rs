@@ -7,6 +7,7 @@ mod demo;
 mod id;
 mod models;
 mod permissions;
+mod search_query;
 mod state;
 mod voice;
 
@@ -14,5 +15,6 @@ pub use attachment_policy::*;
 pub use id::Snowflake;
 pub use models::*;
 pub use permissions::*;
+pub use search_query::*;
 pub use state::*;
 pub use voice::*;

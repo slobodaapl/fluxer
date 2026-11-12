@@ -4,6 +4,9 @@ This is a migration in progress. Full feature parity and the MVP release gate
 are not yet complete. The ledger's statuses apply to complete feature areas,
 not individual types or controls.
 
+Pending real-account, device and usability checks are tracked in
+[REVIEW.md](REVIEW.md), separately from automated verification.
+
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
