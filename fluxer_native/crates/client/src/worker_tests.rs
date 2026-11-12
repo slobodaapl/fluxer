@@ -5,7 +5,32 @@ use tokio::{
     net::TcpListener,
     time::timeout,
 };
-use tokio_tungstenite::{accept_async, tungstenite::Message as WireMessage};
+use tokio_tungstenite::{accept_hdr_async, tungstenite::Message as WireMessage};
+
+#[path = "../../../../fluxer_app/rust/libfluxcore/src/zstd_stream.rs"]
+mod wire_compression;
+use wire_compression::{ZstdStreamDecoder, ZstdStreamEncoder};
+
+fn compressed(value: Value, encoder: &mut ZstdStreamEncoder) -> WireMessage {
+    WireMessage::Binary(
+        encoder
+            .compress_chunk(value.to_string().as_bytes())
+            .unwrap_or_else(|error| panic!("{}", error.message()))
+            .into(),
+    )
+}
+fn uncompressed(message: WireMessage, decoder: &mut ZstdStreamDecoder) -> Value {
+    match message {
+        WireMessage::Text(text) => serde_json::from_str(&text).unwrap(),
+        WireMessage::Binary(bytes) => serde_json::from_slice(
+            &decoder
+                .decompress_chunk(&bytes)
+                .unwrap_or_else(|error| panic!("{}", error.message())),
+        )
+        .unwrap(),
+        _ => panic!("expected a JSON gateway payload"),
+    }
+}
 
 fn worker() -> (Worker, mpsc::Receiver<Event>) {
     let (tx, rx) = mpsc::channel();
@@ -14,6 +39,207 @@ fn worker() -> (Worker, mpsc::Receiver<Event>) {
 
 fn voice_update(channel: Option<&str>, connection: &str) -> VoiceServerUpdate {
     serde_json::from_value(json!({"token":"voice-secret","endpoint":"wss://voice.example","connection_id":connection,"guild_id":"10","channel_id":channel})).unwrap()
+}
+
+#[test]
+fn discovery_identity_selects_the_login_field_independently_of_input_text() {
+    // AccountSignInIdentifier.ts:10-11; AccountIdentityFeatures.ts:13-18.
+    let mut instance =
+        Instance::from_endpoints("https://api.example/api", "wss://gateway.example").unwrap();
+    instance.features = json!({"account_identity":"username"});
+    assert!(
+        matches!(login_identifier(&instance,"alice@example.com".into()),LoginIdentifier::Login(value) if value=="alice@example.com")
+    );
+    instance.features = json!({"account_identity":"email"});
+    assert!(
+        matches!(login_identifier(&instance,"plain-identifier".into()),LoginIdentifier::Email(value) if value=="plain-identifier")
+    );
+    instance.features = json!({});
+    assert!(matches!(
+        login_identifier(&instance, "plain-identifier".into()),
+        LoginIdentifier::Email(_)
+    ));
+}
+
+#[tokio::test]
+async fn selected_guild_sync_matches_desktop_payload_and_session_deduplication() {
+    // GatewayGuildSubscriptionSynchronizer.ts:29-51,90-95; GuildSync.ts:8-11.
+    let (mut worker, _) = worker();
+    let (tx, mut outgoing) = async_mpsc::channel(16);
+    worker.gateway_commands = Some(tx);
+    worker
+        .command(Command::SelectGuild {
+            guild_id: 10.into(),
+        })
+        .await
+        .unwrap();
+    assert!(outgoing.try_recv().is_err(), "selection waits for READY");
+    worker.gateway(GatewayEvent::Dispatch{name:"READY".into(),data:json!({"session_id":"first","user":{"id":"1","username":"alice"},"guilds":[{"id":"10","name":"A"},{"id":"20","name":"B"}]}),sequence:Some(1)}).await.unwrap();
+    worker.gateway(GatewayEvent::Connected).await.unwrap();
+    let GatewayCommand::Send { op, data } = outgoing.try_recv().unwrap() else {
+        panic!("expected op14");
+    };
+    assert_eq!(op, 14);
+    assert_eq!(
+        data,
+        json!({"subscriptions":{"10":{"active":true,"sync":true}}})
+    );
+    worker
+        .command(Command::SelectGuild {
+            guild_id: 10.into(),
+        })
+        .await
+        .unwrap();
+    assert!(outgoing.try_recv().is_err(), "one guild sync per session");
+    worker
+        .command(Command::SelectGuild {
+            guild_id: 20.into(),
+        })
+        .await
+        .unwrap();
+    let GatewayCommand::Send { op, data } = outgoing.try_recv().unwrap() else {
+        panic!("expected op14");
+    };
+    assert_eq!(op, 14);
+    assert_eq!(
+        data,
+        json!({"subscriptions":{"20":{"active":true,"sync":true}}})
+    );
+    assert!(
+        outgoing.try_recv().is_err(),
+        "desktop selection does not invent an old-guild deactivation"
+    );
+    worker.gateway(GatewayEvent::Dispatch{name:"GUILD_SYNC".into(),data:json!({"id":"20","properties":{"name":"Hydrated B"},"channels":[{"id":"200","name":"large-guild-text","type":0}]}),sequence:Some(2)}).await.unwrap();
+    assert_eq!(
+        worker.state.channels.get(&200.into()).unwrap().guild_id,
+        Some(20.into())
+    );
+    worker.gateway(GatewayEvent::Reconnecting).await.unwrap();
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "RESUMED".into(),
+            data: json!({}),
+            sequence: Some(3),
+        })
+        .await
+        .unwrap();
+    worker.gateway(GatewayEvent::Connected).await.unwrap();
+    assert!(
+        outgoing.try_recv().is_err(),
+        "same-session resume preserves completed syncs"
+    );
+    worker.gateway(GatewayEvent::Dispatch{name:"READY".into(),data:json!({"session_id":"second","user":{"id":"1","username":"alice"},"guilds":[{"id":"20","name":"B"}]}),sequence:Some(1)}).await.unwrap();
+    worker.gateway(GatewayEvent::Connected).await.unwrap();
+    let GatewayCommand::Send { op, data } = outgoing.try_recv().unwrap() else {
+        panic!("expected op14");
+    };
+    assert_eq!(op, 14);
+    assert_eq!(
+        data,
+        json!({"subscriptions":{"20":{"active":true,"sync":true}}})
+    );
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn locale_survives_account_reset_and_rejects_header_injection() {
+    let (mut worker, _) = worker();
+    worker
+        .command(Command::SetLocale("de".into()))
+        .await
+        .unwrap();
+    worker.reset().await;
+    assert_eq!(worker.locale, "de");
+    assert_eq!(worker.state.settings.locale, "de");
+    assert!(
+        worker
+            .command(Command::SetLocale("en\r\nInjected:yes".into()))
+            .await
+            .is_err()
+    );
+}
+
+fn ip_challenge() -> PendingIpAuthorization {
+    PendingIpAuthorization {
+        client: Client::new(
+            Instance::from_endpoints("https://api.example/api", "wss://gateway.example").unwrap(),
+        )
+        .unwrap(),
+        ticket: "private-ticket".into(),
+        resend_deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+        resend_used: false,
+        consecutive_errors: 0,
+        next_poll: Some(tokio::time::Instant::now()),
+    }
+}
+
+#[tokio::test]
+async fn ip_authorization_poll_errors_pause_after_three_and_retry_is_immediate() {
+    // IpAuthorizationScreen.tsx:29-30,65-105,126-128.
+    let (mut worker, events) = worker();
+    worker.pending_ip = Some(ip_challenge());
+    assert!(worker.pending_ip.as_ref().unwrap().next_poll.unwrap() <= tokio::time::Instant::now());
+    worker.finish_ip_poll(Err("network".into())).await.unwrap();
+    assert_eq!(worker.pending_ip.as_ref().unwrap().consecutive_errors, 1);
+    let delay = worker
+        .pending_ip
+        .as_ref()
+        .unwrap()
+        .next_poll
+        .unwrap()
+        .duration_since(tokio::time::Instant::now());
+    assert!(delay > Duration::from_millis(1900) && delay <= IP_POLL_INTERVAL);
+    worker.finish_ip_poll(Ok(None)).await.unwrap();
+    assert_eq!(worker.pending_ip.as_ref().unwrap().consecutive_errors, 0);
+    for _ in 0..3 {
+        worker.finish_ip_poll(Err("network".into())).await.unwrap();
+    }
+    assert!(worker.pending_ip.as_ref().unwrap().next_poll.is_none());
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::IpAuthorizationPollingFailed))
+    );
+    worker.command(Command::RetryIpAuthorization).await.unwrap();
+    assert_eq!(worker.pending_ip.as_ref().unwrap().consecutive_errors, 0);
+    assert!(worker.pending_ip.as_ref().unwrap().next_poll.unwrap() <= tokio::time::Instant::now());
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::IpAuthorizationPollingResumed))
+    );
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn ip_authorization_cooldown_once_only_and_cancellation_do_not_make_network_calls() {
+    // IpAuthorizationScreen.tsx:113-125 disallows a second resend even after cooldown.
+    let (mut worker, events) = worker();
+    worker.pending_ip = Some(ip_challenge());
+    worker
+        .command(Command::ResendIpAuthorization)
+        .await
+        .unwrap();
+    worker.pending_ip.as_mut().unwrap().resend_deadline = tokio::time::Instant::now();
+    worker.pending_ip.as_mut().unwrap().resend_used = true;
+    worker
+        .command(Command::ResendIpAuthorization)
+        .await
+        .unwrap();
+    worker.ip_poll_task = Some(tokio::spawn(pending()));
+    let abort = worker.ip_poll_task.as_ref().unwrap().abort_handle();
+    worker.command(Command::CancelLogin).await.unwrap();
+    tokio::task::yield_now().await;
+    assert!(abort.is_finished());
+    assert!(worker.pending_ip.is_none());
+    assert!(worker.ip_poll_task.is_none());
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::IpAuthorizationCleared))
+    );
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.media.is_none());
 }
 
 #[test]
@@ -29,6 +255,42 @@ fn voice_credentials_require_the_requested_channel_and_current_connection() {
     target.connection_id = Some("new".into());
     assert!(target.accepts(&voice_update(None, "new")));
     assert!(!target.accepts(&voice_update(Some("100"), "stale")));
+}
+
+#[test]
+fn only_identical_full_voice_credentials_are_deduplicated() {
+    let previous = voice_update(Some("100"), "connection");
+    assert!(same_voice_credentials(&previous, &previous.clone()));
+    let mut changed = previous.clone();
+    changed.token = SessionToken::new("rotated-secret").unwrap();
+    assert!(!same_voice_credentials(&previous, &changed));
+    let mut changed = previous.clone();
+    changed.e2ee_key = Some("rotated-key".into());
+    assert!(!same_voice_credentials(&previous, &changed));
+    let mut changed = previous.clone();
+    changed.ice_servers = vec![json!({"urls":["turn:relay.example"]})];
+    assert!(!same_voice_credentials(&previous, &changed));
+}
+
+#[test]
+fn channel_bitrate_uses_the_shared_desktop_resolver_and_guild_features() {
+    let mut state = ClientState::default();
+    state.apply_gateway("GUILD_CREATE",json!({"id":"10","name":"Test","features":["AUDIO_BITRATE_256_KBPS"],"channels":[{"id":"100","name":"voice","type":2,"bitrate":384000}]})).unwrap();
+    assert_eq!(voice_channel_bitrate(&state, 100.into()), 256_000);
+    state
+        .guilds
+        .get_mut(&10.into())
+        .unwrap()
+        .extra
+        .remove("features");
+    assert_eq!(voice_channel_bitrate(&state, 100.into()), 96_000);
+    state
+        .apply_gateway(
+            "CHANNEL_CREATE",
+            json!({"id":"200","type":1,"bitrate":384000}),
+        )
+        .unwrap();
+    assert_eq!(voice_channel_bitrate(&state, 200.into()), 64_000);
 }
 
 #[tokio::test]
@@ -154,6 +416,23 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
 
 #[tokio::test]
 async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_capture() {
+    actual_text_workflow(0).await;
+}
+
+#[tokio::test]
+async fn actual_password_login_uses_discovery_identity_locale_then_ready_without_list_rest() {
+    actual_text_workflow(1).await;
+}
+
+#[tokio::test]
+async fn actual_ip_authorization_resend_and_poll_completion_bootstrap_ready_without_capture() {
+    actual_text_workflow(2).await;
+}
+
+#[allow(clippy::result_large_err)] // tungstenite's required handshake callback return type
+async fn actual_text_workflow(login_mode: u8) {
+    let password_login = login_mode != 0;
+    let ip_authorization = login_mode == 2;
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let ws = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", http.local_addr().unwrap());
@@ -169,26 +448,45 @@ async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_captu
     let ws_guild = guild.clone();
     let websocket = tokio::spawn(async move {
         let (socket, _) = ws.accept().await.unwrap();
-        let mut socket = accept_async(socket).await.unwrap();
+        let mut socket = accept_hdr_async(
+            socket,
+            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+             response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                assert!(
+                    request
+                        .uri()
+                        .query()
+                        .unwrap_or("")
+                        .contains("compress=zstd-stream")
+                );
+                Ok(response)
+            },
+        )
+        .await
+        .unwrap();
+        let mut encoder = ZstdStreamEncoder::new(3).unwrap();
+        let mut decoder = ZstdStreamDecoder::new().unwrap();
         socket
-            .send(WireMessage::Text(
-                json!({"op":10,"d":{"heartbeat_interval":1000}})
-                    .to_string()
-                    .into(),
+            .send(compressed(
+                json!({"op":10,"d":{"heartbeat_interval":1000}}),
+                &mut encoder,
             ))
             .await
             .unwrap();
-        let identify = socket.next().await.unwrap().unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(identify.to_text().unwrap()).unwrap()["op"],
-            2
-        );
-        socket.send(WireMessage::Text(json!({"op":0,"t":"READY","s":1,"d":{"session_id":"session","user":ws_user,"guilds":[ws_guild]}}).to_string().into())).await.unwrap();
+        let identify = uncompressed(socket.next().await.unwrap().unwrap(), &mut decoder);
+        assert_eq!(identify["op"], 2);
+        assert_eq!(identify["d"]["properties"]["locale"], "de");
+        assert_eq!(identify["d"]["flags"], 14);
+        socket.send(compressed(json!({"op":0,"t":"READY","s":1,"d":{"session_id":"session","user":ws_user,"guilds":[ws_guild]}}),&mut encoder)).await.unwrap();
         loop {
             tokio::select! {
-                value=dispatch_rx.recv()=>match value{Some(value)=>{if socket.send(WireMessage::Text(value.to_string().into())).await.is_err(){break;}},None=>break},
+                value=dispatch_rx.recv()=>match value{Some(value)=>{if socket.send(compressed(value,&mut encoder)).await.is_err(){break;}},None=>break},
                 value=socket.next()=>match value{
-                    Some(Ok(WireMessage::Text(text)))=>{let value:Value=serde_json::from_str(&text).unwrap();if value["op"]==1 && socket.send(WireMessage::Text(json!({"op":11}).to_string().into())).await.is_err(){break;}},
+                    Some(Ok(message@ (WireMessage::Text(_) | WireMessage::Binary(_))))=>{
+                        let value=uncompressed(message,&mut decoder);
+                        if value["op"]==1 && socket.send(compressed(json!({"op":11}),&mut encoder)).await.is_err(){break;}
+                        if value["op"]==14 {assert_eq!(value["d"],json!({"subscriptions":{"10":{"active":true,"sync":true}}}));}
+                    },
                     Some(Ok(WireMessage::Close(_)))|None|Some(Err(_))=>break,
                     _=>{},
                 }
@@ -199,6 +497,7 @@ async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_captu
     let ws_endpoint = gateway.clone();
     let rest_sent = sent.clone();
     let http_server = tokio::spawn(async move {
+        let mut poll_count = 0;
         loop {
             let (mut socket, _) = http.accept().await.unwrap();
             let request = read_request(&mut socket).await;
@@ -209,16 +508,78 @@ async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_captu
             let (status, body) = match (method, path) {
                 ("GET", "/.well-known/fluxer") => (
                     200,
-                    json!({"codename":"tungsten","api_code_version":1,"endpoints":{"api":advertised_api,"api_client":advertised_api,"webapp":advertised_api,"gateway":ws_endpoint}}),
+                    json!({"codename":"tungsten","api_code_version":1,"features":{"account_identity":"username"},"endpoints":{"api":advertised_api,"api_client":advertised_api,"api_public":advertised_api,"media":advertised_api,"static_cdn":advertised_api,"marketing":advertised_api,"admin":advertised_api,"invite":advertised_api,"gift":advertised_api,"webapp":advertised_api,"gateway":ws_endpoint}}),
                 ),
-                ("GET", "/api/v1/users/@me") => (200, user.clone()),
-                ("GET", "/api/v1/users/@me/guilds") => (200, json!([guild.clone()])),
-                ("GET", "/api/v1/users/@me/channels") => (200, json!([])),
-                ("GET", "/api/v1/guilds/10/channels") => (200, json!([channel.clone()])),
+                ("POST", "/api/v1/auth/login") => {
+                    assert!(password_login);
+                    let body: Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    assert_eq!(
+                        body,
+                        json!({"login":"alice@example.com","password":"password"})
+                    );
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("accept-language: de\r\n")
+                    );
+                    if ip_authorization {
+                        (
+                            403,
+                            json!({"code":"IP_AUTHORIZATION_REQUIRED","details":{"context":{"ticket":"pending-ticket","email":"alice@example.com","resend_available_in":0}}}),
+                        )
+                    } else {
+                        (200, json!({"token":"secret","user_id":"1"}))
+                    }
+                }
+                ("POST", "/api/v1/auth/ip-authorization/resend") => {
+                    assert!(ip_authorization);
+                    let body: Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    assert_eq!(body, json!({"ticket":"pending-ticket"}));
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("accept-language: de\r\n")
+                    );
+                    (200, json!({}))
+                }
+                ("GET", "/api/v1/auth/ip-authorization/poll?ticket=pending-ticket") => {
+                    assert!(ip_authorization);
+                    poll_count += 1;
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("accept-language: de\r\n")
+                    );
+                    if poll_count == 1 {
+                        (200, json!({"completed":false}))
+                    } else {
+                        (
+                            200,
+                            json!({"completed":true,"token":"secret","user_id":"1"}),
+                        )
+                    }
+                }
+                ("GET", "/api/v1/users/@me") => {
+                    assert!(
+                        !password_login,
+                        "fresh desktop login trusts auth response then READY"
+                    );
+                    (200, user.clone())
+                }
                 ("GET", "/api/v1/channels/100/messages?limit=50") => {
                     (200, json!([initial.clone()]))
                 }
-                ("POST", "/api/v1/channels/100/messages/200/ack") => (200, json!({})),
+                ("POST", "/api/v1/read-states/ack") => {
+                    let body: Value =
+                        serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+                    assert_eq!(
+                        body,
+                        json!({"read_states":[{"channel_id":"100","message_id":"200"}]})
+                    );
+                    (200, json!({}))
+                }
                 ("POST", "/api/v1/channels/100/messages") => {
                     let body: Value =
                         serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
@@ -247,12 +608,77 @@ async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_captu
     });
     let (mut worker, events) = worker();
     worker
-        .command(Command::TokenLogin {
-            instance: origin,
-            token: "secret".into(),
+        .command(Command::SetLocale("de".into()))
+        .await
+        .unwrap();
+    worker
+        .command(if password_login {
+            Command::Login {
+                instance: origin,
+                identifier: "alice@example.com".into(),
+                password: "password".into(),
+            }
+        } else {
+            Command::TokenLogin {
+                instance: origin,
+                token: "secret".into(),
+            }
         })
         .await
         .unwrap();
+    if ip_authorization {
+        assert!(worker.pending_ip.is_some());
+        assert!(worker.state.current_user.is_none());
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::IpAuthorizationRequired {
+                resend_available_in: 0,
+                ..
+            }
+        )));
+        tokio::time::sleep_until(worker.pending_ip.as_ref().unwrap().next_poll.unwrap()).await;
+        worker.begin_ip_poll();
+        let result = timeout(
+            Duration::from_secs(5),
+            ip_poll_result(&mut worker.ip_poll_task),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .map_err(error);
+        worker.ip_poll_task = None;
+        worker.finish_ip_poll(result).await.unwrap();
+        assert!(worker.pending_ip.is_some());
+        worker
+            .command(Command::ResendIpAuthorization)
+            .await
+            .unwrap();
+        assert!(worker.pending_ip.as_ref().unwrap().resend_used);
+        assert!(events.try_iter().any(|event| matches!(
+            event,
+            Event::IpAuthorizationResent {
+                resend_available_in: 30
+            }
+        )));
+        tokio::time::sleep_until(worker.pending_ip.as_ref().unwrap().next_poll.unwrap()).await;
+        worker.begin_ip_poll();
+        let result = timeout(
+            Duration::from_secs(5),
+            ip_poll_result(&mut worker.ip_poll_task),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .map_err(error);
+        worker.ip_poll_task = None;
+        worker.finish_ip_poll(result).await.unwrap();
+        assert!(worker.pending_ip.is_none());
+        assert!(
+            events
+                .try_iter()
+                .any(|event| matches!(event, Event::IpAuthorizationCleared))
+        );
+    }
     timeout(Duration::from_secs(5), async {
         while !worker.gateway_ready {
             let event = worker
