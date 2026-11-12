@@ -149,7 +149,11 @@ async fn desktop_origin_comes_from_discovered_webapp_and_excludes_get_and_head()
     let instance = Instance::from_document(
         &Url::parse(&format!("{origin}/.well-known/fluxer")).unwrap(),
         json!({"api_code_version":1,"endpoints":{
-            "api":api,"api_client":api,"webapp":web_app,"gateway":"ws://127.0.0.1/gateway"
+            "api":api,"api_client":api,"api_public":api,"webapp":web_app,
+            "gateway":"ws://127.0.0.1/gateway", "media":format!("{origin}/media"),
+            "static_cdn":format!("{origin}/static"), "marketing":origin,
+            "admin":format!("{origin}/admin"), "invite":format!("{origin}/invite"),
+            "gift":format!("{origin}/gift")
         }}),
     )
     .unwrap();
@@ -385,4 +389,150 @@ async fn websocket_identifies_heartbeats_transmits_voice_and_resumes() {
         .unwrap()
         .unwrap();
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn auth_headers_and_ip_authorization_follow_existing_desktop_contract() {
+    let (origin, mut requests) = http_server(vec![
+        response(
+            "403 Forbidden",
+            json!({"code":"IP_AUTHORIZATION_REQUIRED", "details":{"context":{
+                "ticket":"test +/ticket", "email":"masked@example.test", "resend_available_in":0
+            }}}),
+        ),
+        response("200 OK", json!({"completed":false})),
+        response("200 OK", Value::Null),
+        response(
+            "200 OK",
+            json!({"completed":true,"token":"authorized-secret","user_id":"123"}),
+        ),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_auth_locale("de")
+    .unwrap();
+    assert!(matches!(
+        client
+            .login(
+                LoginIdentifier::Email("test@example.test".into()),
+                "password"
+            )
+            .await
+            .unwrap(),
+        LoginOutcome::IpAuthorization {
+            resend_available_in: 0,
+            ..
+        }
+    ));
+    assert!(
+        client
+            .poll_ip_authorization("test +/ticket")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    client
+        .resend_ip_authorization("test +/ticket")
+        .await
+        .unwrap();
+    assert_eq!(
+        client
+            .poll_ip_authorization("test +/ticket")
+            .await
+            .unwrap()
+            .unwrap()
+            .user_id,
+        "123"
+    );
+    let mut installation = None;
+    for (index, route) in [
+        "POST /api/v1/auth/login",
+        "GET /api/v1/auth/ip-authorization/poll?ticket=test+%2B%2Fticket",
+        "POST /api/v1/auth/ip-authorization/resend",
+        "GET /api/v1/auth/ip-authorization/poll?ticket=test+%2B%2Fticket",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(route), "{request}");
+        let headers = request
+            .split_once("\r\n\r\n")
+            .unwrap()
+            .0
+            .to_ascii_lowercase();
+        for expected in [
+            "accept-language: de",
+            "accept-encoding: gzip, br",
+            "x-fluxer-features: view_channel_members_permission,channel_threads",
+            "x-fluxer-capabilities: guild_visits",
+        ] {
+            assert!(headers.contains(expected));
+        }
+        assert!(!headers.contains("authorization:"));
+        let id = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("x-fluxer-client-installation-id: "))
+            .unwrap()
+            .to_owned();
+        assert_eq!(id.len(), 32);
+        assert!(
+            id.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        );
+        if let Some(previous) = &installation {
+            assert_eq!(previous, &id);
+        }
+        installation = Some(id);
+        if index == 2 {
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(body, json!({"ticket":"test +/ticket"}));
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_acks_use_authoritative_endpoint_and_only_missing_route_fallback() {
+    // ReadStates.postAckEntries/postLegacyAckEntries + ReadStateAckQueue entries.
+    for (status, expected_calls) in [
+        ("200 OK", 1),
+        ("404 Not Found", 2),
+        ("405 Method Not Allowed", 2),
+        ("403 Forbidden", 1),
+    ] {
+        let mut replies = vec![response(status, json!({"read_states":[]}))];
+        if expected_calls == 2 {
+            replies.push(response("200 OK", Value::Null));
+        }
+        let (origin, mut requests) = http_server(replies).await;
+        let client = Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap();
+        let result = client.acknowledge("1", "2").await;
+        if status.starts_with("403") {
+            assert!(matches!(result, Err(Error::Api { status: 403, .. })));
+        } else {
+            result.unwrap();
+        }
+        for index in 0..expected_calls {
+            let request = requests.recv().await.unwrap();
+            let route = if index == 0 {
+                "/api/v1/read-states/ack"
+            } else {
+                "/api/v1/read-states/ack-bulk"
+            };
+            assert!(request.starts_with(&format!("POST {route} HTTP/1.1")));
+            let body: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(
+                body,
+                json!({"read_states":[{"channel_id":"1","message_id":"2"}]})
+            );
+        }
+    }
 }

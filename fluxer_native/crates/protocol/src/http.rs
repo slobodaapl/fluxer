@@ -236,12 +236,14 @@ impl Client {
             .await
         {
             Ok(response) => response,
-            Err(Error::Api { body, .. })
-                if body.get("ip_authorization_required") == Some(&Value::Bool(true)) =>
-            {
-                body
+            Err(error) => {
+                if let Error::Api { status, body, .. } = &error
+                    && let Some(challenge) = ip_authorization_error(*status, body)
+                {
+                    return Ok(challenge);
+                }
+                return Err(error);
             }
-            Err(error) => return Err(error),
         };
         parse_login(response)
     }
@@ -256,6 +258,47 @@ impl Client {
             )
             .await?;
         parse_session(response)
+    }
+
+    pub async fn resend_ip_authorization(&self, ticket: &str) -> Result<()> {
+        self.request_inner(
+            Method::POST,
+            "/auth/ip-authorization/resend",
+            Some(&json!({"ticket":ticket})),
+            false,
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn poll_ip_authorization(&self, ticket: &str) -> Result<Option<AuthSession>> {
+        // Endpoints.AUTH_IP_AUTHORIZATION_POLL uses URLSearchParams (form
+        // encoding), rather than path-segment encoding, for the ticket.
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("ticket", ticket)
+            .finish();
+        let response = self
+            .request_inner(
+                Method::GET,
+                &format!("/auth/ip-authorization/poll?{query}"),
+                None,
+                false,
+            )
+            .await?;
+        // IpAuthorizationScreen keeps polling incomplete or partial responses.
+        if response.get("completed").and_then(Value::as_bool) != Some(true)
+            || response
+                .get("token")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || response
+                .get("user_id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Ok(None);
+        }
+        parse_session(response).map(Some)
     }
 
     pub async fn logout(&self) -> Result<()> {
@@ -329,12 +372,29 @@ impl Client {
         Ok(())
     }
     pub async fn acknowledge(&self, channel: &str, message: &str) -> Result<Value> {
-        self.request(
-            Method::POST,
-            &format!("{}/ack", message_path(channel, message)),
-            Some(&json!({"manual":false,"mention_count":0})),
-        )
-        .await
+        // ReadStates.postAckEntries first uses the authoritative endpoint and
+        // falls back only for missing routes (404/405), never on other errors.
+        match self
+            .request(
+                Method::POST,
+                "/read-states/ack",
+                Some(&json!({"read_states":[{"channel_id":channel,"message_id":message}]})),
+            )
+            .await
+        {
+            Err(Error::Api {
+                status: 404 | 405, ..
+            }) => {
+                self.request(
+                    Method::POST,
+                    "/read-states/ack-bulk",
+                    Some(&json!({"read_states":[{"channel_id":channel,"message_id":message}]})),
+                )
+                .await?;
+                Ok(Value::Null)
+            }
+            result => result,
+        }
     }
     pub async fn typing(&self, channel: &str) -> Result<()> {
         self.request(
@@ -398,6 +458,41 @@ impl Client {
         self.request(Method::PATCH, "/users/@me/settings", Some(patch))
             .await
     }
+}
+
+// ResponseInspection.ipAuthorizationRequiredResponseFromError: modern error
+// envelopes put the challenge under details.context, with legacy top-level
+// context accepted only when the status/code match the documented challenge.
+fn ip_authorization_error(status: u16, body: &Value) -> Option<LoginOutcome> {
+    if status != 403 || body.get("code")?.as_str()? != "IP_AUTHORIZATION_REQUIRED" {
+        return None;
+    }
+    let context = body
+        .pointer("/details/context")
+        .filter(|value| value.is_object())
+        .unwrap_or(body);
+    let ticket = context
+        .get("ticket")?
+        .as_str()
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+    let email = context
+        .get("email")?
+        .as_str()
+        .filter(|value| !value.is_empty())?
+        .to_owned();
+    let resend_available_in = match context.get("resend_available_in").and_then(Value::as_f64) {
+        Some(value) if (0.0..=9_007_199_254_740_991.0).contains(&value) && value.fract() == 0.0 => {
+            value as u64
+        }
+        Some(_) => return None,
+        None => 30,
+    };
+    Some(LoginOutcome::IpAuthorization {
+        ticket,
+        email,
+        resend_available_in,
+    })
 }
 
 fn parse_session(value: Value) -> Result<AuthSession> {
@@ -510,5 +605,35 @@ mod tests {
             LoginOutcome::Mfa { totp: true, .. }
         ));
         assert!(parse_login(json!({"user_id":"1"})).is_err());
+    }
+
+    #[test]
+    fn ip_challenge_matches_response_inspection_status_context_and_integer_rules() {
+        let modern = json!({"code":"IP_AUTHORIZATION_REQUIRED","details":{"context":{
+            "ticket":"ticket", "email":"masked@example.test", "resend_available_in":12
+        }}});
+        assert!(matches!(
+            ip_authorization_error(403, &modern),
+            Some(LoginOutcome::IpAuthorization {
+                resend_available_in: 12,
+                ..
+            })
+        ));
+        assert!(ip_authorization_error(401, &modern).is_none());
+        let mut legacy =
+            json!({"code":"IP_AUTHORIZATION_REQUIRED","ticket":"ticket","email":"email"});
+        assert!(matches!(
+            ip_authorization_error(403, &legacy),
+            Some(LoginOutcome::IpAuthorization {
+                resend_available_in: 30,
+                ..
+            })
+        ));
+        for invalid in [json!(-1), json!(0.5), json!(9_007_199_254_740_992_u64)] {
+            legacy["resend_available_in"] = invalid;
+            assert!(ip_authorization_error(403, &legacy).is_none());
+        }
+        legacy["code"] = json!("INVALID_API_ORIGIN");
+        assert!(ip_authorization_error(403, &legacy).is_none());
     }
 }
