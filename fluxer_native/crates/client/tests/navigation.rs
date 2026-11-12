@@ -186,7 +186,7 @@ impl Fixture {
                                 ("GET","/api/v1/channels/100/messages/pins?limit=25&before=2026%2D11%2D12T12%3A00%3A00%2E000Z")=>(200,json!({"items":[{"message":message(301,100),"pinned_at":"2026-11-11T12:00:00.000Z"}],"has_more":false})),
                                 ("DELETE","/api/v1/channels/100/pins/300")=>{assert!(bytes.is_empty());(403,json!({"code":"MISSING_PERMISSIONS"}))},
                                 ("PUT","/api/v1/channels/100/pins/1000")=>{assert!(bytes.is_empty());(200,Value::Null)},
-                                ("POST","/api/v1/read-states/ack")=>(200,json!({})),
+                                ("POST","/api/v1/read-states/ack")=>(200,json!({"read_states":[{"id":"103","last_message_id":"1200","mention_count":7,"version":"9"}]})),
                                 _=>panic!("unexpected navigation request {first}"),
                             };respond(&mut socket,status,response).await;
                         });
@@ -361,6 +361,23 @@ async fn real_search_jump_and_return_keep_history_contiguous_and_preserve_unread
     })
     .await;
     assert_eq!(seen.history[&103.into()].message_ids.len(), 100);
+    fixture
+        .search(&controller, "archive from:@me has:file scope:all_guilds", 2)
+        .await;
+    seen.until(&controller, |s| {
+        s.search.as_ref().is_some_and(|result| {
+            result.channel_id == Snowflake(100)
+                && result.page == 2
+                && result.status == SearchStatus::Ready
+        })
+    })
+    .await;
+    assert_eq!(
+        seen.state.selected_channel,
+        Some(103.into()),
+        "paging the retained search must not navigate away from the result"
+    );
+    assert_eq!(seen.history[&103.into()].message_ids.len(), 100);
     controller
         .send(Command::ReturnToLatest {
             channel_id: 103.into(),
@@ -400,6 +417,11 @@ async fn real_search_jump_and_return_keep_history_contiguous_and_preserve_unread
             == Some(1200.into())
     })
     .await;
+    assert_eq!(
+        seen.state.read_states[&103.into()].mention_count,
+        7,
+        "apply the server's acknowledgement response rather than synthesizing cleared mentions"
+    );
     let requests = fixture.requests.lock().await;
     let acks = requests
         .iter()
