@@ -32,6 +32,30 @@ def run_json(command):
     return value
 
 
+def parse_module_inventory(text):
+    """Pulse's JSON module rows can omit IDs; short text retains them.
+
+    Module arguments can contain literal newlines. A new row starts only when
+    its first tab-separated field is numeric; other lines extend the arguments
+    of the preceding module.
+    """
+    modules = []
+    for line in text.splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) >= 2 and fields[0].isdigit():
+            modules.append({"index": int(fields[0]), "name": fields[1],
+                            "argument": fields[2] if len(fields) == 3 else ""})
+        elif modules:
+            modules[-1]["argument"] += "\n" + line
+    return modules
+
+
+def module_inventory():
+    result = subprocess.run(["pactl", "list", "short", "modules"], check=True,
+                            capture_output=True, text=True, timeout=10)
+    return parse_module_inventory(result.stdout)
+
+
 def resolve_node(source_name, description, sources, objects):
     """Resolve our source through observed metadata, never a guessed node name."""
     source = [entry for entry in sources if entry.get("name") == source_name]
@@ -143,7 +167,7 @@ def main():
     source = f"{PREFIX}{marker}"
     description = f"FluxerSyntheticMicrophone-{marker}"
     requested_names = {"module-null-sink", "module-remap-source"}
-    baseline = {int(entry["index"]) for entry in run_json(["pactl", "--format=json", "list", "modules"])}
+    baseline = {int(entry["index"]) for entry in module_inventory()}
     created = []
     playback = None
     tests = None
@@ -198,7 +222,7 @@ def main():
             # Recover IDs even if load-module created a device but its command
             # was interrupted before returning its ID. Only this run's UUID and
             # modules absent from the baseline can qualify.
-            modules = run_json(["pactl", "--format=json", "list", "modules"])
+            modules = module_inventory()
             owned = {int(entry["index"]): entry for entry in modules
                      if int(entry["index"]) not in baseline and module_owned(entry, marker, requested_names)}
             for module_id in owned:
@@ -207,7 +231,7 @@ def main():
             for module_id in reversed(created):
                 # A daemon restart could reuse an ID. Verify ownership again
                 # instead of ever unloading someone else's module by ID alone.
-                current = run_json(["pactl", "--format=json", "list", "modules"])
+                current = module_inventory()
                 entry = next((entry for entry in current if int(entry["index"]) == module_id), None)
                 if entry is None or not module_owned(entry, marker, requested_names):
                     continue
