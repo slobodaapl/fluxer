@@ -84,9 +84,19 @@ fn options(kind: ScreenSourceKind) -> DesktopCapturerOptions {
 }
 
 pub(crate) fn sources() -> Result<Vec<ScreenSource>> {
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+    if system_picker_only(
+        std::env::consts::OS,
+        session_type.as_deref(),
+        wayland_display.as_deref(),
+    ) {
+        // Constructing/enumerating WebRTC capturers on Wayland may create
+        // portal sessions. The descriptor is inert; capture opens the system
+        // dialog only after the user explicitly starts this source.
+        return Ok(vec![ScreenShareOptions::default().source]);
+    }
     let mut result = Vec::new();
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    result.push(ScreenShareOptions::default().source);
     for kind in [ScreenSourceKind::Screen, ScreenSourceKind::Window] {
         if let Some(capturer) = DesktopCapturer::new(options(kind)) {
             result.extend(
@@ -107,6 +117,17 @@ pub(crate) fn sources() -> Result<Vec<ScreenSource>> {
         ));
     }
     Ok(result)
+}
+
+fn system_picker_only(
+    platform: &str,
+    session_type: Option<&str>,
+    wayland_display: Option<&str>,
+) -> bool {
+    platform == "macos"
+        || (platform == "linux"
+            && (session_type.is_some_and(|session| session.eq_ignore_ascii_case("wayland"))
+                || wayland_display.is_some_and(|display| !display.is_empty())))
 }
 
 pub(crate) fn video_source(options: &ScreenShareOptions) -> NativeVideoSource {
@@ -260,6 +281,19 @@ fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn source_policy_uses_inert_system_picker_on_wayland_and_macos_only() {
+        assert!(system_picker_only("linux", Some("wayland"), None));
+        assert!(system_picker_only("linux", None, Some("wayland-1")));
+        assert!(system_picker_only("macos", None, None));
+        assert!(!system_picker_only("linux", Some("x11"), None));
+        assert!(!system_picker_only("linux", None, Some("")));
+        assert!(!system_picker_only(
+            "windows",
+            Some("wayland"),
+            Some("wayland-1")
+        ));
+    }
     #[test]
     fn screen_sizing_preserves_aspect_and_bounds() {
         assert_eq!(fit_dimensions(3840, 2160, 1920, 1080), (1920, 1080));
