@@ -1,0 +1,19 @@
+[package]
+name = "fluxer-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+fluxer-core.workspace = true
+fluxer-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+oo7 = { version = "=0.5.0", default-features = false, features = ["async-std", "native_crypto"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
