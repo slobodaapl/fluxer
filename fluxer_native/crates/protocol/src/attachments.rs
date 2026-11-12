@@ -627,57 +627,61 @@ impl Client {
                         upload_id: upload_id.clone(),
                     });
                     let loaded = Arc::new(Mutex::new(vec![0_u64; parts.len()]));
-                    stream::iter(parts.iter().enumerate().map(|(part_index, part)| {
-                        let loaded = loaded.clone();
-                        let file = file.clone();
-                        let progress = progress.clone();
-                        let content_type = plan.content_type().to_owned();
-                        async move {
-                            let offset = part_index as u64 * part_size;
-                            let length = (*part_size).min(file.size - offset);
-                            let bytes: Arc<dyn Fn(u64) + Send + Sync> = Arc::new(move |bytes| {
-                                if let Ok(mut loaded) = loaded.lock() {
-                                    loaded[part_index] = bytes;
-                                    progress.report(
-                                        None,
-                                        Some((index, loaded.iter().sum())),
-                                        false,
-                                    );
-                                }
-                            });
-                            for attempt in 1..=4 {
-                                match put_file(
-                                    &transport.storage,
-                                    &part.upload_url,
-                                    file.clone(),
-                                    offset..offset + length,
-                                    &content_type,
-                                    bytes.clone(),
-                                    cancel,
-                                )
-                                .await
-                                {
-                                    Ok(()) => return Ok(()),
-                                    Err(failure) => {
-                                        if matches!(failure.error, Error::UploadCancelled)
-                                            || attempt == 4
-                                            || !failure.transient
-                                        {
-                                            return Err(failure.error);
+                    let part_size = *part_size;
+                    stream::iter(parts.clone().into_iter().enumerate().map(
+                        |(part_index, part)| {
+                            let loaded = loaded.clone();
+                            let file = file.clone();
+                            let progress = progress.clone();
+                            let content_type = plan.content_type().to_owned();
+                            async move {
+                                let offset = part_index as u64 * part_size;
+                                let length = part_size.min(file.size - offset);
+                                let bytes: Arc<dyn Fn(u64) + Send + Sync> =
+                                    Arc::new(move |bytes| {
+                                        if let Ok(mut loaded) = loaded.lock() {
+                                            loaded[part_index] = bytes;
+                                            progress.report(
+                                                None,
+                                                Some((index, loaded.iter().sum())),
+                                                false,
+                                            );
                                         }
-                                        bytes(0);
-                                        let delay = retry_delay(attempt, failure.retry_after);
-                                        cancellable(cancel, async {
-                                            tokio::time::sleep(delay).await;
-                                            Ok(())
-                                        })
-                                        .await?;
+                                    });
+                                for attempt in 1..=4 {
+                                    match put_file(
+                                        &transport.storage,
+                                        &part.upload_url,
+                                        file.clone(),
+                                        offset..offset + length,
+                                        &content_type,
+                                        bytes.clone(),
+                                        cancel,
+                                    )
+                                    .await
+                                    {
+                                        Ok(()) => return Ok(()),
+                                        Err(failure) => {
+                                            if matches!(failure.error, Error::UploadCancelled)
+                                                || attempt == 4
+                                                || !failure.transient
+                                            {
+                                                return Err(failure.error);
+                                            }
+                                            bytes(0);
+                                            let delay = retry_delay(attempt, failure.retry_after);
+                                            cancellable(cancel, async {
+                                                tokio::time::sleep(delay).await;
+                                                Ok(())
+                                            })
+                                            .await?;
+                                        }
                                     }
                                 }
+                                unreachable!()
                             }
-                            unreachable!()
-                        }
-                    }))
+                        },
+                    ))
                     .buffer_unordered(4)
                     .try_collect::<Vec<_>>()
                     .await?;
@@ -819,7 +823,14 @@ async fn put_file(
     let headers = response.headers().clone();
     let mut body = Vec::new();
     while body.len() < 64 * 1024 {
-        match response.chunk().await {
+        let chunk = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(PutFailure {
+                error: Error::UploadCancelled, transient: false, retry_after: None,
+            }),
+            chunk = response.chunk() => chunk,
+        };
+        match chunk {
             Ok(Some(bytes)) => {
                 let take = bytes.len().min(64 * 1024 - body.len());
                 body.extend_from_slice(&bytes[..take]);
@@ -870,4 +881,112 @@ fn retry_delay(attempt: u32, hint: Option<Duration>) -> Duration {
         (500_u64.saturating_mul(1_u64 << attempt.saturating_sub(1).min(10))).min(8000) as f64;
     let jittered = (base * (0.75 + fastrand::f64() * 0.5)).clamp(500., 8000.);
     Duration::from_secs_f64((jittered / 1000.).max(hint.unwrap_or_default().as_secs_f64()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attachment_only_reply_omits_invisible_content_preserving_reference_nonce_and_mentions() {
+        let reference = serde_json::from_value(
+            json!({"channel_id":"1","message_id":"2","guild_id":"3","type":0}),
+        )
+        .unwrap();
+        let blank = "\u{0000}\u{00ad}\u{034f}\u{061c}\u{115f}\u{1160}\u{17b4}\u{17b5}\u{180e}\u{200b}\u{200f}\u{202a}\u{202e}\u{2060}\u{2069}\u{2800}\u{3164}\u{fe00}\u{fe0f}\u{feff}\u{ffa0}\u{e0100}\u{e01ef} \t\n\u{3000}";
+        for content in ["", " \r\n", blank] {
+            let body = Client::build_message_body(content, Some("123"), Some(&reference), false);
+            assert_eq!(
+                body,
+                json!({"nonce":"123","message_reference":{"channel_id":"1","message_id":"2","guild_id":"3","type":0},"allowed_mentions":{"replied_user":false}})
+            );
+        }
+        // ECMAScript trim does not classify NEL as whitespace.
+        for visible in ["hello", "\u{0085}", "\u{200b}x", "🦀"] {
+            assert_eq!(
+                Client::build_message_body(visible, None, None, false)["content"],
+                visible
+            );
+        }
+    }
+
+    #[test]
+    fn signed_urls_do_not_allow_implicit_credentials_or_non_http_transports() {
+        for value in [
+            "file:///tmp/file",
+            "https://user:secret@storage.test/object",
+            "https://storage.test/object#secret",
+            "broken",
+        ] {
+            let error = storage_url(value).unwrap_err();
+            assert!(!format!("{error:?}").contains("secret"));
+        }
+        assert!(storage_url("https://storage.test/object?signature=secret").is_ok());
+    }
+
+    #[test]
+    fn retry_hints_have_source_priority_caps_and_backoff_bounds() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::RETRY_AFTER, "12".parse().unwrap());
+        headers.insert("x-ratelimit-reset-after", "20".parse().unwrap());
+        assert_eq!(
+            retry_hint(
+                &json!({"details":{"retry":{"after_seconds":7}},"retry_after":9}),
+                &headers
+            ),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            retry_hint(&json!({"retry_after":9}), &headers),
+            Some(Duration::from_secs(9))
+        );
+        assert_eq!(
+            retry_hint(&Value::Null, &headers),
+            Some(Duration::from_secs(12))
+        );
+        assert_eq!(
+            retry_hint(&json!({"retry_after":99999}), &headers),
+            Some(Duration::from_secs(30))
+        );
+        for attempt in 1..10 {
+            let delay = retry_delay(attempt, None);
+            assert!(delay >= Duration::from_millis(500) && delay <= Duration::from_millis(8000));
+        }
+        assert_eq!(
+            retry_delay(1, Some(Duration::from_secs(30))),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_subscribe_is_observed_without_lost_wakeup() {
+        let cancel = UploadCancellation::new();
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_millis(50), cancel.cancelled())
+            .await
+            .unwrap();
+        assert!(matches!(
+            cancellable(&cancel, async { Ok(()) }).await,
+            Err(Error::UploadCancelled)
+        ));
+    }
+
+    #[test]
+    fn zero_byte_files_only_complete_after_their_transfer_succeeds() {
+        let file = PreparedFile {
+            attachment: UploadAttachment::new("0", "/unused", "empty", "text/plain"),
+            size: 0,
+            modified: None,
+        };
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let progress = Progress::new(
+            &[file],
+            Arc::new(move |event| captured.lock().unwrap().push(event)),
+        );
+        progress.report(None, Some((0, 0)), false);
+        assert_eq!(events.lock().unwrap().last().unwrap().completed_files, 0);
+        progress.finish_file(0);
+        assert_eq!(events.lock().unwrap().last().unwrap().completed_files, 1);
+    }
 }

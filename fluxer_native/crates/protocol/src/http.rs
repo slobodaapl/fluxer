@@ -913,7 +913,10 @@ pub(crate) fn message_body(
     reference: Option<&fluxer_core::MessageReference>,
     mention_author: bool,
 ) -> Value {
-    let mut body = json!({"content":content});
+    let mut body = json!({});
+    if has_visible_message_content(content) {
+        body["content"] = content.into();
+    }
     if let Some(nonce) = nonce {
         body["nonce"] = nonce.into();
     }
@@ -928,6 +931,22 @@ pub(crate) fn message_body(
         }
     }
     body
+}
+
+// MessageValidators.ts hasVisibleContent uses ECMAScript trim for each
+// codepoint, then its explicit invisible-content set. Rust is_whitespace also
+// includes U+0085, which ECMAScript intentionally does not trim.
+fn has_visible_message_content(content: &str) -> bool {
+    content.chars().any(|ch| {
+        !matches!(ch as u32,
+            0x0009..=0x000d | 0x0020 | 0x00a0 | 0x1680 | 0x2000..=0x200a |
+            0x2028 | 0x2029 | 0x202f | 0x205f | 0x3000 |
+            0x0000 | 0x00ad | 0x034f | 0x061c | 0x115f | 0x1160 |
+            0x17b4 | 0x17b5 | 0x180e | 0x200b..=0x200f | 0x202a..=0x202e |
+            0x2060..=0x2069 | 0x2800 | 0x3164 | 0xfe00..=0xfe0f | 0xfeff |
+            0xffa0 | 0xe0100..=0xe01ef
+        )
+    })
 }
 
 fn message_path(channel: &str, message: &str) -> String {
