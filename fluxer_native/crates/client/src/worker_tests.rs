@@ -128,12 +128,10 @@ async fn watch_intent_is_explicit_in_every_voice_payload_and_pruned_without_capt
         "watching cannot create an audio engine"
     );
     worker
-        .media_event(MediaEvent::ScreenStreamAvailable {
-            identity: identity.clone(),
-            available: true,
-        })
-        .await
+        .state
+        .apply_gateway("VOICE_STATE_UPDATE", json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"remote_connection","self_stream":true}))
         .unwrap();
+    worker.sync_stream_availability().await.unwrap();
     assert!(
         worker.watched_streams.is_empty(),
         "availability does not automatically watch streams"
@@ -159,6 +157,18 @@ async fn watch_intent_is_explicit_in_every_voice_payload_and_pruned_without_capt
         })
         .await
         .unwrap();
+    assert!(
+        worker.watched_streams.contains(&identity),
+        "temporary metadata loss preserves a gateway-live watch"
+    );
+    worker
+        .state
+        .apply_gateway(
+            "VOICE_STATE_UPDATE",
+            json!({"user_id":"123","connection_id":"remote_connection","self_stream":false}),
+        )
+        .unwrap();
+    worker.sync_stream_availability().await.unwrap();
     let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
         panic!("expected voice state");
     };
@@ -166,24 +176,250 @@ async fn watch_intent_is_explicit_in_every_voice_payload_and_pruned_without_capt
     assert!(worker.watched_streams.is_empty());
     assert!(events.try_iter().any(|event|matches!(event,Event::WatchedStreams(ref streams) if streams==&vec![identity.clone()])));
     worker
-        .media_event(MediaEvent::ScreenStreamAvailable {
-            identity: identity.clone(),
-            available: true,
-        })
-        .await
+        .state
+        .apply_gateway(
+            "VOICE_STATE_UPDATE",
+            json!({"user_id":"123","connection_id":"remote_connection","self_stream":true}),
+        )
         .unwrap();
+    worker.sync_stream_availability().await.unwrap();
     worker
         .set_watch(identity.clone(), true, true)
         .await
         .unwrap();
     worker
-        .media_event(MediaEvent::ParticipantLeft { identity })
+        .media_event(MediaEvent::ParticipantLeft {
+            identity: identity.clone(),
+        })
         .await
         .unwrap();
-    assert!(worker.watched_streams.is_empty());
+    assert!(worker.watched_streams.contains(&identity));
     worker.leave_voice(true).await.unwrap();
+    assert!(worker.watched_streams.is_empty());
     assert!(worker.available_streams.is_empty());
     assert!(worker.media.is_none());
+}
+
+fn watch_worker() -> (
+    Worker,
+    mpsc::Receiver<Event>,
+    async_mpsc::Receiver<GatewayCommand>,
+) {
+    let (mut worker, events) = worker();
+    worker.state.apply_gateway("READY",json!({"session_id":"session","user":{"id":"1","username":"me"},
+        "guilds":[{"id":"10","properties":{"name":"Guild","owner_id":"1"},
+            "channels":[{"id":"100","name":"voice","type":2},{"id":"101","name":"other","type":2}]}]})).unwrap();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("local".into()),
+    });
+    worker.state.voice.join(100.into());
+    let (tx, outgoing) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(tx);
+    (worker, events, outgoing)
+}
+
+async fn gateway_voice(worker: &mut Worker, data: Value) {
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "VOICE_STATE_UPDATE".into(),
+            data,
+            sequence: None,
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn watch_button_is_advertised_by_gateway_before_sfu_metadata_and_intent_survives_metadata_loss()
+ {
+    // useVoiceCallTracksAndLayout.ts:263-290 permits pending tracks from gateway
+    // self_stream, while VoiceStreamWatchState.ts sends viewer_stream_keys.
+    let (mut worker, events, mut outgoing) = watch_worker();
+    let identity = "user_123_connection_with_underscores".to_owned();
+    gateway_voice(
+        &mut worker,
+        json!({"guild_id":"10","channel_id":"100","user_id":"123",
+        "connection_id":"connection_with_underscores","self_stream":true}),
+    )
+    .await;
+    assert!(worker.available_streams.contains(&identity));
+    assert!(events.try_iter().any(|event| matches!(event,
+        Event::Media(MediaEvent::ScreenStreamAvailable{identity:ref id,available:true}) if id==&identity)));
+    assert!(
+        worker.media.is_none(),
+        "gateway availability never opens devices"
+    );
+    assert!(
+        worker.watched_streams.is_empty(),
+        "a live flag is not automatic watch consent"
+    );
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("voice update");
+    };
+    assert_eq!(
+        payload.viewer_stream_keys,
+        ["10:100:connection_with_underscores"]
+    );
+    for event in [
+        MediaEvent::ScreenStreamAvailable {
+            identity: identity.clone(),
+            available: false,
+        },
+        MediaEvent::ParticipantLeft {
+            identity: identity.clone(),
+        },
+    ] {
+        worker.media_event(event).await.unwrap();
+        assert!(worker.available_streams.contains(&identity));
+        assert!(worker.watched_streams.contains(&identity));
+    }
+    assert!(
+        outgoing.try_recv().is_err(),
+        "transient SFU events must not send watch removal"
+    );
+    assert!(!events.try_iter().any(|event| matches!(
+        event,
+        Event::Media(MediaEvent::ScreenStreamAvailable {
+            available: false,
+            ..
+        })
+    )));
+
+    gateway_voice(
+        &mut worker,
+        json!({"user_id":"123","connection_id":"connection_with_underscores","self_stream":false}),
+    )
+    .await;
+    assert!(worker.available_streams.is_empty() && worker.watched_streams.is_empty());
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("voice update");
+    };
+    assert!(payload.viewer_stream_keys.is_empty());
+    worker
+        .media_event(MediaEvent::ScreenStreamAvailable {
+            identity,
+            available: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        worker.available_streams.is_empty(),
+        "late SFU metadata cannot revive a gateway-stopped stream"
+    );
+}
+
+#[tokio::test]
+async fn watch_roster_scopes_channel_and_local_connection_and_prunes_move_leave_disconnect() {
+    let (mut worker, events, mut outgoing) = watch_worker();
+    for (user, connection, channel) in [
+        (1, "local", 100),
+        (1, "other_device", 100),
+        (123, "remote", 100),
+        (124, "elsewhere", 101),
+    ] {
+        gateway_voice(
+            &mut worker,
+            json!({"guild_id":"10","channel_id":channel.to_string(),
+            "user_id":user.to_string(),"connection_id":connection,"self_stream":true}),
+        )
+        .await;
+    }
+    assert_eq!(
+        worker.available_streams,
+        BTreeSet::from(["user_1_other_device".into(), "user_123_remote".into()])
+    );
+    assert!(
+        worker
+            .set_watch("user_124_elsewhere".into(), true, true)
+            .await
+            .is_err()
+    );
+    assert!(
+        worker
+            .set_watch("user_1_local".into(), true, true)
+            .await
+            .is_err()
+    );
+    worker
+        .set_watch("user_123_remote".into(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    gateway_voice(
+        &mut worker,
+        json!({"user_id":"123","connection_id":"remote","channel_id":"101"}),
+    )
+    .await;
+    assert!(!worker.available_streams.contains("user_123_remote"));
+    assert!(worker.watched_streams.is_empty());
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("voice update");
+    };
+    assert!(payload.viewer_stream_keys.is_empty());
+
+    worker
+        .set_watch("user_1_other_device".into(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    gateway_voice(
+        &mut worker,
+        json!({"user_id":"1","connection_id":"other_device","channel_id":null}),
+    )
+    .await;
+    assert!(worker.watched_streams.is_empty());
+    assert!(
+        worker.voice_target.is_some(),
+        "other account connection leaving must not disconnect local call"
+    );
+    outgoing.try_recv().unwrap();
+    gateway_voice(&mut worker,json!({"guild_id":"10","user_id":"123","connection_id":"remote","channel_id":"100","self_stream":true})).await;
+    worker
+        .set_watch("user_123_remote".into(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    worker.gateway(GatewayEvent::Disconnected).await.unwrap();
+    assert!(worker.available_streams.is_empty() && worker.watched_streams.is_empty());
+    assert!(worker.voice_target.is_none());
+    assert!(worker.media.is_none());
+    assert!(events.try_iter().any(|event| matches!(event,
+        Event::Media(MediaEvent::ScreenStreamAvailable{identity:ref id,available:false}) if id=="user_123_remote")));
+}
+
+#[tokio::test]
+async fn watch_roster_in_ready_is_projected_when_joining_and_republished_after_transport_reset() {
+    let (mut worker, events, _) = watch_worker();
+    // READY/GUILD_SYNC can hydrate live states before the local media join.
+    worker.state.voice.disconnect();
+    gateway_voice(&mut worker,json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"live","self_stream":true})).await;
+    assert!(worker.available_streams.is_empty());
+    worker.state.voice.join(100.into());
+    worker.sync_stream_availability().await.unwrap();
+    assert!(worker.available_streams.contains("user_123_live"));
+    let initial = events
+        .try_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                Event::Media(MediaEvent::ScreenStreamAvailable {
+                    available: true,
+                    ..
+                })
+            )
+        })
+        .count();
+    assert_eq!(initial, 1);
+    worker.available_streams.clear(); // connect_voice resets the UI projection.
+    worker.sync_stream_availability().await.unwrap();
+    assert!(events.try_iter().any(|event| matches!(event,
+        Event::Media(MediaEvent::ScreenStreamAvailable{identity:ref id,available:true}) if id=="user_123_live")));
 }
 
 #[tokio::test]
