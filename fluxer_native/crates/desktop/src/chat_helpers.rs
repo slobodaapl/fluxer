@@ -1,14 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use fluxer_core::{ClientState, Emoji, Message, Snowflake};
 use serde::Deserialize;
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
-#[derive(Clone)]
+/// Immutable choices are shared by catalog searches. The picker caches these
+/// handles; rendering or keyboard navigation never rebuilds the catalog.
+#[derive(Clone, Debug)]
 pub struct EmojiChoice {
+    pub key: String,
+    /// Primary shortcode without colons, including a tone suffix for variants.
+    pub name: String,
+    pub category: String,
     pub label: String,
     pub insert: String,
     pub reaction: String,
     pub id: Option<Snowflake>,
+    pub animated: bool,
+    pub aliases: Arc<[String]>,
+    pub keywords: Arc<[String]>,
 }
 #[derive(Deserialize)]
 struct UnicodeEmoji {
@@ -23,33 +35,192 @@ struct UnicodeEmoji {
 struct EmojiData {
     categories: BTreeMap<String, Vec<UnicodeEmoji>>,
 }
-fn emoji_data() -> &'static EmojiData {
-    static DATA: OnceLock<EmojiData> = OnceLock::new();
-    DATA.get_or_init(|| {
-        serde_json::from_str(include_str!(
+const CATEGORY_ORDER: [&str; 8] = [
+    "people", "nature", "food", "activity", "travel", "objects", "symbols", "flags",
+];
+const TONES: [&str; 6] = ["", "🏻", "🏼", "🏽", "🏾", "🏿"];
+
+struct IndexedChoice {
+    choice: Arc<EmojiChoice>,
+    terms: Vec<String>,
+    tone: Option<char>,
+}
+impl IndexedChoice {
+    fn new(choice: EmojiChoice) -> Self {
+        let terms = choice
+            .aliases
+            .iter()
+            .chain(choice.keywords.iter())
+            .map(|term| term.to_lowercase())
+            .chain(std::iter::once(choice.insert.clone()))
+            .collect();
+        Self::with_terms(choice, terms)
+    }
+    fn with_terms(choice: EmojiChoice, terms: Vec<String>) -> Self {
+        let mut tones = choice
+            .insert
+            .chars()
+            .filter(|c| ('\u{1f3fb}'..='\u{1f3ff}').contains(c));
+        let tone = tones
+            .next()
+            .filter(|first| tones.all(|tone| tone == *first));
+        Self {
+            choice: Arc::new(choice),
+            terms,
+            tone,
+        }
+    }
+    fn matches(&self, query: &str) -> bool {
+        self.terms.iter().any(|term| term.contains(query))
+    }
+}
+struct UnicodeGroup {
+    category: String,
+    base: IndexedChoice,
+    variants: Vec<IndexedChoice>,
+}
+impl UnicodeGroup {
+    fn preferred(&self, tone: usize) -> &IndexedChoice {
+        TONES[tone]
+            .chars()
+            .next()
+            .and_then(|tone| {
+                self.variants
+                    .iter()
+                    .find(|variant| variant.tone == Some(tone))
+            })
+            .unwrap_or(&self.base)
+    }
+}
+type ChoiceList = Arc<[Arc<EmojiChoice>]>;
+struct UnicodeIndex {
+    categories: Vec<String>,
+    groups: Vec<UnicodeGroup>,
+    /// Six precomputed base grids per category, including the complete grid.
+    /// Empty search never scans aliases or all 2,030 skin variants.
+    grids: BTreeMap<String, [ChoiceList; 6]>,
+}
+fn unicode_choice(
+    category: &str,
+    emoji: &UnicodeEmoji,
+    base: &UnicodeEmoji,
+    keywords: Arc<[String]>,
+) -> EmojiChoice {
+    let name = emoji
+        .names
+        .first()
+        .cloned()
+        .unwrap_or_else(|| emoji.surrogates.clone());
+    let mut aliases = emoji.names.clone();
+    for alias in &base.names {
+        if !aliases.contains(alias) {
+            aliases.push(alias.clone());
+        }
+    }
+    EmojiChoice {
+        key: format!("unicode:{category}:{name}"),
+        name,
+        category: category.into(),
+        label: emoji.surrogates.clone(),
+        insert: emoji.surrogates.clone(),
+        reaction: emoji.surrogates.clone(),
+        id: None,
+        animated: false,
+        aliases: aliases.into(),
+        keywords,
+    }
+}
+fn unicode_index() -> &'static UnicodeIndex {
+    static INDEX: OnceLock<UnicodeIndex> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut data: EmojiData = serde_json::from_str(include_str!(
             "../../../../fluxer_app/src/media/data/emojis.json"
         ))
-        .expect("bundled emoji data")
+        .expect("bundled emoji data");
+        let mut ordered = Vec::new();
+        for category in CATEGORY_ORDER {
+            if let Some(emojis) = data.categories.remove(category) {
+                ordered.push((category.to_owned(), emojis));
+            }
+        }
+        // Unknown future categories stay visible, after the source's known order.
+        ordered.extend(data.categories);
+        let categories = ordered
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        let mut groups = Vec::new();
+        for (category, emojis) in ordered {
+            for emoji in emojis {
+                let keywords: Arc<[String]> = emoji.keywords.clone().into();
+                let base =
+                    IndexedChoice::new(unicode_choice(&category, &emoji, &emoji, keywords.clone()));
+                let variants = emoji
+                    .skins
+                    .iter()
+                    .map(|variant| {
+                        let terms = variant
+                            .names
+                            .iter()
+                            .map(|name| name.to_lowercase())
+                            .chain(std::iter::once(variant.surrogates.clone()))
+                            .collect();
+                        IndexedChoice::with_terms(
+                            unicode_choice(&category, variant, &emoji, keywords.clone()),
+                            terms,
+                        )
+                    })
+                    .collect();
+                groups.push(UnicodeGroup {
+                    category: category.clone(),
+                    base,
+                    variants,
+                });
+            }
+        }
+        let mut grids: BTreeMap<String, [Vec<Arc<EmojiChoice>>; 6]> = BTreeMap::new();
+        grids.insert("all".into(), std::array::from_fn(|_| Vec::new()));
+        for category in &categories {
+            grids.insert(category.clone(), std::array::from_fn(|_| Vec::new()));
+        }
+        for group in &groups {
+            for tone in 0..6 {
+                let choice = group.preferred(tone).choice.clone();
+                grids.get_mut("all").expect("all category")[tone].push(choice.clone());
+                grids.get_mut(&group.category).expect("emoji category")[tone].push(choice);
+            }
+        }
+        UnicodeIndex {
+            categories,
+            groups,
+            grids: grids
+                .into_iter()
+                .map(|(category, lists)| (category, lists.map(Arc::from)))
+                .collect(),
+        }
     })
 }
+
 pub fn categories() -> Vec<&'static str> {
-    let mut categories = vec!["all", "community"];
-    categories.extend(emoji_data().categories.keys().map(String::as_str));
-    categories
+    let mut result = vec!["all", "community"];
+    result.extend(unicode_index().categories.iter().map(String::as_str));
+    result
 }
-pub fn emoji_choices(
-    state: &ClientState,
-    channel: Option<Snowflake>,
-    query: &str,
-    category: &str,
-) -> Vec<EmojiChoice> {
-    let query = query.trim().trim_matches(':').to_lowercase();
-    let mut choices = Vec::new();
-    if matches!(category, "all" | "community") {
+
+/// One picker snapshot. Rebuild when its channel/guild emoji data changes;
+/// query/category/tone changes reuse both its custom entries and Unicode index.
+/// Rendering should consume the UI's cached search results instead of searching.
+pub struct EmojiCatalog {
+    unicode: &'static UnicodeIndex,
+    custom: Vec<IndexedChoice>,
+}
+impl EmojiCatalog {
+    pub fn new(state: &ClientState, channel: Option<Snowflake>) -> Self {
+        let mut custom = Vec::new();
         let guild = channel
-            .and_then(|channel| state.channels.get(&channel))
+            .and_then(|id| state.channels.get(&id))
             .and_then(|channel| channel.guild_id)
-            .and_then(|guild| state.guilds.get(&guild));
+            .and_then(|id| state.guilds.get(&id));
         if let Some(emojis) = guild
             .and_then(|guild| guild.extra.get("emojis"))
             .and_then(serde_json::Value::as_array)
@@ -59,55 +230,102 @@ pub fn emoji_choices(
                     continue;
                 }
                 if let Ok(emoji) = serde_json::from_value::<Emoji>(value.clone())
-                    && emoji.name.to_lowercase().contains(&query)
                     && let Some(id) = emoji.id
                 {
-                    choices.push(EmojiChoice {
+                    custom.push(IndexedChoice::new(EmojiChoice {
+                        key: format!("custom:{id}"),
+                        name: emoji.name.clone(),
+                        category: "community".into(),
                         label: format!(":{}:", emoji.name),
                         insert: format!(
-                            "<{}:{}:{}>",
+                            "<{}:{}:{id}>",
                             if emoji.animated { "a" } else { "" },
-                            emoji.name,
-                            id
+                            emoji.name
                         ),
                         reaction: reaction_key(&emoji),
                         id: Some(id),
-                    });
+                        animated: emoji.animated,
+                        aliases: vec![emoji.name].into(),
+                        keywords: Arc::from([]),
+                    }));
                 }
             }
         }
-    }
-    for (name, emojis) in &emoji_data().categories {
-        if category != "all" && category != name {
-            continue;
+        Self {
+            unicode: unicode_index(),
+            custom,
         }
-        for emoji in emojis {
-            let base_matches = query.is_empty()
-                || emoji.surrogates.contains(&query)
-                || emoji
-                    .names
+    }
+    pub fn search(&self, query: &str, category: &str) -> Vec<Arc<EmojiChoice>> {
+        self.search_with_tone(query, category, None)
+    }
+    /// Empty queries return one base/preferred-tone choice per Unicode group.
+    /// Unqualified searches retain all matching variants. With a preferred tone,
+    /// base-keyword matches use that tone; explicit variant aliases/Unicode still
+    /// return the exact searched variant, including mixed-tone sequences.
+    pub fn search_with_tone(
+        &self,
+        query: &str,
+        category: &str,
+        tone: Option<&str>,
+    ) -> Vec<Arc<EmojiChoice>> {
+        let query = query.trim().trim_matches(':').to_lowercase();
+        let tone = tone
+            .and_then(|tone| TONES.iter().position(|candidate| *candidate == tone))
+            .unwrap_or(0);
+        let mut choices = Vec::new();
+        if matches!(category, "all" | "community") {
+            choices.extend(
+                self.custom
                     .iter()
-                    .chain(&emoji.keywords)
-                    .any(|name| name.to_lowercase().contains(&query));
-            for variant in std::iter::once(emoji).chain(&emoji.skins) {
-                if base_matches
-                    || variant.surrogates.contains(&query)
-                    || variant
-                        .names
-                        .iter()
-                        .any(|name| name.to_lowercase().contains(&query))
-                {
-                    choices.push(EmojiChoice {
-                        label: variant.surrogates.clone(),
-                        insert: variant.surrogates.clone(),
-                        reaction: variant.surrogates.clone(),
-                        id: None,
-                    });
+                    .filter(|entry| query.is_empty() || entry.matches(&query))
+                    .map(|entry| entry.choice.clone()),
+            );
+        }
+        if query.is_empty() {
+            if let Some(grids) = self.unicode.grids.get(category) {
+                choices.extend(grids[tone].iter().cloned());
+            }
+            return choices;
+        }
+        for group in &self.unicode.groups {
+            if category != "all" && category != group.category {
+                continue;
+            }
+            let base_matches = group.base.matches(&query);
+            if base_matches && tone != 0 {
+                choices.push(group.preferred(tone).choice.clone());
+            } else {
+                if base_matches {
+                    choices.push(group.base.choice.clone());
                 }
+                choices.extend(
+                    group
+                        .variants
+                        .iter()
+                        .filter(|variant| base_matches || variant.matches(&query))
+                        .map(|variant| variant.choice.clone()),
+                );
             }
         }
+        choices
     }
-    choices
+}
+
+/// Transitional convenience API. Interactive pickers should keep an
+/// EmojiCatalog and cache Arc results rather than cloning fields each render.
+#[allow(dead_code)]
+pub fn emoji_choices(
+    state: &ClientState,
+    channel: Option<Snowflake>,
+    query: &str,
+    category: &str,
+) -> Vec<EmojiChoice> {
+    EmojiCatalog::new(state, channel)
+        .search(query, category)
+        .into_iter()
+        .map(|choice| (*choice).clone())
+        .collect()
 }
 pub fn reaction_key(emoji: &Emoji) -> String {
     emoji
@@ -178,6 +396,39 @@ pub fn display_text(message: &Message) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "diagnostic timing of the actual bundled catalog; run explicitly"]
+    fn catalog_hot_path_timing() {
+        let state = ClientState::default();
+        let start = std::time::Instant::now();
+        let catalog = EmojiCatalog::new(&state, None);
+        let empty = catalog.search("", "all");
+        println!(
+            "catalog cold empty: {} choices in {:?}",
+            empty.len(),
+            start.elapsed()
+        );
+        for query in [
+            "",
+            "thumbsup",
+            "thumbsup_tone3",
+            "👍🏽",
+            "banana",
+            "zzzz_nonexistent",
+        ] {
+            let start = std::time::Instant::now();
+            let mut count = 0;
+            for _ in 0..100 {
+                let result = catalog.search(query, "all");
+                count = result.len();
+                std::hint::black_box(result);
+            }
+            println!(
+                "catalog query {query:?}: {count} choices, {:?}/query",
+                start.elapsed() / 100
+            );
+        }
+    }
     #[test]
     fn bundled_catalog_searches_aliases_keywords_and_categories() {
         let state = ClientState::default();
