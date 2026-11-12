@@ -201,7 +201,7 @@ impl Fluxer {
             && !self.search.read(cx).content.trim().is_empty()
         {
             let scope = self.selected_search_scope(cx);
-            self.run_search_override(0, Some(scope), cx);
+            self.run_search_override(1, Some(scope), cx);
         }
     }
     pub(super) fn change_search_sort(&mut self, cx: &mut Context<Self>) {
@@ -209,7 +209,7 @@ impl Fluxer {
             && !self.search.read(cx).content.trim().is_empty()
         {
             let scope = self.search_ui.result.as_ref().map(|result| result.scope);
-            self.run_search_override(0, scope, cx);
+            self.run_search_override(1, scope, cx);
         }
     }
     fn selected_search_scope(&self, cx: &App) -> SearchScope {
@@ -236,7 +236,7 @@ impl Fluxer {
                 scope: snapshot.scope,
                 scope_override: Some(snapshot.scope),
                 sort: snapshot.sort,
-                page,
+                page: page.max(1),
             };
             self.command(command, cx);
         }
@@ -273,7 +273,7 @@ impl Fluxer {
                 scope,
                 scope_override,
                 sort,
-                page,
+                page: page.max(1),
             },
             cx,
         );
@@ -925,7 +925,7 @@ impl Fluxer {
                         .mb_2()
                         .py_1()
                         .bg(rgb(0x6b51bd))
-                        .on_click(cx.listener(|this, _, _, cx| this.run_search(0, cx))),
+                        .on_click(cx.listener(|this, _, _, cx| this.run_search(1, cx))),
                 )
                 .child(
                     div()
@@ -954,7 +954,7 @@ impl Fluxer {
                             .child(
                                 button("retry-search", "Try again")
                                     .m_3()
-                                    .on_click(cx.listener(|this, _, _, cx| this.run_search(0, cx))),
+                                    .on_click(cx.listener(|this, _, _, cx| this.run_search(1, cx))),
                             )
                     }
                     SearchStatus::Ready => {
@@ -992,7 +992,7 @@ impl Fluxer {
                             );
                             let (page, total, hits) =
                                 (snapshot.page, snapshot.total, snapshot.hits_per_page.max(1));
-                            let more = (u64::from(page) + 1) * u64::from(hits) < total;
+                            let more = search_has_next(page, total, hits);
                             body = body.child(
                                 div()
                                     .p_3()
@@ -1004,14 +1004,14 @@ impl Fluxer {
                                         button("search-previous", "Previous")
                                             .px_2()
                                             .py_1()
-                                            .when(page == 0, |view| view.opacity(0.4))
+                                            .when(page <= 1, |view| view.opacity(0.4))
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                if page > 0 {
+                                                if page > 1 {
                                                     this.search_page(page - 1, cx);
                                                 }
                                             })),
                                     )
-                                    .child(muted(format!("Page {}", page + 1)))
+                                    .child(muted(format!("Page {}", page)))
                                     .child(
                                         button("search-next", "Next")
                                             .px_2()
@@ -1181,7 +1181,7 @@ impl Fluxer {
         self.search
             .update(cx, |input, cx| input.set("release".into(), cx));
         self.command(Command::DemoSearch, cx);
-        self.run_search(0, cx);
+        self.run_search(1, cx);
         if let Some(window) = window {
             self.search.focus_handle(cx).focus(window);
         }
@@ -1241,12 +1241,24 @@ fn should_request_ack(read: Option<Snowflake>, pending: bool, failed: bool, id: 
     !pending && !failed && read.is_none_or(|read| read < id)
 }
 
+fn search_has_next(page: u32, total: u64, hits_per_page: u32) -> bool {
+    u64::from(page.max(1)) * u64::from(hits_per_page.max(1)) < total
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{should_request_ack, visible_window_messages};
+    use super::{search_has_next, should_request_ack, visible_window_messages};
     use fluxer_client::HistorySnapshot;
     use fluxer_core::{ClientState, Message, Snowflake, User};
     use std::collections::BTreeMap;
+    #[test]
+    fn search_pagination_uses_one_based_server_pages() {
+        assert!(search_has_next(1, 75, 25));
+        assert!(search_has_next(2, 75, 25));
+        assert!(!search_has_next(3, 75, 25));
+        assert!(!search_has_next(1, 25, 25));
+        assert!(!search_has_next(1, 0, 25));
+    }
     #[test]
     fn ack_suppression_uses_authoritative_read_cursor_and_context_fences() {
         assert!(should_request_ack(None, false, false, Snowflake(10)));

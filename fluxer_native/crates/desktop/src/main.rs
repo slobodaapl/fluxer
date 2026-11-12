@@ -1135,7 +1135,7 @@ impl Fluxer {
         if self.search_ui.open == Some(BrowserTab::Search)
             && self.search.focus_handle(cx).is_focused(window)
         {
-            self.run_search(0, cx);
+            self.run_search(1, cx);
             return;
         }
         if self.session_restoring {
