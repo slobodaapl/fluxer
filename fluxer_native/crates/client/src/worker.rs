@@ -1301,7 +1301,12 @@ impl Worker {
         self.voice_join_deadline = None;
         self.server_muted = false;
         self.server_deafened = false;
-        self.available_streams.clear();
+        for identity in std::mem::take(&mut self.available_streams) {
+            self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
+                identity,
+                available: false,
+            }));
+        }
         self.watched_streams.clear();
         self.emit(Event::WatchedStreams(Vec::new()));
         self.media_events = None;
@@ -1464,7 +1469,12 @@ impl Worker {
                         if let Some(target) = &mut self.voice_target {
                             let channel = data.get("channel_id").and_then(Value::as_str);
                             let connection = data.get("connection_id").and_then(Value::as_str);
-                            if channel == Some(target.channel_id.to_string().as_str()) {
+                            if channel == Some(target.channel_id.to_string().as_str())
+                                && target
+                                    .connection_id
+                                    .as_deref()
+                                    .is_none_or(|local| connection == Some(local))
+                            {
                                 target.connection_id = connection.map(str::to_owned);
                                 self.server_muted = data
                                     .get("mute")
@@ -1516,6 +1526,7 @@ impl Worker {
                             self.emit(Event::Error("Voice channel is no longer available".into()));
                         }
                     }
+                    self.sync_stream_availability().await?;
                     self.snapshot();
                     if name == "READY" && self.restoring_gateway {
                         self.restoring_gateway = false;
@@ -1563,6 +1574,9 @@ impl Worker {
         let deafened = self.state.voice.deafened || self.server_deafened;
         self.media_events = None;
         self.state.voice.disconnect();
+        // The UI clears its media projection during this transport replacement.
+        // Republish gateway availability after joining the replacement room.
+        self.available_streams.clear();
         self.emit(Event::Media(MediaEvent::Disconnected));
         self.emit(Event::VoiceStatus(VoiceStatus::Connecting {
             channel_id: channel,
@@ -1597,6 +1611,10 @@ impl Worker {
                 self.voice_credentials = Some(update);
                 self.voice_join_deadline = None;
                 self.state.voice.join(channel);
+                self.sync_stream_availability().await?;
+                self.emit(Event::WatchedStreams(
+                    self.watched_streams.iter().cloned().collect(),
+                ));
                 self.emit(Event::VoiceStatus(VoiceStatus::Connected {
                     channel_id: channel,
                 }));
@@ -1614,27 +1632,18 @@ impl Worker {
         match event {
             MediaEvent::ScreenStreamAvailable {
                 identity,
-                available,
+                available: _,
             } => {
                 if parse_participant_identity(&identity).is_none() {
                     return Ok(());
                 }
-                if available {
-                    self.available_streams.insert(identity.clone());
-                } else {
-                    self.available_streams.remove(&identity);
-                    self.set_watch(identity.clone(), false, false).await?;
-                }
-                self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
-                    identity,
-                    available,
-                }));
+                // Publication metadata is supplemental. Fluxer's gateway can
+                // announce self_stream before the SFU advertises a track, and a
+                // publication can disappear temporarily during migration.
+                self.sync_stream_availability().await?;
             }
             MediaEvent::ParticipantLeft { identity } => {
-                self.available_streams.remove(&identity);
-                if parse_participant_identity(&identity).is_some() {
-                    self.set_watch(identity.clone(), false, false).await?;
-                }
+                self.sync_stream_availability().await?;
                 self.emit(Event::Media(MediaEvent::ParticipantLeft { identity }));
             }
             MediaEvent::Video(frame) => {
@@ -1668,6 +1677,66 @@ impl Worker {
                 self.screen_event(false, running).await?;
             }
             event => self.emit(Event::Media(event)),
+        }
+        Ok(())
+    }
+
+    /// useVoiceCallTracksAndLayout.ts:234-240,263-290,440-447 derives live
+    /// streams and pending watches from gateway self_stream, not from receiving
+    /// an SFU publication first. An explicit gateway stop/leave/move revokes the
+    /// intent even if stale SDK metadata still exists.
+    async fn sync_stream_availability(&mut self) -> Result<()> {
+        let state = &self.state;
+        let next: BTreeSet<_> = self
+            .voice_target
+            .as_ref()
+            .filter(|target| self.state.voice.channel_id == Some(target.channel_id))
+            .into_iter()
+            .flat_map(|target| {
+                state.voice_states.values().filter_map(move |voice| {
+                    let guild = voice.guild_id.or_else(|| {
+                        state
+                            .channels
+                            .get(&target.channel_id)
+                            .and_then(|c| c.guild_id)
+                    });
+                    let connection = voice.connection_id.as_deref().filter(|id| !id.is_empty())?;
+                    let is_local = state.current_user.as_ref().is_some_and(|me| {
+                        me.id == voice.user_id
+                            && target.connection_id.as_deref() == Some(connection)
+                    });
+                    if !voice.self_stream
+                        || voice.channel_id != Some(target.channel_id)
+                        || guild != target.guild_id
+                        || is_local
+                    {
+                        return None;
+                    }
+                    let identity = format!("user_{}_{connection}", voice.user_id);
+                    parse_participant_identity(&identity).map(|_| identity.clone())
+                })
+            })
+            .collect();
+        let previous = std::mem::replace(&mut self.available_streams, next);
+        for identity in previous.difference(&self.available_streams) {
+            self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
+                identity: identity.clone(),
+                available: false,
+            }));
+        }
+        for identity in self.available_streams.difference(&previous) {
+            self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
+                identity: identity.clone(),
+                available: true,
+            }));
+        }
+        let stopped: Vec<_> = self
+            .watched_streams
+            .difference(&self.available_streams)
+            .cloned()
+            .collect();
+        for identity in stopped {
+            self.set_watch(identity, false, false).await?;
         }
         Ok(())
     }
