@@ -1,6 +1,5 @@
 use std::{
     fs::File,
-    io::{ErrorKind, Write},
     os::fd::{AsRawFd, BorrowedFd, OwnedFd},
 };
 
@@ -17,6 +16,8 @@ use crate::{
 
 #[path = "clipboard_mime.rs"]
 mod clipboard_mime;
+#[path = "clipboard_write.rs"]
+mod clipboard_write;
 
 fn entries(item: &ClipboardItem) -> Vec<clipboard_mime::Entry<'_>> {
     item.entries()
@@ -251,31 +252,31 @@ impl Clipboard {
     }
 
     fn send_internal(&self, fd: OwnedFd, bytes: Vec<u8>) {
+        if let Err(error) = clipboard_write::set_nonblocking(&fd) {
+            log::error!("Unable to make Wayland clipboard pipe nonblocking: {error}");
+            return;
+        }
         let mut written = 0;
-        self.loop_handle
-            .insert_source(
-                calloop::generic::Generic::new(
-                    File::from(fd),
-                    calloop::Interest::WRITE,
-                    calloop::Mode::Level,
-                ),
-                move |_, file, _| {
-                    let mut file = unsafe { file.get_mut() };
-                    loop {
-                        match file.write(&bytes[written..]) {
-                            Ok(n) if written + n == bytes.len() => {
-                                written += n;
-                                break Ok(PostAction::Remove);
-                            }
-                            Ok(n) => written += n,
-                            Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                                break Ok(PostAction::Continue);
-                            }
-                            Err(_) => break Ok(PostAction::Remove),
-                        }
+        let result = self.loop_handle.insert_source(
+            calloop::generic::Generic::new(
+                File::from(fd),
+                calloop::Interest::WRITE,
+                calloop::Mode::Level,
+            ),
+            move |_, file, _| {
+                let file = unsafe { file.get_mut() };
+                match clipboard_write::write_dispatch(file, &bytes, &mut written) {
+                    Ok(true) => Ok(PostAction::Remove),
+                    Ok(false) => Ok(PostAction::Continue),
+                    Err(error) => {
+                        log::debug!("Wayland clipboard transfer ended: {error}");
+                        Ok(PostAction::Remove)
                     }
-                },
-            )
-            .unwrap();
+                }
+            },
+        );
+        if let Err(error) = result {
+            log::error!("Unable to register Wayland clipboard transfer: {error}");
+        }
     }
 }
