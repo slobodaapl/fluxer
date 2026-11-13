@@ -222,154 +222,179 @@ impl Fluxer {
             .child(self.history_banner(cx))
             .child(
                 div()
-                    .id("timeline")
-                    .track_scroll(&self.timeline)
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .px_0()
-                    .py_3()
+                    .min_w_0()
                     .flex()
-                    .flex_col()
-                    .gap_0()
-                    .when(messages.is_empty(), |v| {
-                        v.child(muted("This conversation is ready. Send the first message."))
-                    })
-                    .children(messages.into_iter().zip(layouts).map(|(message, layout)| {
-                        let id = message.id;
-                        let has_text = !chat_helpers::display_text(&message).is_empty();
-                        let reply_preview = self.message_reply_preview(&message, window, cx);
-                        let row_focus = self
-                            .message_actions
-                            .row_focus
-                            .get(&id)
-                            .expect("visible message focus")
-                            .clone();
-                        let focused = row_focus.contains_focused(window, cx);
-                        let toolbar = self.message_toolbar(&message, focused, cx);
-                        let context_message = message.clone();
-                        let keyboard_message = message.clone();
-                        let group = SharedString::from(format!("message-{id}"));
-                        let timestamp_label = layout.short_time.clone();
-                        let timestamp_tooltip = message.timestamp.clone();
-                        let gutter = if layout.starts_group {
-                            div()
-                                .w(px(COZY_AVATAR_SIZE))
-                                .flex_shrink_0()
-                                .pt(px(2.))
-                                .child(rich_message::avatar(
-                                    &message.author,
-                                    self.media_endpoint.as_deref(),
-                                    COZY_AVATAR_SIZE,
+                    .child(
+                        div()
+                            .id("timeline")
+                            .track_scroll(&self.timeline)
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .px_0()
+                            .py_3()
+                            .flex()
+                            .flex_col()
+                            .gap_0()
+                            .when(messages.is_empty(), |v| {
+                                v.child(muted(
+                                    "This conversation is ready. Send the first message.",
                                 ))
-                                .into_any_element()
-                        } else {
-                            div()
-                                .id(("grouped-message-time", id.0))
-                                .w(px(COZY_AVATAR_SIZE))
-                                .h(px(COZY_LINE_HEIGHT))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_end()
-                                .text_size(px(11.))
-                                .text_color(rgb(MUTED))
-                                .invisible()
-                                .group_hover(group.clone(), |style| style.visible())
-                                .when(
-                                    focused || self.message_actions.active_message() == Some(id),
-                                    |label| label.visible(),
-                                )
-                                .tooltip(move |_, cx| {
-                                    cx.new(|_| MessageTimestampTooltip(timestamp_tooltip.clone()))
-                                        .into()
-                                })
-                                .child(timestamp_label)
-                                .into_any_element()
-                        };
-                        let row = div()
-                            .id(("message", id.0))
-                            .relative()
-                            .group(group)
-                            .track_focus(&row_focus)
-                            .px(px(16.))
-                            .py(px(COZY_SPACING_Y))
-                            .rounded_md()
-                            .hover(|row| row.bg(rgb(0x25222f)))
-                            .focus(|row| row.bg(rgb(0x2f293c)))
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.open_message_menu(
+                            })
+                            .children(messages.into_iter().zip(layouts).map(
+                                |(message, layout)| {
+                                    let id = message.id;
+                                    let has_text = !chat_helpers::display_text(&message).is_empty();
+                                    let reply_preview =
+                                        self.message_reply_preview(&message, window, cx);
+                                    let row_focus = self
+                                        .message_actions
+                                        .row_focus
+                                        .get(&id)
+                                        .expect("visible message focus")
+                                        .clone();
+                                    let focused = row_focus.contains_focused(window, cx);
+                                    let toolbar = self.message_toolbar(&message, focused, cx);
+                                    let context_message = message.clone();
+                                    let keyboard_message = message.clone();
+                                    let group = SharedString::from(format!("message-{id}"));
+                                    let timestamp_label = layout.short_time.clone();
+                                    let timestamp_tooltip = message.timestamp.clone();
+                                    let gutter = if layout.starts_group {
+                                        div()
+                                            .w(px(COZY_AVATAR_SIZE))
+                                            .flex_shrink_0()
+                                            .pt(px(2.))
+                                            .child(rich_message::avatar(
+                                                &message.author,
+                                                self.media_endpoint.as_deref(),
+                                                COZY_AVATAR_SIZE,
+                                            ))
+                                            .into_any_element()
+                                    } else {
+                                        div()
+                                            .id(("grouped-message-time", id.0))
+                                            .w(px(COZY_AVATAR_SIZE))
+                                            .h(px(COZY_LINE_HEIGHT))
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_end()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(MUTED))
+                                            .invisible()
+                                            .group_hover(group.clone(), |style| style.visible())
+                                            .when(
+                                                focused
+                                                    || self.message_actions.active_message()
+                                                        == Some(id),
+                                                |label| label.visible(),
+                                            )
+                                            .tooltip(move |_, cx| {
+                                                cx.new(|_| {
+                                                    MessageTimestampTooltip(
+                                                        timestamp_tooltip.clone(),
+                                                    )
+                                                })
+                                                .into()
+                                            })
+                                            .child(timestamp_label)
+                                            .into_any_element()
+                                    };
+                                    let row = div()
+                                        .id(("message", id.0))
+                                        .relative()
+                                        .group(group)
+                                        .track_focus(&row_focus)
+                                        .px(px(16.))
+                                        .py(px(COZY_SPACING_Y))
+                                        .rounded_md()
+                                        .hover(|row| row.bg(rgb(0x25222f)))
+                                        .focus(|row| row.bg(rgb(0x2f293c)))
+                                        .on_mouse_down(
+                                            MouseButton::Right,
+                                            cx.listener(
+                                                move |this, event: &MouseDownEvent, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.open_message_menu(
                                         context_message.clone(),
                                         event.position,
                                         message_actions::MessageMenuContext::Timeline,
                                         window,
                                         cx,
                                     );
-                                }),
-                            )
-                            .on_key_down(cx.listener(
-                                move |this, event: &KeyDownEvent, window, cx| {
-                                    if matches!(event.keystroke.key.as_str(), "up" | "down")
-                                        && event.keystroke.modifiers == Modifiers::default()
-                                        && this
-                                            .message_actions
-                                            .row_focus
-                                            .get(&id)
-                                            .is_some_and(|focus| focus.is_focused(window))
-                                    {
-                                        this.move_message_focus(
-                                            id,
-                                            event.keystroke.key == "down",
-                                            window,
-                                            cx,
-                                        );
-                                        cx.stop_propagation();
-                                        return;
-                                    }
-                                    if event.keystroke.key == "f10"
-                                        && event.keystroke.modifiers.shift
-                                    {
-                                        this.open_message_menu(
+                                                },
+                                            ),
+                                        )
+                                        .on_key_down(cx.listener(
+                                            move |this, event: &KeyDownEvent, window, cx| {
+                                                if matches!(
+                                                    event.keystroke.key.as_str(),
+                                                    "up" | "down"
+                                                ) && event.keystroke.modifiers
+                                                    == Modifiers::default()
+                                                    && this
+                                                        .message_actions
+                                                        .row_focus
+                                                        .get(&id)
+                                                        .is_some_and(|focus| {
+                                                            focus.is_focused(window)
+                                                        })
+                                                {
+                                                    this.move_message_focus(
+                                                        id,
+                                                        event.keystroke.key == "down",
+                                                        window,
+                                                        cx,
+                                                    );
+                                                    cx.stop_propagation();
+                                                    return;
+                                                }
+                                                if event.keystroke.key == "f10"
+                                                    && event.keystroke.modifiers.shift
+                                                {
+                                                    this.open_message_menu(
                                             keyboard_message.clone(),
                                             this.message_menu_anchor(id),
                                             message_actions::MessageMenuContext::Timeline,
                                             window,
                                             cx,
                                         );
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .child(self.message_bounds_marker(id))
-                            .when(
-                                self.search_ui.highlight == Some((message.channel_id, message.id)),
-                                |view| {
-                                    view.bg(rgb(0x37304f))
-                                        .border_l_2()
-                                        .border_color(rgb(ACCENT))
-                                        .pl_2()
-                                },
-                            )
-                            .child(self.visible_message_marker(&message, cx))
-                            .w_full()
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .flex()
-                            .gap(px(COZY_GUTTER))
-                            .line_height(px(COZY_LINE_HEIGHT))
-                            .child(gutter)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_0()
-                                    .when(layout.starts_group, |body| {
-                                        body.child(
+                                                    cx.stop_propagation();
+                                                }
+                                            },
+                                        ))
+                                        .child(self.message_bounds_marker(id))
+                                        .when(
+                                            self.search_ui.highlight
+                                                == Some((message.channel_id, message.id)),
+                                            |view| {
+                                                view.bg(rgb(0x37304f))
+                                                    .border_l_2()
+                                                    .border_color(rgb(ACCENT))
+                                                    .pl_2()
+                                            },
+                                        )
+                                        .child(self.visible_message_marker(&message, cx))
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .gap(px(COZY_GUTTER))
+                                        .line_height(px(COZY_LINE_HEIGHT))
+                                        .child(gutter)
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .flex()
+                                                .flex_col()
+                                                .gap_0()
+                                                .when(layout.starts_group, |body| {
+                                                    body.child(
                                             div()
                                                 .h(px(COZY_LINE_HEIGHT))
                                                 .flex()
@@ -397,57 +422,73 @@ impl Fluxer {
                                                     )
                                                 }),
                                         )
-                                    })
-                                    .when_some(reply_preview, |view, preview| view.child(preview))
-                                    .when(has_text, |view| {
-                                        view.child(
-                                            div()
-                                                .flex()
-                                                .items_end()
-                                                .gap_1()
-                                                .w_full()
-                                                .min_w_0()
-                                                .child(
-                                                    div()
-                                                        .flex_1()
-                                                        .min_w_0()
-                                                        .line_height(px(COZY_LINE_HEIGHT))
-                                                        .child(
-                                                            self.message_text
-                                                                .get(&id)
-                                                                .expect("cached message")
-                                                                .clone(),
-                                                        ),
-                                                )
-                                                .when(
-                                                    !layout.starts_group
-                                                        && message.edited_timestamp.is_some(),
-                                                    |body| {
-                                                        body.child(
-                                                            div()
-                                                                .pb(px(2.))
-                                                                .text_size(px(10.))
-                                                                .text_color(rgb(MUTED))
-                                                                .child("(edited)"),
-                                                        )
-                                                    },
-                                                ),
-                                        )
-                                    })
-                                    .child(rich_message::media(
-                                        &message,
-                                        !self.image_viewer.is_open(),
-                                        media_animation::gif_autoplay(&self.state.user_settings),
-                                        &self.revealed_media,
-                                        cx,
-                                    ))
-                                    .when(!message.reactions.is_empty(), |view| {
-                                        view.child(div().flex().gap_1().flex_wrap().children(
-                                            message.reactions.iter().enumerate().map(
-                                                |(index, reaction)| {
-                                                    let emoji =
-                                                        chat_helpers::reaction_key(&reaction.emoji);
-                                                    controls::quiet_button(
+                                                })
+                                                .when_some(reply_preview, |view, preview| {
+                                                    view.child(preview)
+                                                })
+                                                .when(has_text, |view| {
+                                                    view.child(
+                                                        div()
+                                                            .flex()
+                                                            .items_end()
+                                                            .gap_1()
+                                                            .w_full()
+                                                            .min_w_0()
+                                                            .child(
+                                                                div()
+                                                                    .flex_1()
+                                                                    .min_w_0()
+                                                                    .line_height(px(
+                                                                        COZY_LINE_HEIGHT,
+                                                                    ))
+                                                                    .child(
+                                                                        self.message_text
+                                                                            .get(&id)
+                                                                            .expect(
+                                                                                "cached message",
+                                                                            )
+                                                                            .clone(),
+                                                                    ),
+                                                            )
+                                                            .when(
+                                                                !layout.starts_group
+                                                                    && message
+                                                                        .edited_timestamp
+                                                                        .is_some(),
+                                                                |body| {
+                                                                    body.child(
+                                                                        div()
+                                                                            .pb(px(2.))
+                                                                            .text_size(px(10.))
+                                                                            .text_color(rgb(MUTED))
+                                                                            .child("(edited)"),
+                                                                    )
+                                                                },
+                                                            ),
+                                                    )
+                                                })
+                                                .child(rich_message::media(
+                                                    &message,
+                                                    !self.image_viewer.is_open(),
+                                                    media_animation::gif_autoplay(
+                                                        &self.state.user_settings,
+                                                    ),
+                                                    &self.revealed_media,
+                                                    cx,
+                                                ))
+                                                .when(!message.reactions.is_empty(), |view| {
+                                                    view.child(
+                                                        div().flex().gap_1().flex_wrap().children(
+                                                            message
+                                                                .reactions
+                                                                .iter()
+                                                                .enumerate()
+                                                                .map(|(index, reaction)| {
+                                                                    let emoji =
+                                                                        chat_helpers::reaction_key(
+                                                                            &reaction.emoji,
+                                                                        );
+                                                                    controls::quiet_button(
                                                         SharedString::from(format!(
                                                             "reaction-chip-{id}-{index}"
                                                         )),
@@ -486,50 +527,64 @@ impl Fluxer {
                                                             cx,
                                                         )
                                                     }))
-                                                },
-                                            ),
-                                        ))
-                                    }),
-                            )
-                            // Paint the solid toolbar after text/media. Absolute
-                            // positioning alone does not put it above siblings;
-                            // selectable text used to paint through its backing.
-                            .child(toolbar);
-                        // Keep exactly one scroll child per message. Dividers and
-                        // inter-group spacing live INSIDE this wrapper, so history
-                        // centering and roving keyboard indices remain unchanged.
-                        div()
-                            .id(("timeline-entry", id.0))
-                            .w_full()
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .when_some(layout.date_divider, |entry, label| {
-                                entry.child(
-                                    div()
-                                        .h(px(20.))
-                                        .my(px(16.))
-                                        .px(px(20.))
-                                        .flex()
-                                        .items_center()
-                                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c)))
-                                        .child(
-                                            div()
-                                                .px_3()
-                                                .text_size(px(12.))
-                                                .text_color(rgb(MUTED))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(label),
+                                                                }),
+                                                        ),
+                                                    )
+                                                }),
                                         )
-                                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c))),
-                                )
-                            })
-                            .when(layout.space_before > 0, |entry| {
-                                entry.child(div().h(px(layout.space_before as f32)).flex_shrink_0())
-                            })
-                            .child(row)
-                    })),
+                                        // Paint the solid toolbar after text/media. Absolute
+                                        // positioning alone does not put it above siblings;
+                                        // selectable text used to paint through its backing.
+                                        .child(toolbar);
+                                    // Keep exactly one scroll child per message. Dividers and
+                                    // inter-group spacing live INSIDE this wrapper, so history
+                                    // centering and roving keyboard indices remain unchanged.
+                                    div()
+                                        .id(("timeline-entry", id.0))
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_col()
+                                        .when_some(layout.date_divider, |entry, label| {
+                                            entry.child(
+                                                div()
+                                                    .h(px(20.))
+                                                    .my(px(16.))
+                                                    .px(px(20.))
+                                                    .flex()
+                                                    .items_center()
+                                                    .child(
+                                                        div().flex_1().h(px(2.)).bg(rgb(0x403a4c)),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .px_3()
+                                                            .text_size(px(12.))
+                                                            .text_color(rgb(MUTED))
+                                                            .font_weight(FontWeight::MEDIUM)
+                                                            .child(label),
+                                                    )
+                                                    .child(
+                                                        div().flex_1().h(px(2.)).bg(rgb(0x403a4c)),
+                                                    ),
+                                            )
+                                        })
+                                        .when(layout.space_before > 0, |entry| {
+                                            entry.child(
+                                                div()
+                                                    .h(px(layout.space_before as f32))
+                                                    .flex_shrink_0(),
+                                            )
+                                        })
+                                        .child(row)
+                                },
+                            )),
+                    )
+                    .child(scrollbar::Scrollbar::new(
+                        "chat-scrollbar",
+                        self.timeline.clone(),
+                    )),
             )
             .when(self.forwarding.is_some(), |view| {
                 view.child(self.forward_panel(cx))

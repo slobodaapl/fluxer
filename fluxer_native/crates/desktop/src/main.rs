@@ -24,6 +24,7 @@ mod message_grouping;
 mod message_links;
 mod message_markup;
 mod rich_message;
+mod scrollbar;
 mod search_browser;
 mod stream_grid;
 mod stream_layout;
@@ -1564,14 +1565,17 @@ impl Fluxer {
                     .items_center()
                     .justify_center()
                     .focusable()
+                    .rounded_full()
                     .border_1()
-                    .border_color(transparent_black())
-                    .focus(|style| style.border_color(rgb(ACCENT)))
-                    .rounded_md()
-                    .overflow_hidden()
-                    .when(self.selected_guild == Some(id), |v| {
-                        v.bg(rgb(0x6650bd)).border_color(rgb(ACCENT))
+                    .border_color(if self.selected_guild == Some(id) {
+                        rgb(ACCENT).into()
+                    } else {
+                        transparent_black()
                     })
+                    .focus(|style| style.border_color(rgb(ACCENT)))
+                    .hover(|style| style.border_color(rgb(0x777080)))
+                    .bg(transparent_black())
+                    .overflow_hidden()
                     .child(avatar_images::community_icon(
                         guild,
                         self.media_endpoint.as_deref(),
