@@ -58,6 +58,7 @@ impl Fluxer {
                 self.message_text.insert(message.id, input);
             }
         }
+        let pending_rows = self.pending_message_rows(window, cx);
         let can_attach = self.attachment_block_reason().is_none();
         div()
             .id("chat-file-drop-target")

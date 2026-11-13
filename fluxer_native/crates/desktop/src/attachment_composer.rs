@@ -233,9 +233,11 @@ impl Fluxer {
     pub(super) fn update_attachments(
         &mut self,
         channel: Snowflake,
-        stages: Vec<StagedAttachment>,
+        mut stages: Vec<StagedAttachment>,
         cx: &mut Context<Self>,
     ) {
+        // Ignore snapshots queued before Enter detached these files from the composer.
+        stages.retain(|stage| !self.outbox.owns_attachment(channel, stage.id));
         let mut cache = self.attachments.previews.borrow_mut();
         let obsolete: Vec<_> = cache
             .images
@@ -275,7 +277,7 @@ impl Fluxer {
         }
         cx.notify();
     }
-    fn attachment_preview(
+    pub(super) fn attachment_preview(
         &self,
         channel: Snowflake,
         stage: &StagedAttachment,

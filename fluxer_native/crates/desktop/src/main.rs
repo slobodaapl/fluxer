@@ -23,6 +23,7 @@ mod message_demo;
 mod message_grouping;
 mod message_links;
 mod message_markup;
+mod outbox_view;
 mod rich_message;
 mod scrollbar;
 mod search_browser;
@@ -275,7 +276,7 @@ struct Fluxer {
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
-    pending_replies: BTreeMap<Snowflake, (Snowflake, bool)>,
+    outbox: outbox_view::OutboxUi,
     attachments: AttachmentUi,
     emoji_target: Option<EmojiTarget>,
     emoji_search: Entity<TextInput>,
@@ -378,7 +379,7 @@ impl Fluxer {
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
-            pending_replies: BTreeMap::new(),
+            outbox: outbox_view::OutboxUi::default(),
             attachments: AttachmentUi::new(),
             emoji_target: None,
             emoji_search: cx.new(|cx| {
@@ -683,6 +684,7 @@ impl Fluxer {
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
                     avatar_images::configure_instance(document.as_ref());
+                    emoji_sprites::configure_instance(document.as_ref());
                     if let Some(document) = document {
                         self.message_links.configure_instance(&document);
                     } else {
@@ -718,6 +720,7 @@ impl Fluxer {
                             self.selected_guild = None;
                             self.session_context_loaded = false;
                             self.replies.clear();
+                            self.outbox.reset();
                             self.message_text.clear();
                             self.clear_browser();
                             self.message_actions.reset();
@@ -1007,49 +1010,22 @@ impl Fluxer {
                         self.cancel_edit(cx);
                     }
                 }
-                Event::MessageSent {
+                Event::MessageSent { .. } => {
+                    // Delivery completion belongs to the outbox. Never clear a
+                    // newer draft or reply based on matching message content.
+                }
+                Event::Outbox {
                     channel_id,
-                    content,
+                    messages,
                 } => {
-                    if self.complete_pending_message(channel_id, &content) {
-                        if let Some((message, mention)) = self.pending_replies.remove(&channel_id)
-                            && self.replies.get(&channel_id).is_some_and(
-                                |(reply, current_mention)| {
-                                    reply.id == message && *current_mention == mention
-                                },
-                            )
-                        {
-                            self.replies.remove(&channel_id);
-                        }
-                        if attachment_composer::sent_draft_can_clear(
-                            self.state.selected_channel,
-                            channel_id,
-                            &content,
-                            self.composer.read(cx).content.as_ref(),
-                        ) {
-                            self.composer
-                                .update(cx, |input, cx| input.set(String::new(), cx));
-                            self.editing = None;
-                        }
-                        if self.state.selected_channel == Some(channel_id)
-                            && self
-                                .search_ui
-                                .histories
-                                .get(&channel_id)
-                                .is_none_or(|history| history.latest)
-                        {
-                            self.timeline.scroll_to_bottom();
-                        }
-                    }
+                    self.outbox.update(channel_id, messages);
                 }
                 Event::MessageOperationFailed {
                     channel_id,
                     content,
                     error,
                 } => {
-                    if self.complete_pending_message(channel_id, &content) {
-                        self.pending_replies.remove(&channel_id);
-                    }
+                    self.complete_pending_message(channel_id, &content);
                     self.error = Some(error);
                 }
                 Event::Attachments {
@@ -1076,7 +1052,7 @@ impl Fluxer {
                 Event::AttachmentsCleared => {
                     self.clear_attachments(cx);
                     self.pending_messages.clear();
-                    self.pending_replies.clear();
+                    self.outbox.reset();
                 }
                 Event::MessageAckResult {
                     channel_id,
@@ -1239,10 +1215,10 @@ impl Fluxer {
         if content.trim().is_empty() && (self.editing.is_some() || !self.has_attachments()) {
             return;
         }
-        if let Some(channel) = self.state.selected_channel {
-            self.pending_messages.insert(channel, content.clone());
-        }
         if let Some(message_id) = self.editing {
+            if let Some(channel) = self.state.selected_channel {
+                self.pending_messages.insert(channel, content.clone());
+            }
             self.command(
                 Command::EditMessage {
                     message_id,
@@ -1251,24 +1227,7 @@ impl Fluxer {
                 cx,
             );
         } else {
-            let reply = self
-                .state
-                .selected_channel
-                .and_then(|channel| self.replies.get(&channel));
-            let reply_to = reply.map(|(message, _)| message.id);
-            let mention_author = reply.is_some_and(|(_, mention)| *mention);
-            if let Some((channel, reply)) = self.state.selected_channel.zip(reply_to) {
-                self.pending_replies
-                    .insert(channel, (reply, mention_author));
-            }
-            self.command(
-                Command::SendMessage {
-                    content,
-                    reply_to,
-                    mention_author,
-                },
-                cx,
-            );
+            self.send_optimistically(content, cx);
         }
     }
 
@@ -1598,7 +1557,7 @@ impl Fluxer {
         self.session_restoring = false;
         self.mfa_ticket = None;
         self.pending_messages.clear();
-        self.pending_replies.clear();
+        self.outbox.reset();
         self.clear_attachments(cx);
         self.message_actions.reset();
         self.message_content.reset();
