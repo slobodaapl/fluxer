@@ -175,12 +175,6 @@ enum MediaKind {
 }
 
 fn attachment_kind(attachment: &Attachment) -> MediaKind {
-    if attachment.flags & ((1 << 3) | (1 << 4)) != 0
-        || attachment.filename.starts_with("SPOILER_")
-        || attachment.extra.get("nsfw").and_then(Value::as_bool) == Some(true)
-    {
-        return MediaKind::File;
-    }
     let mime = attachment
         .content_type
         .as_deref()
@@ -195,6 +189,37 @@ fn attachment_kind(attachment: &Attachment) -> MediaKind {
     } else {
         MediaKind::File
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Concealment {
+    Spoiler,
+    Sensitive,
+}
+impl Concealment {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Spoiler => "Spoiler",
+            Self::Sensitive => "Sensitive media",
+        }
+    }
+}
+fn attachment_concealment(attachment: &Attachment) -> Option<Concealment> {
+    if attachment.flags & (1 << 3) != 0 || attachment.filename.starts_with("SPOILER_") {
+        Some(Concealment::Spoiler)
+    } else if attachment.flags & (1 << 4) != 0
+        || attachment.extra.get("nsfw").and_then(Value::as_bool) == Some(true)
+    {
+        Some(Concealment::Sensitive)
+    } else {
+        None
+    }
+}
+fn attachment_reveal_key(namespace: &str, id: fluxer_core::Snowflake) -> String {
+    format!("attachment:{}:{namespace}:{id}", namespace.len())
+}
+fn embed_reveal_key(namespace: &str, index: usize) -> String {
+    format!("embed:{}:{namespace}:{index}", namespace.len())
 }
 
 fn attachment_expired(attachment: &Attachment) -> bool {
@@ -364,6 +389,92 @@ fn preview(
         .into_any_element()
 }
 
+fn concealment_pill(kind: Concealment) -> AnyElement {
+    div()
+        .px_3()
+        .py_2()
+        .rounded_lg()
+        .bg(rgba(0x17131fe8))
+        .border_1()
+        .border_color(rgba(0xffffff33))
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(12.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(TEXT))
+                .child(kind.label()),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(0xd6d0e3))
+                .child("Click to reveal"),
+        )
+        .into_any_element()
+}
+
+fn concealed_preview(
+    id: String,
+    url: String,
+    key: String,
+    kind: Concealment,
+    natural_size: (Option<u32>, Option<u32>),
+    max_size: (f32, f32),
+    cx: &mut Context<Fluxer>,
+) -> AnyElement {
+    let (width, height) = dimensions(natural_size.0, natural_size.1, max_size);
+    let frame_id = crate::media_animation::image_id(&format!("concealed-{id}"), &url);
+    div()
+        .id(SharedString::from(id))
+        .relative()
+        .focusable()
+        .tab_stop(true)
+        .max_w_full()
+        .overflow_hidden()
+        .rounded_md()
+        .bg(rgb(SURFACE))
+        .cursor_pointer()
+        .child(
+            VisibleImage::new(frame_id, width, height, move || {
+                img(crate::concealed_image::blurred_source(url.clone()))
+                    .object_fit(ObjectFit::Contain)
+                    .with_loading(|| div().size_full().bg(rgb(SURFACE)).into_any_element())
+                    .with_fallback(|| div().size_full().bg(rgb(SURFACE)).into_any_element())
+            })
+            .enabled(false)
+            .autoplay(false),
+        )
+        // The light full-area tint keeps blurred colors visible. Only this
+        // compact pill is opaque; neither loading nor failure can expose an
+        // original clear-frame fallback.
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x100c1818))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(concealment_pill(kind)),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.revealed_media.insert(key.clone());
+            cx.notify();
+        }))
+        .into_any_element()
+}
+
+#[derive(Clone, Copy)]
+struct MediaPrivacy<'a> {
+    spoilered: &'a BTreeSet<String>,
+    revealed: &'a BTreeSet<String>,
+}
+
 /// Forward snapshots are flat wire objects with their own flags and media.
 /// Build only the fields used by this renderer, so nested snapshots cannot
 /// recurse and malformed media entries do not discard a valid sibling.
@@ -401,6 +512,7 @@ pub fn media(
     message: &Message,
     tooltips_enabled: bool,
     autoplay: bool,
+    revealed: &BTreeSet<String>,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
     let snapshots = message
@@ -416,6 +528,7 @@ pub fn media(
                 &format!("{}-snapshot-{index}", message.id),
                 tooltips_enabled,
                 autoplay,
+                revealed,
                 cx,
             )
         })
@@ -430,6 +543,7 @@ pub fn media(
             &message.id.to_string(),
             tooltips_enabled,
             autoplay,
+            revealed,
             cx,
         ))
         .children(snapshots)
@@ -438,13 +552,21 @@ pub fn media(
 
 /// Gallery entries retain their source attachment position so filtered files
 /// cannot shift the clicked image to a different attachment.
-fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
+fn attachment_gallery(
+    message: &Message,
+    namespace: &str,
+    revealed: &BTreeSet<String>,
+) -> Vec<(usize, ImageItem)> {
     message
         .attachments
         .iter()
         .enumerate()
         .filter_map(|(index, attachment)| {
-            if attachment_kind(attachment) != MediaKind::Image || attachment_expired(attachment) {
+            if attachment_kind(attachment) != MediaKind::Image
+                || attachment_expired(attachment)
+                || attachment_concealment(attachment).is_some()
+                    && !revealed.contains(&attachment_reveal_key(namespace, attachment.id))
+            {
                 return None;
             }
             let mut source = attachment
@@ -478,9 +600,10 @@ fn media_parts(
     namespace: &str,
     tooltips_enabled: bool,
     autoplay: bool,
+    revealed: &BTreeSet<String>,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
-    let indexed_gallery = attachment_gallery(message);
+    let indexed_gallery = attachment_gallery(message, namespace, revealed);
     let gallery = Arc::new(
         indexed_gallery
             .iter()
@@ -494,6 +617,30 @@ fn media_parts(
         .map(|(source_index, attachment)| {
             let kind = attachment_kind(attachment);
             let original = attachment_url(attachment, false);
+            let reveal_key = attachment_reveal_key(namespace, attachment.id);
+            if kind == MediaKind::Image
+                && !revealed.contains(&reveal_key)
+                && let Some(concealment) = attachment_concealment(attachment)
+                && let Some(url) = attachment_url(attachment, true)
+            {
+                return div()
+                    .id(SharedString::from(format!(
+                        "attachment-image-{namespace}-{}",
+                        attachment.id
+                    )))
+                    .max_w_full()
+                    .min_w_0()
+                    .child(concealed_preview(
+                        format!("image-{namespace}-{}", attachment.id),
+                        url,
+                        reveal_key,
+                        concealment,
+                        (attachment.width, attachment.height),
+                        (550., 350.),
+                        cx,
+                    ))
+                    .into_any_element();
+            }
             if kind == MediaKind::Image
                 && let Some(url) = attachment_url(attachment, true)
                 && let Some(index) = indexed_gallery
@@ -571,14 +718,56 @@ fn media_parts(
         .enumerate()
         .filter(|_| message.flags & (1 << 2) == 0)
         .map(|(index, embed)| {
-            if embed_is_spoiler(embed, &spoilered) {
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(MUTED))
-                    .child("Spoiler · preview hidden")
-                    .into_any_element()
+            let key = embed_reveal_key(namespace, index);
+            if !revealed.contains(&key)
+                && let Some(concealment) = embed_concealment(embed, &spoilered)
+            {
+                if let Some(item) = embed_image_item(embed) {
+                    concealed_preview(
+                        format!("embed-image-{namespace}-{index}"),
+                        item.source,
+                        key,
+                        concealment,
+                        (item.width, item.height),
+                        (400., 300.),
+                        cx,
+                    )
+                } else {
+                    // Non-image/expired embeds do not justify fetching a video,
+                    // audio file, thumbnail substitute, title or description.
+                    div()
+                        .id(SharedString::from(format!(
+                            "concealed-embed-{namespace}-{index}"
+                        )))
+                        .w(px(280.))
+                        .h(px(70.))
+                        .max_w_full()
+                        .rounded_md()
+                        .bg(rgb(SURFACE))
+                        .cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .child(concealment_pill(concealment))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.revealed_media.insert(key.clone());
+                            cx.notify();
+                        }))
+                        .into_any_element()
+                }
             } else {
-                render_embed(namespace, index, embed, tooltips_enabled, autoplay, cx)
+                render_embed(
+                    namespace,
+                    index,
+                    embed,
+                    tooltips_enabled,
+                    autoplay,
+                    MediaPrivacy {
+                        spoilered: &spoilered,
+                        revealed,
+                    },
+                    cx,
+                )
             }
         })
         .collect::<Vec<_>>();
@@ -712,25 +901,13 @@ fn embed_is_spoiler(embed: &Value, spoilered: &BTreeSet<String>) -> bool {
 }
 
 fn embed_image(embed: &Value) -> Option<(&Value, String)> {
-    if embed.get("nsfw").and_then(Value::as_bool) == Some(true)
-        || embed.get("expired").and_then(Value::as_bool) == Some(true)
-    {
+    if media_value_expired(embed) {
         return None;
     }
-    // Choose the source's animated thumbnail for IMAGE embeds. Check privacy
-    // before reordering so choosing animation cannot reveal a concealed asset.
-    for image in ["image", "thumbnail"]
-        .into_iter()
-        .filter_map(|key| embed.get(key))
-    {
-        if image.get("flags").and_then(Value::as_u64).unwrap_or(0) & ((1 << 3) | (1 << 4)) != 0
-            || image.get("nsfw").and_then(Value::as_bool) == Some(true)
-            || image.get("expired").and_then(Value::as_bool) == Some(true)
-        {
-            return None;
-        }
-    }
     let keys = if string_at(embed, "type") == Some("image")
+        && embed.get("image").is_none_or(|image| {
+            media_value_concealment(image).is_none() && !media_value_expired(image)
+        })
         && embed
             .get("thumbnail")
             .and_then(|image| image.get("flags"))
@@ -744,13 +921,71 @@ fn embed_image(embed: &Value) -> Option<(&Value, String)> {
         ["image", "thumbnail"]
     };
     for image in keys.into_iter().filter_map(|key| embed.get(key)) {
+        if media_value_expired(image) {
+            return None;
+        }
         if let Some(url) = string_at(image, "proxy_url").and_then(safe_image_url) {
             return Some((image, url));
+        }
+        if media_value_concealment(image).is_some() {
+            return None;
         }
     }
     None
 }
-fn embed_gallery_item(embed: &Value) -> Option<ImageItem> {
+fn media_value_expired(value: &Value) -> bool {
+    value.get("expired").and_then(Value::as_bool) == Some(true)
+        || value
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .and_then(|expires| chrono::DateTime::parse_from_rfc3339(expires).ok())
+            .is_some_and(|expires| {
+                expires.timestamp_millis() <= chrono::Utc::now().timestamp_millis()
+            })
+}
+fn media_value_concealment(value: &Value) -> Option<Concealment> {
+    let flags = value.get("flags").and_then(Value::as_u64).unwrap_or(0);
+    if flags & (1 << 3) != 0 {
+        Some(Concealment::Spoiler)
+    } else if flags & (1 << 4) != 0 || value.get("nsfw").and_then(Value::as_bool) == Some(true) {
+        Some(Concealment::Sensitive)
+    } else {
+        None
+    }
+}
+fn embed_concealment(embed: &Value, spoilered: &BTreeSet<String>) -> Option<Concealment> {
+    if embed_is_spoiler(embed, spoilered) {
+        return Some(Concealment::Spoiler);
+    }
+    let mut concealment = media_value_concealment(embed);
+    for media in ["image", "thumbnail", "video", "audio"]
+        .into_iter()
+        .filter_map(|key| embed.get(key))
+    {
+        if let Some(kind) = media_value_concealment(media) {
+            if kind == Concealment::Spoiler {
+                return Some(kind);
+            }
+            concealment = Some(kind);
+        }
+    }
+    concealment
+}
+fn embed_gallery_item(
+    embed: &Value,
+    namespace: &str,
+    index: usize,
+    spoilered: &BTreeSet<String>,
+    revealed: &BTreeSet<String>,
+) -> Option<ImageItem> {
+    if embed_concealment(embed, spoilered).is_some()
+        && !revealed.contains(&embed_reveal_key(namespace, index))
+    {
+        return None;
+    }
+    embed_image_item(embed)
+}
+fn embed_image_item(embed: &Value) -> Option<ImageItem> {
     let (image, mut source) = embed_image(embed)?;
     let animated = is_animated_image(
         string_at(image, "content_type"),
@@ -786,6 +1021,7 @@ fn render_embed(
     embed: &Value,
     enabled: bool,
     autoplay: bool,
+    privacy: MediaPrivacy<'_>,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
     let link = string_at(embed, "url").and_then(safe_url);
@@ -866,7 +1102,9 @@ fn render_embed(
             );
         }
     }
-    if let Some(item) = embed_gallery_item(embed) {
+    if let Some(item) =
+        embed_gallery_item(embed, message, index, privacy.spoilered, privacy.revealed)
+    {
         view = view.child(preview(
             format!("embed-image-{message}-{index}"),
             item.source.clone(),
@@ -912,6 +1150,12 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use serde_json::json;
+    fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
+        super::attachment_gallery(message, "test", &BTreeSet::new())
+    }
+    fn embed_gallery_item(embed: &Value) -> Option<ImageItem> {
+        super::embed_gallery_item(embed, "test", 0, &BTreeSet::new(), &BTreeSet::new())
+    }
     #[test]
     fn gif_attachment_and_embed_request_animation_in_chat_and_full_view() {
         let attachment: Attachment = serde_json::from_value(json!({
@@ -994,19 +1238,32 @@ mod tests {
         );
     }
     #[test]
-    fn spoiler_and_sensitive_attachments_never_inline_preview() {
+    fn concealed_attachments_keep_image_classification_for_blurred_preload() {
         let mut attachment = Attachment {
             content_type: Some("image/png".into()),
             ..Attachment::default()
         };
         assert_eq!(attachment_kind(&attachment), MediaKind::Image);
+        assert_eq!(attachment_concealment(&attachment), None);
         attachment.flags = 1 << 3;
-        assert_eq!(attachment_kind(&attachment), MediaKind::File);
+        assert_eq!(attachment_kind(&attachment), MediaKind::Image);
+        assert_eq!(
+            attachment_concealment(&attachment),
+            Some(Concealment::Spoiler)
+        );
         attachment.flags = 1 << 4;
-        assert_eq!(attachment_kind(&attachment), MediaKind::File);
+        assert_eq!(attachment_kind(&attachment), MediaKind::Image);
+        assert_eq!(
+            attachment_concealment(&attachment),
+            Some(Concealment::Sensitive)
+        );
         attachment.flags = 0;
         attachment.filename = "SPOILER_secret.png".into();
-        assert_eq!(attachment_kind(&attachment), MediaKind::File);
+        assert_eq!(attachment_kind(&attachment), MediaKind::Image);
+        assert_eq!(
+            attachment_concealment(&attachment),
+            Some(Concealment::Spoiler)
+        );
     }
     #[test]
     fn previews_prefer_proxy_but_open_original_preserves_signature() {
@@ -1040,9 +1297,14 @@ mod tests {
         assert!(!snapshot.extra.contains_key("message_snapshots"));
     }
     #[test]
-    fn nsfw_and_expired_schema_fields_hide_media() {
+    fn sensitive_images_preload_but_expired_media_remains_unavailable() {
         let attachment: Attachment = serde_json::from_value(json!({"id":"1","filename":"a.png","content_type":"image/png","url":"https://cdn.example/a","nsfw":true})).unwrap();
-        assert_eq!(attachment_kind(&attachment), MediaKind::File);
+        assert_eq!(attachment_kind(&attachment), MediaKind::Image);
+        assert_eq!(
+            attachment_concealment(&attachment),
+            Some(Concealment::Sensitive)
+        );
+        assert!(attachment_url(&attachment, true).is_some());
         let attachment: Attachment = serde_json::from_value(
             json!({"id":"2","filename":"expired.png","url":"https://cdn.example/a","expired":true}),
         )
@@ -1051,7 +1313,7 @@ mod tests {
         assert_eq!(attachment_url(&attachment, false), None);
         assert!(
             embed_image(&json!({"image":{"proxy_url":"https://proxy.example/a","flags":16}}))
-                .is_none()
+                .is_some()
         );
     }
     #[test]
@@ -1088,6 +1350,89 @@ mod tests {
             Some("https://proxy.example/one?width=400")
         );
         assert!(attachment_url(&message.attachments[7], true).is_none());
+    }
+    #[test]
+    fn reveal_keys_do_not_collide_between_message_attachment_embed_and_forward_scopes() {
+        let id = fluxer_core::Snowflake(7);
+        let keys = BTreeSet::from([
+            attachment_reveal_key("100", id),
+            attachment_reveal_key("101", id),
+            attachment_reveal_key("100-snapshot-0", id),
+            attachment_reveal_key("100-snapshot-1", id),
+            embed_reveal_key("100", 7),
+            embed_reveal_key("101", 7),
+            embed_reveal_key("100-snapshot-0", 7),
+            embed_reveal_key("100-snapshot-1", 7),
+        ]);
+        assert_eq!(keys.len(), 8);
+        assert_ne!(
+            attachment_reveal_key("1", fluxer_core::Snowflake(23)),
+            attachment_reveal_key("12", fluxer_core::Snowflake(3))
+        );
+    }
+    #[test]
+    fn revealing_one_image_does_not_admit_other_concealed_images_or_forward_copies() {
+        let message:Message=serde_json::from_value(json!({"id":"100","channel_id":"10","author":{"id":"1","username":"A"},"attachments":[
+            {"id":"7","filename":"SPOILER_hidden.gif","content_type":"image/gif","url":"https://cdn.example/original.gif?signature=x","proxy_url":"https://proxy.example/hidden.gif?width=320","flags":32},
+            {"id":"8","filename":"sensitive.png","content_type":"image/png","url":"https://cdn.example/sensitive.png","nsfw":true},
+            {"id":"9","filename":"expired.png","content_type":"image/png","url":"https://cdn.example/expired.png","expired":true}
+        ]})).unwrap();
+        assert!(super::attachment_gallery(&message, "100", &BTreeSet::new()).is_empty());
+        assert_eq!(
+            attachment_url(&message.attachments[0], true).as_deref(),
+            Some("https://proxy.example/hidden.gif?width=320&animated=true")
+        );
+        let revealed = BTreeSet::from([
+            attachment_reveal_key("100", fluxer_core::Snowflake(7)),
+            attachment_reveal_key("100", fluxer_core::Snowflake(9)),
+        ]);
+        let gallery = super::attachment_gallery(&message, "100", &revealed);
+        assert_eq!(gallery.len(), 1);
+        assert_eq!(gallery[0].0, 0);
+        assert!(gallery[0].1.animated);
+        assert_eq!(
+            gallery[0].1.original.as_deref(),
+            Some("https://cdn.example/original.gif?signature=x")
+        );
+        assert!(super::attachment_gallery(&message, "100-snapshot-0", &revealed).is_empty());
+        assert!(super::attachment_gallery(&message, "101", &revealed).is_empty());
+    }
+    #[test]
+    fn concealed_embeds_select_only_the_chosen_asset_and_join_gallery_after_exact_reveal() {
+        let embed = json!({"type":"image","url":"https://article.example/private","title":"Concealed title","description":"Concealed description",
+            "image":{"url":"https://cdn.example/secret.gif?signature=x","proxy_url":"https://proxy.example/secret.gif","flags":48},
+            "thumbnail":{"proxy_url":"https://proxy.example/public.gif","flags":32}
+        });
+        let item = embed_image_item(&embed).unwrap();
+        assert_eq!(
+            item.source,
+            "https://proxy.example/secret.gif?animated=true"
+        );
+        let spoilered = spoilered_embed_urls("||https://article.example/private||");
+        assert_eq!(
+            embed_concealment(&embed, &spoilered),
+            Some(Concealment::Spoiler)
+        );
+        assert!(
+            super::embed_gallery_item(&embed, "100", 0, &spoilered, &BTreeSet::new()).is_none()
+        );
+        let wrong = BTreeSet::from([
+            embed_reveal_key("100-snapshot-0", 0),
+            attachment_reveal_key("100", fluxer_core::Snowflake(0)),
+        ]);
+        assert!(super::embed_gallery_item(&embed, "100", 0, &spoilered, &wrong).is_none());
+        let revealed = BTreeSet::from([embed_reveal_key("100", 0)]);
+        assert!(super::embed_gallery_item(&embed, "100", 0, &spoilered, &revealed).is_some());
+        let missing = json!({"image":{"flags":16,"url":"https://third-party.example/no-proxy.png"},"thumbnail":{"proxy_url":"https://proxy.example/public.png"}});
+        assert!(
+            embed_image(&missing).is_none(),
+            "a concealed primary without a safe proxy cannot fall through to a public thumbnail"
+        );
+        let expired = json!({"type":"image","image":{"proxy_url":"https://proxy.example/expired.png","expired":true},"thumbnail":{"proxy_url":"https://proxy.example/other.gif","flags":32}});
+        assert!(
+            embed_image(&expired).is_none(),
+            "expired primary is not replaced by a different animation"
+        );
     }
     #[test]
     fn embedded_image_viewer_uses_image_original_not_the_article_and_stays_scoped() {
