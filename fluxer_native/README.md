@@ -186,6 +186,8 @@ forwards that API to maintained xattr to support current Linux libc.
 The pinned LiveKit Rust dependency also has a workspace-local
 [compatibility patch](compat/livekit/FLUXER_PATCHES.md) for RTC receiver reuse,
 normal decryption-hook restoration and ordered subscription signaling.
+GPUI also has a local [Wayland repaint recovery patch](compat/gpui/FLUXER_PATCHES.md)
+so a delayed compositor callback cannot indefinitely block changed content.
 
 
 Messages and attachments appear locally as soon as Enter is pressed, freeing the

@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 440 tests, formatting, strict Clippy and the
+The UI refinement gate passes 448 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -31,7 +31,7 @@ Full feature parity remains in progress.
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
 | U3 | Search, pins and attachments | Browse results and pins; use corner actions, select text without jumping, and open a result. Add image/file attachments and check overlay controls, spoiler/retry/cancel and uncluttered empty composer. | **Pending subjective/live review.** Offline compact search layout, generated-file cards/spoiler concealment and confirmation cancellation checked. Existing upload/search/controller contracts pass. |
 | U4 | Keyboard and small windows | Use Tab/Shift+Tab, timeline Up/Down, menus and confirmation dialogs at 880×600. Try long channel/user/file names and increased text size. Controls should remain reachable, focus visible and dialogs on screen. | **Pending complete accessibility review.** Local keyboard/slider/menu fixtures pass; screen-reader semantics, preference migration and broader focus consistency remain incomplete. |
-| U6 | Window moves and scaling | Move a window between monitors while watching video and using chat; try different scale factors and window sizes. | **Needs investigation/review.** Moving the offline preview between outputs produced blank content until a navigation redraw. No live-call failure established; retain this as an unresolved display check. |
+| U6 | Window moves and scaling | Move a window between monitors while watching video and using chat; try different scale factors and window sizes. | **Fix implemented; pending user review.** Delayed-callback starvation now has an independent, bounded repaint/recovery path, configure acknowledgement and current-output fixes. Before/after protocol-delay evidence is recorded below. Retest normal startup, monitor moves, scaling and hide/restore; other compositor/GPU issues are not ruled out. |
 | U5 | Stream controls | Watch and share with regular Fluxer; check the quieter toolbar, chat/fullscreen/volume and Stop Watching/Stop sharing controls. | **Pending real-call review.** Synthetic viewer toolbar/volume layout checked; UI commands and immediate local stop paths retained. Prior synthetic media evidence remains scoped as V1/V2 below. |
 | U8 | Chat scrolling and community selection | Drag the chat scrollbar, click its track and scroll with the pointer over it; check a short conversation and a narrow call chat. Select communities and compare the thin selection border. | **Pending user review.** Thumb/drag geometry regressions pass; the purple selection fill is removed. |
 | M8 | Immediate text and attachment sending | Press Enter repeatedly, including identical messages and attachment-only sends. The composer clears and a local message appears immediately; upload progress belongs to that row. Force a failure, retry/remove it, and keep typing/staging other files. | **Pending live/feel review.** Per-attempt nonce, ownership, progress, retry/cancel, server/gateway ordering and newer-draft regressions pass. |
@@ -230,7 +230,7 @@ send feel remains M8; this check establishes the persistent transient-state layo
 
 ## Native playback evidence (2026-11-13)
 
-The full gate passes 440 tests, strict Clippy, formatting and the feature inventory
+The full gate passes 448 tests, strict Clippy, formatting and the feature inventory
 audit (13 opt-in tests remain ignored). Source-backed MIME/URL/proxy/concealment
 contracts, actual HTTP signed GET/privacy/redirect/truncation/cancellation/size/
 timeout tests, and generated MP4/H.264/AAC, WebM/VP8/Opus and WAV decoding tests
@@ -270,3 +270,35 @@ initial `final-actions-check.json` capture timeout is retained as evidence rathe
 than relabeled a pass. This is additional U6 evidence, not a claim that the
 monitor/compositor redraw problem is fixed. Native playback and lifecycle tests
 remain green. The next investigation should isolate that presentation issue.
+
+## U6 redraw recovery evidence (2026-11-13)
+
+The original `redraw-before` fixture froze when a test-only Wayland proxy delayed
+one surface frame callback. Three captures during the hold were identical and
+no new frame callback arrived until release. This establishes callback starvation
+as a reproducible failure mode; it does not establish that every earlier stale
+window had the same cause. Unmodified repeated monitor moves did not reproduce
+the intermittent failure in this session.
+
+The patched `redraw-after` fixture kept showing changing native frames while the
+old callback remained held. The measured replacement callback arrived 118 ms
+after the hold began. Late release left one outstanding pacing callback rather
+than creating a duplicate chain. A final-source run also checked the case where
+all callbacks are withheld: the original and one replacement callback accumulated,
+then no further timer-driven frames were requested. Releasing them resumed
+changing GIFV pixels. Four monitor moves and two fullscreen transitions retained
+changing frames without keyboard/navigation redraws. Closing immediately after
+a configure-producing transition exited cleanly, with no frame request after
+surface destruction. Only the owned offline fixture was moved/captured.
+
+`target/qa/redraw/` contains before/after protocol logs, scoped screenshots and
+`final-check.json`; `verify.log` records 448 passing tests, 13 opt-in ignored,
+formatting, source audit and strict workspace Clippy. The committed proxy's smoke
+uses only temporary sockets and synthetic protocol messages:
+`python3 scripts/qa/test_wayland_redraw_proxy.py`. Eight normal desktop regressions
+exercise the actual dependency's scheduling/output policy. No production account
+writes, personal media, audio playback or microphone capture were used.
+
+U6 remains pending for the user's ordinary startup, moving/resizing between their
+monitors, scaling and hide/restore. The callback-starvation fix is implemented;
+broader compositor/GPU acceptance is not inferred from these controlled checks.

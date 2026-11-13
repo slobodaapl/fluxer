@@ -39,6 +39,12 @@ mod stream_view;
 mod video_perf;
 mod visible_image;
 
+// Exercise the actual vendored Wayland scheduling policy in the normal native
+// test gate, without requiring a compositor or compiling GPUI's upstream suite.
+#[cfg(test)]
+#[path = "../../../compat/gpui/src/platform/linux/wayland/redraw.rs"]
+mod wayland_redraw_regressions;
+
 use attachment_composer::AttachmentUi;
 use call_view::{StreamFrame, Viewer};
 use dropdown::{Dropdown, Selected};

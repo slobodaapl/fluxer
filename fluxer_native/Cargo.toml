@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media", "crates/system-audio", "crates/client", "crates/session"]
 resolver = "2"
-exclude = ["compat/xattr", "compat/livekit"]
+exclude = ["compat/xattr", "compat/livekit", "compat/gpui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -24,6 +24,9 @@ xattr = { path = "compat/xattr" }
 
 # Keep RTC handles through explicit unsubscribe and preserve ordered SFU demand.
 livekit = { path = "compat/livekit" }
+
+# Recover Wayland repainting independently of a suspended compositor callback.
+gpui = { path = "compat/gpui" }
 
 # Video capture, pixel handling and GPUI rendering must meet real-time budgets
 # in development builds too. Keep debug symbols/assertions and optimize only

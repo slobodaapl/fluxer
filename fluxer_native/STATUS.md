@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 162 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 170 input/emoji/attachment/search/media/viewer/message/avatar/Wayland tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-440 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+448 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -505,3 +505,46 @@ in REVIEW.md. Remaining work includes progressive range/buffered startup, prefer
 persistence/motion migration, playback rate/PiP/subtitles/HDR, arbitrary-angle or
 reflection transforms, more codec/platform coverage and native-media/shared-audio
 interoperability. Full feature parity remains incomplete.
+
+### Playback startup follow-up (requested 2026-11-13)
+
+Evaluate progressive playback of remote audio/video against the current complete
+download before playback. The goal is to start playing while bytes arrive and
+support seeking without first downloading the entire file. This is HTTP media
+buffering/range playback, separate from live voice and screen sharing.
+
+Compare the existing Fluxer client's request and buffering behavior before
+choosing an implementation. Cover MP4 metadata at the beginning/end of a file,
+WebM/audio, servers with and without byte-range support, signed/expiring URLs,
+slow or interrupted connections, cancellation and bounded disk/memory use.
+Preserve credential isolation, spoiler concealment and immediate stop. Keep
+complete-download fallback where progressive playback is unavailable. Record
+time to first frame/audio, seek latency and buffering behavior under a throttled
+connection before deciding whether it should become the default.
+
+## Wayland redraw recovery (2026-11-13)
+
+A workspace-local GPUI 0.2.2 compatibility patch connects dirty notifications
+and refreshes to a coalesced recovery wake. Regular compositor callbacks preserve
+normal pacing and cancel obsolete work. A delayed callback gets a single 100 ms
+fallback that paints changed content and registers a replacement callback; object
+identity fences late callbacks so they cannot start duplicate pacing chains.
+Configure/output/scale changes wake immediately after the current dispatch, with
+a full scene refresh even when the logical extent stays the same. Every configure
+is acknowledged, and primary display selection excludes outputs already left.
+Closed windows invalidate pending work before their native surface is destroyed.
+
+An offline Wayland proxy reproduced starvation in the original build: holding one
+surface callback froze changing GIFV frames until release. With the patch, frames
+continued before release; the replacement callback arrived about 118 ms after
+the held callback in the measured run. Holding all callbacks allowed only one
+replacement attempt, with rendering resuming after release. Four physical-output
+moves, two fullscreen transitions and close immediately after a transition passed
+on the patched fixture. This is controlled offline evidence; U6 retains normal
+startup, user workflow and broader compositor/GPU review in REVIEW.md.
+
+The full source/format/strict workspace Clippy gate passes 448 tests (13 opt-in
+tests ignored), including eight regressions against the production scheduling
+policy. The private-socket proxy smoke checks descriptor transfer/cleanup, partial
+writes, protocol fragmentation and late callback release. See
+`compat/gpui/FLUXER_PATCHES.md`; no account traffic or personal media was used.
