@@ -142,6 +142,11 @@ pub(super) fn clip(runs: &[TextRun], range: &Range<usize>) -> Vec<TextRun> {
         })
         .collect()
 }
+/// Glyphs at a soft-wrap boundary belong to the downstream row. Carets use
+/// upstream affinity, so their position helper cannot place inline images.
+fn glyph_row(rows: impl IntoIterator<Item = Range<usize>>, index: usize) -> Option<usize> {
+    rows.into_iter().position(|range| range.contains(&index))
+}
 fn paragraph_indent(document: &MessageDocument, paragraph: &Range<usize>) -> Pixels {
     let mut quote = 0;
     let mut code = false;
@@ -275,13 +280,23 @@ pub(super) fn emoji_images(
         if concealed(span, revealed) {
             continue;
         }
-        let start = layout.position_for_index(span.range.start);
-        let end = layout.position_for_index(span.range.end);
-        let width = (end.x - start.x).max(px(1.));
+        let Some(row) = glyph_row(
+            layout.lines.iter().map(|line| line.range.clone()),
+            span.range.start,
+        ) else {
+            continue;
+        };
+        let line = &layout.lines[row];
+        let x = line.indent + line.layout.x_for_index(span.range.start - line.range.start);
+        let end_x = line.indent
+            + line
+                .layout
+                .x_for_index(span.range.end.min(line.range.end) - line.range.start);
+        let width = (end_x - x).max(px(1.));
         let height = (layout.line_height - px(2.)).max(px(1.));
         let origin = point(
-            bounds.left() + start.x - scroll.x,
-            bounds.top() + start.y - scroll.y + px(1.),
+            bounds.left() + x - scroll.x,
+            bounds.top() + layout.line_height * row - scroll.y + px(1.),
         );
         if !Bounds::new(origin, size(width, height)).intersects(&viewport) {
             continue;
@@ -320,4 +335,125 @@ pub(super) fn emoji_images(
         images.push(element);
     }
     images
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message_markup::{self, MessageContext};
+    use fluxer_core::{ClientState, Message, User};
+
+    fn document(source: &str) -> MessageDocument {
+        message_markup::document(
+            &Message::text(100.into(), 10.into(), User::default(), source),
+            &ClientState::default(),
+            Some("https://media.example"),
+            MessageContext::Standard,
+        )
+    }
+    fn base() -> TextRun {
+        TextRun {
+            len: 0,
+            font: gpui::font("sans-serif"),
+            color: rgb(0xffffff).into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    #[test]
+    fn actual_ast_nested_unicode_styles_survive_visual_row_clipping() {
+        let doc = document("**bold *ital😄* end** __under__ ~~gone~~ `code`");
+        assert!(valid(&doc));
+        let styled = runs(&doc, &base(), &BTreeSet::new());
+        assert_eq!(
+            styled.iter().map(|run| run.len).sum::<usize>(),
+            doc.text.len()
+        );
+        let start = doc.text.find("ital").unwrap();
+        let end = start + "ital😄".len();
+        let row = clip(&styled, &(start..end));
+        assert_eq!(row.iter().map(|run| run.len).sum::<usize>(), "ital😄".len());
+        assert!(
+            row.iter()
+                .all(|run| run.font.weight == FontWeight::BOLD
+                    && run.font.style == FontStyle::Italic)
+        );
+        for (word, test) in [("under", 0), ("gone", 1), ("code", 2)] {
+            let start = doc.text.find(word).unwrap();
+            let row = clip(&styled, &(start..start + word.len()));
+            assert!(row.iter().all(|run| match test {
+                0 => run.underline.is_some(),
+                1 => run.strikethrough.is_some(),
+                _ => run.font.family.as_ref() == "monospace" && run.background_color.is_some(),
+            }));
+        }
+    }
+
+    #[test]
+    fn hidden_link_is_inert_and_transparent_until_its_spoiler_is_revealed() {
+        let doc = document("start ||~~[secret😄](https://example.org)~~ <:party:123>|| end");
+        let start = doc.text.find("secret").unwrap();
+        let mut revealed = BTreeSet::new();
+        let id = hidden_at(&doc, &revealed, start).unwrap();
+        assert!(target_at(&doc, &revealed, start).is_none());
+        let masked = clip(
+            &runs(&doc, &base(), &revealed),
+            &(start..start + "secret😄".len()),
+        );
+        assert!(masked.iter().all(|run| run.color.a == 0.
+            && run.underline.is_none()
+            && run.strikethrough.is_none()));
+        let emoji = doc
+            .spans
+            .iter()
+            .find(|span| span.custom_emoji.is_some())
+            .unwrap();
+        assert!(concealed(emoji, &revealed));
+        assert_eq!(doc.copy_range(0..doc.text.len(), &revealed), "start  end");
+        revealed.insert(id);
+        assert!(hidden_at(&doc, &revealed, start).is_none());
+        assert_eq!(
+            target_at(&doc, &revealed, start),
+            Some(MessageTarget::Link("https://example.org/".into()))
+        );
+        assert!(!concealed(emoji, &revealed));
+        assert_eq!(
+            doc.copy_range(0..doc.text.len(), &revealed),
+            "start secret😄 :party: end"
+        );
+    }
+
+    #[test]
+    fn malformed_byte_ranges_fail_closed_and_nonactionable_mentions_stay_text() {
+        let mut doc = MessageDocument::plain("雪");
+        doc.spans[0].target = Some(MessageTarget::User(12.into()));
+        assert!(target_at(&doc, &BTreeSet::new(), 0).is_none());
+        doc.spans[0].target = Some(MessageTarget::Role(34.into()));
+        assert!(target_at(&doc, &BTreeSet::new(), 0).is_none());
+        doc.spans[0].target = Some(MessageTarget::Channel(56.into()));
+        assert_eq!(
+            target_at(&doc, &BTreeSet::new(), 0),
+            Some(MessageTarget::Channel(56.into()))
+        );
+        doc.spans[0].range.end = 1;
+        assert!(!valid(&doc));
+        assert!(target_at(&doc, &BTreeSet::new(), 0).is_none());
+        assert!(
+            runs(&doc, &base(), &BTreeSet::new())
+                .iter()
+                .all(|run| run.color.a == 0.)
+        );
+    }
+
+    #[test]
+    fn inline_emoji_at_soft_wrap_start_uses_downstream_glyph_row() {
+        let rows = vec![0..3, 3..8, 9..12];
+        assert_eq!(glyph_row(rows.clone(), 0), Some(0));
+        assert_eq!(glyph_row(rows.clone(), 3), Some(1));
+        assert_eq!(glyph_row(rows.clone(), 8), None); // hard newline
+        assert_eq!(glyph_row(rows.clone(), 9), Some(2));
+        assert_eq!(glyph_row(rows, 12), None);
+    }
 }

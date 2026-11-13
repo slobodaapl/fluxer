@@ -164,26 +164,6 @@ impl TextInput {
         input
     }
 
-    /// Keep selection stable across gateway updates and unrelated UI redraws.
-    pub fn update_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
-        let rich = self.message_document.take().is_some();
-        if rich {
-            self.revealed_spoilers.clear();
-            self.inline_press = None;
-            self.hover_interactive = false;
-            self.last_layout = None;
-        }
-        if self.content.as_ref() != text {
-            self.content = text.to_owned().into();
-            self.selected_range = 0..0;
-            self.selection_reversed = false;
-            self.selection_origin = None;
-            self.last_layout = None;
-            cx.notify();
-        } else if rich {
-            cx.notify();
-        }
-    }
     pub fn read_only_document(
         document: impl Into<Arc<MessageDocument>>,
         cx: &mut Context<Self>,
@@ -600,7 +580,7 @@ impl TextInput {
         }
         Some(grapheme_offset(
             &self.content,
-            layout.index_for_position(local),
+            line.range.start + line.layout.index_for_x(local.x - line.indent)?,
         ))
     }
 
