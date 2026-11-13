@@ -22,7 +22,9 @@ impl Fluxer {
             return;
         };
         self.image_demo_started = true;
-        let origin = match image_fixture_server() {
+        let large = std::env::args().any(|arg| arg == "--demo-images-large");
+        let (landscape_width, landscape_height) = landscape_dimensions(large);
+        let origin = match image_fixture_server(large) {
             Ok(origin) => origin,
             Err(error) => {
                 self.error = Some(format!("Offline image fixture could not start: {error}"));
@@ -48,9 +50,26 @@ impl Fluxer {
             "Click either image to view it inside Fluxer. Arrow keys browse this message's images.",
         );
         direct.attachments = vec![
-            fixture_attachment(31_000, "landscape.png", &origin, "/landscape.png", 180, 100),
+            fixture_attachment(
+                31_000,
+                "landscape.png",
+                &origin,
+                "/landscape.png",
+                landscape_width,
+                landscape_height,
+            ),
             fixture_attachment(31_001, "portrait.png", &origin, "/portrait.png", 90, 150),
         ];
+        if std::env::args().any(|arg| arg == "--demo-image-error") {
+            direct.attachments.push(fixture_attachment(
+                31_006,
+                "missing.png",
+                &origin,
+                "/missing.png",
+                150,
+                80,
+            ));
+        }
         let mut embed = make_message(
             30_001,
             1,
@@ -155,9 +174,14 @@ fn pattern_png(width: u32, height: u32, variant: u8) -> Result<Vec<u8>, String> 
     Ok(output.into_inner())
 }
 
-fn image_fixture_server() -> Result<String, String> {
+fn landscape_dimensions(large: bool) -> (u32, u32) {
+    if large { (1800, 1000) } else { (180, 100) }
+}
+
+fn image_fixture_server(large: bool) -> Result<String, String> {
+    let (width, height) = landscape_dimensions(large);
     let assets = BTreeMap::from([
-        ("/landscape.png", pattern_png(180, 100, 0)?),
+        ("/landscape.png", pattern_png(width, height, 0)?),
         ("/portrait.png", pattern_png(90, 150, 1)?),
         ("/embed.png", pattern_png(120, 60, 2)?),
         ("/forwarded.png", pattern_png(120, 60, 3)?),
