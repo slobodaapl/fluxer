@@ -2,8 +2,8 @@
 
 Keep this file current as work lands. Automated fixtures establish their stated
 scope; real-account, device and subjective UI checks stay pending until reviewed.
-The user is away from their PC as of 2026-11-12. Continue implementation and local
-verification without treating their absence as approval of a manual test result.
+Some checks were prepared while the user was away on 2026-11-12. Record later
+feedback against its specific scenario without treating it as broader acceptance.
 
 ## Ready for review
 
@@ -146,6 +146,11 @@ remain pending as M5.
 
 
 ## Current concealed-media policy
+
+On 2026-11-13, the user reviewed the concealed-first offline image mock in build
+`b3c3864d3` and confirmed its appearance looks good. This accepts the mocked
+spoiler-image presentation; real-account, GIF, embed/forward, keyboard and gallery
+scenarios in M7 remain pending.
 
 Concealed images and GIFs now preload when their preview is visible and display a
 strongly blurred first frame with a reveal layer. The clear decoded media shares
