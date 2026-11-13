@@ -408,7 +408,11 @@ fn safe_url(raw: &str) -> Option<Url> {
     .then_some(url)
 }
 fn comparable(host: &str) -> String {
-    host.trim().to_lowercase().trim_end_matches('.').to_string()
+    let normalized = host.trim().to_lowercase();
+    normalized
+        .strip_suffix('.')
+        .unwrap_or(&normalized)
+        .to_owned()
 }
 fn covers_host(pattern: &str, host: &str) -> bool {
     let pattern = comparable(pattern);
@@ -538,6 +542,10 @@ mod tests {
         assert!(covers_host(" *.Example.test. ", "example.test"));
         assert!(covers_host("*.example.test", "nested.example.test"));
         assert!(!covers_host("*.example.test", "notexample.test"));
+        assert!(
+            !covers_host("example.test", "example.test.."),
+            "source removes one terminal dot, not an arbitrary suffix"
+        );
         assert!(covers_host("*", "anything.test"));
         let instance = safe_url("https://chat.example:8443/").unwrap();
         assert!(trusted_host(
