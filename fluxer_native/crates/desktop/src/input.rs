@@ -449,7 +449,7 @@ impl TextInput {
             .is_some_and(|menu| menu.read(cx).is_open())
     }
 
-    fn reset_context_menu(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn reset_context_menu(&mut self, cx: &mut Context<Self>) {
         self.context_menu_generation = self.context_menu_generation.wrapping_add(1);
         if let Some(menu) = &self.context_menu {
             menu.update(cx, |menu, cx| menu.reset(cx));

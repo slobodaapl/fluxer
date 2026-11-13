@@ -58,6 +58,17 @@ impl MessageLinks {
     pub fn is_open(&self) -> bool {
         self.destination.is_some()
     }
+    pub fn input_context_menu_open(&self, cx: &App) -> bool {
+        self.text
+            .as_ref()
+            .is_some_and(|text| text.read(cx).context_menu_open(cx))
+    }
+    pub fn reset_input_context_menu(&mut self, cx: &mut App) {
+        if let Some(text) = &self.text {
+            text.update(cx, |input, cx| input.reset_context_menu(cx));
+        }
+        self.keys.clear();
+    }
     pub fn clear_prompt(&mut self) {
         self.destination = None;
         self.text = None;
@@ -148,6 +159,7 @@ struct InternalRoute {
 
 impl Fluxer {
     pub(super) fn dismiss_message_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.message_links.reset_input_context_menu(cx);
         self.message_links.destination = None;
         self.message_links.text = None;
         self.message_links.keys.clear();
@@ -289,6 +301,12 @@ impl Fluxer {
                     .border_color(rgb(0x4c4458))
                     .shadow_lg()
                     .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        // The URL's menu is nested in this warning's focus path.
+                        // Let it handle navigation and activation before the dialog.
+                        if this.message_links.input_context_menu_open(cx) {
+                            this.message_links.keys.clear();
+                            return;
+                        }
                         match event.keystroke.key.as_str() {
                             "escape" => this.dismiss_message_link(window, cx),
                             "tab" => {
@@ -314,6 +332,10 @@ impl Fluxer {
                         cx.stop_propagation();
                     }))
                     .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                        if this.message_links.input_context_menu_open(cx) {
+                            this.message_links.keys.clear();
+                            return;
+                        }
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                             match this.message_links.keys.release() {
                                 Some(ConfirmationChoice::Cancel) => {
