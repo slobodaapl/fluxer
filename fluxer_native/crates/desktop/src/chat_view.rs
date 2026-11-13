@@ -49,7 +49,10 @@ impl Fluxer {
                 .map(|m| (m.channel_id, m.id)),
         );
         self.message_content.cache.retain_visible(&retained);
-        for message in &messages {
+        for message in messages
+            .iter()
+            .filter(|message| !pin_system_message::is_pin_system_message(message))
+        {
             let document = self.message_document(message, message_markup::MessageContext::Standard);
             if let Some(input) = self.message_text.get(&message.id) {
                 input.update(cx, |input, cx| input.update_message_document(document, cx));
@@ -237,7 +240,9 @@ impl Fluxer {
                     })
                     .children(messages.into_iter().zip(layouts).map(|(message, layout)| {
                         let id = message.id;
-                        let has_text = !chat_helpers::display_text(&message).is_empty();
+                        let is_pin = pin_system_message::is_pin_system_message(&message);
+                        let has_text = !is_pin && !chat_helpers::display_text(&message).is_empty();
+                        let pin_content = self.pin_system_message(&message, cx);
                         let reply_preview = self.message_reply_preview(&message, window, cx);
                         let row_focus = self
                             .message_actions
@@ -252,7 +257,9 @@ impl Fluxer {
                         let group = SharedString::from(format!("message-{id}"));
                         let timestamp_label = layout.short_time.clone();
                         let timestamp_tooltip = message.timestamp.clone();
-                        let gutter = if layout.starts_group {
+                        let gutter = if is_pin {
+                            pin_system_message::gutter()
+                        } else if layout.starts_group {
                             div()
                                 .w(px(COZY_AVATAR_SIZE))
                                 .flex_shrink_0()
@@ -368,7 +375,7 @@ impl Fluxer {
                                     .flex()
                                     .flex_col()
                                     .gap_0()
-                                    .when(layout.starts_group, |body| {
+                                    .when(layout.starts_group && !is_pin, |body| {
                                         body.child(
                                             div()
                                                 .h(px(COZY_LINE_HEIGHT))
@@ -398,6 +405,7 @@ impl Fluxer {
                                                 }),
                                         )
                                     })
+                                    .when_some(pin_content, |view, content| view.child(content))
                                     .when_some(reply_preview, |view, preview| view.child(preview))
                                     .when(has_text, |view| {
                                         view.child(
@@ -434,13 +442,17 @@ impl Fluxer {
                                                 ),
                                         )
                                     })
-                                    .child(rich_message::media(
-                                        &message,
-                                        !self.image_viewer.is_open(),
-                                        media_animation::gif_autoplay(&self.state.user_settings),
-                                        &self.revealed_media,
-                                        cx,
-                                    ))
+                                    .when(!is_pin, |view| {
+                                        view.child(rich_message::media(
+                                            &message,
+                                            !self.image_viewer.is_open(),
+                                            media_animation::gif_autoplay(
+                                                &self.state.user_settings,
+                                            ),
+                                            &self.revealed_media,
+                                            cx,
+                                        ))
+                                    })
                                     .when(!message.reactions.is_empty(), |view| {
                                         view.child(div().flex().gap_1().flex_wrap().children(
                                             message.reactions.iter().enumerate().map(

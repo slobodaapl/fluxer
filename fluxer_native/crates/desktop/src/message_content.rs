@@ -61,6 +61,9 @@ impl Fluxer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
+        if crate::pin_system_message::is_pin_system_message(message) {
+            return None;
+        }
         let reference = message.message_reference.as_ref()?;
         if reference.kind == 1 {
             return Some(

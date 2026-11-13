@@ -23,6 +23,7 @@ mod message_demo;
 mod message_grouping;
 mod message_links;
 mod message_markup;
+mod pin_system_message;
 mod rich_message;
 mod search_browser;
 mod stream_grid;
