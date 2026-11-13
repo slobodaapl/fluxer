@@ -155,47 +155,8 @@ fn safe_url(raw: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-fn avatar_url(user: &User, endpoint: Option<&str>) -> Option<String> {
-    let mut base = http_client::Url::parse(&safe_url(endpoint?)?).ok()?;
-    let hash = user
-        .avatar
-        .as_deref()?
-        .strip_prefix("a_")
-        .unwrap_or(user.avatar.as_deref()?);
-    // Hashes are path components, never arbitrary source URLs.
-    if hash.is_empty()
-        || !hash
-            .bytes()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
-    {
-        return None;
-    }
-    base.set_query(None);
-    base.set_fragment(None);
-    base.path_segments_mut().ok()?.pop_if_empty().extend([
-        "avatars",
-        &user.id.to_string(),
-        &format!("{hash}.webp"),
-    ]);
-    base.query_pairs_mut().append_pair("size", "128");
-    Some(base.into())
-}
-
 pub fn avatar(user: &User, media_endpoint: Option<&str>, size: f32) -> AnyElement {
-    let name = user.display_name().to_owned();
-    let id = user.id;
-    let fallback = move || super::voice_avatar(&name, id, false, size);
-    if let Some(url) = avatar_url(user, media_endpoint) {
-        img(url)
-            .size(px(size))
-            .flex_shrink_0()
-            .rounded_full()
-            .object_fit(ObjectFit::Cover)
-            .with_fallback(fallback)
-            .into_any_element()
-    } else {
-        fallback()
-    }
+    crate::avatar_images::user_avatar(user, media_endpoint, size)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -653,12 +614,15 @@ mod tests {
             ..User::default()
         };
         assert_eq!(
-            avatar_url(&user, Some("https://self.example/media/")),
-            Some("https://self.example/media/avatars/123/abc123.webp?size=128".into())
+            crate::avatar_images::user_avatar_url(&user, Some("https://self.example/media/")),
+            Some("https://self.example/media/avatars/123/abc123.webp?size=160".into())
         );
-        assert_eq!(avatar_url(&user, None), None);
+        assert_eq!(crate::avatar_images::user_avatar_url(&user, None), None);
         user.avatar = Some("../bad".into());
-        assert_eq!(avatar_url(&user, Some("https://self.example/media/")), None);
+        assert_eq!(
+            crate::avatar_images::user_avatar_url(&user, Some("https://self.example/media/")),
+            None
+        );
     }
     #[test]
     fn spoiler_and_sensitive_attachments_never_inline_preview() {
