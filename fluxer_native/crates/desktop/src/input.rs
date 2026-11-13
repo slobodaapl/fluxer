@@ -1,5 +1,9 @@
 // Adapted from GPUI 0.2.2 input example (Apache-2.0), Zed Industries.
+use crate::message_markup::{MessageDocument, MessageTarget};
 use std::ops::Range;
+use std::{collections::BTreeSet, sync::Arc};
+#[path = "message_text.rs"]
+mod message_text;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
@@ -80,11 +84,16 @@ actions!(
         Paste,
         Cut,
         Copy,
+        ActivateInline,
         Quit,
     ]
 );
 
 pub struct TextInput {
+    message_document: Option<Arc<MessageDocument>>,
+    revealed_spoilers: BTreeSet<u32>,
+    inline_press: Option<(Point<Pixels>, usize, bool)>,
+    hover_interactive: bool,
     focus_handle: FocusHandle,
     pub content: SharedString,
     pub secret: bool,
@@ -109,10 +118,18 @@ pub struct TextInput {
 }
 
 impl gpui::EventEmitter<ImagePasted> for TextInput {}
+pub struct MessageActivated {
+    pub target: MessageTarget,
+}
+impl gpui::EventEmitter<MessageActivated> for TextInput {}
 
 impl TextInput {
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
+            message_document: None,
+            revealed_spoilers: BTreeSet::new(),
+            inline_press: None,
+            hover_interactive: false,
             focus_handle: cx.focus_handle().tab_stop(true),
             content: "".into(),
             secret: false,
@@ -149,6 +166,13 @@ impl TextInput {
 
     /// Keep selection stable across gateway updates and unrelated UI redraws.
     pub fn update_read_only(&mut self, text: &str, cx: &mut Context<Self>) {
+        let rich = self.message_document.take().is_some();
+        if rich {
+            self.revealed_spoilers.clear();
+            self.inline_press = None;
+            self.hover_interactive = false;
+            self.last_layout = None;
+        }
         if self.content.as_ref() != text {
             self.content = text.to_owned().into();
             self.selected_range = 0..0;
@@ -156,6 +180,69 @@ impl TextInput {
             self.selection_origin = None;
             self.last_layout = None;
             cx.notify();
+        } else if rich {
+            cx.notify();
+        }
+    }
+    pub fn read_only_document(
+        document: impl Into<Arc<MessageDocument>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let document = document.into();
+        let mut input = Self::read_only(&document.text, cx);
+        input.message_document = Some(document);
+        input
+    }
+    pub fn update_message_document(
+        &mut self,
+        document: impl Into<Arc<MessageDocument>>,
+        cx: &mut Context<Self>,
+    ) {
+        let document = document.into();
+        if self
+            .message_document
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old, &document) || old == &document)
+        {
+            return;
+        }
+        let text_changed = self.content.as_ref() != document.text;
+        if self
+            .message_document
+            .as_ref()
+            .is_none_or(|old| old.source != document.source || old.text != document.text)
+        {
+            self.revealed_spoilers.clear();
+        }
+        if text_changed {
+            self.content = document.text.clone().into();
+            self.selected_range = 0..0;
+            self.selection_reversed = false;
+            self.selection_origin = None;
+        }
+        self.message_document = Some(document);
+        self.inline_press = None;
+        self.hover_interactive = false;
+        self.last_layout = None;
+        cx.notify();
+    }
+    fn activate_inline(&mut self, _: &ActivateInline, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.activate_inline_at(self.cursor_offset(), cx);
+        }
+    }
+    fn activate_inline_at(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(document) = self.message_document.as_ref() else {
+            return;
+        };
+        if let Some(id) = message_text::hidden_at(document, &self.revealed_spoilers, index) {
+            self.revealed_spoilers.insert(id);
+            self.last_layout = None;
+            cx.notify();
+            return;
+        }
+        if let Some(target) = message_text::target_at(document, &self.revealed_spoilers, index) {
+            cx.emit(MessageActivated { target });
         }
     }
 
@@ -284,7 +371,10 @@ impl TextInput {
             .clamp(0, layout.lines.len().saturating_sub(1) as isize) as usize;
         let index = grapheme_offset(
             &self.content,
-            layout.lines[next].range.start + layout.lines[next].layout.closest_index_for_x(x),
+            layout.lines[next].range.start
+                + layout.lines[next]
+                    .layout
+                    .closest_index_for_x(x - layout.lines[next].indent),
         );
         if select {
             self.select_to(index, cx);
@@ -336,6 +426,15 @@ impl TextInput {
         self.is_selecting = true;
 
         let index = self.index_for_mouse_position(event.position);
+        self.inline_press = if self.message_document.is_some()
+            && event.click_count == 1
+            && !event.modifiers.shift
+        {
+            self.inline_index_for_mouse_position(event.position)
+                .map(|index| (event.position, index, false))
+        } else {
+            None
+        };
         self.selection_clicks = event.click_count;
         self.selection_origin = None;
         if event.modifiers.shift {
@@ -351,11 +450,41 @@ impl TextInput {
         cx.stop_propagation();
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _window: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.is_selecting = false;
+        if let Some((origin, index, dragged)) = self.inline_press.take()
+            && !dragged
+            && self.selected_range.is_empty()
+            && !event.modifiers.shift
+            && (event.position.x - origin.x).abs() <= px(3.)
+            && (event.position.y - origin.y).abs() <= px(3.)
+            && self.inline_index_for_mouse_position(event.position) == Some(index)
+        {
+            self.activate_inline_at(index, cx);
+        }
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((origin, _, dragged)) = &mut self.inline_press
+            && ((event.position.x - origin.x).abs() > px(3.)
+                || (event.position.y - origin.y).abs() > px(3.))
+        {
+            *dragged = true;
+        }
+        let hover = self
+            .message_document
+            .as_ref()
+            .zip(self.inline_index_for_mouse_position(event.position))
+            .is_some_and(|(document, index)| {
+                !self.is_selecting
+                    && (message_text::hidden_at(document, &self.revealed_spoilers, index).is_some()
+                        || message_text::target_at(document, &self.revealed_spoilers, index)
+                            .is_some())
+            });
+        if hover != self.hover_interactive {
+            self.hover_interactive = hover;
+            cx.notify();
+        }
         if self.is_selecting && event.pressed_button == Some(MouseButton::Left) {
             let index = self.index_for_mouse_position(event.position);
             if let Some(origin) = self.selection_origin.clone() {
@@ -397,7 +526,15 @@ impl TextInput {
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
+                if let Some(document) = self.message_document.as_ref() {
+                    if message_text::valid(document) {
+                        document.copy_range(self.selected_range.clone(), &self.revealed_spoilers)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    self.content[self.selected_range.clone()].to_string()
+                },
             ));
         }
     }
@@ -441,6 +578,30 @@ impl TextInput {
             position.y - bounds.top() + self.scroll_y,
         );
         grapheme_offset(&self.content, layout.index_for_position(local))
+    }
+    fn inline_index_for_mouse_position(&self, position: Point<Pixels>) -> Option<usize> {
+        let bounds = self.last_bounds?;
+        let layout = self.last_layout.as_ref()?;
+        if !bounds.contains(&position) {
+            return None;
+        }
+        let local = point(
+            position.x - bounds.left() + self.scroll_x,
+            position.y - bounds.top() + self.scroll_y,
+        );
+        if local.y < px(0.) || local.y >= layout.height() {
+            return None;
+        }
+        let row =
+            ((local.y / layout.line_height) as usize).min(layout.lines.len().saturating_sub(1));
+        let line = &layout.lines[row];
+        if local.x < line.indent || local.x > line.indent + line.layout.width {
+            return None;
+        }
+        Some(grapheme_offset(
+            &self.content,
+            layout.index_for_position(local),
+        ))
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -645,6 +806,7 @@ impl EntityInputHandler for TextInput {
 struct VisualLine {
     range: Range<usize>,
     layout: ShapedLine,
+    indent: Pixels,
 }
 #[derive(Clone)]
 struct DocumentLayout {
@@ -669,8 +831,10 @@ impl DocumentLayout {
         let row = self.row_for_index(index);
         let line = &self.lines[row];
         point(
-            line.layout
-                .x_for_index(index.saturating_sub(line.range.start).min(line.range.len())),
+            line.indent
+                + line
+                    .layout
+                    .x_for_index(index.saturating_sub(line.range.start).min(line.range.len())),
             self.line_height * row,
         )
     }
@@ -687,7 +851,7 @@ impl DocumentLayout {
         line.range.start
             + line
                 .layout
-                .closest_index_for_x(position.x)
+                .closest_index_for_x(position.x - line.indent)
                 .min(line.range.len())
     }
 }
@@ -701,6 +865,8 @@ struct PrepaintState {
     scroll: Point<Pixels>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
+    backgrounds: Vec<PaintQuad>,
+    emoji_images: Vec<gpui::AnyElement>,
 }
 impl IntoElement for TextElement {
     type Element = Self;
@@ -726,6 +892,41 @@ impl Element for TextElement {
     ) -> (LayoutId, ()) {
         let input = self.input.read(cx);
         if input.read_only {
+            if let Some(document) = input.message_document.clone() {
+                let text_style = window.text_style();
+                let font_size = text_style.font_size.to_pixels(window.rem_size());
+                let line_height = window.line_height();
+                let runs = message_text::runs(
+                    &document,
+                    &text_style.to_run(document.text.len()),
+                    &input.revealed_spoilers,
+                );
+                let mut style = Style::default();
+                style.size.width = relative(1.).into();
+                return (
+                    window.request_measured_layout(style, move |known, available, window, _| {
+                        let width = known.width.or(match available.width {
+                            gpui::AvailableSpace::Definite(width) => Some(width),
+                            _ => None,
+                        });
+                        let layout = message_text::layout(
+                            &document,
+                            &runs,
+                            font_size,
+                            line_height,
+                            width,
+                            window,
+                        );
+                        let measured_width = layout
+                            .lines
+                            .iter()
+                            .map(|line| line.indent + line.layout.width)
+                            .fold(px(0.), Pixels::max);
+                        size(width.unwrap_or(measured_width), layout.height())
+                    }),
+                    (),
+                );
+            }
             let text = input.content.clone();
             let text_style = window.text_style();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -805,7 +1006,18 @@ impl Element for TextElement {
             strikethrough: None,
         };
         let mut lines = Vec::new();
-        if input.multiline && !empty {
+        if let Some(document) = input.message_document.as_ref() {
+            let runs = message_text::runs(document, &base, &input.revealed_spoilers);
+            lines = message_text::layout(
+                document,
+                &runs,
+                font_size,
+                window.line_height(),
+                Some(bounds.size.width.max(px(1.))),
+                window,
+            )
+            .lines;
+        } else if input.multiline && !empty {
             let wrapped = window
                 .text_system()
                 .shape_text(
@@ -829,7 +1041,11 @@ impl Element for TextElement {
                     let layout = window
                         .text_system()
                         .shape_line(text, font_size, &runs, None);
-                    lines.push(VisualLine { range, layout });
+                    lines.push(VisualLine {
+                        range,
+                        layout,
+                        indent: px(0.),
+                    });
                 }
             }
         } else {
@@ -842,7 +1058,11 @@ impl Element for TextElement {
             let layout = window
                 .text_system()
                 .shape_line(display, font_size, &runs, None);
-            lines.push(VisualLine { range, layout });
+            lines.push(VisualLine {
+                range,
+                layout,
+                indent: px(0.),
+            });
         }
         let layout = DocumentLayout {
             lines,
@@ -885,11 +1105,11 @@ impl Element for TextElement {
                         .end
                         .saturating_sub(line.range.start)
                         .min(line.range.len());
-                    let x1 = line.layout.x_for_index(from);
+                    let x1 = line.indent + line.layout.x_for_index(from);
                     let x2 = if range.end > line.range.end {
                         bounds.size.width
                     } else {
-                        line.layout.x_for_index(to)
+                        line.indent + line.layout.x_for_index(to)
                     };
                     if x2 > x1 {
                         selections.push(fill(
@@ -918,7 +1138,21 @@ impl Element for TextElement {
                 rgb(0xb29bff),
             )
         });
+        let document = input.message_document.clone();
+        let revealed = input.revealed_spoilers.clone();
+        let backgrounds = document
+            .as_ref()
+            .map(|document| message_text::backgrounds(document, &layout, bounds, scroll))
+            .unwrap_or_default();
+        let emoji_images = document
+            .as_ref()
+            .map(|document| {
+                message_text::emoji_images(document, &revealed, &layout, bounds, scroll, window, cx)
+            })
+            .unwrap_or_default();
         PrepaintState {
+            backgrounds,
+            emoji_images,
             layout,
             scroll,
             cursor,
@@ -953,6 +1187,9 @@ impl Element for TextElement {
                 input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
             }
         });
+        for background in prepaint.backgrounds.drain(..) {
+            window.paint_quad(background);
+        }
         for selection in prepaint.selections.drain(..) {
             if focus.is_focused(window) {
                 window.paint_quad(selection);
@@ -960,7 +1197,7 @@ impl Element for TextElement {
         }
         for (row, line) in prepaint.layout.lines.iter().enumerate() {
             let origin = point(
-                bounds.left() - prepaint.scroll.x,
+                bounds.left() + line.indent - prepaint.scroll.x,
                 bounds.top() + prepaint.layout.line_height * row - prepaint.scroll.y,
             );
             if origin.y + prepaint.layout.line_height >= bounds.top() && origin.y <= bounds.bottom()
@@ -969,6 +1206,9 @@ impl Element for TextElement {
                     .paint(origin, prepaint.layout.line_height, window, cx)
                     .expect("paint native composer");
             }
+        }
+        for image in &mut prepaint.emoji_images {
+            image.paint(window, cx);
         }
         if focus.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
@@ -1037,7 +1277,12 @@ impl Render for TextInput {
                 "TextInput"
             })
             .track_focus(&self.focus_handle(cx))
-            .cursor(CursorStyle::IBeam)
+            .cursor(if self.hover_interactive {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::IBeam
+            })
+            .on_action(cx.listener(Self::activate_inline))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))
@@ -1072,8 +1317,8 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .when(!self.read_only, |view| view.bg(rgb(0x292735)))
-            .line_height(px(24.))
-            .text_size(px(14.))
+            .line_height(px(if self.read_only { 22. } else { 24. }))
+            .when(!self.read_only, |view| view.text_size(px(14.)))
             .text_color(rgb(0xe9e7f2))
             .child(
                 div()
@@ -1178,6 +1423,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-a", SelectAll, Some("SelectableText")),
         KeyBinding::new("ctrl-c", Copy, Some("SelectableText")),
         KeyBinding::new("cmd-c", Copy, Some("SelectableText")),
+        KeyBinding::new("enter", ActivateInline, Some("SelectableText")),
+        KeyBinding::new("space", ActivateInline, Some("SelectableText")),
     ]);
 }
 
