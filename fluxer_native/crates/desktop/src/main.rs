@@ -698,7 +698,9 @@ impl Fluxer {
                             self.clear_browser();
                             self.message_actions.reset();
                             self.message_content.reset();
-                            self.message_links.reset();
+                            // Authentication may publish an empty transition after
+                            // discovery. Drop private UI while retaining public routing.
+                            self.message_links.clear_prompt();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;

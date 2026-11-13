@@ -58,11 +58,14 @@ impl MessageLinks {
     pub fn is_open(&self) -> bool {
         self.destination.is_some()
     }
-    pub fn reset(&mut self) {
+    pub fn clear_prompt(&mut self) {
         self.destination = None;
         self.text = None;
         self.previous_focus = None;
         self.keys.clear();
+    }
+    pub fn reset(&mut self) {
+        self.clear_prompt();
         self.policy = InstanceLinkPolicy::default();
     }
     pub fn configure_instance(&mut self, document: &serde_json::Value) {
