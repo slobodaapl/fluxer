@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 179 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 207 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-457 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+485 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -576,3 +576,18 @@ retaining the phone's independent 30% gain; your other device stayed separate.
 These checks used no call, capture, audio playback or account writes. Live audio,
 pointer use and broader accessibility remain U10 in REVIEW.md. Further menu
 priorities and classic-client/Discord references are in UI_UX.md.
+
+
+Media now has a shared right-click/Shift+F10 menu across attachments, media
+embeds, forwarded snapshots, search/pins and image/native-player viewers. It
+combines Save as, Copy media link, Open original, still-image clipboard copy and
+existing message actions. It resolves the clicked asset against current message,
+permission, expiry, concealment and channel download policy; asynchronous results
+are fenced across account changes and asset replacement. Transfers and image
+conversion run off the UI thread, with cancellation and bounded concurrency.
+Saving uses the system file dialog and an atomic sibling-file replacement; image
+copy exports PNG bytes through the patched Wayland clipboard. Background completion
+requires an explicit Copy action when the app lacks focus. The standard text
+inputs also offer selection-aware Undo/Redo, Cut/Copy/Paste, Delete and Select all;
+read-only and secret fields restrict their actions. See M10/U11 in REVIEW.md for
+verified scope and remaining acceptance, including native Save dialog completion.

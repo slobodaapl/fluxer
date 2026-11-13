@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 457 tests, formatting, strict Clippy and the
+The UI refinement gate passes 485 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -22,10 +22,12 @@ Full feature parity remains in progress.
 | M2 | Selectable formatting and spoilers | Select across bold/italic/underline/strike, links, code, quotes, Unicode and wrapped lines. Ctrl/Cmd+C should copy rendered text and omit concealed spoilers; click a spoiler to reveal it. Explicit Copy Message should retain Markdown source. | **Pending sustained usability review.** Existing composer/input regressions plus rich-run clipping, Unicode range, hidden-target/copy and soft-wrap emoji tests pass. Source fonts and actual inline backgrounds checked offline. |
 | M3 | Mentions, emoji and links | Compare known user/role/channel labels and custom emoji with Fluxer. Click a channel link and an old message link; inspect an untrusted external URL and cancel. Check registered emoji renames, failures and spoiler concealment. | **Pending real-account review.** Generated loopback emoji images and resolved labels checked; no external destination opened. Trust/host/scope fixtures pass. User/role popovers, animated/jumbo sizing, timestamps and full preference parity remain incomplete. |
 | M4 | Reply and attachment presentation | Follow a reply to its original message; check missing references, forwards, images, spoilers/sensitive attachments and narrow-window wrapping. Images should retain aspect ratio without an extra file card underneath. | **Pending live/layout review.** Reference lookup uses existing cached/wire data and jump commands; media URL/privacy and bounded dimensions regressions pass. |
-| M5 | In-app image viewer | Click attachment, embed and forwarded images in chat and search/pins. Check fit at small/large window sizes, arrow-key browsing and wrapping, Escape/backdrop close, focus restoration and Tab confinement. Open original should use the existing link warning policy; cancel should return to the image. | **Pending real-account/subjective review.** Source-backed gallery/URL/privacy regressions pass; offline modal checks are recorded below. Native video/audio is now covered by M9; pan/zoom and full media-menu parity remain future work. |
+| M5 | In-app image viewer | Click attachment, embed and forwarded images in chat and search/pins. Check fit at small/large window sizes, arrow-key browsing and wrapping, Escape/backdrop close, focus restoration and Tab confinement. Open original should use the existing link warning policy; cancel should return to the image. | **Pending real-account/subjective review.** Source-backed gallery/URL/privacy regressions pass; offline modal checks are recorded below. Native video/audio is now covered by M9; pan/zoom and broader viewer parity remain future work; media menus are covered by M10. |
 | M6 | Visible GIF playback | Check uploaded GIFs, animated-image embeds and forwarded GIFs while scrolling. Open one in the image modal; close it and resume chat. Try GIF autoplay disabled and hover. Concealed/sensitive media should stay hidden. | **Pending real-account/subjective review.** Source animated-proxy URLs, stable GPUI frame IDs, actual clip gating and generated GIF codec/policy fixtures implemented. MP4-backed GIFV playback is implemented under M9; reduced-motion/save-data policy and full preference UI remain migration work. |
 | M7 | Preloaded concealed media | Scroll spoiler/sensitive pictures and GIFs into view. Expect a loaded blurred preview; first click reveals inline, second opens the viewer. Check concealment in embeds/forwards, keyboard activation, and gallery navigation before/after reveal. | **Pending real-account/subjective review.** Current policy preloads visible concealed previews and caches their decoded media; only blurred frame zero is painted before reveal. Expired/suppressed media stays unavailable. This supersedes earlier no-fetch behavior. |
 | M9 | Native audio/video and GIFV | Play MP4/WebM and audio attachments in chat, forwards and search/pins. Check pause/resume, seek, mute/volume, output device, Open original and full view/Escape. Try rotated phone video, GIFV with autoplay off/on, scroll-out/return, concealed/expired media, failures and channel changes. Test while voice/shared audio is active. | **Pending real-account, physical-device and subjective review.** Real codecs, HTTP contracts, private PipeWire PCM routing and generated app presentation/actions are checked below. Complete-file caching precedes playback; range startup, preference persistence, rate/PiP/subtitles/HDR and broader platform/codec coverage remain open. |
+| M10 | Media context menus and export | Right-click or Shift+F10 on attachments, image/video embeds, forwards, search/pins and both viewers. Check Save as, Copy image, Copy media link, Open original and message actions. Concealed/expired/download-hidden media must not expose download actions. Close a menu with Escape before closing its viewer. | **Pending real-account and subjective review.** Source policy, atomic export, image conversion and stale-target tests pass. External Wayland PNG copy is verified. Native Save dialog opens; end-to-end picker completion remains unverified. See evidence below. |
+| U11 | Text editing context menus | Select text in the composer and use right-click/Shift+F10 to Undo/Redo, Cut/Copy/Paste, Delete and Select all. Check emoji/Unicode, selection preservation, read-only external URL fields and secret fields. | **Pending sustained usability review.** Unicode/history, selection and restricted-action tests pass; owned offline keyboard checks are recorded below. |
 | U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
 | U7 | Message toolbar legibility | Hover short and wrapped messages, code and media; check React/Reply/More against the text beneath it. Select nearby text and open reactions. | **Pending subjective review.** Toolbar backing is solid with a stronger border/shadow, and paints after message text/media so content cannot paint through it. Hidden toolbars retain their existing visibility behavior. |
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
@@ -333,3 +335,40 @@ real gateway events and subjective usability still need review. Full persisted
 preferences and broader menu coverage remain in UI_UX.md. Multi-stream layout
 acceptance stays deferred; using several generated stream tiles for menu checks
 does not accept that separate feature.
+
+
+## M10/U11 media and editing menu evidence (2026-11-13)
+
+`target/qa/media-menus/` retains scoped offline menu captures and verification
+results. The final gate passes 485 tests (13 opt-in ignored), source audit,
+formatting and strict workspace Clippy. Policy tests cover exact attachment/embed
+and forwarded-snapshot identity, video-card versus thumbnail targets, current
+permissions, suppression/expiry, concealment and media-channel download hiding.
+Root tests reject removed/replaced timeline/browser targets and hidden titles.
+Export tests exercise bounded image conversion, orientation, exact pixels,
+cancellation/temporary-file cleanup and atomic replacement of an existing file.
+
+The actual Copy image menu supplied an `image/png` Wayland selection to a separate
+`wl-paste` process. Its bytes decoded to the generated fixture's exact dimensions
+and checked pixels. Only validated synthetic fixture data was saved. The GPUI
+patch also advertises actual image MIME types, uses the latest keyboard/mouse
+input serial, and writes pipes nonblockingly with a per-dispatch budget; a stalled
+private-pipe regression checks complete delivery without blocking the UI thread.
+
+The native GTK Save File dialog opened from the actual media menu. Automated
+keyboard confirmation was inconclusive, so end-to-end picker destination and
+completion are **pending manual review**. The owned dialog was closed after the
+check. No production messages, personal media, account settings, physical audio
+or microphone capture were used. Live calls and subjective menu usability remain
+pending; multi-stream layout acceptance remains deferred.
+
+
+Scoped captures verify attachment/embed/forward menus and the absence of download
+or original-link actions on concealed, expired and channel-download-hidden media.
+Inside both image and native-video viewers, Escape dismisses the menu first and
+a second Escape closes the viewer. Keyboard-driven composer checks performed
+Undo and Redo on a draft containing an emoji, then selected/copied the exact
+synthetic Unicode text to an external reader. No message was submitted. The final
+nonblocking clipboard build also passed the external generated-PNG pixel check.
+Pointer targeting and full real-account search/pins interactions remain manual
+review items; these fixture captures do not establish broader acceptance.

@@ -5,6 +5,7 @@ use gpui::http_client::Url;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageItem {
+    pub context: Option<crate::media_actions::MediaReference>,
     pub source: String,
     pub original: Option<String>,
     pub name: String,
@@ -111,6 +112,7 @@ mod tests {
     use super::*;
     fn item(name: &str) -> ImageItem {
         ImageItem {
+            context: None,
             source: format!("https://proxy.example/{name}.png"),
             original: Some(format!("https://cdn.example/{name}.png?signature=x")),
             name: name.into(),

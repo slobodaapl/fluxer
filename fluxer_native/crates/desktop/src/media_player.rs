@@ -593,6 +593,7 @@ impl Render for MediaPlayer {
 pub(super) struct PlaybackUi {
     players: BTreeMap<String, Entity<MediaPlayer>>,
     seen: HashSet<String>,
+    contexts: BTreeMap<String, crate::media_actions::MediaReference>,
     pub modal: PlayerModal,
     output: Option<String>,
     retained_browser: HashSet<String>,
@@ -602,6 +603,7 @@ impl PlaybackUi {
         Self {
             players: BTreeMap::new(),
             seen: HashSet::new(),
+            contexts: BTreeMap::new(),
             modal: PlayerModal::new(cx),
             output: None,
             retained_browser: HashSet::new(),
@@ -632,6 +634,7 @@ impl PlaybackUi {
             player.update(cx, |player, cx| player.retire(cx));
         }
         self.seen.clear();
+        self.contexts.clear();
         self.modal.reset();
     }
     pub fn finish_frame(&mut self, cx: &mut App) {
@@ -648,10 +651,22 @@ impl PlaybackUi {
             .cloned()
             .collect::<Vec<_>>();
         for id in obsolete {
+            self.contexts.remove(&id);
             if let Some(player) = self.players.remove(&id) {
                 player.update(cx, |player, cx| player.retire(cx));
             }
         }
+    }
+    pub fn set_context(&mut self, key: String, reference: crate::media_actions::MediaReference) {
+        self.contexts.insert(key, reference);
+    }
+    pub fn cached_file(&self, url: &str, cx: &App) -> Option<Arc<tempfile::NamedTempFile>> {
+        self.players.values().find_map(|player| {
+            let player = player.read(cx);
+            (player.source.source == url)
+                .then(|| player.file.clone())
+                .flatten()
+        })
     }
     pub fn render(
         &mut self,
@@ -664,48 +679,59 @@ impl PlaybackUi {
     ) -> AnyElement {
         let id = source.resource_key.clone();
         self.seen.insert(id.clone());
-        let entity = self.players.entry(id.clone()).or_insert_with(|| {
-            let entity = cx.new(|cx| MediaPlayer::new(source.clone(), self.output.clone(), cx));
-            cx.subscribe_in(
-                &entity,
-                window,
-                |this, player, event: &PlayerEvent, window, cx| {
-                    match event {
-                        PlayerEvent::Open => {
-                            this.emoji_target = None;
-                            this.dismiss_message_actions(window, cx);
-                            this.playback.modal.open(
-                                player.read(cx).source.resource_key.clone(),
-                                window,
-                                cx,
-                            );
-                        }
-                        PlayerEvent::Close => this.playback.modal.close(window, cx),
-                        PlayerEvent::Original => {
-                            let original = player.read(cx).source.original.clone();
-                            if let Some(url) = original {
-                                this.activate_message_target(
-                                    &message_markup::MessageTarget::Link(url),
+        let entity =
+            self.players.entry(id.clone()).or_insert_with(|| {
+                let entity = cx.new(|cx| MediaPlayer::new(source.clone(), self.output.clone(), cx));
+                cx.subscribe_in(
+                    &entity,
+                    window,
+                    |this, player, event: &PlayerEvent, window, cx| {
+                        match event {
+                            PlayerEvent::Open => {
+                                this.emoji_target = None;
+                                this.dismiss_message_actions(window, cx);
+                                this.playback.modal.open(
+                                    player.read(cx).source.resource_key.clone(),
                                     window,
                                     cx,
                                 );
                             }
+                            PlayerEvent::Close => this.playback.modal.close(window, cx),
+                            PlayerEvent::Original => {
+                                let key = player.read(cx).source.resource_key.clone();
+                                if this.playback.contexts.get(&key).is_some_and(|reference| {
+                                    !this.media_original_allowed(reference)
+                                }) {
+                                    return;
+                                }
+                                let original = player.read(cx).source.original.clone();
+                                if let Some(url) = original {
+                                    this.activate_message_target(
+                                        &message_markup::MessageTarget::Link(url),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            PlayerEvent::Demo(action) => {
+                                player.update(cx, |player, cx| player.action(*action, window, cx));
+                            }
+                            PlayerEvent::Reveal => {
+                                this.revealed_media
+                                    .insert(player.read(cx).source.reveal_key.clone());
+                            }
                         }
-                        PlayerEvent::Demo(action) => {
-                            player.update(cx, |player, cx| player.action(*action, window, cx));
-                        }
-                        PlayerEvent::Reveal => {
-                            this.revealed_media
-                                .insert(player.read(cx).source.reveal_key.clone());
-                        }
-                    }
-                    cx.notify();
-                },
-            )
-            .detach();
-            entity
-        });
+                        cx.notify();
+                    },
+                )
+                .detach();
+                entity
+            });
         entity.update(cx, |player, cx| {
+            if player.source.original != source.original {
+                player.source.original = source.original.clone();
+                cx.notify();
+            }
             let active = window.is_window_active();
             if player.revealed != revealed
                 || player.autoplay != autoplay
@@ -728,18 +754,36 @@ impl PlaybackUi {
         });
         entity.clone().into_any_element()
     }
-    pub fn overlay(&self, window: &Window, cx: &mut App) -> AnyElement {
+    pub fn overlay(&self, window: &Window, cx: &mut Context<Fluxer>) -> AnyElement {
         let Some(player) = self.modal.id().and_then(|id| self.players.get(id)) else {
             return div().into_any_element();
         };
         let view = player.read(cx).view();
-        media_player_view::render_modal(
+        let content = media_player_view::render_modal(
             &view,
             &self.modal,
             MediaPlayer::callback(player.downgrade()),
             window,
             cx,
-        )
+        );
+        if let Some(reference) = self
+            .modal
+            .id()
+            .and_then(|id| self.contexts.get(id))
+            .cloned()
+        {
+            crate::context_actions::trigger(
+                div().id("native-player-context"),
+                crate::context_actions::Target::Media(reference),
+                cx,
+            )
+            .absolute()
+            .inset_0()
+            .child(content)
+            .into_any_element()
+        } else {
+            content
+        }
     }
     pub fn close(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(player) = self.modal.id().and_then(|id| self.players.get(id)) {

@@ -487,6 +487,7 @@ impl Fluxer {
                                                             enabled: !(self.image_viewer.is_open() || self.playback.modal.is_open()),
                                                             autoplay: media_animation::gif_autoplay(&self.state.user_settings),
                                                             surface: "timeline",
+ hide_downloads: crate::media_context_policy::hide_media_downloads(message.channel_id, crate::media_context_policy::MediaKind::Image, &self.state.channels),
                                                         },
                                                         &self.revealed_media,
                                                         &mut self.playback,

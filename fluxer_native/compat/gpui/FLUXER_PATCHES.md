@@ -1,4 +1,4 @@
-# GPUI 0.2.2 Wayland repaint recovery
+# GPUI 0.2.2 Wayland repaint and clipboard fixes
 
 This directory contains the published crates.io GPUI 0.2.2 source with the
 changes below. Upstream copyright headers and Apache-2.0 license are retained.
@@ -36,3 +36,24 @@ replacement callbacks, then release the old callback to check fencing. Its
 private-socket smoke covers message fragmentation and descriptor forwarding.
 Offline before/after fixture captures are recorded in `REVIEW.md`; these establish
 callback-starvation recovery, not acceptance on every compositor or GPU.
+
+
+## Image clipboard and bounded transfer
+
+* `clipboard_mime.rs` and `clipboard.rs`: retain actual clipboard entry types,
+  advertise their image MIME types and serve matching bytes. Image-only selections
+  no longer advertise fabricated text; text and GPUI internal marker behavior is
+  retained. Unknown MIME requests receive no payload.
+* `serial.rs` and `client.rs`: use the most recently received keyboard or pointer
+  input serial when setting the selection, including after asynchronous image
+  preparation. Arrival order avoids numeric comparisons across serial wraparound.
+* `clipboard_write.rs` and `clipboard.rs`: set clipboard pipes nonblocking while
+  preserving existing descriptor flags, and write at most 64 KiB per dispatch.
+  Slow readers therefore cannot block rendering. Interrupted writes, zero writes,
+  closed readers and source registration failures are handled without panicking.
+
+Six normal desktop tests include these production helper modules by path: MIME
+selection/payload, input serial ordering/wraparound, and bounded nonblocking pipe
+writes (including a stalled reader and exact delivery). An owned offline media
+menu also supplied a generated PNG to an external Wayland clipboard reader; see
+M10 in REVIEW.md. These tests supplement the eight repaint scheduling regressions.

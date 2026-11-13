@@ -281,9 +281,24 @@ fn byte_size(bytes: u64) -> String {
     }
 }
 
-fn open_card(id: String, label: String, detail: String, url: Option<String>) -> AnyElement {
+fn open_card(
+    id: String,
+    label: String,
+    detail: String,
+    url: Option<String>,
+    context: crate::media_actions::MediaReference,
+    cx: &mut Context<Fluxer>,
+) -> AnyElement {
+    let menu_context = context.clone();
     div()
         .id(SharedString::from(id))
+        .map(|view| {
+            crate::context_actions::trigger(
+                view,
+                crate::context_actions::Target::Media(menu_context),
+                cx,
+            )
+        })
         .flex()
         .flex_col()
         .gap_1()
@@ -303,13 +318,27 @@ fn open_card(id: String, label: String, detail: String, url: Option<String>) -> 
                 .text_color(rgb(MUTED))
                 .child(detail),
         )
-        .when_some(url, |card, url| {
+        .when_some(url, |card, _| {
             card.cursor_pointer()
                 .hover(|style| style.bg(rgb(0x302b3d)))
-                .on_click(move |_, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    cx.open_url(&url);
-                })
+                    if let Some(media) = this.media_descriptor(&context) {
+                        let action = if media.concealment.is_some()
+                            && !this.revealed_media.contains(&media.reveal_key)
+                        {
+                            "media-reveal"
+                        } else {
+                            "media-open"
+                        };
+                        this.perform_media_context_action(
+                            &context,
+                            crate::context_menu::ContextMenuEvent::Action(action.into()),
+                            window,
+                            cx,
+                        );
+                    }
+                }))
         })
         .into_any_element()
 }
@@ -351,8 +380,16 @@ fn preview(
         settings.max_size,
     );
     let frame_id = crate::media_animation::image_id(&id, &url);
+    let context = gallery.get(index).and_then(|item| item.context.clone());
     div()
         .id(SharedString::from(id))
+        .when_some(context, |view, reference| {
+            crate::context_actions::trigger(
+                view,
+                crate::context_actions::Target::Media(reference),
+                cx,
+            )
+        })
         .focusable()
         .tab_stop(true)
         .max_w_full()
@@ -595,6 +632,57 @@ pub(super) fn playable_keys(message: &Message, surface: &str) -> Vec<String> {
     keys
 }
 
+#[derive(Clone)]
+struct MediaScope {
+    namespace: String,
+    owner: Arc<Message>,
+    snapshot_index: Option<usize>,
+}
+impl MediaScope {
+    fn reference(
+        &self,
+        asset: crate::media_context_policy::MediaAsset,
+        surface: &'static str,
+    ) -> crate::media_actions::MediaReference {
+        crate::media_actions::MediaReference::new(
+            self.owner.clone(),
+            crate::media_context_policy::MediaTarget {
+                snapshot_index: self.snapshot_index,
+                asset,
+            },
+            surface,
+        )
+    }
+}
+
+pub(super) fn context_embed_spoiler(
+    message: &Message,
+    target: &crate::media_context_policy::MediaTarget,
+) -> bool {
+    let index = match target.asset {
+        crate::media_context_policy::MediaAsset::Embed(index)
+        | crate::media_context_policy::MediaAsset::EmbedVideo(index) => index,
+        _ => return false,
+    };
+    let selected = target
+        .snapshot_index
+        .and_then(|index| {
+            message
+                .extra
+                .get("message_snapshots")?
+                .as_array()?
+                .get(index)
+        })
+        .map(snapshot_media);
+    let message = selected.as_ref().unwrap_or(message);
+    message
+        .extra
+        .get("embeds")
+        .and_then(Value::as_array)
+        .and_then(|embeds| embeds.get(index))
+        .is_some_and(|embed| embed_is_spoiler(embed, &spoilered_embed_urls(&message.content)))
+}
+
 pub fn media(
     message: &Message,
     motion: MediaMotion,
@@ -603,6 +691,7 @@ pub fn media(
     window: &Window,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
+    let owner = Arc::new(message.clone());
     let snapshots = message
         .extra
         .get("message_snapshots")
@@ -613,7 +702,11 @@ pub fn media(
         .map(|(index, snapshot)| {
             media_parts(
                 &snapshot_media(snapshot),
-                &format!("{}-snapshot-{index}", message.id),
+                MediaScope {
+                    namespace: format!("{}-snapshot-{index}", message.id),
+                    owner: owner.clone(),
+                    snapshot_index: Some(index),
+                },
                 motion,
                 revealed,
                 players,
@@ -629,7 +722,11 @@ pub fn media(
         .min_w_0()
         .child(media_parts(
             message,
-            &message.id.to_string(),
+            MediaScope {
+                namespace: message.id.to_string(),
+                owner: owner.clone(),
+                snapshot_index: None,
+            },
             motion,
             revealed,
             players,
@@ -673,6 +770,7 @@ fn attachment_gallery(
             Some((
                 index,
                 ImageItem {
+                    context: None,
                     source,
                     original,
                     name: attachment.filename.clone(),
@@ -690,11 +788,12 @@ pub(super) struct MediaMotion {
     pub enabled: bool,
     pub autoplay: bool,
     pub surface: &'static str,
+    pub hide_downloads: bool,
 }
 
 fn media_parts(
     message: &Message,
-    namespace: &str,
+    scope: MediaScope,
     motion: MediaMotion,
     revealed: &BTreeSet<String>,
     players: &mut crate::media_player::PlaybackUi,
@@ -706,7 +805,14 @@ fn media_parts(
         autoplay,
         ..
     } = motion;
-    let indexed_gallery = attachment_gallery(message, namespace, revealed);
+    let namespace = scope.namespace.as_str();
+    let mut indexed_gallery = attachment_gallery(message, namespace, revealed);
+    for (index, item) in &mut indexed_gallery {
+        item.context = Some(scope.reference(
+            crate::media_context_policy::MediaAsset::Attachment(message.attachments[*index].id),
+            motion.surface,
+        ));
+    }
     let gallery = Arc::new(
         indexed_gallery
             .iter()
@@ -718,106 +824,148 @@ fn media_parts(
         .iter()
         .enumerate()
         .map(|(source_index, attachment)| {
-            if let Some(mut source) = crate::playable_media::attachment(
-                attachment,
-                namespace,
-                chrono::Utc::now().timestamp_millis(),
-            ) {
-                source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
-                let is_revealed =
-                    source.concealment.is_none() || revealed.contains(&source.reveal_key);
-                return players.render(source, is_revealed, autoplay, tooltips_enabled, window, cx);
-            }
-            let kind = attachment_kind(attachment);
-            let original = attachment_url(attachment, false);
-            let reveal_key = attachment_reveal_key(namespace, attachment.id);
-            if kind == MediaKind::Image
-                && !revealed.contains(&reveal_key)
-                && let Some(concealment) = attachment_concealment(attachment)
-                && let Some(url) = attachment_url(attachment, true)
-            {
-                return div()
-                    .id(SharedString::from(format!(
-                        "attachment-image-{namespace}-{}",
-                        attachment.id
-                    )))
-                    .max_w_full()
-                    .min_w_0()
-                    .child(concealed_preview(
-                        format!("image-{namespace}-{}", attachment.id),
-                        url,
-                        reveal_key,
-                        concealment,
-                        (attachment.width, attachment.height),
-                        (550., 350.),
-                        cx,
-                    ))
-                    .into_any_element();
-            }
-            if kind == MediaKind::Image
-                && let Some(url) = attachment_url(attachment, true)
-                && let Some(index) = indexed_gallery
-                    .iter()
-                    .position(|(index, _)| *index == source_index)
-            {
-                let tooltip = format!("{} · {}", attachment.filename, byte_size(attachment.size));
-                return div()
-                    .id(SharedString::from(format!(
-                        "attachment-image-{namespace}-{}",
-                        attachment.id
-                    )))
-                    .max_w_full()
-                    .min_w_0()
-                    // GPUI's active tooltip uses source bounds during prepaint;
-                    // removing its builder prevents it leaking above the modal.
-                    .when(tooltips_enabled, |view| {
-                        view.tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
-                    })
-                    .child(preview(
-                        format!("image-{namespace}-{}", attachment.id),
-                        url,
-                        gallery.clone(),
-                        index,
-                        PreviewSettings {
-                            natural_size: (attachment.width, attachment.height),
-                            max_size: (550., 350.),
-                            enabled: tooltips_enabled,
-                            autoplay,
-                        },
-                        cx,
-                    ))
-                    .into_any_element();
-            }
-            let view = div().flex().flex_col().gap_1().min_w_0();
-            let prefix = if attachment.flags & (1 << 3) != 0
-                || attachment.filename.starts_with("SPOILER_")
-            {
-                "Spoiler · "
-            } else if attachment.flags & (1 << 4) != 0
-                || attachment.extra.get("nsfw").and_then(Value::as_bool) == Some(true)
-            {
-                "Sensitive media · "
-            } else {
-                match kind {
-                    MediaKind::Video => "Video · ",
-                    MediaKind::Audio => "Audio · ",
-                    _ => "",
-                }
-            };
-            view.child(open_card(
-                format!("attachment-{namespace}-{}", attachment.id),
-                format!("{prefix}{}", attachment.filename),
-                format!(
-                    "{} · {}",
-                    byte_size(attachment.size),
-                    if original.is_some() {
-                        "Open original"
-                    } else {
-                        "File unavailable"
+            let reference = scope.reference(
+                crate::media_context_policy::MediaAsset::Attachment(attachment.id),
+                motion.surface,
+            );
+            let content = (|| {
+                if let Some(mut source) = crate::playable_media::attachment(
+                    attachment,
+                    namespace,
+                    chrono::Utc::now().timestamp_millis(),
+                ) {
+                    source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
+                    players.set_context(source.resource_key.clone(), reference.clone());
+                    if motion.hide_downloads
+                        && source.kind != crate::playable_media::PlayableKind::Audio
+                    {
+                        source.original = None;
                     }
-                ),
-                original,
-            ))
+                    let is_revealed =
+                        source.concealment.is_none() || revealed.contains(&source.reveal_key);
+                    return players.render(
+                        source,
+                        is_revealed,
+                        autoplay,
+                        tooltips_enabled,
+                        window,
+                        cx,
+                    );
+                }
+                let kind = attachment_kind(attachment);
+                let original = attachment_url(attachment, false);
+                let reveal_key = attachment_reveal_key(namespace, attachment.id);
+                if kind == MediaKind::Image
+                    && !revealed.contains(&reveal_key)
+                    && let Some(concealment) = attachment_concealment(attachment)
+                    && let Some(url) = attachment_url(attachment, true)
+                {
+                    return div()
+                        .id(SharedString::from(format!(
+                            "attachment-image-{namespace}-{}",
+                            attachment.id
+                        )))
+                        .max_w_full()
+                        .min_w_0()
+                        .child(concealed_preview(
+                            format!("image-{namespace}-{}", attachment.id),
+                            url,
+                            reveal_key,
+                            concealment,
+                            (attachment.width, attachment.height),
+                            (550., 350.),
+                            cx,
+                        ))
+                        .into_any_element();
+                }
+                if kind == MediaKind::Image
+                    && let Some(url) = attachment_url(attachment, true)
+                    && let Some(index) = indexed_gallery
+                        .iter()
+                        .position(|(index, _)| *index == source_index)
+                {
+                    let tooltip =
+                        format!("{} · {}", attachment.filename, byte_size(attachment.size));
+                    return div()
+                        .id(SharedString::from(format!(
+                            "attachment-image-{namespace}-{}",
+                            attachment.id
+                        )))
+                        .max_w_full()
+                        .min_w_0()
+                        // GPUI's active tooltip uses source bounds during prepaint;
+                        // removing its builder prevents it leaking above the modal.
+                        .when(tooltips_enabled, |view| {
+                            view.tooltip(move |_, cx| {
+                                cx.new(|_| MediaTooltip(tooltip.clone())).into()
+                            })
+                        })
+                        .child(preview(
+                            format!("image-{namespace}-{}", attachment.id),
+                            url,
+                            gallery.clone(),
+                            index,
+                            PreviewSettings {
+                                natural_size: (attachment.width, attachment.height),
+                                max_size: (550., 350.),
+                                enabled: tooltips_enabled,
+                                autoplay,
+                            },
+                            cx,
+                        ))
+                        .into_any_element();
+                }
+                let view = div().flex().flex_col().gap_1().min_w_0();
+                let prefix = if attachment.flags & (1 << 3) != 0
+                    || attachment.filename.starts_with("SPOILER_")
+                {
+                    "Spoiler · "
+                } else if attachment.flags & (1 << 4) != 0
+                    || attachment.extra.get("nsfw").and_then(Value::as_bool) == Some(true)
+                {
+                    "Sensitive media · "
+                } else {
+                    match kind {
+                        MediaKind::Video => "Video · ",
+                        MediaKind::Audio => "Audio · ",
+                        _ => "",
+                    }
+                };
+                view.child(open_card(
+                    format!("attachment-{namespace}-{}", attachment.id),
+                    format!("{prefix}{}", attachment.filename),
+                    format!(
+                        "{} · {}",
+                        byte_size(attachment.size),
+                        if attachment_concealment(attachment).is_some()
+                            && !revealed.contains(&attachment_reveal_key(namespace, attachment.id))
+                        {
+                            "Click to reveal"
+                        } else if original.is_some() {
+                            "Open original"
+                        } else {
+                            "File unavailable"
+                        }
+                    ),
+                    original,
+                    reference.clone(),
+                    cx,
+                ))
+                .into_any_element()
+            })();
+            crate::context_actions::trigger(
+                div()
+                    .id(SharedString::from(format!(
+                        "media-context-{}-{namespace}-{}",
+                        motion.surface, attachment.id
+                    )))
+                    .min_w_0()
+                    .max_w_full(),
+                crate::context_actions::Target::Media(reference),
+                cx,
+            )
+            .tab_stop(false)
+            .child(content)
             .into_any_element()
         })
         .collect::<Vec<_>>();
@@ -831,68 +979,114 @@ fn media_parts(
         .enumerate()
         .filter(|_| !crate::playable_media::embeds_suppressed(message.flags))
         .map(|(index, embed)| {
-            if let Some(mut source) = crate::playable_media::embed(
+            let reference = scope.reference(
+                crate::media_context_policy::MediaAsset::Embed(index),
+                motion.surface,
+            );
+            let has_media = crate::playable_media::embed(
                 embed,
                 namespace,
                 index,
                 embed_is_spoiler(embed, &spoilered),
                 chrono::Utc::now().timestamp_millis(),
-            ) {
-                source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
-                let is_revealed =
-                    source.concealment.is_none() || revealed.contains(&source.reveal_key);
-                return players.render(source, is_revealed, autoplay, tooltips_enabled, window, cx);
-            }
-            let key = embed_reveal_key(namespace, index);
-            if !revealed.contains(&key)
-                && let Some(concealment) = embed_concealment(embed, &spoilered)
-            {
-                if let Some(item) = embed_image_item(embed) {
-                    concealed_preview(
-                        format!("embed-image-{namespace}-{index}"),
-                        item.source,
-                        key,
-                        concealment,
-                        (item.width, item.height),
-                        (400., 300.),
-                        cx,
-                    )
-                } else {
-                    // Non-image/expired embeds do not justify fetching a video,
-                    // audio file, thumbnail substitute, title or description.
-                    div()
-                        .id(SharedString::from(format!(
-                            "concealed-embed-{namespace}-{index}"
-                        )))
-                        .w(px(280.))
-                        .h(px(70.))
-                        .max_w_full()
-                        .rounded_md()
-                        .bg(rgb(SURFACE))
-                        .cursor_pointer()
-                        .focusable()
-                        .tab_stop(true)
-                        .child(concealment_pill(concealment, false))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.revealed_media.insert(key.clone());
-                            cx.notify();
-                        }))
-                        .into_any_element()
-                }
-            } else {
-                render_embed(
+            )
+            .is_some()
+                || (embed_concealment(embed, &spoilered).is_some()
+                    && !revealed.contains(&embed_reveal_key(namespace, index)));
+            let content = (|| {
+                if let Some(mut source) = crate::playable_media::embed(
+                    embed,
                     namespace,
                     index,
-                    embed,
-                    tooltips_enabled,
-                    autoplay,
-                    MediaPrivacy {
-                        spoilered: &spoilered,
-                        revealed,
-                    },
+                    embed_is_spoiler(embed, &spoilered),
+                    chrono::Utc::now().timestamp_millis(),
+                ) {
+                    source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
+                    players.set_context(source.resource_key.clone(), reference.clone());
+                    if motion.hide_downloads
+                        && source.kind != crate::playable_media::PlayableKind::Audio
+                    {
+                        source.original = None;
+                    }
+                    let is_revealed =
+                        source.concealment.is_none() || revealed.contains(&source.reveal_key);
+                    return players.render(
+                        source,
+                        is_revealed,
+                        autoplay,
+                        tooltips_enabled,
+                        window,
+                        cx,
+                    );
+                }
+                let key = embed_reveal_key(namespace, index);
+                if !revealed.contains(&key)
+                    && let Some(concealment) = embed_concealment(embed, &spoilered)
+                {
+                    if let Some(item) = embed_image_item(embed) {
+                        concealed_preview(
+                            format!("embed-image-{namespace}-{index}"),
+                            item.source,
+                            key,
+                            concealment,
+                            (item.width, item.height),
+                            (400., 300.),
+                            cx,
+                        )
+                    } else {
+                        // Non-image/expired embeds do not justify fetching a video,
+                        // audio file, thumbnail substitute, title or description.
+                        div()
+                            .id(SharedString::from(format!(
+                                "concealed-embed-{namespace}-{index}"
+                            )))
+                            .w(px(280.))
+                            .h(px(70.))
+                            .max_w_full()
+                            .rounded_md()
+                            .bg(rgb(SURFACE))
+                            .cursor_pointer()
+                            .focusable()
+                            .tab_stop(true)
+                            .child(concealment_pill(concealment, false))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.revealed_media.insert(key.clone());
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                    }
+                } else {
+                    render_embed(
+                        namespace,
+                        index,
+                        embed,
+                        reference.clone(),
+                        motion,
+                        MediaPrivacy {
+                            spoilered: &spoilered,
+                            revealed,
+                        },
+                        cx,
+                    )
+                }
+            })();
+            if has_media {
+                crate::context_actions::trigger(
+                    div()
+                        .id(SharedString::from(format!(
+                            "embed-context-{}-{namespace}-{index}",
+                            motion.surface
+                        )))
+                        .min_w_0()
+                        .max_w_full(),
+                    crate::context_actions::Target::Media(reference),
                     cx,
                 )
+                .child(content)
+                .into_any_element()
+            } else {
+                content
             }
         })
         .collect::<Vec<_>>();
@@ -1121,6 +1315,7 @@ fn embed_image_item(embed: &Value) -> Option<ImageItem> {
         source = animated_proxy_url(&source, false)?;
     }
     Some(ImageItem {
+        context: None,
         original: string_at(image, "url")
             .and_then(safe_image_url)
             .or_else(|| Some(source.clone())),
@@ -1144,11 +1339,13 @@ fn render_embed(
     message: &str,
     index: usize,
     embed: &Value,
-    enabled: bool,
-    autoplay: bool,
+    context: crate::media_actions::MediaReference,
+    motion: MediaMotion,
     privacy: MediaPrivacy<'_>,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
+    let enabled = motion.enabled;
+    let autoplay = motion.autoplay;
     let link = string_at(embed, "url").and_then(safe_url);
     let color = embed
         .get("color")
@@ -1227,9 +1424,10 @@ fn render_embed(
             );
         }
     }
-    if let Some(item) =
+    if let Some(mut item) =
         embed_gallery_item(embed, message, index, privacy.spoilered, privacy.revealed)
     {
+        item.context = Some(context.clone());
         view = view.child(preview(
             format!("embed-image-{message}-{index}"),
             item.source.clone(),
@@ -1244,16 +1442,26 @@ fn render_embed(
             cx,
         ));
     }
-    if let Some(video) = embed
-        .get("video")
-        .and_then(|video| string_at(video, "url"))
-        .and_then(safe_url)
+    if !motion.hide_downloads
+        && let Some(video) = embed
+            .get("video")
+            .and_then(|video| string_at(video, "url"))
+            .and_then(safe_url)
     {
         view = view.child(open_card(
             format!("embed-video-{message}-{index}"),
             "▶ Open video".into(),
             "Plays in your browser or default player".into(),
-            link.clone().or(Some(video)),
+            Some(video),
+            crate::media_actions::MediaReference::new(
+                context.message.clone(),
+                crate::media_context_policy::MediaTarget {
+                    snapshot_index: context.target.snapshot_index,
+                    asset: crate::media_context_policy::MediaAsset::EmbedVideo(index),
+                },
+                context.surface,
+            ),
+            cx,
         ));
     }
     if let Some(footer) = embed

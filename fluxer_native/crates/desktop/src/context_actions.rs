@@ -11,6 +11,7 @@ use std::{cell::Cell, rc::Rc};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
     Stream(String),
+    Media(crate::media_actions::MediaReference),
     User { channel: Snowflake, user: Snowflake },
     Connection(String),
     SelfVoice(Snowflake),
@@ -264,12 +265,41 @@ impl Fluxer {
     }
     pub(super) fn context_menu_open(&self, cx: &App) -> bool {
         self.context.menu.read(cx).is_open()
+            || self.message_links.input_context_menu_open(cx)
+            || [
+                &self.composer,
+                &self.instance,
+                &self.identifier,
+                &self.password,
+                &self.mfa,
+                &self.search,
+                &self.emoji_search,
+                &self.forward_search,
+            ]
+            .iter()
+            .any(|input| input.read(cx).context_menu_open(cx))
+    }
+    pub(super) fn reset_text_context_menus(&mut self, cx: &mut Context<Self>) {
+        for input in [
+            &self.composer,
+            &self.instance,
+            &self.identifier,
+            &self.password,
+            &self.mfa,
+            &self.search,
+            &self.emoji_search,
+            &self.forward_search,
+        ] {
+            input.update(cx, |input, cx| input.reset_context_menu(cx));
+        }
+        self.message_links.reset_input_context_menu(cx);
     }
     pub(super) fn reset_context_menu(&mut self, cx: &mut Context<Self>) {
+        self.reset_text_context_menus(cx);
         self.context.target = None;
         self.context.generation = self.context.generation.wrapping_add(1);
         let menu = self.context.menu.clone();
-        if self.context_menu_open(cx)
+        if self.context.menu.read(cx).is_open()
             && let Some(window) = self.context.window
         {
             let owner = cx.entity().downgrade();
@@ -306,6 +336,7 @@ impl Fluxer {
 
     fn context_target_valid(&self, target: &Target) -> bool {
         match target {
+            Target::Media(reference) => self.media_descriptor(reference).is_some(),
             Target::Stream(id) => {
                 self.available_streams.contains(id) || self.viewer.desired.contains(id)
             }
@@ -342,6 +373,7 @@ impl Fluxer {
     fn context_items(&self, target: &Target, window: &Window) -> Vec<Item> {
         let mut items = Vec::new();
         match target {
+            Target::Media(reference) => return self.media_context_items(reference),
             Target::Stream(identity) => {
                 items.push(Item::Header(self.stream_name(identity)));
                 if self.viewer.desired.contains(identity) {
@@ -507,14 +539,15 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.image_viewer.is_open()
-            || self.playback.modal.is_open()
+        if ((self.image_viewer.is_open() || self.playback.modal.is_open())
+            && !matches!(&target, Target::Media(_)))
             || self.message_links.is_open()
             || self.search_ui.confirm.is_some()
             || !self.context_target_valid(&target)
         {
             return;
         }
+        self.reset_text_context_menus(cx);
         self.dismiss_message_actions(window, cx);
         self.emoji_target = None;
         self.command_if_live(Command::SetPushToTalkPressed(false), cx);
@@ -650,6 +683,9 @@ impl Fluxer {
             None
         };
         match (target, id) {
+            (Target::Media(reference), _) => {
+                self.perform_media_context_action(reference, event.clone(), window, cx)
+            }
             (Target::Stream(identity), "stream-mute") => {
                 if let Some(muted) = muted {
                     self.change_stream_audio(identity.clone(), |s| s.muted = muted, cx);

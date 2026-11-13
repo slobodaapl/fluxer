@@ -180,6 +180,8 @@ impl Fluxer {
         );
     }
     pub(super) fn close_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search
+            .update(cx, |input, cx| input.reset_context_menu(cx));
         match self.search_ui.open.take() {
             Some(BrowserTab::Search) => {
                 if let Some(channel_id) = self.search_ui.context {
@@ -405,6 +407,30 @@ impl Fluxer {
             .histories
             .insert(snapshot.channel_id, snapshot);
         cx.notify();
+    }
+    pub(super) fn current_browser_media_message(
+        &self,
+        channel: Snowflake,
+        id: Snowflake,
+    ) -> Option<&Message> {
+        match self.search_ui.open {
+            Some(BrowserTab::Search) => self
+                .search_ui
+                .result
+                .as_ref()?
+                .messages
+                .iter()
+                .find(|message| message.channel_id == channel && message.id == id),
+            Some(BrowserTab::Pins) => self
+                .search_ui
+                .pins
+                .get(&self.search_ui.pins_context?)?
+                .items
+                .iter()
+                .map(|item| &item.message)
+                .find(|message| message.channel_id == channel && message.id == id),
+            None => None,
+        }
     }
     pub(super) fn playback_browser_keys(&self) -> std::collections::HashSet<String> {
         let messages: Vec<&Message> = match self.search_ui.open {
@@ -929,6 +955,11 @@ impl Fluxer {
                                 || self.playback.modal.is_open()),
                             autoplay: media_animation::gif_autoplay(&self.state.user_settings),
                             surface: "browser",
+                            hide_downloads: crate::media_context_policy::hide_media_downloads(
+                                message.channel_id,
+                                crate::media_context_policy::MediaKind::Image,
+                                &self.state.channels,
+                            ),
                         },
                         &self.revealed_media,
                         &mut self.playback,

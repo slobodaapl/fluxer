@@ -562,7 +562,7 @@ impl Render for ContextMenu {
                         .children(rows),
                 ),
         )
-        .with_priority(4)
+        .with_priority(8)
         .into_any_element()
     }
 }

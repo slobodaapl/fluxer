@@ -46,7 +46,7 @@ impl ImageViewer {
         self.previous_focus = None;
         self.armed = None;
     }
-    fn controls(&self) -> Vec<(ImageControl, FocusHandle)> {
+    fn controls(&self, original_allowed: bool) -> Vec<(ImageControl, FocusHandle)> {
         let mut controls = Vec::new();
         if self
             .gallery
@@ -56,12 +56,14 @@ impl ImageViewer {
             controls.push((ImageControl::Previous, self.previous.clone()));
             controls.push((ImageControl::Next, self.next.clone()));
         }
-        controls.push((ImageControl::Original, self.original.clone()));
+        if original_allowed {
+            controls.push((ImageControl::Original, self.original.clone()));
+        }
         controls.push((ImageControl::Close, self.close.clone()));
         controls
     }
-    fn focused_control(&self, window: &Window) -> Option<ImageControl> {
-        self.controls()
+    fn focused_control(&self, window: &Window, original_allowed: bool) -> Option<ImageControl> {
+        self.controls(original_allowed)
             .into_iter()
             .find(|(_, focus)| focus.is_focused(window))
             .map(|(control, _)| control)
@@ -69,6 +71,17 @@ impl ImageViewer {
 }
 
 impl Fluxer {
+    fn image_original_available(&self) -> bool {
+        self.image_viewer
+            .gallery
+            .as_ref()
+            .and_then(ImageGallery::current)
+            .is_some_and(|item| {
+                item.context
+                    .as_ref()
+                    .is_none_or(|reference| self.media_original_allowed(reference))
+            })
+    }
     pub(super) fn open_image_gallery(
         &mut self,
         items: Vec<ImageItem>,
@@ -108,6 +121,9 @@ impl Fluxer {
         match control {
             ImageControl::Close => self.dismiss_image_viewer(window, cx),
             ImageControl::Original => {
+                if !self.image_original_available() {
+                    return;
+                }
                 if let Some(item) = self
                     .image_viewer
                     .gallery
@@ -193,7 +209,7 @@ impl Fluxer {
                     }
                     "tab" => {
                         this.image_viewer.armed = None;
-                        let controls = this.image_viewer.controls();
+                        let controls = this.image_viewer.controls(this.image_original_available());
                         let current = controls
                             .iter()
                             .position(|(_, focus)| focus.is_focused(window));
@@ -207,7 +223,9 @@ impl Fluxer {
                     }
                     "enter" | "space" if !event.keystroke.modifiers.modified() => {
                         if !event.is_held {
-                            this.image_viewer.armed = this.image_viewer.focused_control(window);
+                            this.image_viewer.armed = this
+                                .image_viewer
+                                .focused_control(window, this.image_original_available());
                         }
                     }
                     _ => return,
@@ -217,7 +235,10 @@ impl Fluxer {
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
                 if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                     if let Some(control) = this.image_viewer.armed.take()
-                        && this.image_viewer.focused_control(window) == Some(control)
+                        && this
+                            .image_viewer
+                            .focused_control(window, this.image_original_available())
+                            == Some(control)
                     {
                         this.activate_image_control(control, window, cx);
                     }
@@ -287,6 +308,13 @@ impl Fluxer {
                     .child(
                         div()
                             .id("image-viewer-media")
+                            .when_some(item.context.clone(), |view, reference| {
+                                crate::context_actions::trigger(
+                                    view,
+                                    crate::context_actions::Target::Media(reference),
+                                    cx,
+                                )
+                            })
                             .w(px(width))
                             .h(px(height))
                             .min_w_0()
@@ -356,14 +384,16 @@ impl Fluxer {
                     .items_center()
                     .justify_between()
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(
-                        quiet_button("open-original-image", "Open original")
-                            .track_focus(&self.image_viewer.original)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.activate_image_control(ImageControl::Original, window, cx);
-                            })),
-                    )
+                    .when(self.image_original_available(), |footer| {
+                        footer.child(
+                            quiet_button("open-original-image", "Open original")
+                                .track_focus(&self.image_viewer.original)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.activate_image_control(ImageControl::Original, window, cx);
+                                })),
+                        )
+                    })
                     .child(
                         div()
                             .text_size(px(11.))

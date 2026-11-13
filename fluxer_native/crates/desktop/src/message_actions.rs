@@ -11,7 +11,7 @@ pub(super) enum MessageMenuContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MessageAction {
+pub(super) enum MessageAction {
     React,
     Reply,
     Forward,
@@ -22,7 +22,7 @@ enum MessageAction {
     Delete,
 }
 impl MessageAction {
-    fn label(self, pinned: bool) -> &'static str {
+    pub(super) fn label(self, pinned: bool) -> &'static str {
         match self {
             Self::React => "Add reaction",
             Self::Reply => "Reply",
@@ -40,7 +40,7 @@ impl MessageAction {
             Self::Delete => "Delete message",
         }
     }
-    fn icon(self) -> Icon {
+    pub(super) fn icon(self) -> Icon {
         match self {
             Self::React => Icon::React,
             Self::Reply => Icon::Reply,
@@ -196,7 +196,7 @@ impl Fluxer {
         }
         self.dismiss_message_actions(window, cx);
     }
-    fn message_action_options(
+    pub(super) fn message_action_options(
         &self,
         message: &Message,
         context: MessageMenuContext,
@@ -297,7 +297,7 @@ impl Fluxer {
         cx.notify();
     }
 
-    fn perform_message_action(
+    pub(super) fn perform_message_action(
         &mut self,
         message: Message,
         action: MessageAction,

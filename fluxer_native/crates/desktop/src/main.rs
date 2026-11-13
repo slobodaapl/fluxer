@@ -18,9 +18,12 @@ mod image_demo;
 mod image_gallery;
 mod image_viewer;
 mod input;
+mod media_actions;
 mod media_animation;
+mod media_context_policy;
 mod media_demo;
 mod media_download;
+mod media_export;
 mod media_player;
 mod media_player_view;
 mod message_actions;
@@ -43,9 +46,19 @@ mod visible_image;
 
 // Exercise the actual vendored Wayland scheduling policy in the normal native
 // test gate, without requiring a compositor or compiling GPUI's upstream suite.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../compat/gpui/src/platform/linux/wayland/clipboard_write.rs"]
+mod wayland_clipboard_pipe_regressions;
+#[cfg(test)]
+#[path = "../../../compat/gpui/src/platform/linux/wayland/clipboard_mime.rs"]
+mod wayland_clipboard_regressions;
 #[cfg(test)]
 #[path = "../../../compat/gpui/src/platform/linux/wayland/redraw.rs"]
 mod wayland_redraw_regressions;
+#[cfg(test)]
+#[path = "../../../compat/gpui/src/platform/linux/wayland/serial.rs"]
+#[allow(dead_code)] // Other serial kinds are exercised by GPUI, not this focused host test.
+mod wayland_serial_regressions;
 
 use attachment_composer::AttachmentUi;
 use call_view::{StreamFrame, Viewer};
@@ -284,6 +297,7 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
     context: context_actions::ContextUi,
+    media_ui: media_actions::MediaUi,
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
@@ -390,6 +404,7 @@ impl Fluxer {
                 input
             }),
             context: context_actions::ContextUi::new(cx),
+            media_ui: media_actions::MediaUi::default(),
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
@@ -579,6 +594,7 @@ impl Fluxer {
         })
         .detach();
         cx.observe_window_activation(window, |this, window, cx| {
+            this.media_ui.active = window.is_window_active();
             if !window.is_window_active() {
                 this.command(Command::SetPushToTalkPressed(false), cx);
                 for picker in [
@@ -627,6 +643,7 @@ impl Fluxer {
             view.schedule_perf_stop(window, cx);
         }
         view.schedule_context_demo(window, cx);
+        view.schedule_media_menu_demo(window, cx);
         view
     }
 
@@ -714,6 +731,8 @@ impl Fluxer {
                     }
                 }
                 Event::MessageForwarded { destination } => {
+                    self.forward_search
+                        .update(cx, |input, cx| input.reset_context_menu(cx));
                     self.forwarding = None;
                     self.forward_pending = false;
                     self.status =
@@ -733,7 +752,14 @@ impl Fluxer {
                     let near_bottom =
                         self.timeline.max_offset().height + self.timeline.offset().y <= px(48.);
                     let previous_voice_channel = self.state.voice.channel_id;
+                    let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
+                    if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.reset_context_menu(cx);
+                        self.media_ui.reset();
+                        self.context.user_audio.clear();
+                        self.context.connection_audio.clear();
+                    }
                     if previous_voice_channel != self.state.voice.channel_id {
                         self.context.connection_audio.clear();
                     }
@@ -751,6 +777,7 @@ impl Fluxer {
                             self.clear_browser();
                             self.reset_context_menu(cx);
                             self.context.user_audio.clear();
+                            self.media_ui.reset();
                             self.context.connection_audio.clear();
                             self.message_actions.reset();
                             self.message_content.reset();
@@ -768,6 +795,7 @@ impl Fluxer {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
                     if old != self.state.selected_channel {
+                        self.reset_text_context_menus(cx);
                         self.playback.reset(cx);
                         self.revealed_media.clear();
                         let draft = self
@@ -1220,6 +1248,7 @@ impl Fluxer {
             changed = true;
         }
         self.reconcile_context_menu(cx);
+        self.poll_media_transfers(cx);
         if changed {
             cx.notify();
         }
@@ -1611,6 +1640,7 @@ impl Fluxer {
         self.clear_attachments(cx);
         self.reset_context_menu(cx);
         self.context.user_audio.clear();
+        self.media_ui.reset();
         self.context.connection_audio.clear();
         self.message_actions.reset();
         self.message_content.reset();
@@ -2168,6 +2198,7 @@ impl Render for Fluxer {
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
+            .child(self.media_transfer_overlay(cx))
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))

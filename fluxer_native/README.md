@@ -186,7 +186,7 @@ forwards that API to maintained xattr to support current Linux libc.
 The pinned LiveKit Rust dependency also has a workspace-local
 [compatibility patch](compat/livekit/FLUXER_PATCHES.md) for RTC receiver reuse,
 normal decryption-hook restoration and ordered subscription signaling.
-GPUI also has a local [Wayland repaint recovery patch](compat/gpui/FLUXER_PATCHES.md)
+GPUI also has a local [Wayland repaint and clipboard patch](compat/gpui/FLUXER_PATCHES.md)
 so a delayed compositor callback cannot indefinitely block changed content.
 
 
@@ -227,3 +227,11 @@ capture. For automated local presentation checks only,
 `FLUXER_MEDIA_DEMO_AUTO_PLAY=1` starts the silent MP4 and
 `FLUXER_MEDIA_DEMO_ACTIONS=1` exercises full view/pause/seek/resume/close.
 The audio tone never autoplays. Pending acceptance is M9 in REVIEW.md.
+
+
+Right-click or Shift+F10 on media opens Save as, Copy media link, Open original,
+still-image Copy image and message actions. These menus also work inside media
+viewers and honor concealed/expired/channel-hidden media policy. Save uses the
+system file dialog and background atomic export; clipboard images are exported
+as PNG. Standard text inputs expose selection-aware editing menus, including
+Undo/Redo. Remaining manual acceptance is tracked in REVIEW.md (M10/U11).

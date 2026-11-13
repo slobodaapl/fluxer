@@ -192,14 +192,29 @@ Prioritized remaining menu work:
 1. Channel/community Mark as read, Mark unread and notification mute controls.
    Implement explicit manual acknowledgements and source settings transport;
    automatic visible-history acknowledgements must not be repurposed here.
-2. Media menus that combine existing message actions with actual Save as,
-   Copy/Open original and appropriate media clipboard behavior. Honor expiry,
-   concealment and the source channel's hide-download policy.
-3. Composer Cut/Copy/Paste, Undo/Redo and selection-aware editing menus.
-4. Member/profile menus, DM creation, roles and community moderation. These need
+2. Member/profile menus, DM creation, roles and community moderation. These need
    their actual transport/UI plus source permission and hierarchy checks.
-5. Full own-stream source/quality/privacy menus, per-device submenus, remembered
+3. Full own-stream source/quality/privacy menus, per-device submenus, remembered
    preferences and member/profile popovers. Existing local playback controls are
    not server mute/deafen, notification mute or moderation.
 
 Review is U10 in REVIEW.md. Multi-stream layout acceptance remains deferred.
+
+
+## Media and text editing menus (2026-11-13)
+
+Media and standard text-input context menus are implemented. Media actions stay
+on the clicked attachment/embed/snapshot, including inside image and native video
+viewers, with existing message actions below a separator. Generic article bodies
+retain their message menu; a video card targets its video rather than its thumbnail
+or article URL. Download/copy/open actions honor current source policy and remain
+unavailable for concealed, expired or download-hidden media. Native Save as and
+background transfers avoid adding permanent button banks to chat. Still-image
+copy supplies image bytes to other Wayland applications. Text menus use current
+selection/history and restrict read-only/secret fields. Review is M10/U11.
+
+Next expansion: channel/community read and notification controls, using the
+classic client's explicit acknowledgement and settings transport. After that,
+prioritize audio resilience (device hotplug, disconnect/reconnect and restoration)
+alongside the existing real-device review queue. Full profile/moderation and
+persisted preference parity remain open.
