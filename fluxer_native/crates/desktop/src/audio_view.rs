@@ -33,6 +33,14 @@ impl Fluxer {
             .unwrap_or_else(|| voice_avatar(&name, Snowflake::default(), false, 24.));
         let tooltip: SharedString = name.clone().into();
         div()
+            .id("account-voice-dock")
+            .when_some(self.state.voice.channel_id, |view, channel| {
+                crate::context_actions::trigger(
+                    view,
+                    crate::context_actions::Target::SelfVoice(channel),
+                    cx,
+                )
+            })
             .w_full()
             .flex()
             .flex_col()
@@ -391,6 +399,11 @@ impl Fluxer {
                             .into_iter()
                             .enumerate()
                             .map(|(index, participant)| {
+                                let menu_target = self.voice_context_target(
+                                    Some(channel),
+                                    Some(participant.user_id),
+                                    participant.livekit_identity.clone(),
+                                );
                                 let speaking = self.participant_speaking(&participant, channel);
                                 let stream =
                                     participant.livekit_identity.clone().filter(|identity| {
@@ -400,6 +413,9 @@ impl Fluxer {
                                     });
                                 div()
                                     .id(("voice-participant-card", index))
+                                    .when_some(menu_target, |view, target| {
+                                        crate::context_actions::trigger(view, target, cx)
+                                    })
                                     .w(px(200.))
                                     .min_h(px(58.))
                                     .px_2()
@@ -531,7 +547,8 @@ impl Fluxer {
                         .on_click(cx.listener(|this,_,_,cx|{this.testing_microphone= !this.testing_microphone;this.command(if this.testing_microphone{Command::StartMicrophoneTest}else{Command::StopMicrophoneTest},cx);}))))
                 .child(audio_meter(self.levels.0))
                 .child(audio_description(format!("Input {:.0}% · Output {:.0}%",self.levels.0*100.,self.levels.1*100.))))
-            .when(!self.participants.is_empty(),|view|view.child(audio_section("People in your call").children(self.participants.iter().map(|(identity,(name,settings))|{
+            .when(!self.participants.is_empty(),|view|view.child(audio_section("People in your call").child(audio_description("These controls adjust each device. Right-click a person in the call to change their user volume.")).children(self.participants.iter().map(|(identity,(name,_settings))|{
+                let settings = self.context.connection_audio.get(identity).copied().unwrap_or_default();
                 let gain_id=identity.clone();let mute_id=identity.clone();
                 div().flex().flex_col().gap_2().py_2()
                     .child(div().flex().items_center().gap_2()
@@ -539,8 +556,8 @@ impl Fluxer {
                         .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!("{:.0}%",settings.gain*100.)))
                         .child(icon_button(SharedString::from(format!("participant-mute-{identity}")),if settings.muted{Icon::VolumeOff}else{Icon::Volume},if settings.muted{"Unmute participant for you"}else{"Mute participant for you"})
                             .when(settings.muted,|view|view.text_color(rgb(0xe79a9e)))
-                            .on_click(cx.listener(move|this,_,_,cx|{if let Some((_,settings))=this.participants.get_mut(&mute_id){settings.muted= !settings.muted;let settings= *settings;this.command(Command::SetParticipantAudio{identity:mute_id.clone(),settings},cx);}}))))
-                    .child(slider(SharedString::from(format!("participant-volume-{identity}")),settings.gain,0.,2.,0.01,"Participant volume",cx.listener(move|this,value:&f32,_,cx|{if let Some((_,settings))=this.participants.get_mut(&gain_id){settings.gain= *value;let settings= *settings;this.command(Command::SetParticipantAudio{identity:gain_id.clone(),settings},cx);}})))
+                            .on_click(cx.listener(move|this,_,_,cx|{let mut settings=this.context.connection_audio.get(&mute_id).copied().unwrap_or_default();settings.muted = !settings.muted;this.set_connection_audio(&mute_id,settings,cx);}))))
+                    .child(slider(SharedString::from(format!("participant-volume-{identity}")),settings.gain,0.,2.,0.01,"Connection volume",cx.listener(move|this,value:&f32,_,cx|{let mut settings=this.context.connection_audio.get(&gain_id).copied().unwrap_or_default();settings.gain = *value;this.set_connection_audio(&gain_id,settings,cx);})))
             }))))
             .into_any_element()
     }

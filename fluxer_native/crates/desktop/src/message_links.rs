@@ -71,6 +71,19 @@ impl MessageLinks {
     pub fn configure_instance(&mut self, document: &serde_json::Value) {
         self.policy = instance_policy(document);
     }
+    pub fn channel_link(&self, guild: Option<Snowflake>, channel: Snowflake) -> Option<String> {
+        channel_url(self.policy.web_app.as_ref()?, guild, channel)
+    }
+}
+
+fn channel_url(webapp: &Url, guild: Option<Snowflake>, channel: Snowflake) -> Option<String> {
+    let base = safe_url(webapp.as_str())?;
+    let scope = guild
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "@me".into());
+    base.join(&format!("/channels/{scope}/{channel}"))
+        .ok()
+        .map(Into::into)
 }
 
 #[derive(Default)]
@@ -518,6 +531,31 @@ mod tests {
         trusted_host,
     };
     use fluxer_core::Snowflake;
+    #[test]
+    fn copied_channel_links_use_discovered_frontend_and_exact_scope() {
+        let origin = reqwest::Url::parse("https://chat.example").unwrap();
+        assert_eq!(
+            super::channel_url(
+                &origin,
+                Some(fluxer_core::Snowflake(1)),
+                fluxer_core::Snowflake(11)
+            )
+            .as_deref(),
+            Some("https://chat.example/channels/1/11")
+        );
+        assert_eq!(
+            super::channel_url(&origin, None, fluxer_core::Snowflake(22)).as_deref(),
+            Some("https://chat.example/channels/@me/22")
+        );
+        assert!(
+            super::channel_url(
+                &reqwest::Url::parse("https://user:secret@chat.example").unwrap(),
+                None,
+                fluxer_core::Snowflake(22)
+            )
+            .is_none()
+        );
+    }
     #[test]
     fn channel_link_actions_require_live_access_without_requiring_cached_history() {
         let mut state = fluxer_core::ClientState::demo();

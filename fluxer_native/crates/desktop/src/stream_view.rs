@@ -67,7 +67,7 @@ impl Fluxer {
         .detach();
     }
 
-    fn stream_name(&self, identity: &str) -> String {
+    pub(super) fn stream_name(&self, identity: &str) -> String {
         if let Some((name, _)) = self.participants.get(identity) {
             return name.clone();
         }
@@ -107,7 +107,7 @@ impl Fluxer {
         .then_some(id)
     }
 
-    fn change_stream_audio(
+    pub(super) fn change_stream_audio(
         &mut self,
         identity: String,
         change: impl FnOnce(&mut ParticipantAudioSettings),
@@ -163,6 +163,13 @@ impl Fluxer {
         let retry_identity = identity.to_owned();
         div()
             .id(SharedString::from(format!("watched-tile-{identity}")))
+            .map(|view| {
+                crate::context_actions::trigger(
+                    view,
+                    crate::context_actions::Target::Stream(identity.to_owned()),
+                    cx,
+                )
+            })
             .size_full()
             .min_w_0()
             .min_h_0()
@@ -357,6 +364,7 @@ impl Fluxer {
                         participant.display_name,
                         Some(participant.user_id),
                         speaking,
+                        participant.livekit_identity,
                     )
                 })
                 .collect()
@@ -368,6 +376,7 @@ impl Fluxer {
                         name.clone(),
                         self.cached_stream_user(identity),
                         self.active_speakers.contains(identity),
+                        Some(identity.clone()),
                     )
                 })
                 .collect()
@@ -381,6 +390,13 @@ impl Fluxer {
         } else {
             div()
                 .id("focused-stream-stage")
+                .map(|view| {
+                    crate::context_actions::trigger(
+                        view,
+                        crate::context_actions::Target::Stream(identity.clone()),
+                        cx,
+                    )
+                })
                 .relative()
                 .flex_1()
                 .min_h(px(if short { 80. } else { 120. }))
@@ -662,6 +678,15 @@ impl Fluxer {
                                                 let click_identity = identity.clone();
                                                 div()
                                                     .id(("stream-tile", index))
+                                                    .map(|view| {
+                                                        crate::context_actions::trigger(
+                                                            view,
+                                                            crate::context_actions::Target::Stream(
+                                                                identity.clone(),
+                                                            ),
+                                                            cx,
+                                                        )
+                                                    })
                                                     .w(px(140.))
                                                     .flex_shrink_0()
                                                     .rounded_md()
@@ -735,8 +760,22 @@ impl Fluxer {
                                             },
                                         ))
                                         .children(members.iter().map(
-                                            |(name, user_id, speaking)| {
+                                            |(name, user_id, speaking, identity)| {
+                                                let menu_target = self.voice_context_target(
+                                                    self.state.voice.channel_id,
+                                                    *user_id,
+                                                    identity.clone(),
+                                                );
                                                 div()
+                                                    .id(SharedString::from(format!(
+                                                        "filmstrip-person-{}",
+                                                        identity.as_deref().unwrap_or(name)
+                                                    )))
+                                                    .when_some(menu_target, |view, target| {
+                                                        crate::context_actions::trigger(
+                                                            view, target, cx,
+                                                        )
+                                                    })
                                                     .w(px(72.))
                                                     .flex_shrink_0()
                                                     .flex()
@@ -984,7 +1023,7 @@ fn fixture_frame(index: usize, generation: u64) -> StreamFrame<Arc<RenderImage>>
 }
 
 // VoiceParticipantIdentity.ts: the connection suffix may itself contain `_`.
-fn sdk_identity_user(identity: &str) -> Option<Snowflake> {
+pub(super) fn sdk_identity_user(identity: &str) -> Option<Snowflake> {
     let (user, connection) = identity.strip_prefix("user_")?.split_once('_')?;
     if connection.is_empty() || user.is_empty() || !user.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;

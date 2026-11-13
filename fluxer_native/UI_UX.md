@@ -152,3 +152,54 @@ modal. Search/pins reserve room for controls; concealed video displays a loaded,
 blurred paused preview. Status/progress stays within the player and expiry stays
 unavailable. Control interactions wake polling immediately; idle/unloaded players
 wait instead of running an eager animation loop. Real-user acceptance is M9.
+
+## Context menus (2026-11-13)
+
+Streams now offer local mute, 0–200% volume, reset, Watch/Stop watching and existing
+stage/tile/fullscreen/chat actions. Voice participants offer local user mute and
+volume, mention/copy ID and available streams in the joined channel. Voice cards,
+sidebar rows and filmstrip entries share the same targeting policy. The account
+dock explicitly controls this device's microphone, deafen, voice settings and
+disconnect, plus Stop sharing when applicable. Another device on the same account
+is remote playback; an unresolved gateway device never implies local ownership.
+
+Channel rows/headers offer Open chat, permitted Join voice/Disconnect, Copy channel
+link and Copy channel ID. Community icons offer Open community and Copy community
+ID. Link copying uses the discovered webapp origin, including self-hosted origins.
+No added permanent action buttons are needed. All these triggers also accept
+Shift+F10; menus fit the viewport, scroll if necessary, restore focus and keep
+checkboxes/sliders open during adjustment. Keyboard activation is release-guarded.
+
+User and connection audio settings are independent: user mute applies across the
+user's remote devices, connection mute remains local to that connection, and gain
+scopes compose within the existing native 0–2 playback bound. New/repeated remote
+join events restore those settings. Stream audio remains separate. User choices
+last for the running account session; connection choices reset on voice-channel
+changes. Full persisted preference and gain-curve parity remain migration work.
+
+Source references: classic `VoiceParticipantContextMenu.tsx`,
+`items/VoiceParticipantMenuData.tsx`, `items/VoiceParticipantStreamMenuBuilder.tsx`,
+`items/ChannelMenuData.tsx`, `items/GuildMenuData.tsx` under
+`fluxer_app/src/features/ui/action_menu/`, plus
+`features/voice/state/ParticipantVolume.ts`. Discord also documents
+[stream mute/volume](https://support.discord.com/hc/en-us/articles/360040816151-Go-Live-and-Screen-Share)
+and [participant volume](https://support.discord.com/hc/en-us/articles/360045138471-Discord-Voice-and-Video-Troubleshooting-Guide)
+on right-click menus. Stage/tile/chat conveniences reuse the native viewer's
+actions; they are not a claim of identical classic menu contents.
+
+Prioritized remaining menu work:
+
+1. Channel/community Mark as read, Mark unread and notification mute controls.
+   Implement explicit manual acknowledgements and source settings transport;
+   automatic visible-history acknowledgements must not be repurposed here.
+2. Media menus that combine existing message actions with actual Save as,
+   Copy/Open original and appropriate media clipboard behavior. Honor expiry,
+   concealment and the source channel's hide-download policy.
+3. Composer Cut/Copy/Paste, Undo/Redo and selection-aware editing menus.
+4. Member/profile menus, DM creation, roles and community moderation. These need
+   their actual transport/UI plus source permission and hierarchy checks.
+5. Full own-stream source/quality/privacy menus, per-device submenus, remembered
+   preferences and member/profile popovers. Existing local playback controls are
+   not server mute/deafen, notification mute or moderation.
+
+Review is U10 in REVIEW.md. Multi-stream layout acceptance remains deferred.

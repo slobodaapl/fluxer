@@ -88,6 +88,8 @@ impl Fluxer {
             .when(self.pane == Pane::Call, |view| view.overflow_hidden())
             .child(
                 div()
+                    .id("channel-header")
+                    .when_some(self.state.selected_channel, |view, channel| crate::context_actions::trigger(view, crate::context_actions::Target::Channel(channel), cx))
                     .h(px(if self.pane == Pane::Call { 38. } else { 60. }))
                     .flex_shrink_0()
                     .px_5()
@@ -177,6 +179,8 @@ impl Fluxer {
                                         .unwrap_or_else(|| identity.clone());
                                     let identity = identity.clone();
                                     div()
+                                        .id(("available-stream-context", index))
+                                        .map(|view| crate::context_actions::trigger(view, crate::context_actions::Target::Stream(identity.clone()), cx))
                                         .flex()
                                         .items_center()
                                         .gap_1()

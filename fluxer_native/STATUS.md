@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 170 input/emoji/attachment/search/media/viewer/message/avatar/Wayland tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 179 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-448 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+457 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -548,3 +548,31 @@ tests ignored), including eight regressions against the production scheduling
 policy. The private-socket proxy smoke checks descriptor transfer/cleanup, partial
 writes, protocol fragmentation and late callback release. See
 `compat/gpui/FLUXER_PATCHES.md`; no account traffic or personal media was used.
+
+## Voice and navigation context menus (2026-11-13)
+
+Compact native context menus now cover watched/available streams, voice cards,
+sidebar participants, call filmstrip members, the connected account dock,
+channels/headers and community icons. They expose existing local audio and viewer
+commands plus mention/copy/navigation actions. Shift+F10 opens the same menus.
+Toggle/slider adjustments remain open; regular actions close and restore focus.
+Target and permission checks run again when an action activates, and deferred
+callbacks are fenced when a menu is replaced or its target leaves.
+
+User and remote-connection volume/mute are stored separately and composed for
+the existing native mixer; stream audio is independent. Exact SDK identities
+prevent cross-user prefix matches. New/repeated remote join events reapply the
+stored scopes, and voice-channel/account transitions reset the appropriate
+connection/account state. Only the explicitly local dock controls this device's
+microphone/deafen/disconnect; an unresolved gateway row never proves ownership.
+Channel links use discovery's webapp origin. No new server moderation,
+notification settings or acknowledgement payloads are inferred.
+
+The gate passes 457 tests, formatting, source audit and strict workspace Clippy.
+Offline captures checked all menu types, actual Shift+F10 opening from a focused
+community icon, keyboard mute and 0–200% slider behavior, shortcut blocking and
+Escape. Synthetic user-volume changes affected both of Alex's devices while
+retaining the phone's independent 30% gain; your other device stayed separate.
+These checks used no call, capture, audio playback or account writes. Live audio,
+pointer use and broader accessibility remain U10 in REVIEW.md. Further menu
+priorities and classic-client/Discord references are in UI_UX.md.

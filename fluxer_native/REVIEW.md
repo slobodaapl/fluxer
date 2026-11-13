@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 448 tests, formatting, strict Clippy and the
+The UI refinement gate passes 457 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -37,6 +37,7 @@ Full feature parity remains in progress.
 | M8 | Immediate text and attachment sending | Press Enter repeatedly, including identical messages and attachment-only sends. The composer clears and a local message appears immediately; upload progress belongs to that row. Force a failure, retry/remove it, and keep typing/staging other files. | **Pending live/feel review.** Per-attempt nonce, ownership, progress, retry/cancel, server/gateway ordering and newer-draft regressions pass. |
 | E2 | Consistent emoji artwork | Compare the same Unicode/tone/ZWJ emoji in picker, composer, messages, reactions and reply/search previews. Selection/copy must preserve Unicode. | **Pending visual review.** Shared bundled Fluxer artwork and source-byte/UTF-16 mapping regressions pass. Catalog variants without sprite tiles use the discovered static CDN; OS glyphs are used only outside the catalog. |
 | U9 | Composer undo and redo | Type, delete, paste and insert emoji; use Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y. Check restored selection and channel/edit/send boundaries. | **Pending hands-on review.** Grouped edits, atomic paste/IME/emoji insertion, redo and reversed selection regressions pass. |
+| U10 | Voice, stream and navigation context menus | Right-click streams, voice sidebar rows/cards/filmstrip, the connected account dock, channels/headers and community icons. Check mute/0–200% volume, persistent sliders/toggles, independent user/connection/stream audio, other-device safety, watch/stop and copy/navigation actions. Try Shift+F10, Tab/arrows/Home/End, Escape, viewport edges and a participant leaving while its menu is open. | **Pending live audio, pointer and user acceptance.** Offline keyboard/menu presentation and multi-device model checks are recorded below. Remaining menu parity is prioritized in UI_UX.md; multi-stream layout review stays deferred. |
 | N5 | Pin system notices and message links | Read a pin notice, follow “a message”, then “all pinned messages”; try an old/deleted target and a search result containing a notice. | **Pending user review.** Type 6 uses the system sentence and existing channel-specific navigation; missing-target centering guards and source reference/permission cases have tests. |
 | A1 | Real attachment delivery | In a suitable test conversation, attach a small image and a normal file. Send with text, as a reply, and with no text. View each from regular Fluxer. Filenames, bytes, reply target and spoiler visibility should match. | **Pending real-account check.** Real-byte HTTP contracts and public-controller fixtures pass. |
 | A2 | Attachment input and layout | Add several files using the system picker, drag files into chat, and paste a screenshot. Toggle a spoiler and remove a file; switch channels and back. Cards should remain compact and belong to the original channel. | **Pending usability review.** Generated-file preparation, actual Wayland image paste, native picker opening and spoiler preview hiding checked offline. Physical drag/drop and picker selection need review. |
@@ -302,3 +303,33 @@ writes, personal media, audio playback or microphone capture were used.
 U6 remains pending for the user's ordinary startup, moving/resizing between their
 monitors, scaling and hide/restore. The callback-starvation fix is implemented;
 broader compositor/GPU acceptance is not inferred from these controlled checks.
+
+## U10 context-menu evidence (2026-11-13)
+
+`target/qa/context-menus/` contains offline stream/user/connection/self/channel/
+community captures, generated model diagnostics and the 457-test verification
+log (13 opt-in tests ignored). Stream keyboard checks toggled mute once with
+Enter, then adjusted the focused slider to 200%, 0% and 1% while mute remained
+checked and the menu stayed open. Ctrl+F stayed within the menu; Escape dismissed
+it. Actual Tab navigation followed by Shift+F10 opened the focused community
+icon's menu, using its own anchor and restoring focus on dismissal.
+
+The explicit `--demo-stream` fixture can open a menu with
+`FLUXER_CONTEXT_DEMO_TARGET=stream|user|connection|self|channel|community`.
+That environment variable only affects the offline stream fixture, where it
+adds a synthetic two-device Alex and your other device. With user mute enabled
+and User volume at 200%, the model's desktop gain became 2.0 and phone gain 0.6,
+preserving the phone's separate 30% connection volume. Changes to your other
+device's Connection volume/mute affected only that identity. The explicit local
+dock menu toggled this device's mute/deafen in the fixture. These were actual
+menu handlers driven by guarded keyboard input, with synthetic state only.
+
+Normal tests cover exact user/connection identity matching, independent audio
+scopes, retained new-device defaults, unresolved own-device safety, stale/wrong
+action types, finite gains, viewport bounds, menu keyboard selection and copied
+channel links using a discovered frontend. No physical audio or pointer test is
+claimed here; live calls, own-share behavior, target disappearance/focus under
+real gateway events and subjective usability still need review. Full persisted
+preferences and broader menu coverage remain in UI_UX.md. Multi-stream layout
+acceptance stays deferred; using several generated stream tiles for menu checks
+does not accept that separate feature.

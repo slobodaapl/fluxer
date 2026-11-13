@@ -7,6 +7,8 @@ mod call_view;
 mod chat_helpers;
 mod chat_view;
 mod concealed_image;
+mod context_actions;
+mod context_menu;
 mod controls;
 mod dropdown;
 mod emoji_picker;
@@ -281,6 +283,7 @@ struct Fluxer {
     pane: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
+    context: context_actions::ContextUi,
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
@@ -386,6 +389,7 @@ impl Fluxer {
                 input.attachment_paste = true;
                 input
             }),
+            context: context_actions::ContextUi::new(cx),
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
@@ -622,6 +626,7 @@ impl Fluxer {
             view.animation = Some(AnimatedFixture::new());
             view.schedule_perf_stop(window, cx);
         }
+        view.schedule_context_demo(window, cx);
         view
     }
 
@@ -727,7 +732,11 @@ impl Fluxer {
                     });
                     let near_bottom =
                         self.timeline.max_offset().height + self.timeline.offset().y <= px(48.);
+                    let previous_voice_channel = self.state.voice.channel_id;
                     self.state = *state;
+                    if previous_voice_channel != self.state.voice.channel_id {
+                        self.context.connection_audio.clear();
+                    }
                     self.sharing = self.state.voice.screen_share;
                     if self.state.current_user.is_none() && self.state.guilds.is_empty() {
                         // A restore can publish an empty transition before its
@@ -740,6 +749,9 @@ impl Fluxer {
                             self.outbox.reset();
                             self.message_text.clear();
                             self.clear_browser();
+                            self.reset_context_menu(cx);
+                            self.context.user_audio.clear();
+                            self.context.connection_audio.clear();
                             self.message_actions.reset();
                             self.message_content.reset();
                             // Authentication may publish an empty transition after
@@ -1139,8 +1151,19 @@ impl Fluxer {
                         self.shared_audio = false;
                     }
                     MediaEvent::ParticipantJoined { identity, name } => {
-                        self.participants
-                            .insert(identity, (name, ParticipantAudioSettings::default()));
+                        let base = self
+                            .context
+                            .connection_audio
+                            .get(&identity)
+                            .copied()
+                            .unwrap_or_default();
+                        let settings = stream_view::sdk_identity_user(&identity)
+                            .and_then(|user| self.context.user_audio.get(&user))
+                            .copied()
+                            .unwrap_or_default()
+                            .apply(base);
+                        self.participants.insert(identity.clone(), (name, settings));
+                        self.command(Command::SetParticipantAudio { identity, settings }, cx);
                     }
                     MediaEvent::ParticipantLeft { identity } => {
                         self.active_speakers.remove(&identity);
@@ -1196,13 +1219,15 @@ impl Fluxer {
             self.last_ip_countdown = countdown;
             changed = true;
         }
+        self.reconcile_context_menu(cx);
         if changed {
             cx.notify();
         }
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.message_actions.is_open()
+        if self.context_menu_open(cx)
+            || self.message_actions.is_open()
             || self.message_links.is_open()
             || self.image_viewer.is_open()
             || self.playback.modal.is_open()
@@ -1298,6 +1323,7 @@ impl Fluxer {
     }
 
     fn select(&mut self, id: Snowflake, cx: &mut Context<Self>) {
+        self.reset_context_menu(cx);
         self.reset_ack_context(id);
         self.search_ui.return_to_latest_on_select(id);
         if self.state.selected_channel == Some(id) {
@@ -1565,6 +1591,9 @@ impl Fluxer {
                         this.selected_guild = Some(id);
                         this.command(Command::SelectGuild { guild_id: id }, cx);
                     }))
+                    .map(|view| {
+                        context_actions::trigger(view, context_actions::Target::Community(id), cx)
+                    })
             }))
             .child(div().flex_1())
             .into_any_element()
@@ -1580,6 +1609,9 @@ impl Fluxer {
         self.pending_messages.clear();
         self.outbox.reset();
         self.clear_attachments(cx);
+        self.reset_context_menu(cx);
+        self.context.user_audio.clear();
+        self.context.connection_audio.clear();
         self.message_actions.reset();
         self.message_content.reset();
         self.message_links.reset();
@@ -1697,11 +1729,23 @@ impl Fluxer {
                                     })
                                     .on_click(
                                         cx.listener(move |this, _, _, cx| this.select(id, cx)),
-                                    ),
+                                    )
+                                    .map(|view| {
+                                        context_actions::trigger(
+                                            view,
+                                            context_actions::Target::Channel(id),
+                                            cx,
+                                        )
+                                    }),
                             )
                             .when(!roster.is_empty(), |view| {
                                 view.child(div().ml_5().mb_1().flex().flex_col().gap_1().children(
                                     roster.into_iter().map(|(participant, speaking)| {
+                                        let menu_target = self.voice_context_target(
+                                            Some(id),
+                                            Some(participant.user_id),
+                                            None,
+                                        );
                                         div()
                                             .id(SharedString::from(format!(
                                                 "voice-row-{}-{}",
@@ -1761,6 +1805,9 @@ impl Fluxer {
                                                 )
                                             })
                                             .child(voice_badges(&participant, true))
+                                            .when_some(menu_target, |view, target| {
+                                                context_actions::trigger(view, target, cx)
+                                            })
                                     }),
                                 ))
                             })
@@ -1831,6 +1878,10 @@ impl Fluxer {
     }
 
     fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.context_menu_open(cx) {
+            cx.stop_propagation();
+            return;
+        }
         if self.emoji_target.is_none() && self.forwarding.is_none() {
             return;
         }
@@ -2068,15 +2119,16 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
+            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.context_menu_open(cx) && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
+                if this.context_menu_open(cx) || this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
                 this.pane = Pane::Settings;
                 this.command(Command::RefreshDevices, cx);
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.playback.modal.is_open() {this.playback.close(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.image_viewer.is_open() {this.dismiss_image_viewer(window,cx);cx.stop_propagation();return;}
@@ -2116,6 +2168,7 @@ impl Render for Fluxer {
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
+            .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
