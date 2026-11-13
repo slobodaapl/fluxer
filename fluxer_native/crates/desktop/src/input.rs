@@ -1170,6 +1170,22 @@ impl Element for TextElement {
         for background in prepaint.backgrounds.drain(..) {
             window.paint_quad(background);
         }
+        let input = self.input.read(cx);
+        if input.read_only && input.message_document.is_some() {
+            for (row, line) in prepaint.layout.lines.iter().enumerate() {
+                let origin = point(
+                    bounds.left() + line.indent - prepaint.scroll.x,
+                    bounds.top() + prepaint.layout.line_height * row - prepaint.scroll.y,
+                );
+                if origin.y + prepaint.layout.line_height >= bounds.top()
+                    && origin.y <= bounds.bottom()
+                {
+                    line.layout
+                        .paint_background(origin, prepaint.layout.line_height, window, cx)
+                        .expect("paint rich message run backgrounds");
+                }
+            }
+        }
         for selection in prepaint.selections.drain(..) {
             if focus.is_focused(window) {
                 window.paint_quad(selection);

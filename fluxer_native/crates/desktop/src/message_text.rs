@@ -87,7 +87,7 @@ pub(super) fn runs(
                 run.font.style = FontStyle::Italic;
             }
             if span.style.code {
-                run.font.family = "monospace".into();
+                run.font.family = "Fluxer Mono".into();
                 run.background_color = Some(rgb(0x25222b).into());
             }
             if span.style.subtext || span.style.quote_depth > 0 {
@@ -386,7 +386,7 @@ mod tests {
             assert!(row.iter().all(|run| match test {
                 0 => run.underline.is_some(),
                 1 => run.strikethrough.is_some(),
-                _ => run.font.family.as_ref() == "monospace" && run.background_color.is_some(),
+                _ => run.font.family.as_ref() == "Fluxer Mono" && run.background_color.is_some(),
             }));
         }
     }
