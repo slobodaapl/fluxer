@@ -32,9 +32,12 @@ impl Drop for Job {
 }
 struct PendingSend {
     token: u64,
+    channel: Snowflake,
     nonce: String,
     ids: Vec<u64>,
     job: Option<Job>,
+    failure: Option<String>,
+    generation: u64,
 }
 struct PreuploadPlan {
     members: Vec<(u64, u64)>,
@@ -92,12 +95,11 @@ pub(super) enum AttachmentEvent {
 pub(super) struct AttachmentState {
     epoch: u64,
     next_id: u64,
-    next_send: u64,
+    next_job: u64,
     next_batch: u64,
     channels: BTreeMap<Snowflake, Vec<Stage>>,
-    sends: BTreeMap<Snowflake, PendingSend>,
+    sends: BTreeMap<u64, PendingSend>,
     attempts: BTreeMap<String, Attempt>,
-    last_attempt: BTreeMap<Snowflake, String>,
     plans: BTreeMap<u64, PreuploadPlan>,
     tx: async_mpsc::UnboundedSender<AttachmentEvent>,
     pub rx: async_mpsc::UnboundedReceiver<AttachmentEvent>,
@@ -109,12 +111,11 @@ impl AttachmentState {
         Self {
             epoch: 1,
             next_id: 0,
-            next_send: 0,
+            next_job: 0,
             next_batch: 0,
             channels: BTreeMap::new(),
             sends: BTreeMap::new(),
             attempts: BTreeMap::new(),
-            last_attempt: BTreeMap::new(),
             plans: BTreeMap::new(),
             tx,
             rx,
@@ -136,7 +137,6 @@ impl Worker {
         self.attachments.plans.clear();
         self.attachments.channels.clear();
         self.attachments.attempts.clear();
-        self.attachments.last_attempt.clear();
         self.emit(Event::AttachmentsCleared);
     }
     fn attachment_policy(&self, channel: Snowflake) -> Result<fluxer_core::AttachmentPolicy> {
@@ -190,6 +190,7 @@ impl Worker {
             .get(&channel)
             .into_iter()
             .flatten()
+            .filter(|stage| stage.last_send_nonce.is_none())
             .map(|stage| stage.dto.clone())
             .collect();
         self.emit(Event::Attachments {
@@ -204,6 +205,40 @@ impl Worker {
                 preupload: policy.preupload,
             });
         }
+    }
+    fn outbox_snapshot(&self, channel: Snowflake) {
+        let messages = self
+            .attachments
+            .sends
+            .values()
+            .filter(|send| send.channel == channel)
+            .filter_map(|send| {
+                let attempt = self.attachments.attempts.get(&send.nonce)?;
+                let attachments = self
+                    .attachments
+                    .channels
+                    .get(&channel)
+                    .into_iter()
+                    .flatten()
+                    .filter(|stage| send.ids.contains(&stage.dto.id))
+                    .map(|stage| stage.dto.clone())
+                    .collect();
+                Some(crate::PendingMessage {
+                    id: send.token,
+                    content: attempt.fingerprint.content.clone(),
+                    attachments,
+                    status: send.failure.clone().map_or(
+                        crate::PendingMessageStatus::Sending,
+                        crate::PendingMessageStatus::Failed,
+                    ),
+                    reply: attempt.fingerprint.reference.clone(),
+                })
+            })
+            .collect();
+        self.emit(Event::Outbox {
+            channel_id: channel,
+            messages,
+        });
     }
     fn refresh_attachment_policy(&mut self, channel: Snowflake) {
         let preupload = !self.demo
@@ -293,7 +328,14 @@ impl Worker {
     fn stage_inputs(&mut self, channel: Snowflake, inputs: Vec<AttachmentInput>) -> Result<()> {
         self.can_attach(channel)?;
         let policy = self.attachment_policy(channel)?;
-        let count = self.attachments.channels.get(&channel).map_or(0, Vec::len);
+        let count = self
+            .attachments
+            .channels
+            .get(&channel)
+            .into_iter()
+            .flatten()
+            .filter(|stage| stage.last_send_nonce.is_none())
+            .count();
         if count.saturating_add(inputs.len()) > policy.max_attachments {
             return Err(format!(
                 "This account allows {} attachments per message",
@@ -427,11 +469,7 @@ impl Worker {
                 stage.prepared.is_some()
                     && stage.uploaded.is_none()
                     && stage.dto.status == AttachmentStatus::Staged
-                    && !self
-                        .attachments
-                        .sends
-                        .get(&channel)
-                        .is_some_and(|send| send.ids.contains(&stage.dto.id))
+                    && stage.last_send_nonce.is_none()
             })
             .collect::<Vec<_>>();
         if stages.is_empty() {
@@ -535,9 +573,8 @@ impl Worker {
         self.can_attach(channel)?;
         if self
             .attachments
-            .sends
-            .get(&channel)
-            .is_some_and(|send| send.ids.contains(&id))
+            .stage(channel, id)
+            .is_some_and(|stage| stage.last_send_nonce.is_some())
         {
             return Err("Cancel the queued message before retrying its attachments".into());
         }
@@ -570,11 +607,10 @@ impl Worker {
     ) -> Result<()> {
         if self
             .attachments
-            .sends
-            .get(&channel)
-            .is_some_and(|send| send.ids.contains(&id))
+            .stage(channel, id)
+            .is_some_and(|stage| stage.last_send_nonce.is_some())
         {
-            self.fail_attachment_send(channel, "Attachment send cancelled".into());
+            return Err("Attachment belongs to a pending message".into());
         }
         let stage = self
             .attachments
@@ -598,7 +634,16 @@ impl Worker {
         Ok(())
     }
     pub(super) fn cancel_attachment_send(&mut self, channel: Snowflake) {
-        self.fail_attachment_send(channel, "Attachment send cancelled".into());
+        let ids = self
+            .attachments
+            .sends
+            .values()
+            .filter(|send| send.channel == channel && send.failure.is_none())
+            .map(|send| send.token)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.fail_attachment_send(id, "Attachment send cancelled".into());
+        }
     }
     pub(super) fn spoiler_attachment(
         &mut self,
@@ -608,9 +653,8 @@ impl Worker {
     ) -> Result<()> {
         if self
             .attachments
-            .sends
-            .get(&channel)
-            .is_some_and(|send| send.ids.contains(&id))
+            .stage(channel, id)
+            .is_some_and(|stage| stage.last_send_nonce.is_some())
         {
             return Err("Cancel the queued message before changing an attachment".into());
         }
@@ -629,15 +673,25 @@ impl Worker {
         reference: Option<fluxer_core::MessageReference>,
         mention_author: bool,
     ) -> Result<()> {
+        self.request_pending_send(
+            crate::next_pending_message_id(),
+            channel,
+            content,
+            reference,
+            mention_author,
+        )
+    }
+    pub(super) fn request_pending_send(
+        &mut self,
+        token: u64,
+        channel: Snowflake,
+        content: String,
+        reference: Option<fluxer_core::MessageReference>,
+        mention_author: bool,
+    ) -> Result<()> {
         self.refresh_attachment_policy(channel);
-        let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
-        let target = self.state.channels.get(&channel).ok_or("Unknown channel")?;
-        if !fluxer_core::can_send_message(target.kind, self.state.permissions_for(channel, user.id))
-        {
-            return Err("You cannot send messages in this channel".into());
-        }
-        if self.attachments.sends.contains_key(&channel) {
-            return Err("A message is already queued in this channel".into());
+        if self.attachments.sends.contains_key(&token) {
+            return Err("Duplicate pending message ID".into());
         }
         let stages = self
             .attachments
@@ -645,25 +699,8 @@ impl Worker {
             .get(&channel)
             .into_iter()
             .flatten()
+            .filter(|stage| stage.last_send_nonce.is_none())
             .collect::<Vec<_>>();
-        if Client::build_message_body(&content, None, reference.as_ref(), mention_author)
-            .get("content")
-            .is_none()
-            && stages.is_empty()
-        {
-            return Err("Message cannot be empty".into());
-        }
-        if !stages.is_empty() {
-            self.can_attach(channel)?;
-        }
-        let policy = self.attachment_policy(channel)?;
-        if stages.len() > policy.max_attachments
-            || stages
-                .iter()
-                .any(|stage| stage.dto.size > policy.max_file_size)
-        {
-            return Err("Staged files exceed this account's upload limits".into());
-        }
         let ids = stages.iter().map(|stage| stage.dto.id).collect::<Vec<_>>();
         let fingerprint = Fingerprint {
             channel,
@@ -675,36 +712,22 @@ impl Worker {
                 .map(|stage| (stage.dto.id, stage.dto.spoiler))
                 .collect(),
         };
-        let nonce = self
-            .attachments
-            .last_attempt
-            .get(&channel)
-            .filter(|nonce| {
-                self.attachments
-                    .attempts
-                    .get(*nonce)
-                    .is_some_and(|attempt| attempt.fingerprint == fingerprint)
-            })
-            .cloned()
-            .unwrap_or_else(|| {
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    .to_string()
-            });
+        // Every new submission gets its own nonce, even when two drafts are
+        // identical. Only an explicit retry reuses an existing nonce.
+        let nonce = token.to_string();
         self.attachments
             .attempts
             .insert(nonce.clone(), Attempt { fingerprint });
-        self.attachments.last_attempt.insert(channel, nonce.clone());
-        self.attachments.next_send = self.attachments.next_send.wrapping_add(1);
         self.attachments.sends.insert(
-            channel,
+            token,
             PendingSend {
-                token: self.attachments.next_send,
+                token,
+                channel,
                 nonce: nonce.clone(),
                 ids: ids.clone(),
                 job: None,
+                failure: None,
+                generation: 0,
             },
         );
         for stage in self
@@ -720,11 +743,36 @@ impl Worker {
                 stage.dto.status = AttachmentStatus::Queued;
             }
         }
+        if self.state.drafts.get(&channel)
+            == Some(&self.attachments.attempts[&nonce].fingerprint.content)
+        {
+            self.state.set_draft(channel, String::new());
+        }
         self.attachment_snapshot(channel);
+        self.outbox_snapshot(channel);
         self.advance_attachment_send(channel);
         Ok(())
     }
     fn advance_attachment_send(&mut self, channel: Snowflake) {
+        let ids = self
+            .attachments
+            .sends
+            .values()
+            .filter(|send| send.channel == channel)
+            .map(|send| send.token)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.advance_one_attachment_send(id);
+        }
+    }
+    fn advance_one_attachment_send(&mut self, id: u64) {
+        let Some(send) = self.attachments.sends.get(&id) else {
+            return;
+        };
+        if send.failure.is_some() {
+            return;
+        }
+        let channel = send.channel;
         self.refresh_attachment_policy(channel);
         for stage in self
             .attachments
@@ -744,10 +792,39 @@ impl Worker {
                 stage.uploaded = None;
             }
         }
-        let Some(send) = self.attachments.sends.get(&channel) else {
+        let Some(send) = self.attachments.sends.get(&id) else {
             return;
         };
         if send.job.is_some() {
+            return;
+        }
+        let attempt = &self.attachments.attempts[&send.nonce];
+        if Client::build_message_body(
+            &attempt.fingerprint.content,
+            None,
+            attempt.fingerprint.reference.as_ref(),
+            attempt.fingerprint.mention_author,
+        )
+        .get("content")
+        .is_none()
+            && send.ids.is_empty()
+        {
+            self.fail_attachment_send(id, "Message cannot be empty".into());
+            return;
+        }
+        let permission = self
+            .state
+            .current_user
+            .as_ref()
+            .zip(self.state.channels.get(&channel))
+            .is_some_and(|(user, target)| {
+                fluxer_core::can_send_message(
+                    target.kind,
+                    self.state.permissions_for(channel, user.id),
+                )
+            });
+        if !permission {
+            self.fail_attachment_send(id, "You cannot send messages in this channel".into());
             return;
         }
         let stages = self
@@ -770,7 +847,7 @@ impl Worker {
             })
         {
             self.fail_attachment_send(
-                channel,
+                id,
                 "Retry or remove attachments that could not be prepared".into(),
             );
             return;
@@ -778,7 +855,7 @@ impl Worker {
         let policy = match self.attachment_policy(channel) {
             Ok(policy) => policy,
             Err(message) => {
-                self.fail_attachment_send(channel, message);
+                self.fail_attachment_send(id, message);
                 return;
             }
         };
@@ -787,7 +864,7 @@ impl Worker {
         } else {
             self.can_attach(channel)
         } {
-            self.fail_attachment_send(channel, message);
+            self.fail_attachment_send(id, message);
             return;
         }
         if stages.len() > policy.max_attachments
@@ -796,13 +873,14 @@ impl Worker {
                 .any(|stage| stage.dto.size > policy.max_file_size)
         {
             self.fail_attachment_send(
-                channel,
+                id,
                 "Staged files exceed this account's upload limits".into(),
             );
             return;
         }
         let nonce = send.nonce.clone();
-        let token = send.token;
+        self.attachments.next_job = self.attachments.next_job.wrapping_add(1);
+        let token = self.attachments.next_job;
         let attempt = &self.attachments.attempts[&nonce];
         let fingerprint = attempt.fingerprint.clone();
         let files = stages
@@ -821,7 +899,7 @@ impl Worker {
         })).collect::<Option<Vec<_>>>();
         let client = self.client.clone();
         if client.is_none() && !self.demo {
-            self.fail_attachment_send(channel, "Sign in first".into());
+            self.fail_attachment_send(id, "Sign in first".into());
             return;
         }
         let demo_user = self.state.current_user.clone();
@@ -874,18 +952,31 @@ impl Worker {
         });
         self.attachments
             .sends
-            .get_mut(&channel)
+            .get_mut(&id)
+            .expect("pending send")
+            .generation = token;
+        self.attachments
+            .sends
+            .get_mut(&id)
             .expect("pending send")
             .job = Some(Job {
             task,
             cancel: Some(cancel),
         });
         self.attachment_snapshot(channel);
+        self.outbox_snapshot(channel);
     }
-    fn fail_attachment_send(&mut self, channel: Snowflake, message: String) {
-        let Some(send) = self.attachments.sends.remove(&channel) else {
+    fn fail_attachment_send(&mut self, id: u64, message: String) {
+        let Some(send) = self.attachments.sends.get_mut(&id) else {
             return;
         };
+        if send.failure.is_some() {
+            return;
+        }
+        send.job = None;
+        send.failure = Some(message.clone());
+        let channel = send.channel;
+        let ids = send.ids.clone();
         let content = self
             .attachments
             .attempts
@@ -898,7 +989,7 @@ impl Worker {
             .get_mut(&channel)
             .into_iter()
             .flatten()
-            .filter(|stage| send.ids.contains(&stage.dto.id))
+            .filter(|stage| ids.contains(&stage.dto.id))
         {
             stage.job = None;
             stage.planning = None;
@@ -913,6 +1004,58 @@ impl Worker {
             error: message,
         });
         self.attachment_snapshot(channel);
+        self.outbox_snapshot(channel);
+    }
+    pub(super) fn retry_pending_message(&mut self, channel: Snowflake, id: u64) -> Result<()> {
+        let send = self
+            .attachments
+            .sends
+            .get_mut(&id)
+            .filter(|send| send.channel == channel)
+            .ok_or("Pending message is no longer available")?;
+        if send.failure.take().is_none() {
+            return Err("Message is already sending".into());
+        }
+        let ids = send.ids.clone();
+        let max_size = self
+            .attachment_policy(channel)
+            .map(|p| p.max_file_size)
+            .unwrap_or(u64::MAX);
+        for stage_id in ids {
+            let needs_preparation = if let Some(stage) = self.attachments.stage(channel, stage_id) {
+                stage.dto.error = None;
+                stage.dto.progress = 0.;
+                stage.dto.status = AttachmentStatus::Queued;
+                stage.prepared.is_none()
+            } else {
+                false
+            };
+            if needs_preparation {
+                self.prepare_attachment(channel, stage_id, max_size);
+            }
+        }
+        self.outbox_snapshot(channel);
+        self.advance_one_attachment_send(id);
+        Ok(())
+    }
+    pub(super) fn remove_pending_message(&mut self, channel: Snowflake, id: u64) -> Result<()> {
+        if self
+            .attachments
+            .sends
+            .get(&id)
+            .is_none_or(|send| send.channel != channel)
+        {
+            return Err("Pending message is no longer available".into());
+        }
+        let send = self.attachments.sends.remove(&id).expect("checked");
+        self.attachments.attempts.remove(&send.nonce);
+        if let Some(stages) = self.attachments.channels.get_mut(&channel) {
+            stages.retain(|stage| !send.ids.contains(&stage.dto.id));
+        }
+        self.prune_attachment_plans();
+        self.attachment_snapshot(channel);
+        self.outbox_snapshot(channel);
+        Ok(())
     }
     pub(super) fn reconcile_attachment_message(&mut self, message: &Message) {
         if self
@@ -927,7 +1070,7 @@ impl Worker {
             self.complete_attachment_send(message.channel_id, nonce, message.clone());
         }
     }
-    fn complete_attachment_send(&mut self, channel: Snowflake, nonce: &str, message: Message) {
+    fn complete_attachment_send(&mut self, channel: Snowflake, nonce: &str, mut message: Message) {
         let Some(attempt) = self.attachments.attempts.remove(nonce) else {
             return;
         };
@@ -935,34 +1078,28 @@ impl Worker {
             self.attachments.attempts.insert(nonce.into(), attempt);
             return;
         }
-        if self
-            .attachments
-            .sends
-            .get(&channel)
-            .is_some_and(|send| send.nonce == nonce)
+        if let Some(id) =
+            self.attachments.sends.iter().find_map(|(id, send)| {
+                (send.channel == channel && send.nonce == nonce).then_some(*id)
+            })
         {
-            self.attachments.sends.remove(&channel);
+            self.attachments.sends.remove(&id);
+        }
+        // A deduplicated REST response may omit the request nonce. Preserve it
+        // locally so consumers can hide the optimistic row with the same ID.
+        if message.nonce.is_none() {
+            message.nonce = Some(nonce.to_owned());
         }
         let message_id = message.id;
         self.state.insert_message(message);
         self.navigation_message_inserted(channel, message_id);
         let content = attempt.fingerprint.content;
-        if self.state.drafts.get(&channel) == Some(&content) {
-            self.state.set_draft(channel, String::new());
-        }
         if let Some(stages) = self.attachments.channels.get_mut(&channel) {
             stages.retain(|stage| stage.last_send_nonce.as_deref() != Some(nonce));
         }
-        if self
-            .attachments
-            .last_attempt
-            .get(&channel)
-            .is_some_and(|last| last == nonce)
-        {
-            self.attachments.last_attempt.remove(&channel);
-        }
         self.attachment_snapshot(channel);
         self.snapshot();
+        self.outbox_snapshot(channel);
         self.emit(Event::MessageSent {
             channel_id: channel,
             content,
@@ -1015,6 +1152,7 @@ impl Worker {
                     }
                 }
                 self.attachment_snapshot(channel);
+                self.outbox_snapshot(channel);
                 self.advance_attachment_send(channel);
             }
             AttachmentEvent::Prepared {
@@ -1057,6 +1195,7 @@ impl Worker {
                 }
                 self.start_preupload(channel, id);
                 self.attachment_snapshot(channel);
+                self.outbox_snapshot(channel);
                 self.advance_attachment_send(channel);
             }
             AttachmentEvent::Uploaded {
@@ -1090,6 +1229,7 @@ impl Worker {
                 }
                 self.start_preupload(channel, id);
                 self.attachment_snapshot(channel);
+                self.outbox_snapshot(channel);
                 self.advance_attachment_send(channel);
             }
             AttachmentEvent::Progress {
@@ -1110,12 +1250,9 @@ impl Worker {
                     {
                         stage.dto.progress = progress;
                     }
-                } else if let Some(send) = self
-                    .attachments
-                    .sends
-                    .get(&channel)
-                    .filter(|send| send.token == revision)
-                {
+                } else if let Some(send) = self.attachments.sends.values().find(|send| {
+                    send.channel == channel && send.generation == revision && send.failure.is_none()
+                }) {
                     let ids = send.ids.clone();
                     for stage in self
                         .attachments
@@ -1131,6 +1268,7 @@ impl Worker {
                     return;
                 }
                 self.attachment_snapshot(channel);
+                self.outbox_snapshot(channel);
             }
             AttachmentEvent::Sent {
                 epoch,
@@ -1145,13 +1283,13 @@ impl Worker {
                 match result {
                     Ok(message) => self.complete_attachment_send(channel, &nonce, *message),
                     Err(message) => {
-                        if self
-                            .attachments
-                            .sends
-                            .get(&channel)
-                            .is_some_and(|send| send.token == token)
-                        {
-                            self.fail_attachment_send(channel, message);
+                        if let Some(id) = self.attachments.sends.iter().find_map(|(id, send)| {
+                            (send.channel == channel
+                                && send.generation == token
+                                && send.failure.is_none())
+                            .then_some(*id)
+                        }) {
+                            self.fail_attachment_send(id, message);
                         }
                     }
                 }

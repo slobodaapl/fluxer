@@ -357,7 +357,13 @@ async fn cancelling_queued_send_stops_its_plan_and_keeps_new_files_and_draft() {
     worker.state.set_draft(channel, "next draft".into());
     worker.cancel_attachment_send(channel);
     assert!(cancel.is_cancelled());
-    assert!(!worker.attachments.sends.contains_key(&channel));
+    assert!(
+        worker
+            .attachments
+            .sends
+            .values()
+            .any(|send| send.channel == channel && send.failure.is_some())
+    );
     assert_eq!(worker.state.drafts[&channel], "next draft");
     assert_eq!(worker.attachments.channels[&channel].len(), 2);
     assert_eq!(worker.attachments.channels[&channel][0].dto.id, id);
@@ -374,10 +380,15 @@ async fn cancelling_queued_send_stops_its_plan_and_keeps_new_files_and_draft() {
 async fn invisible_only_messages_fail_locally_but_attachment_only_send_is_accepted() {
     let (mut worker, _) = demo();
     let channel = Snowflake(11);
+    worker
+        .request_attachment_send(channel, "\u{200b}\u{2060}".into(), None, false)
+        .unwrap();
     assert!(
         worker
-            .request_attachment_send(channel, "\u{200b}\u{2060}".into(), None, false)
-            .is_err()
+            .attachments
+            .sends
+            .values()
+            .any(|send| send.failure.as_deref() == Some("Message cannot be empty"))
     );
     worker
         .stage_clipboard(
@@ -391,6 +402,229 @@ async fn invisible_only_messages_fail_locally_but_attachment_only_send_is_accept
     worker
         .request_attachment_send(channel, String::new(), None, false)
         .unwrap();
-    assert!(worker.attachments.sends.contains_key(&channel));
+    assert!(
+        worker
+            .attachments
+            .sends
+            .values()
+            .any(|send| send.channel == channel && send.failure.is_none())
+    );
     worker.clear_attachments();
+}
+
+#[tokio::test]
+async fn overlapping_outbox_sends_keep_files_drafts_and_nonces_independent() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    worker
+        .stage_clipboard(
+            channel,
+            "first.bin".into(),
+            "application/octet-stream".into(),
+            Arc::new(vec![1]),
+        )
+        .unwrap();
+    settle_preparation(&mut worker, channel).await;
+    let first_file = worker.attachments.channels[&channel][0].dto.id;
+    worker.state.set_draft(channel, "same".into());
+    let first = crate::next_pending_message_id();
+    worker
+        .request_pending_send(first, channel, "same".into(), None, false)
+        .unwrap();
+    let first_generation = worker.attachments.sends[&first].generation;
+    // Keep the first request outstanding while another draft is composed.
+    worker.attachments.sends.get_mut(&first).unwrap().job = Some(Job {
+        task: tokio::spawn(pending()),
+        cancel: None,
+    });
+    worker.state.set_draft(channel, "same".into());
+    worker
+        .stage_clipboard(
+            channel,
+            "second.bin".into(),
+            "application/octet-stream".into(),
+            Arc::new(vec![2]),
+        )
+        .unwrap();
+    settle_preparation(&mut worker, channel).await;
+    let second_file = worker.attachments.channels[&channel]
+        .iter()
+        .find(|stage| stage.dto.id != first_file)
+        .unwrap()
+        .dto
+        .id;
+    let second = crate::next_pending_message_id();
+    worker
+        .request_pending_send(second, channel, "same".into(), None, false)
+        .unwrap();
+    let second_generation = worker.attachments.sends[&second].generation;
+    worker.attachments.sends.get_mut(&second).unwrap().job = Some(Job {
+        task: tokio::spawn(pending()),
+        cancel: None,
+    });
+    assert_ne!(first, second);
+    assert_eq!(worker.attachments.sends[&first].nonce, first.to_string());
+    assert_eq!(worker.attachments.sends[&first].ids, vec![first_file]);
+    assert_eq!(worker.attachments.sends[&second].ids, vec![second_file]);
+    assert!(events.try_iter().any(|event| matches!(event, Event::Attachments { channel_id, attachments } if channel_id == channel && attachments.is_empty())));
+
+    worker.state.set_draft(channel, "newer draft".into());
+    worker.attachment_event(AttachmentEvent::Progress {
+        epoch: worker.attachments.epoch,
+        channel,
+        id: None,
+        revision: first_generation,
+        progress: 0.4,
+    });
+    assert_eq!(
+        worker
+            .attachments
+            .stage(channel, first_file)
+            .unwrap()
+            .dto
+            .progress,
+        0.4
+    );
+    assert_eq!(
+        worker
+            .attachments
+            .stage(channel, second_file)
+            .unwrap()
+            .dto
+            .progress,
+        0.0
+    );
+    worker.attachment_event(AttachmentEvent::Sent {
+        epoch: worker.attachments.epoch,
+        channel,
+        token: first_generation,
+        nonce: first.to_string(),
+        result: Err("offline".into()),
+    });
+    assert_eq!(
+        worker.attachments.sends[&first].failure.as_deref(),
+        Some("offline")
+    );
+    assert_eq!(worker.state.drafts[&channel], "newer draft");
+    worker.retry_pending_message(channel, first).unwrap();
+    let retry_generation = worker.attachments.sends[&first].generation;
+    assert_ne!(retry_generation, first_generation);
+    assert_eq!(worker.attachments.sends[&first].nonce, first.to_string());
+    worker.attachments.sends.get_mut(&first).unwrap().job.take();
+    worker.attachment_event(AttachmentEvent::Sent {
+        epoch: worker.attachments.epoch,
+        channel,
+        token: first_generation,
+        nonce: first.to_string(),
+        result: Err("stale".into()),
+    });
+    assert!(worker.attachments.sends[&first].failure.is_none());
+
+    let author = worker.state.current_user.clone().unwrap();
+    let mut first_message = Message::text(9001.into(), channel, author.clone(), "same");
+    first_message.nonce = Some(first.to_string());
+    // Gateway before HTTP completes exactly once; the old result cannot remove a newer draft.
+    worker.reconcile_attachment_message(&first_message);
+    worker.attachment_event(AttachmentEvent::Sent {
+        epoch: worker.attachments.epoch,
+        channel,
+        token: retry_generation,
+        nonce: first.to_string(),
+        result: Ok(Box::new(first_message.clone())),
+    });
+    assert!(!worker.attachments.sends.contains_key(&first));
+    assert_eq!(worker.state.drafts[&channel], "newer draft");
+    assert!(
+        worker.attachments.channels[&channel]
+            .iter()
+            .any(|stage| stage.dto.id == second_file)
+    );
+
+    let mut second_message = Message::text(9002.into(), channel, author, "same");
+    second_message.nonce = Some(second.to_string());
+    worker.attachment_event(AttachmentEvent::Sent {
+        epoch: worker.attachments.epoch,
+        channel,
+        token: second_generation,
+        nonce: second.to_string(),
+        result: Ok(Box::new(second_message.clone())),
+    });
+    worker.state.insert_message(second_message.clone());
+    worker.reconcile_attachment_message(&second_message);
+    assert_eq!(
+        worker
+            .state
+            .channel_messages(channel)
+            .filter(|message| message.id == 9001.into() || message.id == 9002.into())
+            .count(),
+        2
+    );
+    assert!(worker.attachments.sends.is_empty());
+    assert!(worker.attachments.channels[&channel].is_empty());
+}
+
+#[tokio::test]
+async fn rejected_preflight_is_visible_and_remove_does_not_touch_new_staging() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    worker
+        .stage_clipboard(
+            channel,
+            "old.bin".into(),
+            "application/octet-stream".into(),
+            Arc::new(vec![1]),
+        )
+        .unwrap();
+    settle_preparation(&mut worker, channel).await;
+    let user = worker.state.current_user.take();
+    let id = crate::next_pending_message_id();
+    worker
+        .request_pending_send(id, channel, "old".into(), None, false)
+        .unwrap();
+    assert!(worker.attachments.sends[&id].failure.is_some());
+    assert!(events.try_iter().any(|event| matches!(event, Event::Outbox { messages, .. } if messages.iter().any(|message| message.id == id && matches!(message.status, crate::PendingMessageStatus::Failed(_))))));
+    worker.state.current_user = user;
+    worker
+        .stage_clipboard(
+            channel,
+            "new.bin".into(),
+            "application/octet-stream".into(),
+            Arc::new(vec![2]),
+        )
+        .unwrap();
+    let new_id = worker.attachments.channels[&channel].last().unwrap().dto.id;
+    worker.remove_pending_message(channel, id).unwrap();
+    assert_eq!(worker.attachments.channels[&channel].len(), 1);
+    assert_eq!(worker.attachments.channels[&channel][0].dto.id, new_id);
+}
+
+#[tokio::test]
+async fn concurrent_demo_sends_reserve_distinct_confirmed_message_ids() {
+    let (mut worker, _) = demo();
+    let channel = Snowflake(11);
+    let first = crate::next_pending_message_id();
+    let second = crate::next_pending_message_id();
+    worker
+        .request_pending_send(first, channel, "first concurrent".into(), None, false)
+        .unwrap();
+    worker
+        .request_pending_send(second, channel, "second concurrent".into(), None, false)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !worker.attachments.sends.is_empty() {
+            let event = worker.attachments.rx.recv().await.unwrap();
+            worker.attachment_event(event);
+        }
+    })
+    .await
+    .unwrap();
+    let confirmed = worker
+        .state
+        .channel_messages(channel)
+        .filter(|message| {
+            message.content == "first concurrent" || message.content == "second concurrent"
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(confirmed.len(), 2);
+    assert_ne!(confirmed[0].id, confirmed[1].id);
 }

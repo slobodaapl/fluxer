@@ -11,6 +11,37 @@ pub use navigation::{
 };
 
 pub use fluxer_core::{ClientState, Snowflake};
+
+/// A locally accepted message, retained until the server confirms it or the
+/// user removes it. IDs are scoped to the current client session.
+#[derive(Clone, Debug)]
+pub struct PendingMessage {
+    pub id: u64,
+    pub content: String,
+    pub attachments: Vec<StagedAttachment>,
+    pub status: PendingMessageStatus,
+    pub reply: Option<fluxer_core::MessageReference>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingMessageStatus {
+    Sending,
+    Failed(String),
+}
+
+/// Reserve a session-unique local ID before submitting, so the UI can display
+/// the pending row synchronously with the user's action.
+pub fn next_pending_message_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .min(u64::MAX as u128) as u64;
+    LAST.fetch_max(now.saturating_sub(1), Ordering::Relaxed);
+    LAST.fetch_add(1, Ordering::Relaxed).saturating_add(1)
+}
 pub use fluxer_media::{
     AudioMixSettings, AudioSettings, DeviceInventory, InputMode, MediaEvent,
     ParticipantAudioSettings, ScreenShareOptions, ScreenSource, SharedAudioSelection,
@@ -125,7 +156,22 @@ pub enum Command {
     CancelAttachmentSend {
         channel_id: Snowflake,
     },
+    RetryPendingMessage {
+        channel_id: Snowflake,
+        id: u64,
+    },
+    RemovePendingMessage {
+        channel_id: Snowflake,
+        id: u64,
+    },
     SendMessage {
+        content: String,
+        reply_to: Option<Snowflake>,
+        mention_author: bool,
+    },
+    SendPendingMessage {
+        id: u64,
+        channel_id: Snowflake,
         content: String,
         reply_to: Option<Snowflake>,
         mention_author: bool,
@@ -215,6 +261,10 @@ pub enum Event {
     Attachments {
         channel_id: Snowflake,
         attachments: Vec<StagedAttachment>,
+    },
+    Outbox {
+        channel_id: Snowflake,
+        messages: Vec<PendingMessage>,
     },
     AttachmentsCleared,
     AttachmentLimits {

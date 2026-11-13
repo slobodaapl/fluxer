@@ -1244,7 +1244,7 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
 }
 
 #[tokio::test]
-async fn actual_http_and_gateway_send_merge_preserve_failed_drafts_without_capture() {
+async fn actual_http_and_gateway_send_merge_preserve_failed_outbox_without_capture() {
     actual_text_workflow(0).await;
 }
 
@@ -1692,11 +1692,9 @@ async fn actual_text_workflow(login_mode: u8) {
         .await
         .unwrap();
     finish_attachment_send(&mut worker, 100.into()).await;
-    assert_eq!(
-        worker.state.drafts.get(&100.into()).map(String::as_str),
-        Some("fail")
-    );
+    assert!(worker.state.drafts.get(&100.into()).is_none());
     let events = events.try_iter().collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(event, Event::Outbox { channel_id, messages } if *channel_id == Snowflake(100) && messages.iter().any(|message| message.content == "fail" && matches!(&message.status, crate::PendingMessageStatus::Failed(_))))));
     assert_eq!(
         events
             .iter()
@@ -1915,7 +1913,7 @@ async fn wrong_account_ready_invalidates_saved_session_without_adopting_foreign_
 }
 
 #[tokio::test]
-async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_drafts() {
+async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_outbox() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -2036,11 +2034,9 @@ async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_dr
         .await
         .unwrap();
     finish_attachment_send(&mut worker, 11.into()).await;
-    assert_eq!(
-        worker.state.drafts.get(&11.into()).map(String::as_str),
-        Some("failed reply")
-    );
+    assert!(worker.state.drafts.get(&11.into()).is_none());
     let events = events.try_iter().collect::<Vec<_>>();
+    assert!(events.iter().any(|event| matches!(event, Event::Outbox { channel_id, messages } if *channel_id == Snowflake(11) && messages.iter().any(|message| message.content == "failed reply" && matches!(&message.status, crate::PendingMessageStatus::Failed(_))))));
     assert_eq!(
         events
             .iter()
