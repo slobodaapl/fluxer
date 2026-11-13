@@ -3,6 +3,8 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
+#include <libavutil/display.h>
+#include <math.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
@@ -85,12 +87,40 @@ static int convert_frame(FluxDecoder *d, int stream, FluxDecoded *out, char *err
     out->duration = f->duration > 0 ? (double)f->duration * av_q2d(s->time_base) : 0;
     if (stream == d->vi) {
         if (f->width <= 0 || f->height <= 0 || (int64_t)f->width * f->height > 4096LL * 2304) { snprintf(error, len, "Invalid video dimensions"); return -1; }
-        d->scale = sws_getCachedContext(d->scale, f->width, f->height, f->format, f->width, f->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
+        AVRational sar = av_guess_sample_aspect_ratio(d->format, s, f);
+        double aspect = sar.num > 0 && sar.den > 0 ? av_q2d(sar) : 1.0;
+        double scaled_width = f->width * aspect;
+        if (!isfinite(scaled_width) || scaled_width < 1 || scaled_width > 4096LL * 2304 / f->height) {
+            snprintf(error, len, "Unsupported video sample aspect ratio"); return -1;
+        }
+        int width = (int)(scaled_width + 0.5), height = f->height;
+        const int32_t *matrix = NULL;
+        AVFrameSideData *frame_matrix = av_frame_get_side_data(f, AV_FRAME_DATA_DISPLAYMATRIX);
+        if (frame_matrix && frame_matrix->size >= 9 * sizeof(int32_t)) matrix = (const int32_t *)frame_matrix->data;
+        if (!matrix) {
+            const AVPacketSideData *side = av_packet_side_data_get(s->codecpar->coded_side_data, s->codecpar->nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+            if (side && side->size >= 9 * sizeof(int32_t)) matrix = (const int32_t *)side->data;
+        }
+        double angle = matrix ? av_display_rotation_get(matrix) : 0;
+        int turns = isfinite(angle) ? (int)(angle / 90.0 + (angle >= 0 ? 0.5 : -0.5)) : 0;
+        turns = ((turns % 4) + 4) % 4;
+        d->scale = sws_getCachedContext(d->scale, f->width, f->height, f->format, width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!d->scale) { snprintf(error, len, "Unable to convert video"); return -1; }
-        out->kind = 1; out->width = f->width; out->height = f->height; out->len = (size_t)f->width * f->height * 4;
+        out->kind = 1; out->width = turns % 2 ? height : width; out->height = turns % 2 ? width : height;
+        out->len = (size_t)width * height * 4;
         out->data = malloc(out->len); if (!out->data) { snprintf(error, len, "Out of memory"); return -1; }
-        uint8_t *dst[] = {out->data, NULL, NULL, NULL}; int stride[] = { f->width * 4, 0, 0, 0 };
+        unsigned char *source = turns ? malloc(out->len) : out->data;
+        if (!source) { free(out->data); out->data = NULL; snprintf(error, len, "Out of memory"); return -1; }
+        uint8_t *dst[] = {source, NULL, NULL, NULL}; int stride[] = { width * 4, 0, 0, 0 };
         sws_scale(d->scale, (const uint8_t *const *)f->data, f->linesize, 0, f->height, dst, stride);
+        if (turns) {
+            for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
+                int dx = turns == 1 ? y : turns == 2 ? width - 1 - x : height - 1 - y;
+                int dy = turns == 1 ? width - 1 - x : turns == 2 ? height - 1 - y : x;
+                memcpy(out->data + ((size_t)dy * out->width + dx) * 4, source + ((size_t)y * width + x) * 4, 4);
+            }
+            free(source);
+        }
         return 1;
     }
     if (!d->resample || d->audio_rate != f->sample_rate || d->audio_format != f->format || av_channel_layout_compare(&d->audio_layout, &f->ch_layout)) {

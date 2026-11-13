@@ -140,6 +140,7 @@ impl FilePlayer {
         let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         shared.frame = None;
         shared.pending_seek = true;
+        shared.seek_generation = shared.seek_generation.wrapping_add(1);
         let _ = self.tx.send(Command::Stop);
     }
     pub fn snapshot(&self) -> FilePlaybackSnapshot {
@@ -159,7 +160,7 @@ impl FilePlayer {
 }
 impl Drop for FilePlayer {
     fn drop(&mut self) {
-        let _ = self.tx.send(Command::Stop);
+        self.stop();
     }
 }
 
@@ -444,6 +445,14 @@ mod native {
                     audio.lock().unwrap_or_else(|e| e.into_inner()).playing = false;
                 }
                 Ok(Command::Seek(pos, generation)) => {
+                    if shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .seek_generation
+                        != generation
+                    {
+                        continue;
+                    }
                     if unsafe { flux_decoder_seek(p, pos, error.as_mut_ptr(), error.len()) } == 0 {
                         failed(&shared, error_text(&error));
                         break;
@@ -735,8 +744,10 @@ mod tests {
         }
     }
     fn fixture(ext: &str, video_codec: &str, audio_codec: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "fluxer-playback-test-{}-{ext}.{ext}",
+            "fluxer-playback-test-{}-{id}-{ext}.{ext}",
             std::process::id()
         ));
         let status = Process::new("ffmpeg")
@@ -988,40 +999,61 @@ mod tests {
             .status()
             .unwrap();
         assert!(result.success());
-        let player = FilePlayer::open_impl(
-            path.clone(),
-            FilePlaybackOptions {
-                autoplay: true,
-                ..Default::default()
-            },
-            true,
-        )
-        .unwrap();
-        wait(&player, |s| {
-            s.status == FilePlaybackStatus::Playing && s.width == 1920
-        });
-        let start = Instant::now();
-        let initial = player.snapshot().position;
-        let mut displayed = 0;
-        while start.elapsed() < Duration::from_secs(3) {
-            if let Some(frame) = player.take_frame() {
-                assert_eq!(frame.bgra.len(), 1920 * 1080 * 4);
-                displayed += 1;
+        let rotated =
+            std::env::temp_dir().join(format!("fluxer-1080p-rotated-{}.mp4", std::process::id()));
+        assert!(
+            Process::new("ffmpeg")
+                .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+                .arg(&path)
+                .args(["-c", "copy"])
+                .arg(&rotated)
+                .status()
+                .unwrap()
+                .success()
+        );
+        for (file, expected_width, label) in
+            [(&path, 1920, "landscape"), (&rotated, 1080, "rotated")]
+        {
+            let player = FilePlayer::open_impl(
+                file.clone(),
+                FilePlaybackOptions {
+                    autoplay: true,
+                    ..Default::default()
+                },
+                true,
+            )
+            .unwrap();
+            wait(&player, |s| {
+                s.status == FilePlaybackStatus::Playing && s.width == expected_width
+            });
+            let start = Instant::now();
+            let initial = player.snapshot().position;
+            let mut displayed = 0;
+            while start.elapsed() < Duration::from_secs(3) {
+                if let Some(frame) = player.take_frame() {
+                    assert_eq!(frame.bgra.len(), 1920 * 1080 * 4);
+                    displayed += 1;
+                }
+                thread::sleep(Duration::from_millis(8));
             }
-            thread::sleep(Duration::from_millis(8));
+            let elapsed = start.elapsed().as_secs_f64();
+            let advanced = player.snapshot().position - initial;
+            println!(
+                "1080p30 {label} decoder presentation: {displayed} frames in {elapsed:.3}s ({:.2} fps), clock advanced {advanced:.3}s (ratio {:.3})",
+                displayed as f64 / elapsed,
+                advanced / elapsed
+            );
+            assert!(
+                advanced > elapsed * 0.80 && advanced < elapsed * 1.20,
+                "clock advanced {advanced:.3}s over {elapsed:.3}s"
+            );
+            assert!(
+                displayed >= 60,
+                "only {displayed} frames presented in {elapsed:.2}s"
+            );
         }
-        let elapsed = start.elapsed().as_secs_f64();
-        let advanced = player.snapshot().position - initial;
-        assert!(
-            advanced > elapsed * 0.80 && advanced < elapsed * 1.20,
-            "clock advanced {advanced:.3}s over {elapsed:.3}s"
-        );
-        assert!(
-            displayed >= 60,
-            "only {displayed} frames presented in {elapsed:.2}s"
-        );
-        drop(player);
         let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(rotated);
     }
     #[test]
     fn delayed_audio_does_not_block_video_clock() {
@@ -1100,6 +1132,123 @@ mod tests {
         wait(&player, |s| {
             s.position < 0.2 && s.status == FilePlaybackStatus::Playing
         });
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn display_rotation_and_sample_aspect_are_applied() {
+        let base =
+            std::env::temp_dir().join(format!("fluxer-orient-base-{}.mp4", std::process::id()));
+        let rotated =
+            std::env::temp_dir().join(format!("fluxer-orient-{}.mp4", std::process::id()));
+        let rotated_270 =
+            std::env::temp_dir().join(format!("fluxer-orient-270-{}.mp4", std::process::id()));
+        let wide = std::env::temp_dir().join(format!("fluxer-sar-{}.mp4", std::process::id()));
+        let source = "color=black:size=80x40:rate=1:duration=1,drawbox=x=0:y=0:w=40:h=20:color=red:t=fill,drawbox=x=40:y=0:w=40:h=20:color=green:t=fill,drawbox=x=0:y=20:w=40:h=20:color=blue:t=fill,drawbox=x=40:y=20:w=40:h=20:color=white:t=fill";
+        assert!(
+            Process::new("ffmpeg")
+                .args([
+                    "-v", "error", "-y", "-f", "lavfi", "-i", source, "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p"
+                ])
+                .arg(&base)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Process::new("ffmpeg")
+                .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+                .arg(&base)
+                .args(["-c", "copy"])
+                .arg(&rotated)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Process::new("ffmpeg")
+                .args(["-v", "error", "-y", "-display_rotation", "270", "-i"])
+                .arg(&base)
+                .args(["-c", "copy"])
+                .arg(&rotated_270)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Process::new("ffmpeg")
+                .args(["-v", "error", "-y", "-i"])
+                .arg(&base)
+                .args(["-vf", "setsar=2/1", "-c:v", "libx264"])
+                .arg(&wide)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let player =
+            FilePlayer::open_impl(rotated.clone(), FilePlaybackOptions::default(), true).unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.width > 0
+        });
+        let frame = player.take_frame().unwrap();
+        assert_eq!((frame.width, frame.height), (40, 80));
+        let pixel = |x: usize, y: usize| &frame.bgra[(y * 40 + x) * 4..(y * 40 + x) * 4 + 4];
+        let top_left = pixel(10, 20);
+        let bottom_left = pixel(10, 60);
+        assert!(
+            top_left[1] > 90 && top_left[2] < 40,
+            "expected green in top-left: {top_left:?}"
+        );
+        assert!(
+            bottom_left[2] > 200 && bottom_left[1] < 40,
+            "expected red in bottom-left: {bottom_left:?}"
+        );
+        let player =
+            FilePlayer::open_impl(rotated_270.clone(), FilePlaybackOptions::default(), true)
+                .unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.width > 0
+        });
+        let frame = player.take_frame().unwrap();
+        assert_eq!((frame.width, frame.height), (40, 80));
+        let pixel = &frame.bgra[(20 * 40 + 10) * 4..(20 * 40 + 10) * 4 + 4];
+        assert!(
+            pixel[0] > 200 && pixel[2] < 40,
+            "expected blue in top-left: {pixel:?}"
+        );
+        let player =
+            FilePlayer::open_impl(wide.clone(), FilePlaybackOptions::default(), true).unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.width > 0
+        });
+        assert_eq!(
+            (player.snapshot().width, player.snapshot().height),
+            (160, 40)
+        );
+        for path in [base, rotated, rotated_270, wide] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    #[test]
+    fn latest_seek_wins_during_rapid_scrubbing() {
+        let path = fixture("mp4", "libx264", "aac");
+        let player =
+            FilePlayer::open_impl(path.clone(), FilePlaybackOptions::default(), true).unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.width > 0
+        });
+        for n in 0..500 {
+            player.seek((n % 20) as f64 / 10.0);
+        }
+        player.seek(2.2);
+        let start = Instant::now();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.position >= 2.2
+        });
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "latest scrub seek was delayed"
+        );
         let _ = std::fs::remove_file(path);
     }
 }
