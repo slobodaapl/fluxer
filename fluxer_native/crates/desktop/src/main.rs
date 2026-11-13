@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
 mod audio_view;
+mod avatar_demo;
+mod avatar_images;
 mod call_view;
 mod chat_helpers;
 mod chat_view;
@@ -245,6 +247,7 @@ struct Fluxer {
     state: ClientState,
     demo: bool,
     message_demo_started: bool,
+    avatar_demo_endpoint: Option<String>,
     session_restoring: bool,
     session_restore_failed: bool,
     session_context_loaded: bool,
@@ -338,6 +341,7 @@ impl Fluxer {
             state: ClientState::default(),
             demo,
             message_demo_started: false,
+            avatar_demo_endpoint: None,
             session_restoring,
             session_restore_failed: false,
             session_context_loaded: false,
@@ -659,6 +663,7 @@ impl Fluxer {
             match event {
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
+                    avatar_images::configure_instance(document.as_ref());
                     if let Some(document) = document {
                         self.message_links.configure_instance(&document);
                     } else {
@@ -752,6 +757,7 @@ impl Fluxer {
                     }
                     self.maybe_demo_search(None, cx);
                     self.maybe_demo_messages(cx);
+                    self.maybe_demo_avatars(cx);
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
@@ -803,6 +809,7 @@ impl Fluxer {
                                 self.viewer.stop("preview-1");
                             }
                         }
+                        self.maybe_demo_avatars(cx);
                     }
                 }
                 Event::MfaRequired { ticket, .. } => {
@@ -1521,8 +1528,7 @@ impl Fluxer {
             )
             .children(self.state.guilds.values().map(|guild| {
                 let id = guild.id;
-                let label = guild.name.chars().take(2).collect::<String>();
-                button(("guild", id.0), label)
+                button_base(("guild", id.0))
                     .size(px(44.))
                     .p_0()
                     .flex()
@@ -1532,7 +1538,16 @@ impl Fluxer {
                     .border_1()
                     .border_color(transparent_black())
                     .focus(|style| style.border_color(rgb(ACCENT)))
-                    .when(self.selected_guild == Some(id), |v| v.bg(rgb(0x6650bd)))
+                    .rounded_md()
+                    .overflow_hidden()
+                    .when(self.selected_guild == Some(id), |v| {
+                        v.bg(rgb(0x6650bd)).border_color(rgb(ACCENT))
+                    })
+                    .child(avatar_images::community_icon(
+                        guild,
+                        self.media_endpoint.as_deref(),
+                        42.,
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.selected_guild = Some(id);
                         this.command(Command::SelectGuild { guild_id: id }, cx);
@@ -1670,9 +1685,10 @@ impl Fluxer {
                                             .py_1()
                                             .rounded_md()
                                             .bg(rgb(if speaking { 0x302e3d } else { PANEL }))
-                                            .child(voice_avatar(
-                                                &participant.display_name,
-                                                participant.user_id,
+                                            .child(avatar_images::voice_avatar(
+                                                &participant,
+                                                channel.guild_id,
+                                                self.media_endpoint.as_deref(),
                                                 speaking,
                                                 24.,
                                             ))
@@ -2045,7 +2061,7 @@ impl Render for Fluxer {
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
-            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
+            .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .child(self.message_action_overlay(window,cx))
@@ -2068,6 +2084,7 @@ fn main() {
                 || v == "--demo-attachments"
                 || v == "--demo-search"
                 || v == "--demo-messages"
+                || v == "--demo-avatars"
         });
     Application::new()
         .with_assets(controls::Assets)

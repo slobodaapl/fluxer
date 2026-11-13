@@ -9,13 +9,15 @@ verification without treating their absence as approval of a manual test result.
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 353 tests, formatting, strict Clippy and the
+The UI refinement gate passes 360 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
 
 | ID | Review | Steps and expected result | Evidence / status |
 |---|---|---|---|
+| P1 | Community and voice profile images | Check community icons, the in-voice sidebar, voice participant cards and the stream viewer filmstrip against regular Fluxer. Try a community-specific avatar, a global avatar and no avatar; speaking rings and mute/live badges should remain visible. | **Pending real-account review.** Source URL/member precedence/default asset tests and local image fixture checks are recorded below. |
+| P2 | Image fallback and updates | Check a community without an icon, a missing image, an avatar cleared in community settings, and an avatar changed while connected. Switch communities while remaining in a call; call images should retain the joined community's avatar context. | **Pending live/hot-update review.** Shared credential-free image loading, source defaults, member AVATAR_UNSET, safe identity resolution and image-error fallbacks implemented. Animated image behavior remains future work. |
 | M1 | Grouping and conversation density | Compare repeated authors, long conversations, replies and midnight boundaries with Fluxer. Same-author continuations should share a header; a new group starts after seven minutes from its first message. Check hover timestamps and old-message jumps. | **Pending live/subjective review.** Eight source-rule tests, ten source-executed cases and offline date/group rendering checked. Cozy layout implemented; compact/density preference migration remains open. |
 | M2 | Selectable formatting and spoilers | Select across bold/italic/underline/strike, links, code, quotes, Unicode and wrapped lines. Ctrl/Cmd+C should copy rendered text and omit concealed spoilers; click a spoiler to reveal it. Explicit Copy Message should retain Markdown source. | **Pending sustained usability review.** Existing composer/input regressions plus rich-run clipping, Unicode range, hidden-target/copy and soft-wrap emoji tests pass. Source fonts and actual inline backgrounds checked offline. |
 | M3 | Mentions, emoji and links | Compare known user/role/channel labels and custom emoji with Fluxer. Click a channel link and an old message link; inspect an untrusted external URL and cancel. Check registered emoji renames, failures and spoiler concealment. | **Pending real-account review.** Generated loopback emoji images and resolved labels checked; no external destination opened. Trust/host/scope fixtures pass. User/role popovers, animated/jumbo sizing, timestamps and full preference parity remain incomplete. |
@@ -87,3 +89,14 @@ font/background refinements. No real messages, pins or uploads were sent, and no
 microphone was captured. Clipboard, pointer/keyboard activation, real-client emoji
 behavior and source-account preference acceptance still need hands-on review;
 synthetic input did not consistently target the offline fixture during this pass.
+
+## Avatar imagery evidence (2026-11-12)
+
+`--demo-avatars` uses a synthetic gateway roster and a loopback-only image server.
+The captured voice channel shows a community image, a failed-community-icon
+acronym, a community-specific avatar with a speaking ring, global profile images
+and a deliberately cleared avatar using the source default. Combining it with
+`--demo-stream` checks the call filmstrip. Captures and the 360-test verification
+log are in `target/qa/avatar-images/`. No real voice connection, capture or account
+mutation was used. Real image changes, animated assets and two-client acceptance
+remain separate from these offline checks.

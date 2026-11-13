@@ -255,7 +255,20 @@ pub fn member_avatar(
         .as_ref()
         .filter(|user| user.id == user_id)
         .or_else(|| state.users.get(&user_id))
-        .or_else(|| member.map(|member| &member.user));
+        .or_else(|| member.map(|member| &member.user))
+        .or_else(|| {
+            state
+                .voice
+                .channel_id
+                .and_then(|id| state.channels.get(&id))
+                .and_then(|channel| channel.recipients.iter().find(|user| user.id == user_id))
+        })
+        .or_else(|| {
+            state
+                .relationships
+                .get(&user_id)
+                .and_then(|relationship| relationship.user.as_ref())
+        });
     let unset = member
         .and_then(|member| member.profile_flags)
         .is_some_and(|flags| flags & 1 != 0);
@@ -359,8 +372,13 @@ pub fn community_icon(guild: &Guild, media: Option<&str>, size: f32) -> AnyEleme
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        default_image, default_index, guild_acronym, guild_icon_url, media_url, member_avatar_url,
+        user_avatar_url, uses_neutral_defaults,
+    };
+    use fluxer_core::{Guild, Snowflake, User};
     use serde_json::json;
+    use std::sync::Arc;
 
     #[test]
     fn static_user_and_community_urls_preserve_discovered_prefix_and_source_size() {
