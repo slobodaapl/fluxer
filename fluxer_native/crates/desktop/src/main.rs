@@ -1596,7 +1596,11 @@ impl Fluxer {
                     .items_center()
                     .border_b_1()
                     .border_color(rgb(RAIL))
-                    .child(heading(name)),
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(emoji_sprites::unicode_text(&name, 18., false, cx)),
+                    ),
             )
             .child(
                 div()
@@ -1618,7 +1622,12 @@ impl Fluxer {
                                 .pb_1()
                                 .text_color(rgb(MUTED))
                                 .text_size(px(11.))
-                                .child(channel.name.to_uppercase())
+                                .child(emoji_sprites::unicode_text(
+                                    &channel.name.to_uppercase(),
+                                    11.,
+                                    false,
+                                    cx,
+                                ))
                                 .into_any_element();
                         }
                         let label = format!("{}  {}", if voice { "◉" } else { "#" }, channel.name);
@@ -1649,7 +1658,11 @@ impl Fluxer {
                                     .when(self.state.is_unread(id), |view| {
                                         view.text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD)
                                     })
-                                    .child(div().flex_1().min_w_0().text_ellipsis().child(label))
+                                    .child(
+                                        div().flex_1().min_w_0().text_ellipsis().child(
+                                            emoji_sprites::unicode_text(&label, 14., false, cx),
+                                        ),
+                                    )
                                     .when(voice, |view| {
                                         view.child(
                                             div()
@@ -1700,14 +1713,19 @@ impl Fluxer {
                                                         },
                                                     ))
                                                     .text_ellipsis()
-                                                    .child(format!(
-                                                        "{}{}",
-                                                        participant.display_name,
-                                                        if participant.is_current_user {
-                                                            " (you)"
-                                                        } else {
-                                                            ""
-                                                        }
+                                                    .child(emoji_sprites::unicode_text(
+                                                        &format!(
+                                                            "{}{}",
+                                                            participant.display_name,
+                                                            if participant.is_current_user {
+                                                                " (you)"
+                                                            } else {
+                                                                ""
+                                                            }
+                                                        ),
+                                                        12.,
+                                                        false,
+                                                        cx,
                                                     )),
                                             )
                                             .when(participant.connection_count > 1, |view| {

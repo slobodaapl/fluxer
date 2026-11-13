@@ -62,6 +62,7 @@ impl Fluxer {
             }
         }
         let pending_rows = self.pending_message_rows(window, cx);
+        let conversation_empty = messages.is_empty() && pending_rows.is_empty();
         let can_attach = self.attachment_block_reason().is_none();
         div()
             .id("chat-file-drop-target")
@@ -243,7 +244,7 @@ impl Fluxer {
                             .flex()
                             .flex_col()
                             .gap_0()
-                            .when(messages.is_empty(), |v| {
+                            .when(conversation_empty, |v| {
                                 v.child(muted(
                                     "This conversation is ready. Send the first message.",
                                 ))

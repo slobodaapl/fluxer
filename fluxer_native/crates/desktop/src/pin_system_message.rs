@@ -121,7 +121,12 @@ impl Fluxer {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(TEXT))
-                        .child(author_name(&self.state, message)),
+                        .child(emoji_sprites::unicode_text(
+                            &author_name(&self.state, message),
+                            14.,
+                            false,
+                            cx,
+                        )),
                 )
                 .child("pinned")
                 .child(link("pin-message-link", "a message", jump))

@@ -384,7 +384,13 @@ impl Fluxer {
             self.search_ui.pending_latest = Some(snapshot.channel_id);
             self.search_ui.latest_scheduled = false;
         }
+        if center_failed(self.search_ui.pending_center, &snapshot) {
+            self.search_ui.pending_center = None;
+            self.search_ui.center_scheduled = false;
+            self.search_ui.highlight = None;
+        }
         if !snapshot.loading
+            && snapshot.error.is_none()
             && let Some(target) = snapshot.target
         {
             self.search_ui.highlight = Some((snapshot.channel_id, target));
@@ -404,6 +410,19 @@ impl Fluxer {
         visible_window_messages(&self.state, &self.search_ui.histories)
     }
     pub(super) fn jump_message(&mut self, message: &Message, cx: &mut Context<Self>) {
+        let allowed = self.state.current_user.as_ref().is_some_and(|user| {
+            self.state
+                .permissions_for(message.channel_id, user.id)
+                .contains(
+                    fluxer_core::Permissions::VIEW_CHANNEL
+                        | fluxer_core::Permissions::READ_MESSAGE_HISTORY,
+                )
+        });
+        if !allowed {
+            self.error = Some("You do not have permission to read this message history.".into());
+            cx.notify();
+            return;
+        }
         self.cancel_edit(cx);
         if self.state.selected_channel.is_some() {
             self.command(
@@ -737,6 +756,25 @@ impl Fluxer {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if pin_system_message::is_pin_system_message(&message) {
+            return div()
+                .id(("browse-pin-notice", message.id.0))
+                .w_full()
+                .min_w_0()
+                .px_3()
+                .py_3()
+                .mb_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(rgb(0x393343))
+                .flex()
+                .gap_2()
+                .child(pin_system_message::gutter())
+                .when_some(self.pin_system_message(&message, cx), |view, content| {
+                    view.child(div().flex_1().min_w_0().child(content))
+                })
+                .into_any_element();
+        }
         let key = (message.channel_id, message.id);
         let text = chat_helpers::display_text(&message);
         if self.search_ui.text.len() > 96 {
@@ -1479,6 +1517,15 @@ fn auto_ack_policy(
     active && at_bottom && latest && !manual && !blocking_modal
 }
 
+fn center_failed(pending: Option<(Snowflake, Snowflake)>, history: &HistorySnapshot) -> bool {
+    pending.is_some_and(|(channel, target)| {
+        channel == history.channel_id
+            && history.target == Some(target)
+            && !history.loading
+            && (history.error.is_some() || !history.message_ids.contains(&target))
+    })
+}
+
 fn consume_latest_ready(requests: &mut BTreeSet<Snowflake>, history: &HistorySnapshot) -> bool {
     !history.loading
         && history.latest
@@ -1490,12 +1537,36 @@ fn consume_latest_ready(requests: &mut BTreeSet<Snowflake>, history: &HistorySna
 #[cfg(test)]
 mod tests {
     use super::{
-        auto_ack_policy, consume_latest_ready, search_has_next, should_request_ack,
+        auto_ack_policy, center_failed, consume_latest_ready, search_has_next, should_request_ack,
         visible_window_messages,
     };
     use fluxer_client::HistorySnapshot;
     use fluxer_core::{ClientState, Message, Snowflake, User};
     use std::collections::{BTreeMap, BTreeSet};
+    #[test]
+    fn failed_or_deleted_jump_releases_centering_guard_only_for_matching_request() {
+        let mut history = HistorySnapshot {
+            channel_id: Snowflake(1),
+            message_ids: vec![],
+            target: Some(Snowflake(5)),
+            loading: true,
+            has_older: false,
+            has_newer: false,
+            latest: false,
+            error: None,
+        };
+        let pending = Some((Snowflake(1), Snowflake(5)));
+        assert!(!center_failed(pending, &history));
+        history.loading = false;
+        assert!(center_failed(pending, &history));
+        assert!(!center_failed(Some((Snowflake(2), Snowflake(5))), &history));
+        assert!(!center_failed(Some((Snowflake(1), Snowflake(6))), &history));
+        history.message_ids.push(Snowflake(5));
+        assert!(!center_failed(pending, &history));
+        history.error = Some("Message unavailable".into());
+        assert!(center_failed(pending, &history));
+    }
+
     #[test]
     fn return_latest_scroll_waits_for_ready_window_and_is_one_shot() {
         let mut requests = BTreeSet::from([Snowflake(1)]);

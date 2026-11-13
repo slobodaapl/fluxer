@@ -106,6 +106,22 @@ impl Fluxer {
         self.state.drafts.remove(&channel);
         self.composer
             .update(cx, |input, cx| input.set(String::new(), cx));
+        if self
+            .search_ui
+            .histories
+            .get(&channel)
+            .is_some_and(|history| !history.latest)
+        {
+            self.search_ui.returning_latest.insert(channel);
+            self.search_ui.pending_center = None;
+            self.search_ui.highlight = None;
+            self.command(
+                Command::ReturnToLatest {
+                    channel_id: channel,
+                },
+                cx,
+            );
+        }
         self.timeline.scroll_to_bottom();
         self.error = None;
         cx.notify();
@@ -214,11 +230,14 @@ impl Fluxer {
                             .flex()
                             .flex_col()
                             .gap_1()
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(author.display_name().to_string()),
-                            )
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(
+                                emoji_sprites::unicode_text(
+                                    author.display_name(),
+                                    14.,
+                                    window.scale_factor() > 1.,
+                                    cx,
+                                ),
+                            ))
                             .when_some(reply, |view, reply| view.child(reply))
                             .when(!pending.content.is_empty(), |view| {
                                 view.child(
