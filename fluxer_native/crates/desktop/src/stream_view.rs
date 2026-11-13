@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::controls::{Icon, icon_button, quiet_button, slider};
+use crate::{stream_grid::StreamGrid, stream_layout::StreamLayout};
 
 impl Fluxer {
     pub(super) fn watch_stream(&mut self, identity: String, watch: bool, cx: &mut Context<Self>) {
@@ -22,7 +23,7 @@ impl Fluxer {
             && let Some(index) = identity
                 .strip_prefix("preview-")
                 .and_then(|index| index.parse::<usize>().ok())
-                .filter(|index| *index < 2)
+                .filter(|index| *index < 4)
         {
             self.fixture_generation += 1;
             let frame = fixture_frame(index, self.fixture_generation);
@@ -121,6 +122,203 @@ impl Fluxer {
         cx.notify();
     }
 
+    fn tiled_stream_stage(&self, short: bool, cx: &mut Context<Self>) -> AnyElement {
+        let tiles = self
+            .viewer
+            .desired
+            .iter()
+            .map(|identity| {
+                let ratio = self
+                    .viewer
+                    .frames
+                    .get(identity)
+                    .map(|frame| frame.width.max(1) as f32 / frame.height.max(1) as f32)
+                    .unwrap_or(16. / 9.);
+                (ratio, self.watched_stream_tile(identity, cx))
+            })
+            .collect();
+        div()
+            .id("tiled-stream-stage")
+            .flex_1()
+            .min_h(px(if short { 80. } else { 120. }))
+            .min_w_0()
+            .relative()
+            .p_2()
+            .bg(rgb(0x050506))
+            .overflow_hidden()
+            .child(StreamGrid::new(tiles, 8.))
+            .into_any_element()
+    }
+
+    fn watched_stream_tile(&self, identity: &str, cx: &mut Context<Self>) -> AnyElement {
+        let frame = self.viewer.frames.get(identity);
+        let name = self.stream_name(identity);
+        let selected = self.viewer.focused.as_deref() == Some(identity);
+        let ended = self.viewer.ended.contains(identity);
+        let error = self.viewer.errors.get(identity);
+        let audio = self.stream_audio.get(identity).copied().unwrap_or_default();
+        let focus_identity = identity.to_owned();
+        let stop_identity = identity.to_owned();
+        let mute_identity = identity.to_owned();
+        let retry_identity = identity.to_owned();
+        div()
+            .id(SharedString::from(format!("watched-tile-{identity}")))
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .relative()
+            .rounded_md()
+            .border_2()
+            .border_color(rgb(if selected { ACCENT } else { 0x373140 }))
+            .bg(rgb(0x08070a))
+            .overflow_hidden()
+            .cursor_pointer()
+            .focusable()
+            .tab_stop(true)
+            .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                this.viewer.focused = Some(focus_identity.clone());
+                if event.click_count() > 1 {
+                    this.viewer.layout = StreamLayout::MainStage;
+                }
+                cx.notify();
+            }))
+            .when_some(frame, |tile, frame| {
+                tile.child(
+                    img(frame.image.clone())
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                )
+            })
+            .when(frame.is_none(), |tile| {
+                tile.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .px_3()
+                        .pt(px(32.))
+                        .pb_2()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .text_center()
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(if ended {
+                                    "This stream has ended"
+                                } else if error.is_some() {
+                                    "Could not load this stream"
+                                } else {
+                                    "Connecting to the stream…"
+                                }),
+                        )
+                        .when_some(error, |tile, error| {
+                            tile.child(
+                                div()
+                                    .max_w(px(340.))
+                                    .text_size(px(11.))
+                                    .text_color(rgb(MUTED))
+                                    .child(error.clone()),
+                            )
+                        })
+                        .when(error.is_some(), |tile| {
+                            tile.child(
+                                quiet_button(
+                                    SharedString::from(format!("retry-tiled-{identity}")),
+                                    "Retry stream",
+                                )
+                                .bg(rgb(0x6f56d7))
+                                .text_color(rgb(TEXT))
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.watch_stream(retry_identity.clone(), false, cx);
+                                        this.watch_stream(retry_identity.clone(), true, cx);
+                                    },
+                                )),
+                            )
+                        }),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(32.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .bg(rgba(0x15111cdd))
+                    .child(div().size(px(5.)).rounded_full().bg(rgb(if ended {
+                        MUTED
+                    } else {
+                        0x6bc99d
+                    })))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_ellipsis()
+                            .text_size(px(11.))
+                            .text_color(rgb(TEXT))
+                            .child(name),
+                    )
+                    .when(selected, |tile| {
+                        tile.child(
+                            div()
+                                .text_size(px(9.))
+                                .text_color(rgb(0xc4b7ff))
+                                .child("Selected"),
+                        )
+                    })
+                    .child(
+                        icon_button(
+                            SharedString::from(format!("mute-tiled-{identity}")),
+                            if audio.muted {
+                                Icon::VolumeOff
+                            } else {
+                                Icon::Volume
+                            },
+                            if audio.muted {
+                                "Unmute this stream"
+                            } else {
+                                "Mute this stream"
+                            },
+                        )
+                        .when(audio.muted, |button| button.text_color(rgb(0xe79a9e)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.change_stream_audio(
+                                mute_identity.clone(),
+                                |audio| audio.muted = !audio.muted,
+                                cx,
+                            );
+                        })),
+                    )
+                    .child(
+                        icon_button(
+                            SharedString::from(format!("stop-tiled-{identity}")),
+                            Icon::Stop,
+                            "Stop watching this stream",
+                        )
+                        .text_color(rgb(0xe79a9e))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.watch_stream(stop_identity.clone(), false, cx);
+                        })),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn call_view(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(identity) = self.viewer.focused.clone() else {
             return self.chat(window, cx);
@@ -177,6 +375,84 @@ impl Fluxer {
         let retry_identity = identity.clone();
         let mute_identity = identity.clone();
         let gain_identity = identity.clone();
+        let stage = if self.viewer.layout == StreamLayout::Tiled && !self.viewer.desired.is_empty()
+        {
+            self.tiled_stream_stage(short, cx)
+        } else {
+            div()
+                .id("focused-stream-stage")
+                .relative()
+                .flex_1()
+                .min_h(px(if short { 80. } else { 120. }))
+                .min_w_0()
+                .bg(rgb(0x050506))
+                .overflow_hidden()
+                .when_some(frame, |view, frame| {
+                    view.child(
+                        img(frame.image.clone())
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .object_fit(ObjectFit::Contain),
+                    )
+                })
+                .when(frame.is_none(), |view| {
+                    view.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_size(px(30.))
+                                    .text_color(rgb(0x777082))
+                                    .child("▣"),
+                            )
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if ended {
+                                "This stream has ended"
+                            } else if stream_error.is_some() {
+                                "Could not load this stream"
+                            } else {
+                                "Connecting to the stream…"
+                            }))
+                            .child(
+                                div().max_w(px(440.)).px_4().text_center().child(muted(
+                                    (if ended {
+                                        "You are still connected to voice."
+                                    } else if let Some(error) = stream_error {
+                                        error.as_str()
+                                    } else {
+                                        "Waiting for the first video frame."
+                                    })
+                                    .to_owned(),
+                                )),
+                            )
+                            .when(stream_error.is_some(), |view| {
+                                view.child(
+                                    quiet_button("retry-viewer-stream", "Retry stream")
+                                        .bg(rgb(0x6f56d7))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.watch_stream(retry_identity.clone(), false, cx);
+                                            this.watch_stream(retry_identity.clone(), true, cx);
+                                        })),
+                                )
+                            }),
+                    )
+                })
+                .into_any_element()
+        };
+        let strip_streams = streams
+            .iter()
+            .filter(|identity| {
+                self.viewer.layout == StreamLayout::MainStage
+                    || !self.viewer.desired.contains(*identity)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         div()
             .flex_1()
             .min_w_0()
@@ -211,7 +487,18 @@ impl Fluxer {
                                     .text_size(px(13.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_ellipsis()
-                                    .child(format!("{name}'s screen")),
+                                    .child(
+                                        if self.viewer.layout == StreamLayout::Tiled
+                                            && !self.viewer.desired.is_empty()
+                                        {
+                                            format!(
+                                                "{} streams · {name} selected",
+                                                self.viewer.desired.len()
+                                            )
+                                        } else {
+                                            format!("{name}'s screen")
+                                        },
+                                    ),
                             )
                             .when_some(frame, |view, frame| {
                                 view.when(!narrow, |view| {
@@ -223,6 +510,36 @@ impl Fluxer {
                                     )
                                 })
                             }),
+                    )
+                    .child(
+                        div()
+                            .id("stream-layout-options")
+                            .p(px(2.))
+                            .rounded_md()
+                            .bg(rgb(0x292333))
+                            .flex()
+                            .items_center()
+                            .gap_0()
+                            .child(
+                                quiet_button("stream-layout-tiled", "Tile all")
+                                    .when(self.viewer.layout == StreamLayout::Tiled, |button| {
+                                        button.bg(rgb(0x514365)).text_color(rgb(TEXT))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.viewer.layout = StreamLayout::Tiled;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                quiet_button("stream-layout-main", "Main stage")
+                                    .when(self.viewer.layout == StreamLayout::MainStage, |button| {
+                                        button.bg(rgb(0x514365)).text_color(rgb(TEXT))
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.viewer.layout = StreamLayout::MainStage;
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
                         icon_button(
@@ -305,217 +622,155 @@ impl Fluxer {
                             .min_h_0()
                             .flex()
                             .flex_col()
-                            .child(
-                                div()
-                                    .id("focused-stream-stage")
-                                    .relative()
-                                    .flex_1()
-                                    .min_h(px(if short { 80. } else { 120. }))
-                                    .min_w_0()
-                                    .bg(rgb(0x050506))
-                                    .overflow_hidden()
-                                    .when_some(frame, |view, frame| {
-                                        view.child(
-                                            img(frame.image.clone())
-                                                .absolute()
-                                                .inset_0()
-                                                .size_full()
-                                                .object_fit(ObjectFit::Contain),
-                                        )
-                                    })
-                                    .when(frame.is_none(), |view| {
-                                        view.child(
-                                            div()
-                                                .absolute()
-                                                .inset_0()
-                                                .flex()
-                                                .flex_col()
-                                                .items_center()
-                                                .justify_center()
-                                                .gap_3()
-                                                .child(
-                                                    div()
-                                                        .text_size(px(30.))
-                                                        .text_color(rgb(0x777082))
-                                                        .child("▣"),
-                                                )
-                                                .child(
-                                                    div().font_weight(FontWeight::SEMIBOLD).child(
-                                                        if ended {
-                                                            "This stream has ended"
-                                                        } else if stream_error.is_some() {
-                                                            "Could not load this stream"
-                                                        } else {
-                                                            "Connecting to the stream…"
-                                                        },
-                                                    ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .max_w(px(440.))
-                                                        .px_4()
-                                                        .text_center()
-                                                        .child(muted(
-                                                            (if ended {
-                                                                "You are still connected to voice."
-                                                            } else if let Some(error) = stream_error
-                                                            {
-                                                                error.as_str()
-                                                            } else {
-                                                                "Waiting for the first video frame."
-                                                            })
-                                                            .to_owned(),
-                                                        )),
-                                                )
-                                                .when(stream_error.is_some(), |view| {
-                                                    view.child(
-                                                        quiet_button(
-                                                            "retry-viewer-stream",
-                                                            "Retry stream",
-                                                        )
-                                                        .bg(rgb(0x6f56d7))
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.watch_stream(
-                                                                    retry_identity.clone(),
-                                                                    false,
-                                                                    cx,
-                                                                );
-                                                                this.watch_stream(
-                                                                    retry_identity.clone(),
-                                                                    true,
-                                                                    cx,
-                                                                );
-                                                            },
-                                                        )),
-                                                    )
-                                                }),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("stream-filmstrip")
-                                    .h(px(if short { 82. } else { 112. }))
-                                    .flex_shrink_0()
-                                    .overflow_x_scroll()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .px_3()
-                                    .py_2()
-                                    .bg(rgb(0x19161f))
-                                    .children(streams.iter().enumerate().map(
-                                        |(index, identity)| {
-                                            let name = self.stream_name(identity);
-                                            let watching = self.viewer.desired.contains(identity);
-                                            let active =
-                                                self.viewer.focused.as_ref() == Some(identity);
-                                            let identity = identity.clone();
-                                            let click_identity = identity.clone();
-                                            div()
-                                                .id(("stream-tile", index))
-                                                .w(px(140.))
-                                                .flex_shrink_0()
-                                                .rounded_md()
-                                                .overflow_hidden()
-                                                .border_2()
-                                                .border_color(rgb(if active {
-                                                    ACCENT
-                                                } else {
-                                                    0x373140
-                                                }))
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.watch_stream(
-                                                        click_identity.clone(),
-                                                        true,
-                                                        cx,
-                                                    );
-                                                }))
-                                                .child(
-                                                    div()
-                                                        .h(px(if short { 38. } else { 62. }))
-                                                        .relative()
-                                                        .bg(rgb(0x09080b))
-                                                        .flex()
-                                                        .items_center()
-                                                        .justify_center()
-                                                        .when_some(
-                                                            self.viewer.frames.get(&identity),
-                                                            |view, frame| {
-                                                                view.child(
-                                                                    img(frame.image.clone())
-                                                                        .size_full()
-                                                                        .object_fit(
-                                                                            ObjectFit::Contain,
-                                                                        ),
-                                                                )
-                                                            },
-                                                        )
-                                                        .when(
-                                                            !self
-                                                                .viewer
-                                                                .frames
-                                                                .contains_key(&identity),
-                                                            |view| {
-                                                                view.child(muted(if watching {
-                                                                    "Loading…"
-                                                                } else {
-                                                                    "Watch stream"
-                                                                }))
-                                                            },
-                                                        ),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .px_2()
-                                                        .py_1()
-                                                        .text_size(px(11.))
-                                                        .text_ellipsis()
-                                                        .child(name),
-                                                )
-                                        },
-                                    ))
-                                    .children(members.iter().map(|(name, user_id, speaking)| {
-                                        div()
-                                            .w(px(72.))
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(if let Some(user_id) = user_id {
-                                                crate::avatar_images::member_avatar(
-                                                    &self.state,
-                                                    *user_id,
-                                                    voice_guild,
-                                                    name,
-                                                    self.media_endpoint.as_deref(),
-                                                    *speaking,
-                                                    30.,
-                                                )
+                            .child(stage)
+                            .when(!strip_streams.is_empty() || !members.is_empty(), |view| {
+                                view.child(
+                                    div()
+                                        .id("stream-filmstrip")
+                                        .h(px(
+                                            if self.viewer.layout == StreamLayout::Tiled
+                                                && strip_streams.is_empty()
+                                            {
+                                                72.
+                                            } else if short {
+                                                82.
                                             } else {
-                                                // SDK-only/offline preview names do not establish an
-                                                // account ID. Retain the neutral initials fallback.
-                                                voice_avatar(
-                                                    name,
-                                                    Snowflake::default(),
-                                                    *speaking,
-                                                    30.,
-                                                )
-                                            })
-                                            .child(
+                                                112.
+                                            },
+                                        ))
+                                        .flex_shrink_0()
+                                        .overflow_x_scroll()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .px_3()
+                                        .py_2()
+                                        .bg(rgb(0x19161f))
+                                        .children(strip_streams.iter().enumerate().map(
+                                            |(index, identity)| {
+                                                let name = self.stream_name(identity);
+                                                let watching =
+                                                    self.viewer.desired.contains(identity);
+                                                let active =
+                                                    self.viewer.focused.as_ref() == Some(identity);
+                                                let identity = identity.clone();
+                                                let click_identity = identity.clone();
                                                 div()
-                                                    .w_full()
-                                                    .text_center()
-                                                    .text_ellipsis()
-                                                    .text_size(px(10.))
-                                                    .text_color(rgb(MUTED))
-                                                    .child(name.clone()),
-                                            )
-                                    })),
-                            ),
+                                                    .id(("stream-tile", index))
+                                                    .w(px(140.))
+                                                    .flex_shrink_0()
+                                                    .rounded_md()
+                                                    .overflow_hidden()
+                                                    .border_2()
+                                                    .border_color(rgb(if active {
+                                                        ACCENT
+                                                    } else {
+                                                        0x373140
+                                                    }))
+                                                    .cursor_pointer()
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        if this
+                                                            .viewer
+                                                            .desired
+                                                            .contains(&click_identity)
+                                                        {
+                                                            this.viewer.focused =
+                                                                Some(click_identity.clone());
+                                                            cx.notify();
+                                                        } else {
+                                                            this.watch_stream(
+                                                                click_identity.clone(),
+                                                                true,
+                                                                cx,
+                                                            );
+                                                        }
+                                                    }))
+                                                    .child(
+                                                        div()
+                                                            .h(px(if short { 38. } else { 62. }))
+                                                            .relative()
+                                                            .bg(rgb(0x09080b))
+                                                            .flex()
+                                                            .items_center()
+                                                            .justify_center()
+                                                            .when_some(
+                                                                self.viewer.frames.get(&identity),
+                                                                |view, frame| {
+                                                                    view.child(
+                                                                        img(frame.image.clone())
+                                                                            .size_full()
+                                                                            .object_fit(
+                                                                                ObjectFit::Contain,
+                                                                            ),
+                                                                    )
+                                                                },
+                                                            )
+                                                            .when(
+                                                                !self
+                                                                    .viewer
+                                                                    .frames
+                                                                    .contains_key(&identity),
+                                                                |view| {
+                                                                    view.child(muted(if watching {
+                                                                        "Loading…"
+                                                                    } else {
+                                                                        "Watch stream"
+                                                                    }))
+                                                                },
+                                                            ),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .px_2()
+                                                            .py_1()
+                                                            .text_size(px(11.))
+                                                            .text_ellipsis()
+                                                            .child(name),
+                                                    )
+                                            },
+                                        ))
+                                        .children(members.iter().map(
+                                            |(name, user_id, speaking)| {
+                                                div()
+                                                    .w(px(72.))
+                                                    .flex_shrink_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .items_center()
+                                                    .gap_2()
+                                                    .child(if let Some(user_id) = user_id {
+                                                        crate::avatar_images::member_avatar(
+                                                            &self.state,
+                                                            *user_id,
+                                                            voice_guild,
+                                                            name,
+                                                            self.media_endpoint.as_deref(),
+                                                            *speaking,
+                                                            30.,
+                                                        )
+                                                    } else {
+                                                        // SDK-only/offline preview names do not establish an
+                                                        // account ID. Retain the neutral initials fallback.
+                                                        voice_avatar(
+                                                            name,
+                                                            Snowflake::default(),
+                                                            *speaking,
+                                                            30.,
+                                                        )
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .w_full()
+                                                            .text_center()
+                                                            .text_ellipsis()
+                                                            .text_size(px(10.))
+                                                            .text_color(rgb(MUTED))
+                                                            .child(name.clone()),
+                                                    )
+                                            },
+                                        )),
+                                )
+                            }),
                     )
                     .when(self.viewer.chat_open, |view| {
                         view.child(
@@ -658,7 +913,16 @@ impl Fluxer {
     pub(super) fn install_stream_fixture(&mut self, cx: &mut Context<Self>) {
         self.clear_viewer(cx);
         self.state = ClientState::demo();
-        for (index, name) in ["Alex", "Morgan"].into_iter().enumerate() {
+        let count = if std::env::args().any(|argument| argument == "--demo-stream-many") {
+            4
+        } else {
+            2
+        };
+        for (index, name) in ["Alex", "Morgan", "Robin", "Taylor"]
+            .into_iter()
+            .take(count)
+            .enumerate()
+        {
             let identity = format!("preview-{index}");
             self.participants.insert(
                 identity.clone(),
@@ -676,7 +940,11 @@ impl Fluxer {
 }
 
 fn fixture_frame(index: usize, generation: u64) -> StreamFrame<Arc<RenderImage>> {
-    let (width, height) = if index == 0 { (1600, 900) } else { (900, 1600) };
+    let (width, height) = if index.is_multiple_of(2) {
+        (1600, 900)
+    } else {
+        (900, 1600)
+    };
     let buffer = image::RgbaImage::from_fn(width, height, |x, y| {
         let edge = x < 4 || y < 4 || x + 4 >= width || y + 4 >= height;
         let panel = x < width / 5 || y < height / 12;
