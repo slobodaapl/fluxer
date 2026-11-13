@@ -368,7 +368,7 @@ fn snapshot_media(snapshot: &Value) -> Message {
     message
 }
 
-pub fn media(message: &Message, cx: &mut Context<Fluxer>) -> AnyElement {
+pub fn media(message: &Message, tooltips_enabled: bool, cx: &mut Context<Fluxer>) -> AnyElement {
     let snapshots = message
         .extra
         .get("message_snapshots")
@@ -380,6 +380,7 @@ pub fn media(message: &Message, cx: &mut Context<Fluxer>) -> AnyElement {
             media_parts(
                 &snapshot_media(snapshot),
                 &format!("{}-snapshot-{index}", message.id),
+                tooltips_enabled,
                 cx,
             )
         })
@@ -389,7 +390,12 @@ pub fn media(message: &Message, cx: &mut Context<Fluxer>) -> AnyElement {
         .flex_col()
         .gap_2()
         .min_w_0()
-        .child(media_parts(message, &message.id.to_string(), cx))
+        .child(media_parts(
+            message,
+            &message.id.to_string(),
+            tooltips_enabled,
+            cx,
+        ))
         .children(snapshots)
         .into_any_element()
 }
@@ -426,7 +432,12 @@ fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
         .collect()
 }
 
-fn media_parts(message: &Message, namespace: &str, cx: &mut Context<Fluxer>) -> AnyElement {
+fn media_parts(
+    message: &Message,
+    namespace: &str,
+    tooltips_enabled: bool,
+    cx: &mut Context<Fluxer>,
+) -> AnyElement {
     let indexed_gallery = attachment_gallery(message);
     let gallery = Arc::new(
         indexed_gallery
@@ -455,7 +466,11 @@ fn media_parts(message: &Message, namespace: &str, cx: &mut Context<Fluxer>) -> 
                     )))
                     .max_w_full()
                     .min_w_0()
-                    .tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
+                    // GPUI's active tooltip uses source bounds during prepaint;
+                    // removing its builder prevents it leaking above the modal.
+                    .when(tooltips_enabled, |view| {
+                        view.tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
+                    })
                     .child(preview(
                         format!("image-{namespace}-{}", attachment.id),
                         url,

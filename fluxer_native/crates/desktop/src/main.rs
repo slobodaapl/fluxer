@@ -10,6 +10,9 @@ mod controls;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
+mod image_demo;
+mod image_gallery;
+mod image_viewer;
 mod input;
 mod message_actions;
 mod message_content;
@@ -38,6 +41,7 @@ use fluxer_media::{
     SharedAudioSelection, SharedAudioSettings,
 };
 use gpui::{prelude::*, *};
+use image_viewer::ImageViewer;
 use input::TextInput;
 use message_actions::MessageActions;
 use message_content::MessageContent;
@@ -249,6 +253,7 @@ struct Fluxer {
     state: ClientState,
     demo: bool,
     message_demo_started: bool,
+    image_demo_started: bool,
     avatar_demo_endpoint: Option<String>,
     session_restoring: bool,
     session_restore_failed: bool,
@@ -259,6 +264,7 @@ struct Fluxer {
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
+    image_viewer: ImageViewer,
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
@@ -343,6 +349,7 @@ impl Fluxer {
             state: ClientState::default(),
             demo,
             message_demo_started: false,
+            image_demo_started: false,
             avatar_demo_endpoint: None,
             session_restoring,
             session_restore_failed: false,
@@ -358,6 +365,7 @@ impl Fluxer {
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
+            image_viewer: ImageViewer::new(cx),
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
@@ -708,6 +716,7 @@ impl Fluxer {
                             // Authentication may publish an empty transition after
                             // discovery. Drop private UI while retaining public routing.
                             self.message_links.clear_prompt();
+                            self.image_viewer.reset();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;
@@ -759,6 +768,7 @@ impl Fluxer {
                     }
                     self.maybe_demo_search(None, cx);
                     self.maybe_demo_messages(cx);
+                    self.maybe_demo_images(cx);
                     self.maybe_demo_avatars(cx);
                 }
                 Event::SessionRestoring(restoring) => {
@@ -1183,7 +1193,10 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.message_actions.is_open() || self.message_links.is_open() {
+        if self.message_actions.is_open()
+            || self.message_links.is_open()
+            || self.image_viewer.is_open()
+        {
             return;
         }
         if self.search_ui.confirm.is_some() {
@@ -1575,6 +1588,7 @@ impl Fluxer {
         self.message_actions.reset();
         self.message_content.reset();
         self.message_links.reset();
+        self.image_viewer.reset();
         self.editing = None;
         self.clear_viewer(cx);
     }
@@ -2031,15 +2045,17 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none(){this.open_search(window,cx);}}))
+            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.image_viewer.is_open(){this.open_search(window,cx);}}))
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                if this.image_viewer.is_open() { return; }
                 this.pane = Pane::Settings;
                 this.command(Command::RefreshDevices, cx);
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.image_viewer.is_open() {this.dismiss_image_viewer(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
                 if this.search_ui.confirm.is_some() && event.keystroke.key=="escape" {
                     this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
@@ -2077,9 +2093,10 @@ impl Render for Fluxer {
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .child(self.message_action_overlay(window,cx))
-            .child(self.message_link_overlay(window,cx))
+            .child(deferred(self.message_link_overlay(window,cx)).with_priority(6))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
+        let rendered = rendered.child(self.image_viewer_overlay(window, cx));
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());
         rendered
@@ -2096,6 +2113,7 @@ fn main() {
                 || v == "--demo-attachments"
                 || v == "--demo-search"
                 || v == "--demo-messages"
+                || v == "--demo-images"
                 || v == "--demo-avatars"
         });
     Application::new()

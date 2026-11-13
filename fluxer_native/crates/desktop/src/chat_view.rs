@@ -434,7 +434,11 @@ impl Fluxer {
                                                 ),
                                         )
                                     })
-                                    .child(rich_message::media(&message))
+                                    .child(rich_message::media(
+                                        &message,
+                                        !self.image_viewer.is_open(),
+                                        cx,
+                                    ))
                                     .when(!message.reactions.is_empty(), |view| {
                                         view.child(div().flex().gap_1().flex_wrap().children(
                                             message.reactions.iter().enumerate().map(

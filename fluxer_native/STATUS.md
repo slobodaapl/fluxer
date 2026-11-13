@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 102 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 110 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-368 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+376 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -361,3 +361,28 @@ in 6.4 ms after handling (45.3 ms action scheduling delay; next-frame callback
 241.3 ms, which includes platform scheduling). These are local presentation
 measurements, not network latency, physical scanout or real-call acceptance.
 Review items U7/V3 retain the subjective and two-client checks.
+
+
+## In-app image viewer (2026-11-12)
+
+Clicking an attachment image, embedded image or flat forwarded image now opens
+an in-app modal from chat and search/pin previews. Attachment galleries retain
+the clicked image's position, browse visible images from that message and wrap
+with Left/Right like MediaViewerModal. Images fit the viewport without cropping
+or enlarging small originals. Escape, the close control and the backdrop dismiss
+the viewer and restore prior focus; Tab remains within its controls. The viewer
+blocks background send/read acknowledgements and search/settings shortcuts.
+
+Open original is explicit and uses the existing trusted-domain warning policy;
+its warning appears above the viewer. The image proxy remains credential-free
+and bounded. Full-view proxy URLs remove only the source transform parameters;
+original links retain signatures. Embedded pictures target their media URL,
+while article titles keep their article link. Hidden/sensitive/expired images,
+suppressed embeds and spoiler-linked embeds are excluded from automatic previews
+and galleries. Media spoiler reveal/preferences, video/audio viewing, pan/zoom,
+download/copy/favorite controls and full media-viewer parity remain incomplete.
+
+The full gate passes 376 tests, including eight new gallery/privacy regressions.
+`--demo-images` uses loopback-generated images and exposes optional
+`--demo-images-large` and `--demo-image-error` cases. The review queue keeps
+real-account and subjective acceptance separate from local fixture checks.

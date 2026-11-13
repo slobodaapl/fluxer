@@ -14,6 +14,8 @@ Cargo workspace; its lockfile does not change the server workspace's resolution.
 ```sh
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
+# Offline image attachments, embeds and forwarded images:
+cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-images
 # Offline reaction picker (synthetic messages, no saved account):
 FLUXER_EMOJI_PERF=1 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-emoji
 # Offline landscape/portrait screen viewer, synthetic participants, no capture:
@@ -65,6 +67,10 @@ establish complete messaging parity with the existing client.
 macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
 prerequisites; their builds and capture behavior have not yet been validated by
 this migration. Full cross-platform parity remains a release gate.
+
+Chat images open in an in-app viewer. Use Left/Right to browse the message's
+images, and Escape or the backdrop to close. **Open original** is available
+explicitly and follows the normal external-link warning policy.
 
 ## Screen-share audio
 

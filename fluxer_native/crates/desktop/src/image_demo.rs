@@ -75,7 +75,23 @@ impl Fluxer {
             1,
             "Embedded image: the picture and linked article have different destinations.",
         );
-        embed.extra.insert("embeds".into(),json!([{"type":"article","title":"Offline linked article","url":format!("{origin}/article"),"image":{"url":format!("{origin}/embed.png"),"proxy_url":format!("{origin}/embed.png"),"width":120,"height":60}}]));
+        // The original is deliberately untrusted, while all image bytes come
+        // from the local proxy. Open original can exercise warning cancellation
+        // without requesting or opening an external page.
+        embed.extra.insert(
+            "embeds".into(),
+            json!([{
+                "type": "article",
+                "title": "Offline linked article",
+                "url": format!("{origin}/article"),
+                "image": {
+                    "url": "https://untrusted.example.invalid/fixture-image.png",
+                    "proxy_url": format!("{origin}/embed.png"),
+                    "width": 120,
+                    "height": 60
+                }
+            }]),
+        );
         let mut forwarded = make_message(30_002, 2, "Forwarded image");
         forwarded.extra.insert("message_snapshots".into(),json!([{"content":"A small forwarded picture.","flags":0,"timestamp":"2026-11-12T17:00:00Z","attachments":[fixture_attachment(31_002,"forwarded.png",&origin,"/forwarded.png",120,60)]}]));
         let mut blocked = make_message(
@@ -125,7 +141,7 @@ impl Fluxer {
         self.media_endpoint = Some(origin);
         self.pane = Pane::Chat;
         self.status = "OFFLINE IMAGE FIXTURE · generated loopback images only".into();
-        self.timeline.set_offset(point(px(0.), px(0.)));
+        self.timeline.scroll_to_top_of_item(0);
         cx.notify();
     }
 }

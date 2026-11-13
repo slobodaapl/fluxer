@@ -659,6 +659,7 @@ impl Fluxer {
             || self.search_ui.confirm.is_some()
             || self.message_actions.is_blocking()
             || self.message_links.is_open()
+            || self.image_viewer.is_open()
             || self.attachments.picker_open
             || self.session_restoring;
         auto_ack_policy(active, at_bottom, latest, manual, blocking)
@@ -845,7 +846,11 @@ impl Fluxer {
                     .max_h(px(180.))
                     .overflow_hidden()
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(rich_message::media(&message)),
+                    .child(rich_message::media(
+                        &message,
+                        !self.image_viewer.is_open(),
+                        cx,
+                    )),
             )
             .when(pending, |view| {
                 view.child(muted("Updating pin…").text_size(px(10.)))

@@ -79,6 +79,17 @@ is retained so invisible actions do not cover selectable message content.
 Real-call layout, per-stream audio/stop and subjective toolbar legibility remain
 explicit review items U7/V3 in REVIEW.md.
 
+## In-app image viewing follow-up
+
+Attachment, embed and forwarded image previews now open an in-app modal from
+chat or search/pins. The viewer contains large images, keeps small originals at
+native size, supports message-scoped Left/Right browsing, confines Tab focus and
+restores it on dismissal. Open original is secondary and uses the existing link
+warning above the image viewer. Thumbnail tooltips are suppressed behind it.
+Offline opening, navigation, dismissal, warning cancellation, fit and error-state
+checks are recorded under M5 in REVIEW.md. Pan/zoom, video/audio playback and the
+remaining media menu and accessibility semantics are still migration work.
+
 ## Next priorities
 
 1. Finish block presentation (heading hierarchy, nested lists, code tools and
