@@ -200,3 +200,15 @@ nonce, while separate identical submissions receive separate nonces.
 
 Multi-stream acceptance is explicitly deferred. The previous spoiler mock approval
 is scoped to its appearance and does not close the remaining M7 scenarios.
+
+
+Offline Wayland checks of the merged build exercised actual keyboard typing,
+Ctrl+Z, Ctrl+Shift+Z and Enter in a guarded demo window. Captures show composer
+emoji artwork, empty text after undo, restored text after redo, and the sent
+message with the composer cleared. The same fixture shows a visible scrollbar,
+thin active-community border and compact pin sentence. These captures and the
+412-test gate log are in `target/qa/interaction-fixes/`. A duplicate GPUI hover
+style found on the first demo launch was removed before installation. The
+subsequent pin-click/scrollbar-drag check stopped when the focus guard detected
+a different window; no successful interactive navigation/drag result is claimed.
+The fixture generated no production messages/uploads or microphone capture.

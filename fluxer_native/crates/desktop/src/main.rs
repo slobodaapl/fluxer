@@ -1533,7 +1533,6 @@ impl Fluxer {
                         transparent_black()
                     })
                     .focus(|style| style.border_color(rgb(ACCENT)))
-                    .hover(|style| style.border_color(rgb(0x777080)))
                     .bg(transparent_black())
                     .overflow_hidden()
                     .child(avatar_images::community_icon(
