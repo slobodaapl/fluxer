@@ -174,31 +174,16 @@ pub(super) fn layout(
         let indent = paragraph_indent(document, &paragraph);
         let text: SharedString = document.text[paragraph.clone()].to_owned().into();
         let paragraph_runs = clip(runs, &paragraph);
-        let wrapped = window
-            .text_system()
-            .shape_text(
-                text,
-                font_size,
-                &paragraph_runs,
-                width.map(|width| (width - indent).max(px(1.))),
-                None,
-            )
-            .expect("measure rich message paragraph");
-        let breaks = wrapped
-            .first()
-            .map(|line| {
-                line.wrap_boundaries
-                    .iter()
-                    .map(|boundary| line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let breaks = inline_emoji::wrap_breaks(
+            &text,
+            font_size,
+            &paragraph_runs,
+            width.map(|width| (width - indent).max(px(1.))),
+            window,
+        );
         for range in visual_ranges(paragraph, &breaks) {
             let text: SharedString = document.text[range.clone()].to_owned().into();
-            let layout =
-                window
-                    .text_system()
-                    .shape_line(text, font_size, &clip(runs, &range), None);
+            let layout = inline_emoji::shape_line(&text, font_size, &clip(runs, &range), window);
             lines.push(VisualLine {
                 range,
                 layout,

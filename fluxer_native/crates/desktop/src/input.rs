@@ -2,6 +2,8 @@
 use crate::message_markup::{MessageDocument, MessageTarget};
 use std::ops::Range;
 use std::{collections::BTreeSet, sync::Arc};
+#[path = "inline_emoji.rs"]
+mod inline_emoji;
 #[path = "message_text.rs"]
 mod message_text;
 
@@ -13,6 +15,85 @@ use gpui::{
     point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::*;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EditSnapshot {
+    text: SharedString,
+    selection: Range<usize>,
+    reversed: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    Backspace,
+    Delete,
+    Atomic,
+}
+#[derive(Default)]
+struct EditHistory {
+    undo: Vec<EditSnapshot>,
+    redo: Vec<EditSnapshot>,
+    group: Option<(EditKind, EditSnapshot, std::time::Instant)>,
+}
+impl EditHistory {
+    fn record(&mut self, before: EditSnapshot, after: EditSnapshot, kind: EditKind) {
+        self.record_at(before, after, kind, std::time::Instant::now());
+    }
+    fn record_at(
+        &mut self,
+        before: EditSnapshot,
+        after: EditSnapshot,
+        kind: EditKind,
+        now: std::time::Instant,
+    ) {
+        if before.text == after.text {
+            return;
+        }
+        let joins = kind != EditKind::Atomic
+            && self.group.as_ref().is_some_and(|(last_kind, last, time)| {
+                *last_kind == kind
+                    && last == &before
+                    && now.duration_since(*time) < std::time::Duration::from_millis(750)
+            });
+        if !joins {
+            self.undo.push(before);
+            if self.undo.len() > 100 {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.group = Some((kind, after, now));
+    }
+    fn undo(&mut self, current: EditSnapshot) -> Option<EditSnapshot> {
+        self.group = None;
+        let previous = self.undo.pop()?;
+        self.redo.push(current);
+        Some(previous)
+    }
+    fn redo(&mut self, current: EditSnapshot) -> Option<EditSnapshot> {
+        self.group = None;
+        let next = self.redo.pop()?;
+        self.undo.push(current);
+        Some(next)
+    }
+}
+
+fn edit_kind(before: &EditSnapshot, range: &Range<usize>, inserted: &str) -> EditKind {
+    if before.selection.is_empty() {
+        if range.is_empty() && inserted.graphemes(true).count() == 1 && inserted != "\n" {
+            return EditKind::Insert;
+        }
+        if inserted.is_empty() && !range.is_empty() {
+            if range.end == before.selection.start {
+                return EditKind::Backspace;
+            }
+            if range.start == before.selection.start {
+                return EditKind::Delete;
+            }
+        }
+    }
+    EditKind::Atomic
+}
 
 pub struct ImagePasted {
     pub content_type: &'static str,
@@ -84,12 +165,15 @@ actions!(
         Paste,
         Cut,
         Copy,
+        Undo,
+        Redo,
         ActivateInline,
         Quit,
     ]
 );
 
 pub struct TextInput {
+    history: EditHistory,
     message_document: Option<Arc<MessageDocument>>,
     revealed_spoilers: BTreeSet<u32>,
     inline_press: Option<(Point<Pixels>, usize, bool)>,
@@ -126,6 +210,7 @@ impl gpui::EventEmitter<MessageActivated> for TextInput {}
 impl TextInput {
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
+            history: EditHistory::default(),
             message_document: None,
             revealed_spoilers: BTreeSet::new(),
             inline_press: None,
@@ -227,10 +312,15 @@ impl TextInput {
     }
 
     pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.history.group = None;
         self.replace_text_in_range(None, text, window, cx);
+        self.history.group = None;
     }
 
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
+        // Switching drafts and sending are history boundaries. A programmatic
+        // reset must never resurrect a sent message or another channel's draft.
+        self.history = EditHistory::default();
         self.content = normalize_insert(&text, self.multiline).into();
         self.selected_range = self.content.len()..self.content.len();
         self.selection_reversed = false;
@@ -238,6 +328,44 @@ impl TextInput {
         self.reveal_cursor = true;
         self.preferred_x = None;
         cx.notify();
+    }
+
+    fn snapshot(&self) -> EditSnapshot {
+        EditSnapshot {
+            text: self.content.clone(),
+            selection: self.selected_range.clone(),
+            reversed: self.selection_reversed,
+        }
+    }
+
+    fn restore_edit(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.content = snapshot.text;
+        self.selected_range = snapshot.selection;
+        self.selection_reversed = snapshot.reversed;
+        self.marked_range = None;
+        self.selection_origin = None;
+        self.last_layout = None;
+        self.reveal_cursor = true;
+        self.preferred_x = None;
+        cx.notify();
+    }
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_only {
+            let current = self.snapshot();
+            if let Some(snapshot) = self.history.undo(current) {
+                self.restore_edit(snapshot, cx);
+            }
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.read_only {
+            let current = self.snapshot();
+            if let Some(snapshot) = self.history.redo(current) {
+                self.restore_edit(snapshot, cx);
+            }
+        }
     }
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
@@ -383,17 +511,21 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.previous_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        let range = if self.selected_range.is_empty() {
+            self.previous_boundary(self.cursor_offset())..self.cursor_offset()
+        } else {
+            self.selected_range.clone()
+        };
+        self.replace_text_in_range(Some(self.range_to_utf16(&range)), "", window, cx)
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.select_to(self.next_boundary(self.cursor_offset()), cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        let range = if self.selected_range.is_empty() {
+            self.cursor_offset()..self.next_boundary(self.cursor_offset())
+        } else {
+            self.selected_range.clone()
+        };
+        self.replace_text_in_range(Some(self.range_to_utf16(&range)), "", window, cx)
     }
 
     fn on_mouse_down(
@@ -494,6 +626,7 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        self.history.group = None;
         if let Some(item) = cx.read_from_clipboard() {
             match paste_payload(item, self.attachment_paste && !self.read_only) {
                 PastePayload::Text(text) => self.replace_text_in_range(None, &text, window, cx),
@@ -501,6 +634,7 @@ impl TextInput {
                 PastePayload::Empty => {}
             }
         }
+        self.history.group = None;
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
@@ -531,6 +665,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.history.group = None;
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.reveal_cursor = true;
@@ -585,6 +720,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.history.group = None;
         if self.selection_reversed {
             self.selected_range.start = offset
         } else {
@@ -698,12 +834,20 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-
+        let before = self.snapshot();
+        let composing = self.marked_range.is_some();
+        let kind = edit_kind(&before, &range, new_text);
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
+        self.selection_reversed = false;
         self.marked_range.take();
+        if !composing {
+            self.history.record(before, self.snapshot(), kind);
+        } else {
+            self.history.group = None;
+        }
         self.reveal_cursor = true;
         self.preferred_x = None;
         cx.notify();
@@ -727,7 +871,8 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
-
+        let before = self.snapshot();
+        let composing = self.marked_range.is_some();
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -738,6 +883,12 @@ impl EntityInputHandler for TextInput {
         }
         self.selected_range =
             marked_selection(range.start, new_text, new_selected_range_utf16.as_ref());
+        self.selection_reversed = false;
+        if !composing {
+            self.history
+                .record(before, self.snapshot(), EditKind::Atomic);
+        }
+        self.history.group = None;
 
         self.reveal_cursor = true;
         self.preferred_x = None;
@@ -785,7 +936,7 @@ impl EntityInputHandler for TextInput {
 #[derive(Clone)]
 struct VisualLine {
     range: Range<usize>,
-    layout: ShapedLine,
+    layout: inline_emoji::EmojiLine,
     indent: Pixels,
 }
 #[derive(Clone)]
@@ -920,24 +1071,26 @@ impl Element for TextElement {
                         gpui::AvailableSpace::Definite(width) => Some(width),
                         _ => None,
                     });
-                    let lines = window
-                        .text_system()
-                        .shape_text(
-                            text.clone(),
+                    let mut height = px(0.);
+                    let mut measured_width = px(0.);
+                    for paragraph in logical_lines(&text) {
+                        let runs = message_text::clip(std::slice::from_ref(&run), &paragraph);
+                        let breaks = inline_emoji::wrap_breaks(
+                            &text[paragraph.clone()],
                             font_size,
-                            std::slice::from_ref(&run),
+                            &runs,
                             width,
-                            None,
-                        )
-                        .expect("measure selectable message");
-                    let mut measured = size(px(0.), px(0.));
-                    for line in lines {
-                        let line_size = line.size(line_height);
-                        measured.width = measured.width.max(line_size.width);
-                        measured.height += line_size.height;
+                            window,
+                        );
+                        for range in visual_ranges(paragraph, &breaks) {
+                            let runs = message_text::clip(std::slice::from_ref(&run), &range);
+                            let line =
+                                inline_emoji::shape_line(&text[range], font_size, &runs, window);
+                            measured_width = measured_width.max(line.width);
+                            height += line_height;
+                        }
                     }
-                    measured.width = width.unwrap_or(measured.width);
-                    measured
+                    size(width.unwrap_or(measured_width), height)
                 }),
                 (),
             );
@@ -998,29 +1151,20 @@ impl Element for TextElement {
             )
             .lines;
         } else if input.multiline && !empty {
-            let wrapped = window
-                .text_system()
-                .shape_text(
-                    display.clone(),
+            for paragraph in logical_lines(&display) {
+                let paragraph_runs =
+                    decoration_runs(&base, &paragraph, input.marked_range.as_ref());
+                let breaks = inline_emoji::wrap_breaks(
+                    &display[paragraph.clone()],
                     font_size,
-                    std::slice::from_ref(&base),
+                    &paragraph_runs,
                     Some(bounds.size.width.max(px(1.))),
-                    None,
-                )
-                .expect("shape native composer text");
-            let paragraphs = logical_lines(&display);
-            for (paragraph, wrapped) in paragraphs.into_iter().zip(wrapped) {
-                let breaks = wrapped
-                    .wrap_boundaries
-                    .iter()
-                    .map(|boundary| wrapped.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
-                    .collect::<Vec<_>>();
+                    window,
+                );
                 for range in visual_ranges(paragraph, &breaks) {
-                    let text: SharedString = display[range.clone()].to_owned().into();
                     let runs = decoration_runs(&base, &range, input.marked_range.as_ref());
-                    let layout = window
-                        .text_system()
-                        .shape_line(text, font_size, &runs, None);
+                    let layout =
+                        inline_emoji::shape_line(&display[range.clone()], font_size, &runs, window);
                     lines.push(VisualLine {
                         range,
                         layout,
@@ -1035,9 +1179,7 @@ impl Element for TextElement {
             } else {
                 decoration_runs(&base, &range, input.marked_range.as_ref())
             };
-            let layout = window
-                .text_system()
-                .shape_line(display, font_size, &runs, None);
+            let layout = inline_emoji::shape_line(&display, font_size, &runs, window);
             lines.push(VisualLine {
                 range,
                 layout,
@@ -1124,12 +1266,26 @@ impl Element for TextElement {
             .as_ref()
             .map(|document| message_text::backgrounds(document, &layout, bounds, scroll))
             .unwrap_or_default();
-        let emoji_images = document
+        let content = input.content.clone();
+        let secret = input.secret;
+        let mut emoji_images = document
             .as_ref()
             .map(|document| {
                 message_text::emoji_images(document, &revealed, &layout, bounds, scroll, window, cx)
             })
             .unwrap_or_default();
+        if !empty && !secret && document.as_ref().is_none_or(|doc| message_text::valid(doc)) {
+            emoji_images.extend(inline_emoji::images(
+                &content,
+                document.as_deref(),
+                &revealed,
+                &layout,
+                bounds,
+                scroll,
+                window,
+                cx,
+            ));
+        }
         PrepaintState {
             backgrounds,
             emoji_images,
@@ -1307,6 +1463,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -1373,10 +1531,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-v", Paste, Some("TextInput")),
         KeyBinding::new("ctrl-c", Copy, Some("TextInput")),
         KeyBinding::new("ctrl-x", Cut, Some("TextInput")),
+        KeyBinding::new("ctrl-z", Undo, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-z", Redo, Some("TextInput")),
+        KeyBinding::new("ctrl-y", Redo, Some("TextInput")),
         KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
         KeyBinding::new("cmd-v", Paste, Some("TextInput")),
         KeyBinding::new("cmd-c", Copy, Some("TextInput")),
         KeyBinding::new("cmd-x", Cut, Some("TextInput")),
+        KeyBinding::new("cmd-z", Undo, Some("TextInput")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
         KeyBinding::new("left", Left, Some("SelectableText")),
@@ -1545,11 +1708,70 @@ fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) 
 
 #[cfg(test)]
 mod tests {
+    use super::{EditHistory, EditKind, EditSnapshot};
     use super::{
         PastePayload, grapheme_offset, logical_lines, marked_selection, normalize_insert,
         paste_payload, row_for_index, selection_unit, utf16_offset, visual_ranges, word_offset,
     };
     use gpui::ClipboardItem;
+    use std::ops::Range;
+    fn edit_snapshot(text: &str, selection: Range<usize>, reversed: bool) -> EditSnapshot {
+        EditSnapshot {
+            text: text.to_owned().into(),
+            selection,
+            reversed,
+        }
+    }
+    #[test]
+    fn undo_groups_adjacent_unicode_typing_and_redo_restores_final_caret() {
+        let mut history = EditHistory::default();
+        let now = std::time::Instant::now();
+        let empty = edit_snapshot("", 0..0, false);
+        let first = edit_snapshot("a", 1..1, false);
+        let second = edit_snapshot("a👍🏽", 9..9, false);
+        history.record_at(empty.clone(), first.clone(), EditKind::Insert, now);
+        history.record_at(
+            first,
+            second.clone(),
+            EditKind::Insert,
+            now + std::time::Duration::from_millis(200),
+        );
+        assert_eq!(history.undo(second.clone()), Some(empty.clone()));
+        assert_eq!(history.redo(empty), Some(second));
+    }
+    #[test]
+    fn selection_replacement_and_paste_are_atomic_and_restore_reversed_selection() {
+        let mut history = EditHistory::default();
+        let original = edit_snapshot("hello 👍🏽", 6..14, true);
+        let replaced = edit_snapshot("hello 🌈", 10..10, false);
+        history.record(original.clone(), replaced.clone(), EditKind::Atomic);
+        let pasted = edit_snapshot("hello 🌈 pasted", 17..17, false);
+        history.record(replaced.clone(), pasted.clone(), EditKind::Atomic);
+        assert_eq!(history.undo(pasted), Some(replaced.clone()));
+        assert_eq!(history.undo(replaced), Some(original));
+    }
+    #[test]
+    fn deletion_direction_and_time_break_groups_and_new_edits_discard_redo() {
+        let mut history = EditHistory::default();
+        let now = std::time::Instant::now();
+        let a = edit_snapshot("abcd", 2..2, false);
+        let b = edit_snapshot("acd", 1..1, false);
+        let c = edit_snapshot("ad", 1..1, false);
+        let d = edit_snapshot("a", 1..1, false);
+        history.record_at(a.clone(), b.clone(), EditKind::Backspace, now);
+        history.record_at(b.clone(), c.clone(), EditKind::Delete, now);
+        history.record_at(
+            c.clone(),
+            d.clone(),
+            EditKind::Delete,
+            now + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(history.undo(d), Some(c.clone()));
+        assert_eq!(history.undo(c), Some(b.clone()));
+        assert_eq!(history.undo(b.clone()), Some(a.clone()));
+        history.record(a, b.clone(), EditKind::Atomic);
+        assert_eq!(history.redo(b), None);
+    }
     #[test]
     fn clipboard_text_paste_preserves_unicode_and_newlines_with_attachment_support() {
         let text = "one\n雪 🦀";

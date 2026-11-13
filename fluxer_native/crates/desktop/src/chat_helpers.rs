@@ -5,7 +5,7 @@ use serde::{
     de::{MapAccess, Visitor},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, OnceLock},
 };
 
@@ -56,6 +56,14 @@ pub fn unicode_sprite(surrogate: &str) -> Option<EmojiSprite> {
         .sprites
         .get(&surrogate.replace('\u{fe0f}', ""))
         .copied()
+}
+pub fn unicode_catalog_contains(surrogate: &str) -> bool {
+    if surrogate.is_ascii() {
+        return false;
+    }
+    unicode_index()
+        .surrogates
+        .contains(&surrogate.replace('\u{fe0f}', ""))
 }
 #[derive(Deserialize)]
 struct UnicodeEmoji {
@@ -172,6 +180,7 @@ struct UnicodeIndex {
     /// Empty search never scans aliases or all 2,030 skin variants.
     grids: BTreeMap<String, [ChoiceList; 6]>,
     sprites: BTreeMap<String, EmojiSprite>,
+    surrogates: BTreeSet<String>,
     base_sprite_count: u32,
     skin_sprite_count: u32,
 }
@@ -291,12 +300,14 @@ fn unicode_index() -> &'static UnicodeIndex {
         }
         let mut grids: BTreeMap<String, [Vec<Arc<EmojiChoice>>; 6]> = BTreeMap::new();
         let mut sprites = BTreeMap::new();
+        let mut surrogates = BTreeSet::new();
         grids.insert("all".into(), std::array::from_fn(|_| Vec::new()));
         for category in &categories {
             grids.insert(category.clone(), std::array::from_fn(|_| Vec::new()));
         }
         for group in &groups {
             for entry in std::iter::once(&group.base).chain(&group.variants) {
+                surrogates.insert(entry.choice.insert.replace('\u{fe0f}', ""));
                 if let Some(sprite) = entry.choice.sprite {
                     sprites.insert(entry.choice.insert.replace('\u{fe0f}', ""), sprite);
                 }
@@ -314,6 +325,7 @@ fn unicode_index() -> &'static UnicodeIndex {
             categories,
             groups,
             sprites,
+            surrogates,
             base_sprite_count,
             skin_sprite_count,
             grids: grids
