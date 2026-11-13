@@ -1,4 +1,5 @@
 // Adapted from GPUI 0.2.2 input example (Apache-2.0), Zed Industries.
+use crate::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::message_markup::{MessageDocument, MessageTarget};
 use std::ops::Range;
 use std::{collections::BTreeSet, sync::Arc};
@@ -95,6 +96,111 @@ fn edit_kind(before: &EditSnapshot, range: &Range<usize>, inserted: &str) -> Edi
     EditKind::Atomic
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InputMenuAction {
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+    SelectAll,
+}
+#[derive(Default)]
+struct InputMenuState {
+    read_only: bool,
+    secret: bool,
+    selected: bool,
+    selectable: bool,
+    undo: bool,
+    redo: bool,
+    paste: bool,
+}
+impl InputMenuAction {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+            Self::Cut => "cut",
+            Self::Copy => "copy",
+            Self::Paste => "paste",
+            Self::Delete => "delete",
+            Self::SelectAll => "select-all",
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::Cut => "Cut",
+            Self::Copy => "Copy",
+            Self::Paste => "Paste",
+            Self::Delete => "Delete",
+            Self::SelectAll => "Select all",
+        }
+    }
+    fn visible(self, state: &InputMenuState) -> bool {
+        match self {
+            Self::Copy => !state.secret,
+            Self::Cut => !state.secret && !state.read_only,
+            Self::SelectAll => true,
+            _ => !state.read_only,
+        }
+    }
+    fn enabled(self, state: &InputMenuState) -> bool {
+        self.visible(state)
+            && match self {
+                Self::Undo => state.undo,
+                Self::Redo => state.redo,
+                Self::Cut | Self::Copy | Self::Delete => state.selected,
+                Self::Paste => state.paste,
+                Self::SelectAll => state.selectable,
+            }
+    }
+}
+const INPUT_MENU_ACTIONS: [InputMenuAction; 7] = [
+    InputMenuAction::Undo,
+    InputMenuAction::Redo,
+    InputMenuAction::Cut,
+    InputMenuAction::Copy,
+    InputMenuAction::Paste,
+    InputMenuAction::Delete,
+    InputMenuAction::SelectAll,
+];
+
+fn input_menu_items(state: &InputMenuState) -> Vec<ContextMenuItem> {
+    let mut items = Vec::new();
+    let mut previous_group = None;
+    for action in INPUT_MENU_ACTIONS {
+        if !action.visible(state) {
+            continue;
+        }
+        let group = match action {
+            InputMenuAction::Undo | InputMenuAction::Redo => 0,
+            InputMenuAction::SelectAll => 2,
+            _ => 1,
+        };
+        if previous_group.is_some_and(|previous| previous != group) {
+            items.push(ContextMenuItem::Separator);
+        }
+        previous_group = Some(group);
+        items.push(ContextMenuItem::Action {
+            id: action.id().into(),
+            label: action.label().into(),
+            icon: None,
+            enabled: action.enabled(state),
+            danger: false,
+        });
+    }
+    items
+}
+
+fn context_click_selection(selection: &Range<usize>, index: usize) -> Option<Range<usize>> {
+    // Secondary-clicking inside a selection must not destroy Cut/Copy's target.
+    (selection.is_empty() || index < selection.start || index > selection.end)
+        .then_some(index..index)
+}
+
 pub struct ImagePasted {
     pub content_type: &'static str,
     pub extension: &'static str,
@@ -167,12 +273,15 @@ actions!(
         Copy,
         Undo,
         Redo,
+        OpenTextContextMenu,
         ActivateInline,
         Quit,
     ]
 );
 
 pub struct TextInput {
+    context_menu: Option<Entity<ContextMenu>>,
+    context_menu_generation: u64,
     history: EditHistory,
     message_document: Option<Arc<MessageDocument>>,
     revealed_spoilers: BTreeSet<u32>,
@@ -210,6 +319,8 @@ impl gpui::EventEmitter<MessageActivated> for TextInput {}
 impl TextInput {
     pub fn new(placeholder: &str, cx: &mut Context<Self>) -> Self {
         Self {
+            context_menu: None,
+            context_menu_generation: 0,
             history: EditHistory::default(),
             message_document: None,
             revealed_spoilers: BTreeSet::new(),
@@ -271,6 +382,7 @@ impl TextInput {
         {
             return;
         }
+        self.reset_context_menu(cx);
         let text_changed = self.content.as_ref() != document.text;
         if self
             .message_document
@@ -318,6 +430,7 @@ impl TextInput {
     }
 
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
+        self.reset_context_menu(cx);
         // Switching drafts and sending are history boundaries. A programmatic
         // reset must never resurrect a sent message or another channel's draft.
         self.history = EditHistory::default();
@@ -328,6 +441,163 @@ impl TextInput {
         self.reveal_cursor = true;
         self.preferred_x = None;
         cx.notify();
+    }
+
+    pub fn context_menu_open(&self, cx: &App) -> bool {
+        self.context_menu
+            .as_ref()
+            .is_some_and(|menu| menu.read(cx).is_open())
+    }
+
+    fn reset_context_menu(&mut self, cx: &mut Context<Self>) {
+        self.context_menu_generation = self.context_menu_generation.wrapping_add(1);
+        if let Some(menu) = &self.context_menu {
+            menu.update(cx, |menu, cx| menu.reset(cx));
+        }
+    }
+
+    fn input_menu_state(&self, cx: &mut Context<Self>) -> InputMenuState {
+        let paste = !self.read_only
+            && cx.read_from_clipboard().is_some_and(|item| {
+                match paste_payload(item, self.attachment_paste && !self.secret) {
+                    PastePayload::Text(text) => !text.is_empty(),
+                    PastePayload::Image(_) => true,
+                    PastePayload::Empty => false,
+                }
+            });
+        InputMenuState {
+            read_only: self.read_only,
+            secret: self.secret,
+            selected: !self.selected_range.is_empty(),
+            selectable: !self.content.is_empty() && self.selected_range != (0..self.content.len()),
+            undo: !self.history.undo.is_empty(),
+            redo: !self.history.redo.is_empty(),
+            paste,
+        }
+    }
+
+    fn on_context_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Rich message bodies belong to the enclosing message action menu.
+        if self.message_document.is_some() {
+            return;
+        }
+        let index = self.index_for_mouse_position(event.position);
+        if let Some(selection) = context_click_selection(&self.selected_range, index) {
+            self.move_to(selection.start, cx);
+        }
+        self.open_input_menu(event.position, window, cx);
+        cx.stop_propagation();
+    }
+
+    fn open_text_context_menu(
+        &mut self,
+        _: &OpenTextContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.message_document.is_some() {
+            return;
+        }
+        let anchor = self
+            .last_bounds
+            .map(|bounds| {
+                let caret = self
+                    .last_layout
+                    .as_ref()
+                    .map(|layout| layout.position_for_index(self.cursor_offset()))
+                    .unwrap_or_default();
+                point(
+                    (bounds.left() + caret.x - self.scroll_x).clamp(bounds.left(), bounds.right()),
+                    (bounds.top() + caret.y - self.scroll_y + window.line_height())
+                        .clamp(bounds.top(), bounds.bottom()),
+                )
+            })
+            .unwrap_or_default();
+        self.open_input_menu(anchor, window, cx);
+        cx.stop_propagation();
+    }
+
+    fn open_input_menu(
+        &mut self,
+        anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.history.group = None;
+        self.marked_range = None;
+        self.is_selecting = false;
+        self.inline_press = None;
+        self.selection_origin = None;
+        window.focus(&self.focus_handle);
+        let items = input_menu_items(&self.input_menu_state(cx));
+        let snapshot = self.snapshot();
+        self.context_menu_generation = self.context_menu_generation.wrapping_add(1);
+        let generation = self.context_menu_generation;
+        let owner = cx.entity().downgrade();
+        let menu = self
+            .context_menu
+            .get_or_insert_with(|| cx.new(ContextMenu::new))
+            .clone();
+        menu.update(cx, |menu, cx| {
+            menu.open(
+                items,
+                anchor,
+                std::rc::Rc::new(move |event, window, cx| {
+                    if let ContextMenuEvent::Action(id) = event {
+                        let _ = owner.update(cx, |input, cx| {
+                            // Draft switches and programmatic resets invalidate queued actions.
+                            if input.context_menu_generation != generation
+                                || input.content != snapshot.text
+                            {
+                                return;
+                            }
+                            input.selected_range = snapshot.selection.clone();
+                            input.selection_reversed = snapshot.reversed;
+                            if let Some(action) = INPUT_MENU_ACTIONS
+                                .iter()
+                                .copied()
+                                .find(|action| action.id() == id)
+                            {
+                                input.run_input_menu_action(action, window, cx);
+                            }
+                        });
+                    }
+                }),
+                window,
+                cx,
+            )
+        });
+        cx.notify();
+    }
+
+    fn run_input_menu_action(
+        &mut self,
+        action: InputMenuAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !action.enabled(&self.input_menu_state(cx)) {
+            return;
+        }
+        window.focus(&self.focus_handle);
+        match action {
+            InputMenuAction::Undo => self.undo(&Undo, window, cx),
+            InputMenuAction::Redo => self.redo(&Redo, window, cx),
+            InputMenuAction::Cut => self.cut(&Cut, window, cx),
+            InputMenuAction::Copy => self.copy(&Copy, window, cx),
+            InputMenuAction::Paste => self.paste(&Paste, window, cx),
+            InputMenuAction::Delete => {
+                self.history.group = None;
+                self.replace_text_in_range(None, "", window, cx);
+                self.history.group = None;
+            }
+            InputMenuAction::SelectAll => self.select_all(&SelectAll, window, cx),
+        }
     }
 
     fn snapshot(&self) -> EditSnapshot {
@@ -626,9 +896,12 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         self.history.group = None;
         if let Some(item) = cx.read_from_clipboard() {
-            match paste_payload(item, self.attachment_paste && !self.read_only) {
+            match paste_payload(item, self.attachment_paste && !self.secret) {
                 PastePayload::Text(text) => self.replace_text_in_range(None, &text, window, cx),
                 PastePayload::Image(image) => cx.emit(image),
                 PastePayload::Empty => {}
@@ -638,7 +911,7 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.secret && !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 if let Some(document) = self.message_document.as_ref() {
                     if message_text::valid(document) {
@@ -653,7 +926,7 @@ impl TextInput {
         }
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
-        if self.read_only {
+        if self.read_only || self.secret {
             return;
         }
         if !self.selected_range.is_empty() {
@@ -1415,17 +1688,21 @@ fn decoration_runs(
 
 impl Render for TextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let editor = div()
             .flex()
+            .w_full()
+            .min_w_0()
             .when(self.read_only, |view| view.w_full().min_w_0())
-            .key_context(if self.read_only {
+            .key_context(if self.message_document.is_some() {
                 "SelectableText"
+            } else if self.read_only {
+                "SelectableText InputContextMenu"
             } else if self.chat_picker {
-                "TextInput ChatPicker"
+                "TextInput ChatPicker InputContextMenu"
             } else if self.multiline {
-                "TextInput MultilineInput"
+                "TextInput MultilineInput InputContextMenu"
             } else {
-                "TextInput"
+                "TextInput InputContextMenu"
             })
             .track_focus(&self.focus_handle(cx))
             .cursor(if self.hover_interactive {
@@ -1464,7 +1741,9 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::open_text_context_menu))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_context_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
@@ -1489,7 +1768,15 @@ impl Render for TextInput {
                         .overflow_hidden()
                     })
                     .child(TextElement { input: cx.entity() }),
-            )
+            );
+        // Keep the menu beside the editor's focus/action subtree. Menu pointer
+        // events and Ctrl shortcuts must not edit or reselect the backing input.
+        div()
+            .flex()
+            .w_full()
+            .min_w_0()
+            .child(editor)
+            .when_some(self.context_menu.clone(), |view, menu| view.child(menu))
     }
 }
 
@@ -1501,6 +1788,7 @@ impl Focusable for TextInput {
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("shift-f10", OpenTextContextMenu, Some("InputContextMenu")),
         KeyBinding::new("backspace", Backspace, Some("TextInput")),
         KeyBinding::new("delete", Delete, Some("TextInput")),
         KeyBinding::new("left", Left, Some("TextInput")),
@@ -1707,11 +1995,15 @@ fn marked_selection(start: usize, text: &str, selection: Option<&Range<usize>>) 
 
 #[cfg(test)]
 mod tests {
-    use super::{EditHistory, EditKind, EditSnapshot};
+    use super::{
+        EditHistory, EditKind, EditSnapshot, InputMenuAction, InputMenuState,
+        context_click_selection, input_menu_items,
+    };
     use super::{
         PastePayload, grapheme_offset, logical_lines, marked_selection, normalize_insert,
         paste_payload, row_for_index, selection_unit, utf16_offset, visual_ranges, word_offset,
     };
+    use crate::context_menu::ContextMenuItem;
     use gpui::ClipboardItem;
     use std::ops::Range;
     fn edit_snapshot(text: &str, selection: Range<usize>, reversed: bool) -> EditSnapshot {
@@ -1720,6 +2012,92 @@ mod tests {
             selection,
             reversed,
         }
+    }
+    fn menu_rows(state: &InputMenuState) -> Vec<(String, bool)> {
+        input_menu_items(state)
+            .into_iter()
+            .filter_map(|item| match item {
+                ContextMenuItem::Action { id, enabled, .. } => Some((id, enabled)),
+                _ => None,
+            })
+            .collect()
+    }
+    #[test]
+    fn text_context_menu_disables_selection_actions_and_tracks_undo_redo() {
+        let mut state = InputMenuState {
+            selectable: true,
+            paste: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            menu_rows(&state),
+            [
+                ("undo".into(), false),
+                ("redo".into(), false),
+                ("cut".into(), false),
+                ("copy".into(), false),
+                ("paste".into(), true),
+                ("delete".into(), false),
+                ("select-all".into(), true),
+            ]
+        );
+        let mut history = EditHistory::default();
+        let selected = edit_snapshot("a👍🏽b", 1..9, true);
+        let deleted = edit_snapshot("ab", 1..1, false);
+        let kind = super::edit_kind(&selected, &selected.selection, "");
+        assert_eq!(kind, EditKind::Atomic);
+        history.record(selected.clone(), deleted.clone(), kind);
+        state.undo = !history.undo.is_empty();
+        state.redo = !history.redo.is_empty();
+        assert!(InputMenuAction::Undo.enabled(&state));
+        assert!(!InputMenuAction::Redo.enabled(&state));
+        assert_eq!(history.undo(deleted), Some(selected));
+        state.undo = !history.undo.is_empty();
+        state.redo = !history.redo.is_empty();
+        assert!(!InputMenuAction::Undo.enabled(&state));
+        assert!(InputMenuAction::Redo.enabled(&state));
+    }
+    #[test]
+    fn readonly_menu_exposes_only_copy_and_select_all_and_passwords_never_offer_export() {
+        let state = InputMenuState {
+            read_only: true,
+            selected: true,
+            selectable: true,
+            undo: true,
+            redo: true,
+            paste: true,
+            secret: false,
+        };
+        assert_eq!(
+            menu_rows(&state),
+            [("copy".into(), true), ("select-all".into(), true)]
+        );
+        let password = InputMenuState {
+            secret: true,
+            read_only: false,
+            ..state
+        };
+        let rows = menu_rows(&password);
+        assert_eq!(
+            rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            ["undo", "redo", "paste", "delete", "select-all"]
+        );
+        assert!(!InputMenuAction::Copy.enabled(&password));
+        assert!(!InputMenuAction::Cut.enabled(&password));
+    }
+    #[test]
+    fn secondary_click_preserves_selected_unicode_including_trailing_caret_boundary() {
+        let text = "a👩‍💻b";
+        let selection = 1..text.len() - 1;
+        for index in [selection.start, selection.end] {
+            assert_eq!(context_click_selection(&selection, index), None);
+        }
+        assert_eq!(context_click_selection(&selection, 0), Some(0..0));
+        assert_eq!(
+            context_click_selection(&selection, text.len()),
+            Some(text.len()..text.len())
+        );
+        assert_eq!(context_click_selection(&(0..0), 1), Some(1..1));
     }
     #[test]
     fn undo_groups_adjacent_unicode_typing_and_redo_restores_final_caret() {
