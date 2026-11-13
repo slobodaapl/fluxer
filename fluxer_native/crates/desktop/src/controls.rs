@@ -4,6 +4,8 @@ use super::*;
 use std::{borrow::Cow, cell::Cell, rc::Rc};
 #[derive(Clone, Copy)]
 pub(super) enum Icon {
+    Play,
+    Pause,
     React,
     Reply,
     More,
@@ -42,6 +44,8 @@ pub(super) enum Icon {
 impl Icon {
     fn path(self) -> &'static str {
         match self {
+            Self::Play => "icons/Play.svg",
+            Self::Pause => "icons/Pause.svg",
             Self::React => "icons/React.svg",
             Self::Reply => "icons/Reply.svg",
             Self::More => "icons/More.svg",
@@ -80,6 +84,11 @@ impl Icon {
     }
 }
 const ASSETS: &[(&str, &[u8])] = &[
+    ("icons/Play.svg", include_bytes!("../assets/icons/Play.svg")),
+    (
+        "icons/Pause.svg",
+        include_bytes!("../assets/icons/Pause.svg"),
+    ),
     (
         "icons/React.svg",
         include_bytes!("../assets/icons/React.svg"),
