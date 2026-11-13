@@ -259,3 +259,14 @@ for their complete bounded disk download before decoding. This is explicitly not
 progressive/range streaming. Per-player volume is local; full persisted preference
 and accessibility/motion migration, media gallery mixing and broader media menus
 remain part of parity work. Multi-stream review remains deferred by the user.
+
+
+The exact-build smoke run (`62c9fea28`) also reproduced stale initial window
+contents: automated frame captures timed out while the fixture nevertheless
+initialized and logged all five player actions. A guarded search open/close forced
+a redraw; subsequent captures showed current native frames and changing GIFV
+pixels. `final-visible-check.json` records that successful visible check; the
+initial `final-actions-check.json` capture timeout is retained as evidence rather
+than relabeled a pass. This is additional U6 evidence, not a claim that the
+monitor/compositor redraw problem is fixed. Native playback and lifecycle tests
+remain green. The next investigation should isolate that presentation issue.
