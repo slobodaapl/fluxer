@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Local viewing intent is independent of delayed transport acknowledgements.
+use crate::stream_layout::StreamLayout;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct StreamFrame<T> {
@@ -20,6 +21,7 @@ pub struct Viewer<T> {
     latest_generations: BTreeMap<String, u64>,
     pub chat_open: bool,
     pub expanded: bool,
+    pub layout: StreamLayout,
 }
 impl<T> Default for Viewer<T> {
     fn default() -> Self {
@@ -33,6 +35,7 @@ impl<T> Default for Viewer<T> {
             latest_generations: BTreeMap::new(),
             chat_open: false,
             expanded: false,
+            layout: StreamLayout::Tiled,
         }
     }
 }
@@ -131,15 +134,40 @@ mod tests {
         viewer.watch("alice".into());
         viewer.receive("alice".into(), frame("old-room", 1));
         viewer.chat_open = true;
+        viewer.layout = StreamLayout::MainStage;
         viewer.transport_reset();
         assert_eq!(viewer.focused.as_deref(), Some("alice"));
         assert!(viewer.desired.contains("alice"));
         assert!(viewer.frames.is_empty());
         assert!(viewer.chat_open);
+        assert_eq!(viewer.layout, StreamLayout::MainStage);
         assert!(viewer.receive("alice".into(), frame("new-room", 2)));
         viewer.stop("alice");
         viewer.transport_reset();
         assert!(!viewer.receive("alice".into(), frame("old-room", 3)));
+    }
+    #[test]
+    fn layout_selection_preserves_watch_focus_frames_and_generation_fences() {
+        let mut viewer = Viewer::default();
+        assert_eq!(viewer.layout, StreamLayout::Tiled);
+        viewer.watch("alice".into());
+        viewer.receive("alice".into(), frame("a", 1));
+        viewer.watch("bob".into());
+        viewer.receive("bob".into(), frame("b", 2));
+        for layout in [StreamLayout::MainStage, StreamLayout::Tiled] {
+            viewer.layout = layout;
+            assert_eq!(viewer.focused.as_deref(), Some("bob"));
+            assert_eq!(viewer.desired.len(), 2);
+            assert_eq!(viewer.frames.len(), 2);
+            assert_eq!(viewer.frames["alice"].image, 1);
+            assert_eq!(viewer.frames["bob"].image, 2);
+        }
+        viewer.stop("bob");
+        viewer.watch("bob".into());
+        viewer.layout = StreamLayout::MainStage;
+        assert!(!viewer.receive("bob".into(), frame("stale", 3)));
+        viewer.clear();
+        assert_eq!(viewer.layout, StreamLayout::Tiled);
     }
     fn frame(track: &str, image: u8) -> StreamFrame<u8> {
         StreamFrame {
