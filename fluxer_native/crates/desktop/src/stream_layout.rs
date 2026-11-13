@@ -40,8 +40,8 @@ struct Candidate {
 
 impl Candidate {
     fn better_than(&self, other: &Self) -> bool {
-        let legible = self.shortest >= MIN_SHORT_EDGE;
-        let other_legible = other.shortest >= MIN_SHORT_EDGE;
+        let legible = self.shortest + 0.001 >= MIN_SHORT_EDGE;
+        let other_legible = other.shortest + 0.001 >= MIN_SHORT_EDGE;
         if legible != other_legible {
             return legible;
         }
@@ -101,15 +101,26 @@ pub fn tiled_layout(width: f32, height: f32, aspect_ratios: &[f32], gap: f32) ->
             .map(|ratio| if transpose { 1. / ratio } else { *ratio })
             .collect();
         for partition in partitions(&ratios) {
-            let mut candidate = arrange(stage_width, stage_height, &ratios, &partition, gap);
-            if transpose {
-                for tile in &mut candidate.tiles {
-                    std::mem::swap(&mut tile.x, &mut tile.y);
-                    std::mem::swap(&mut tile.width, &mut tile.height);
+            let uniform = arrange(stage_width, stage_height, &ratios, &partition, gap);
+            let mut candidates = nonuniform_arrangements(
+                stage_width,
+                stage_height,
+                &ratios,
+                &partition,
+                gap,
+                uniform.shortest,
+            );
+            candidates.push(uniform);
+            for mut candidate in candidates {
+                if transpose {
+                    for tile in &mut candidate.tiles {
+                        std::mem::swap(&mut tile.x, &mut tile.y);
+                        std::mem::swap(&mut tile.width, &mut tile.height);
+                    }
                 }
-            }
-            if best.as_ref().is_none_or(|best| candidate.better_than(best)) {
-                best = Some(candidate);
+                if best.as_ref().is_none_or(|best| candidate.better_than(best)) {
+                    best = Some(candidate);
+                }
             }
         }
     }
@@ -117,9 +128,9 @@ pub fn tiled_layout(width: f32, height: f32, aspect_ratios: &[f32], gap: f32) ->
 }
 
 /// For normal call counts examine every ordered row partition, in both axes.
-/// Larger rosters use bounded families of balanced counts and aspect weights,
-/// keeping resize/frame work linear in the number of streams (at most 200
-/// candidate partitions, rather than exponentially many).
+/// Larger rosters use bounded families of balanced counts and aspect weights
+/// (at most 200 candidate partitions, rather than exponentially many). Each
+/// candidate costs O(n + r log r) for n streams and r row-allocation priorities.
 fn partitions(aspects: &[f64]) -> Vec<Vec<usize>> {
     let count = aspects.len();
     if count <= EXHAUSTIVE_COUNT {
@@ -187,14 +198,112 @@ fn arrange(width: f64, height: f64, aspects: &[f64], partition: &[usize], gap: f
     }
     let available_height = height - gap * (partition.len() - 1) as f64;
     let scale = (available_height / heights.iter().sum::<f64>()).min(1.);
-    let content_height = heights.iter().sum::<f64>() * scale + gap * (partition.len() - 1) as f64;
+    for row_height in &mut heights {
+        *row_height *= scale;
+    }
+    arrange_heights(width, height, aspects, partition, gap, &heights)
+}
+
+/// Mixed sources benefit from independent row heights: shrinking a full-width
+/// landscape just to give a portrait more height can waste usable stage area.
+/// Reserve at least the uniform layout's smallest short edge (or the compact
+/// minimum when feasible), then fill width-limited row caps in bounded priority
+/// orders. Two rows try both endpoints of the convex area objective exactly.
+/// Equal-aspect sources retain the balanced grid candidates above.
+fn nonuniform_arrangements(
+    width: f64,
+    height: f64,
+    aspects: &[f64],
+    partition: &[usize],
+    gap: f64,
+    uniform_shortest: f64,
+) -> Vec<Candidate> {
+    if partition.len() < 2
+        || aspects
+            .iter()
+            .all(|ratio| (*ratio - aspects[0]).abs() < 0.001)
+    {
+        return Vec::new();
+    }
+    let mut offset = 0;
+    let mut caps = Vec::with_capacity(partition.len());
+    let mut weights = Vec::with_capacity(partition.len());
+    let mut short_factors = Vec::with_capacity(partition.len());
+    for count in partition {
+        let row = &aspects[offset..offset + count];
+        let sum: f64 = row.iter().sum();
+        weights.push(sum);
+        caps.push((width - gap * (count - 1) as f64) / sum);
+        short_factors.push(row.iter().copied().fold(1., f64::min));
+        offset += count;
+    }
+    let available = height - gap * (partition.len() - 1) as f64;
+    let feasible_shortest = caps
+        .iter()
+        .zip(&short_factors)
+        .map(|(cap, factor)| cap * factor)
+        .fold(
+            available / short_factors.iter().map(|factor| 1. / factor).sum::<f64>(),
+            f64::min,
+        );
+    let floor = uniform_shortest.max(MIN_SHORT_EDGE.min(feasible_shortest));
+    let baseline: Vec<_> = short_factors
+        .iter()
+        .zip(&caps)
+        .map(|(factor, cap)| (floor / factor).min(*cap))
+        .collect();
+    let free = (available - baseline.iter().sum::<f64>()).max(0.);
+    let orders = if partition.len() == 2 {
+        vec![vec![0, 1], vec![1, 0]]
+    } else {
+        (0..3)
+            .map(|priority| {
+                // Gradient, average potential gradient, and natural row height
+                // cover convex endpoints without enumerating row permutations.
+                let mut order: Vec<_> = (0..partition.len()).collect();
+                order.sort_by(|left, right| {
+                    let score = |index: usize| match priority {
+                        0 => weights[index] * baseline[index],
+                        1 => weights[index] * (baseline[index] + caps[index]),
+                        _ => caps[index],
+                    };
+                    score(*right).total_cmp(&score(*left)).then(left.cmp(right))
+                });
+                order
+            })
+            .collect()
+    };
+    let mut result = Vec::new();
+    for order in orders {
+        let mut heights = baseline.clone();
+        let mut remaining = free;
+        for index in order {
+            let extra = (caps[index] - heights[index]).max(0.).min(remaining);
+            heights[index] += extra;
+            remaining -= extra;
+        }
+        result.push(arrange_heights(
+            width, height, aspects, partition, gap, &heights,
+        ));
+    }
+    result
+}
+
+fn arrange_heights(
+    width: f64,
+    height: f64,
+    aspects: &[f64],
+    partition: &[usize],
+    gap: f64,
+    heights: &[f64],
+) -> Candidate {
+    let content_height = heights.iter().sum::<f64>() + gap * (partition.len() - 1) as f64;
     let mut y = (height - content_height).max(0.) / 2.;
     let mut offset = 0;
     let mut tiles = Vec::with_capacity(aspects.len());
     let mut area = 0.;
     let mut shortest = f64::INFINITY;
-    for (count, natural_height) in partition.iter().zip(heights) {
-        let tile_height = natural_height * scale;
+    for (count, tile_height) in partition.iter().zip(heights.iter().copied()) {
         let row = &aspects[offset..offset + count];
         let row_width = row.iter().sum::<f64>() * tile_height + gap * (count - 1) as f64;
         let mut x = (width - row_width).max(0.) / 2.;
@@ -301,6 +410,58 @@ mod tests {
         let area: f32 = tiles.iter().map(|tile| tile.width * tile.height).sum();
         assert!(area > 1200. * 800. * 0.90, "{tiles:?} area={area}");
         assert!(tiles[0].height > tiles[1].height * 1.9);
+    }
+
+    #[test]
+    fn narrow_mixed_stage_gives_landscape_full_width_instead_of_uniform_scaling() {
+        let ratios = [16. / 9., 9. / 16.];
+        let tiles = tiled_layout(562., 744., &ratios, 12.);
+        assert_geometry(562., 744., &ratios, &tiles);
+        let uniform = arrange(
+            562.,
+            744.,
+            &ratios
+                .iter()
+                .map(|value| aspect(*value))
+                .collect::<Vec<_>>(),
+            &[1, 1],
+            12.,
+        );
+        let area: f64 = tiles
+            .iter()
+            .map(|tile| f64::from(tile.width) * f64::from(tile.height))
+            .sum();
+        assert!(
+            area > uniform.area * 1.15,
+            "{tiles:?}, area={area}, old={}",
+            uniform.area
+        );
+        assert!((tiles[0].width - 562.).abs() < 0.01);
+        assert!(tiles[0].height > 300.);
+        assert!(tiles[1].height > 400. && tiles[1].height < 430.);
+        assert!(
+            tiles
+                .iter()
+                .all(|tile| f64::from(tile.width.min(tile.height)) + 0.001 >= uniform.shortest)
+        );
+    }
+
+    #[test]
+    fn nonuniform_rows_never_shrink_below_an_already_legible_uniform_short_edge() {
+        let ratios = [16. / 9., 9. / 16., 4. / 3., 1., 16. / 9., 9. / 16.];
+        let aspects: Vec<_> = ratios.iter().map(|value| aspect(*value)).collect();
+        let partition = [2, 2, 2];
+        let uniform = arrange(1600., 1000., &aspects, &partition, 12.);
+        assert!(uniform.shortest > MIN_SHORT_EDGE);
+        for candidate in
+            nonuniform_arrangements(1600., 1000., &aspects, &partition, 12., uniform.shortest)
+        {
+            assert!(candidate.shortest + 0.001 >= uniform.shortest);
+            assert_geometry(1600., 1000., &ratios, &candidate.tiles);
+        }
+        assert!(
+            nonuniform_arrangements(1600., 1000., &[16. / 9.; 6], &partition, 12., 100.).is_empty()
+        );
     }
 
     #[test]
