@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Exercise the public actor with real loopback HTTP bytes and isolated storage.
 //! No account vault, microphone, screen capture or external server is used.
-use fluxer_client::{AttachmentStatus, Command, Controller, Event, StagedAttachment};
+use fluxer_client::{
+    AttachmentStatus, Command, Controller, Event, PendingMessage, PendingMessageStatus,
+    StagedAttachment, next_pending_message_id,
+};
 use fluxer_core::{ClientState, Snowflake};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -22,6 +25,7 @@ type RecordedRequests = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 struct Seen {
     state: ClientState,
     attachments: BTreeMap<Snowflake, Vec<StagedAttachment>>,
+    outbox: BTreeMap<Snowflake, Vec<PendingMessage>>,
     sent: usize,
     failed: usize,
 }
@@ -39,7 +43,16 @@ impl Seen {
                 } => {
                     self.attachments.insert(channel_id, attachments);
                 }
-                Event::AttachmentsCleared => self.attachments.clear(),
+                Event::AttachmentsCleared => {
+                    self.attachments.clear();
+                    self.outbox.clear();
+                }
+                Event::Outbox {
+                    channel_id,
+                    messages,
+                } => {
+                    self.outbox.insert(channel_id, messages);
+                }
                 Event::MessageSent { .. } => self.sent += 1,
                 Event::MessageOperationFailed { .. } => self.failed += 1,
                 _ => {}
@@ -61,6 +74,12 @@ impl Seen {
     }
     fn files(&self, channel: u64) -> &[StagedAttachment] {
         self.attachments
+            .get(&Snowflake(channel))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+    fn pending(&self, channel: u64) -> &[PendingMessage] {
+        self.outbox
             .get(&Snowflake(channel))
             .map(Vec::as_slice)
             .unwrap_or_default()
@@ -312,39 +331,30 @@ async fn multipart_failure_retains_files_and_actor_handles_channel_changes_durin
     controller
         .send(Command::SetDraft("caption".into()))
         .unwrap();
+    let id = next_pending_message_id();
     controller
-        .send(Command::SendMessage {
+        .send(Command::SendPendingMessage {
+            id,
+            channel_id: 100.into(),
             content: "caption".into(),
             reply_to: Some(200.into()),
             mention_author: false,
         })
         .unwrap();
     seen.until(&controller, |seen| seen.failed == 1).await;
-    // SetDraft intentionally does not echo a whole state for each keystroke.
-    // A guild selection is an actor barrier that publishes the retained draft.
-    controller
-        .send(Command::SelectGuild {
-            guild_id: 10.into(),
-        })
-        .unwrap();
     seen.until(&controller, |seen| {
-        seen.state.drafts.get(&100.into()).map(String::as_str) == Some("caption")
+        seen.pending(100).iter().any(|message| {
+            message.id == id && matches!(message.status, PendingMessageStatus::Failed(_))
+        })
     })
     .await;
-    assert_eq!(
-        seen.files(100).len(),
-        1,
-        "failed request must retain the actual staged file"
-    );
-    assert_eq!(
-        seen.state.drafts.get(&100.into()).map(String::as_str),
-        Some("caption")
-    );
+    assert!(seen.files(100).is_empty());
+    assert_eq!(seen.pending(100)[0].content, "caption");
+    assert_eq!(seen.pending(100)[0].attachments.len(), 1);
     controller
-        .send(Command::SendMessage {
-            content: "caption".into(),
-            reply_to: Some(200.into()),
-            mention_author: false,
+        .send(Command::RetryPendingMessage {
+            channel_id: 100.into(),
+            id,
         })
         .unwrap();
     timeout(Duration::from_secs(8), fixture.held.notified())
@@ -368,13 +378,14 @@ async fn multipart_failure_retains_files_and_actor_handles_channel_changes_durin
     })
     .await;
     assert_eq!(
-        seen.files(100).len(),
+        seen.pending(100)[0].attachments.len(),
         1,
         "switching channels retains sending files"
     );
     fixture.release.notify_one();
     seen.until(&controller, |seen| seen.sent == 1).await;
-    assert!(seen.files(100).is_empty());
+    seen.until(&controller, |seen| seen.pending(100).is_empty())
+        .await;
     assert_eq!(seen.state.selected_channel, Some(101.into()));
     assert_eq!(
         seen.state.drafts.get(&101.into()).map(String::as_str),
@@ -465,7 +476,7 @@ async fn preuploaded_attachment_only_send_keeps_new_draft_and_newly_staged_file(
 }
 
 #[tokio::test]
-async fn changed_file_is_rejected_before_upload_and_preserves_the_draft() {
+async fn changed_file_is_rejected_before_upload_and_preserved_in_outbox() {
     let fixture = Fixture::new(false).await;
     let (controller, mut seen) = fixture.controller().await;
     let directory = tempfile::tempdir().unwrap();
@@ -493,22 +504,17 @@ async fn changed_file_is_rejected_before_upload_and_preserves_the_draft() {
         })
         .unwrap();
     seen.until(&controller, |seen| seen.failed == 1).await;
-    controller
-        .send(Command::SelectGuild {
-            guild_id: 10.into(),
-        })
-        .unwrap();
     seen.until(&controller, |seen| {
-        seen.state.drafts.get(&100.into()).map(String::as_str) == Some("keep this text")
+        seen.pending(100).iter().any(|message| {
+            message.content == "keep this text"
+                && matches!(message.status, PendingMessageStatus::Failed(_))
+        })
     })
     .await;
     assert!(
         fixture.messages.lock().await.is_empty(),
         "changed files must not reach message creation"
     );
-    assert_eq!(seen.files(100).len(), 1);
-    assert_eq!(
-        seen.state.drafts.get(&100.into()).map(String::as_str),
-        Some("keep this text")
-    );
+    assert!(seen.files(100).is_empty());
+    assert_eq!(seen.pending(100)[0].attachments.len(), 1);
 }

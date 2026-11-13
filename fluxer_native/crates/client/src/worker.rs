@@ -824,6 +824,27 @@ impl Worker {
                 spoiler,
             } => self.spoiler_attachment(channel_id, id, spoiler)?,
             Command::CancelAttachmentSend { channel_id } => self.cancel_attachment_send(channel_id),
+            Command::RetryPendingMessage { channel_id, id } => {
+                self.retry_pending_message(channel_id, id)?
+            }
+            Command::RemovePendingMessage { channel_id, id } => {
+                self.remove_pending_message(channel_id, id)?
+            }
+            Command::SendPendingMessage {
+                id,
+                channel_id,
+                content,
+                reply_to,
+                mention_author,
+            } => {
+                let reference = reply_to.map(|message_id| MessageReference {
+                    channel_id,
+                    message_id: Some(message_id),
+                    guild_id: None,
+                    kind: 0,
+                });
+                self.request_pending_send(id, channel_id, content, reference, mention_author)?;
+            }
             Command::SendMessage {
                 content,
                 reply_to,
