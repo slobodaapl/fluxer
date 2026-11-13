@@ -179,6 +179,7 @@ mod native {
         width: c_int,
         height: c_int,
         pts: f64,
+        duration: f64,
         data: *mut u8,
         len: usize,
     }
@@ -315,6 +316,7 @@ mod native {
                 width: 0,
                 height: 0,
                 pts: -1.0,
+                duration: 0.0,
                 data: ptr::null_mut(),
                 len: 0,
             };
@@ -373,6 +375,10 @@ mod native {
             error: None,
         }));
         let mut output = if has_audio && !fake {
+            if let Err(error) = crate::pipewire_runtime::ensure() {
+                failed(&shared, error.to_string());
+                return;
+            }
             match start_output(options.output_device.as_deref(), audio.clone()) {
                 Ok(v) => Some(v),
                 Err(e) => {
@@ -385,6 +391,8 @@ mod native {
         };
         let mut video = VecDeque::<(f64, FilePlaybackFrame)>::new();
         let mut revision = 0;
+        let mut preroll_shown = false;
+        let mut seek_fallback: Option<FilePlaybackFrame> = None;
         let mut eof = false;
         let mut ended = false;
         let mut initialized = false;
@@ -393,6 +401,8 @@ mod native {
         let mut clock_time = Instant::now();
         let mut fake_time = Instant::now();
         let mut audio_tail = 0.0;
+        let mut video_end = 0.0;
+        let mut previous_video_pts: Option<f64> = None;
 
         loop {
             match rx.recv_timeout(Duration::from_millis(2)) {
@@ -406,11 +416,15 @@ mod native {
                             break;
                         }
                         video.clear();
+                        preroll_shown = false;
+                        seek_fallback = None;
                         eof = false;
                         ended = false;
                         seek_target = 0.0;
                         clock_base = 0.0;
                         audio_tail = 0.0;
+                        video_end = 0.0;
+                        previous_video_pts = None;
                         let mut a = audio.lock().unwrap_or_else(|e| e.into_inner());
                         a.chunks.clear();
                         a.samples = 0;
@@ -435,11 +449,15 @@ mod native {
                         break;
                     }
                     video.clear();
+                    preroll_shown = false;
+                    seek_fallback = None;
                     eof = false;
                     ended = false;
                     seek_target = pos;
                     clock_base = pos;
                     audio_tail = pos;
+                    video_end = pos;
+                    previous_video_pts = None;
                     clock_time = Instant::now();
                     fake_time = Instant::now();
                     initialized = false;
@@ -504,10 +522,11 @@ mod native {
             let mut latest = None;
             while video
                 .front()
-                .is_some_and(|(pts, _)| *pts <= position + 0.015 || (!initialized && !playing))
+                .is_some_and(|(pts, _)| *pts <= position + 0.015 || (!preroll_shown && !playing))
             {
                 latest = video.pop_front().map(|(_, frame)| frame);
                 initialized = true;
+                preroll_shown = true;
             }
             if let Some(frame) = latest {
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -517,7 +536,17 @@ mod native {
                     s.frame = Some(frame);
                 }
             }
-            if eof && audio_samples == 0 && video.is_empty() && playing {
+            if eof
+                && audio_samples == 0
+                && video.is_empty()
+                && playing
+                && position + 0.005
+                    >= if duration >= 0.0 {
+                        duration.max(video_end)
+                    } else {
+                        video_end
+                    }
+            {
                 if options.looping {
                     if unsafe { flux_decoder_seek(p, 0.0, error.as_mut_ptr(), error.len()) } == 0 {
                         failed(&shared, error_text(&error));
@@ -525,9 +554,13 @@ mod native {
                     }
                     eof = false;
                     initialized = false;
+                    preroll_shown = false;
+                    seek_fallback = None;
                     seek_target = 0.0;
                     clock_base = 0.0;
                     audio_tail = 0.0;
+                    video_end = 0.0;
+                    previous_video_pts = None;
                     clock_time = Instant::now();
                     let mut a = audio.lock().unwrap_or_else(|e| e.into_inner());
                     a.position = 0.0;
@@ -576,6 +609,7 @@ mod native {
                     width: 0,
                     height: 0,
                     pts: -1.0,
+                    duration: 0.0,
                     data: ptr::null_mut(),
                     len: 0,
                 };
@@ -587,6 +621,15 @@ mod native {
                 }
                 if result == 0 {
                     eof = true;
+                    if let Some(frame) = seek_fallback.take() {
+                        let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        if !s.pending_seek {
+                            s.snapshot.width = frame.width;
+                            s.snapshot.height = frame.height;
+                            s.frame = Some(frame);
+                        }
+                    }
+                    initialized = true;
                     continue;
                 }
                 let bytes = unsafe { std::slice::from_raw_parts(decoded.data, decoded.len) };
@@ -597,6 +640,20 @@ mod native {
                         decoded.pts.max(0.0)
                     };
                     if pts + 0.04 >= seek_target {
+                        seek_fallback = None;
+                        // Start the master clock from video even if the audio stream
+                        // begins later. Silence is rendered until its first packet.
+                        audio.lock().unwrap_or_else(|e| e.into_inner()).started = true;
+                        let interval = previous_video_pts
+                            .map(|previous| (pts - previous).clamp(0.0, 1.0))
+                            .unwrap_or(0.04);
+                        let frame_duration = if decoded.duration > 0.0 {
+                            decoded.duration
+                        } else {
+                            interval.max(0.001)
+                        };
+                        video_end = pts + frame_duration;
+                        previous_video_pts = Some(pts);
                         revision += 1;
                         video.push_back((
                             pts,
@@ -607,6 +664,14 @@ mod native {
                                 revision,
                             },
                         ));
+                    } else if seek_target > 0.0 {
+                        revision += 1;
+                        seek_fallback = Some(FilePlaybackFrame {
+                            width: decoded.width as u32,
+                            height: decoded.height as u32,
+                            bgra: Arc::new(bytes.to_vec()),
+                            revision,
+                        });
                     }
                 } else if decoded.kind == 2 {
                     let samples = unsafe {
@@ -722,9 +787,37 @@ mod tests {
             thread::sleep(Duration::from_millis(150));
             assert!((player.snapshot().position - paused).abs() < 0.06);
             player.seek(1.8);
-            assert!(player.take_frame().is_none());
             wait(&player, |s| {
                 s.position >= 1.8 && s.status == FilePlaybackStatus::Paused
+            });
+            let preview_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(frame) = player.take_frame() {
+                    assert_eq!(frame.width, 64);
+                    break;
+                }
+                assert!(
+                    Instant::now() < preview_deadline,
+                    "paused seek did not deliver a preview frame"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            let end = player.snapshot().duration.unwrap();
+            player.seek(end);
+            wait(&player, |s| {
+                s.position >= end && s.status == FilePlaybackStatus::Paused
+            });
+            let preview_deadline = Instant::now() + Duration::from_secs(5);
+            while player.take_frame().is_none() {
+                assert!(
+                    Instant::now() < preview_deadline,
+                    "end seek did not deliver a final frame"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            player.seek(1.8);
+            wait(&player, |s| {
+                s.position >= 1.8 && s.position < 2.0 && s.status == FilePlaybackStatus::Paused
             });
             player.set_volume(0.2);
             player.set_muted(true);
@@ -802,7 +895,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "testsrc=size=64x48:rate=10:duration=1",
+                "testsrc=size=64x48:rate=2:duration=1",
                 "-pix_fmt",
                 "yuv420p",
                 "-c:v",
@@ -817,8 +910,13 @@ mod tests {
         wait(&player, |s| {
             s.status == FilePlaybackStatus::Paused && s.width == 64
         });
+        let start = Instant::now();
         player.play();
         wait(&player, |s| s.status == FilePlaybackStatus::Ended);
+        assert!(
+            start.elapsed() >= Duration::from_millis(850),
+            "last frame was cut short"
+        );
         let _ = std::fs::remove_file(path);
     }
     #[test]
@@ -859,6 +957,149 @@ mod tests {
         )
         .unwrap();
         wait(&player, |s| s.status == FilePlaybackStatus::Ended);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    #[ignore = "opt-in synthetic 1080p playback performance test"]
+    fn synthetic_1080p_30fps_keeps_clock_and_frames_current() {
+        let path = std::env::temp_dir().join(format!("fluxer-1080p-{}.mp4", std::process::id()));
+        let result = Process::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=1920x1080:rate=30:duration=5",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=5",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(result.success());
+        let player = FilePlayer::open_impl(
+            path.clone(),
+            FilePlaybackOptions {
+                autoplay: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Playing && s.width == 1920
+        });
+        let start = Instant::now();
+        let initial = player.snapshot().position;
+        let mut displayed = 0;
+        while start.elapsed() < Duration::from_secs(3) {
+            if let Some(frame) = player.take_frame() {
+                assert_eq!(frame.bgra.len(), 1920 * 1080 * 4);
+                displayed += 1;
+            }
+            thread::sleep(Duration::from_millis(8));
+        }
+        let elapsed = start.elapsed().as_secs_f64();
+        let advanced = player.snapshot().position - initial;
+        assert!(
+            advanced > elapsed * 0.80 && advanced < elapsed * 1.20,
+            "clock advanced {advanced:.3}s over {elapsed:.3}s"
+        );
+        assert!(
+            displayed >= 60,
+            "only {displayed} frames presented in {elapsed:.2}s"
+        );
+        drop(player);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn delayed_audio_does_not_block_video_clock() {
+        let path =
+            std::env::temp_dir().join(format!("fluxer-delayed-audio-{}.mp4", std::process::id()));
+        let result = Process::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=64x48:rate=10:duration=2",
+                "-itsoffset",
+                "1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(result.success());
+        let player = FilePlayer::open_impl(
+            path.clone(),
+            FilePlaybackOptions {
+                autoplay: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        wait(&player, |s| s.position > 1.2);
+        wait(&player, |s| s.status == FilePlaybackStatus::Ended);
+        let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn one_frame_loop_respects_duration() {
+        let path =
+            std::env::temp_dir().join(format!("fluxer-one-frame-{}.mp4", std::process::id()));
+        let result = Process::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x48:rate=1:duration=1",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+            ])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(result.success());
+        let player = FilePlayer::open_impl(
+            path.clone(),
+            FilePlaybackOptions {
+                autoplay: true,
+                looping: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        wait(&player, |s| s.position > 0.6);
+        wait(&player, |s| {
+            s.position < 0.2 && s.status == FilePlaybackStatus::Playing
+        });
         let _ = std::fs::remove_file(path);
     }
 }
