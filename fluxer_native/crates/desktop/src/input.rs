@@ -1280,8 +1280,7 @@ impl Element for TextElement {
                 document.as_deref(),
                 &revealed,
                 &layout,
-                bounds,
-                scroll,
+                (bounds, scroll),
                 window,
                 cx,
             ));

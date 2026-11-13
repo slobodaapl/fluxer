@@ -112,7 +112,7 @@ impl Fluxer {
             .get(&channel)
             .is_some_and(|history| !history.latest)
         {
-            self.search_ui.returning_latest.insert(channel);
+            self.search_ui.return_to_latest_on_select(channel);
             self.search_ui.pending_center = None;
             self.search_ui.highlight = None;
             self.command(

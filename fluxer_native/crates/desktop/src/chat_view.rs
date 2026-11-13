@@ -431,6 +431,7 @@ impl Fluxer {
                                                 }),
                                         )
                                                 })
+                                                .when_some(pin_content, |view, content| view.child(content))
                                                 .when_some(reply_preview, |view, preview| {
                                                     view.child(preview)
                                                 })

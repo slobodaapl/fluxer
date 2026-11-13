@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 127 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 143 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-393 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+412 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -436,3 +436,29 @@ preloaded blurred GIF cache reuse. The selected concealed GIF was decoded before
 a programmed reveal and generated no additional HTTP request when revealed.
 Only generated media was captured. Artifact paths and the remaining real-account,
 hover/keyboard and subjective checks are recorded in REVIEW.md.
+
+
+## Messaging interaction fixes (2026-11-13)
+
+Text and attachment sends now use immediate GPUI local echoes and a worker-owned
+outbox keyed by an individual submission ID/nonce. Enter clears the captured
+composer/reply/files immediately, permits subsequent sends, and moves upload
+progress to the local row. Failed rows retain text and immutable file ownership
+for explicit retry/removal; retries reuse their nonce and stale asynchronous
+callbacks cannot mutate replacement attempts. Gateway and REST acceptance are
+reconciled without duplicate echoes or clearing a later draft. No server routes
+or upload contracts were invented for this UI change.
+
+The timeline has a subtle draggable scrollbar with track paging and wheel support.
+Community selection uses a thin border without a purple tile fill. Unicode emoji
+across the picker, composer, messages, reactions and previews share Fluxer art;
+editing and clipboard/IME offsets remain the original Unicode bytes. Composer
+undo/redo groups adjacent edits and preserves selection, with explicit history
+boundaries for programmatic draft resets. Pin system messages render source type 6
+as an author/action sentence with links to the original and channel pins; search
+results share that presentation. Failed/deleted-target jumps release centering
+state, and denied history navigation is rejected before entering it.
+
+The full 412-test verification gate passes, including actual localhost send/upload
+fixtures. User-facing checks remain U8/M8/E2/U9/N5 in REVIEW.md. Multi-stream
+review is deferred at the user's request.

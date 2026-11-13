@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 393 tests, formatting, strict Clippy and the
+The UI refinement gate passes 412 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -32,6 +32,11 @@ Full feature parity remains in progress.
 | U4 | Keyboard and small windows | Use Tab/Shift+Tab, timeline Up/Down, menus and confirmation dialogs at 880×600. Try long channel/user/file names and increased text size. Controls should remain reachable, focus visible and dialogs on screen. | **Pending complete accessibility review.** Local keyboard/slider/menu fixtures pass; screen-reader semantics, preference migration and broader focus consistency remain incomplete. |
 | U6 | Window moves and scaling | Move a window between monitors while watching video and using chat; try different scale factors and window sizes. | **Needs investigation/review.** Moving the offline preview between outputs produced blank content until a navigation redraw. No live-call failure established; retain this as an unresolved display check. |
 | U5 | Stream controls | Watch and share with regular Fluxer; check the quieter toolbar, chat/fullscreen/volume and Stop Watching/Stop sharing controls. | **Pending real-call review.** Synthetic viewer toolbar/volume layout checked; UI commands and immediate local stop paths retained. Prior synthetic media evidence remains scoped as V1/V2 below. |
+| U8 | Chat scrolling and community selection | Drag the chat scrollbar, click its track and scroll with the pointer over it; check a short conversation and a narrow call chat. Select communities and compare the thin selection border. | **Pending user review.** Thumb/drag geometry regressions pass; the purple selection fill is removed. |
+| M8 | Immediate text and attachment sending | Press Enter repeatedly, including identical messages and attachment-only sends. The composer clears and a local message appears immediately; upload progress belongs to that row. Force a failure, retry/remove it, and keep typing/staging other files. | **Pending live/feel review.** Per-attempt nonce, ownership, progress, retry/cancel, server/gateway ordering and newer-draft regressions pass. |
+| E2 | Consistent emoji artwork | Compare the same Unicode/tone/ZWJ emoji in picker, composer, messages, reactions and reply/search previews. Selection/copy must preserve Unicode. | **Pending visual review.** Shared bundled Fluxer artwork and source-byte/UTF-16 mapping regressions pass. Catalog variants without sprite tiles use the discovered static CDN; OS glyphs are used only outside the catalog. |
+| U9 | Composer undo and redo | Type, delete, paste and insert emoji; use Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z and Ctrl+Y. Check restored selection and channel/edit/send boundaries. | **Pending hands-on review.** Grouped edits, atomic paste/IME/emoji insertion, redo and reversed selection regressions pass. |
+| N5 | Pin system notices and message links | Read a pin notice, follow “a message”, then “all pinned messages”; try an old/deleted target and a search result containing a notice. | **Pending user review.** Type 6 uses the system sentence and existing channel-specific navigation; missing-target centering guards and source reference/permission cases have tests. |
 | A1 | Real attachment delivery | In a suitable test conversation, attach a small image and a normal file. Send with text, as a reply, and with no text. View each from regular Fluxer. Filenames, bytes, reply target and spoiler visibility should match. | **Pending real-account check.** Real-byte HTTP contracts and public-controller fixtures pass. |
 | A2 | Attachment input and layout | Add several files using the system picker, drag files into chat, and paste a screenshot. Toggle a spoiler and remove a file; switch channels and back. Cards should remain compact and belong to the original channel. | **Pending usability review.** Generated-file preparation, actual Wayland image paste, native picker opening and spoiler preview hiding checked offline. Physical drag/drop and picker selection need review. |
 | A3 | Upload failure and cancellation | Cancel a large upload; retry after a temporary connection failure. Files, text and reply intent should remain available. Type the next draft and add another file while a send is pending; completion must preserve the new draft/file. | **Pending real-network check.** Loopback retry/cancellation, retained nonce, draft preservation and changed-file rejection pass. |
@@ -43,7 +48,7 @@ Full feature parity remains in progress.
 | E1 | Reaction picker feel | Open reactions repeatedly, search a Unicode/custom emoji, change skin tone, and add/remove a reaction. Icons should be centered and opening should feel immediate. | **Pending subjective/live check.** Sprite, search and virtualization fixtures pass; earlier local cold-open measurement was 112 ms. |
 | V1 | Shared audio with regular Fluxer | Have another client watch a stream with Include audio enabled. Check system/application selection, stereo, stream mute/gain, and microphone mute/deafen independence. | **Pending real-client audio check.** Generated selected-application audio → publication → decoded stereo passes plain/E2EE locally. |
 | V2 | Watching and stopping streams | Watch/re-watch another person's Live stream, use fullscreen/chat controls, then Stop Watching while voice continues. Check video smoothness, immediate local stop and absence of lingering stream audio. | **Pending sustained real-call check.** Local plain/E2EE lifecycle, 1080p30 throughput, teardown and mixed audio fixtures pass. |
-| V3 | Multiple streams and layouts | Watch two or more streams. Switch Tile all/Main stage, select different streams, resize the window and open chat. Check landscape/portrait layouts, per-stream audio and stopping one stream while the others continue. | **Pending real-call/subjective review.** Multiple watch subscriptions already exist; this pass adds an explicit local layout choice and tiling from actual stage bounds. Offline evidence is recorded below. |
+| V3 | Multiple streams and layouts | Watch two or more streams. Switch Tile all/Main stage, select different streams, resize the window and open chat. Check landscape/portrait layouts, per-stream audio and stopping one stream while the others continue. | **Deferred by the user on 2026-11-13.** Multiple watch subscriptions already exist; this pass adds an explicit local layout choice and tiling from actual stage bounds. Offline evidence is recorded below. |
 
 Successful microphone transmission with GoXLR Chat Mic was previously confirmed
 by the user. Session restore, joining voice, receiving audio and watching a stream
@@ -180,3 +185,18 @@ fetched. The GIFV fixture uses an actual GIF image fallback; native MP4/GIFV
 playback remains separate. Autoplay-disabled and pointer-hover policy has
 regression coverage; desktop input targeting was not stable enough to claim a
 complete interactive hover run. M6/M7 retain the hands-on checks.
+
+
+## Interaction fixes (2026-11-13)
+
+The fixes for scrolling, community selection, optimistic text/attachment sends,
+emoji consistency, composer undo/redo and pin system notices are integrated on
+`yolo/gpui`. The full gate passes 412 tests (11 opt-in tests remain ignored),
+formatting, strict workspace Clippy and the feature inventory audit. Local HTTP
+fixtures exercise actual send/upload contracts without production account writes.
+Failure retention now belongs to an outbox row rather than the composer; the next
+draft and newly staged files remain independent. Retry preserves the original
+nonce, while separate identical submissions receive separate nonces.
+
+Multi-stream acceptance is explicitly deferred. The previous spoiler mock approval
+is scoped to its appearance and does not close the remaining M7 scenarios.

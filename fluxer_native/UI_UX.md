@@ -127,3 +127,16 @@ account mutations or microphone capture.
 Real-account, device, keyboard and subjective acceptance checks are recorded in
 [REVIEW.md](REVIEW.md). Local fixture evidence is recorded separately from user
 acceptance; the user being away is not a manual pass.
+
+
+## Interaction follow-up (2026-11-13)
+
+Sending no longer blocks the composer on network confirmation. Text and files move
+immediately into a local timeline row, with delivery/upload progress and explicit
+failure retry/removal. New drafts and staged files remain independent. The chat
+scrollbar is always discoverable when content overflows, with a six-pixel thumb
+and a larger drag target; active communities use a thin border without a filled
+purple box. Unicode emoji rendering is shared across picker, composer, messages
+and previews. Undo/redo preserves editing selections. Pin notices use compact
+system text with links to the target message and channel pins. Hands-on checks
+are U8/M8/E2/U9/N5; multi-stream review is deferred by the user.

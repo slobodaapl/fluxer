@@ -160,12 +160,12 @@ pub(super) fn images(
     document: Option<&MessageDocument>,
     revealed: &BTreeSet<u32>,
     layout: &DocumentLayout,
-    bounds: Bounds<Pixels>,
-    scroll: Point<Pixels>,
+    viewport: (Bounds<Pixels>, Point<Pixels>),
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<gpui::AnyElement> {
     use gpui::{AvailableSpace, ObjectFit, img};
+    let (bounds, scroll) = viewport;
     let mut images = Vec::new();
     for (row, line) in layout.lines.iter().enumerate() {
         let y = bounds.top() + layout.line_height * row - scroll.y;

@@ -1692,7 +1692,7 @@ async fn actual_text_workflow(login_mode: u8) {
         .await
         .unwrap();
     finish_attachment_send(&mut worker, 100.into()).await;
-    assert!(worker.state.drafts.get(&100.into()).is_none());
+    assert!(!worker.state.drafts.contains_key(&100.into()));
     let events = events.try_iter().collect::<Vec<_>>();
     assert!(events.iter().any(|event| matches!(event, Event::Outbox { channel_id, messages } if *channel_id == Snowflake(100) && messages.iter().any(|message| message.content == "fail" && matches!(&message.status, crate::PendingMessageStatus::Failed(_))))));
     assert_eq!(
@@ -2034,7 +2034,7 @@ async fn actual_reply_and_forward_requests_keep_source_destination_and_failed_ou
         .await
         .unwrap();
     finish_attachment_send(&mut worker, 11.into()).await;
-    assert!(worker.state.drafts.get(&11.into()).is_none());
+    assert!(!worker.state.drafts.contains_key(&11.into()));
     let events = events.try_iter().collect::<Vec<_>>();
     assert!(events.iter().any(|event| matches!(event, Event::Outbox { channel_id, messages } if *channel_id == Snowflake(11) && messages.iter().any(|message| message.content == "failed reply" && matches!(&message.status, crate::PendingMessageStatus::Failed(_))))));
     assert_eq!(

@@ -80,6 +80,8 @@ impl Fluxer {
         }
         let jump = jump_action(message);
         let pins = pins_action(message);
+        let author =
+            emoji_sprites::unicode_text(&author_name(&self.state, message), 14., false, cx);
         let link = |suffix: &'static str, label: &'static str, action: Option<PinAction>| {
             div()
                 .id((suffix, message.id.0))
@@ -121,12 +123,7 @@ impl Fluxer {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(rgb(TEXT))
-                        .child(emoji_sprites::unicode_text(
-                            &author_name(&self.state, message),
-                            14.,
-                            false,
-                            cx,
-                        )),
+                        .child(author),
                 )
                 .child("pinned")
                 .child(link("pin-message-link", "a message", jump))

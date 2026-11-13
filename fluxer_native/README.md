@@ -61,9 +61,9 @@ counts without message content. Replies have a cancellable preview and author-me
 forwarding has a searchable destination picker. Reply intent and unsent drafts
 survive channel switching, and editing preserves the unsent composer draft.
 
-Full markdown and inline custom-emoji rendering, attachment uploads, native
-audio/video playback, selection across messages, and selection autoscroll remain
-open. Embed text is currently plain and is not selectable. These features do not
+Native audio/video playback, full block-formatting parity, selection across
+messages, and selection autoscroll remain open. Attachment upload interoperability
+still needs real-client acceptance. Embed text is currently plain and is not selectable. These features do not
 establish complete messaging parity with the existing client.
 
 macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
@@ -186,3 +186,12 @@ forwards that API to maintained xattr to support current Linux libc.
 The pinned LiveKit Rust dependency also has a workspace-local
 [compatibility patch](compat/livekit/FLUXER_PATCHES.md) for RTC receiver reuse,
 normal decryption-hook restoration and ordered subscription signaling.
+
+
+Messages and attachments appear locally as soon as Enter is pressed, freeing the
+composer for the next draft. Upload/sending progress and failures stay with that
+message; failed sends can be retried or removed. Chat has a narrow draggable
+scrollbar, and community selection uses a thin border. Ctrl/Cmd+Z undoes composer
+edits; Ctrl/Cmd+Shift+Z or Ctrl+Y redoes them. Picker, composer, messages and
+reactions share Fluxer's emoji artwork. Pin announcements link to their original
+message and the channel's pins instead of displaying a reply preview.
