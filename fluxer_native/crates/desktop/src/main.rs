@@ -1992,7 +1992,7 @@ impl Render for Fluxer {
                 .child(body)
                 .into_any_element()
         };
-        let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Inter").text_size(px(14.))
+        let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
@@ -2071,6 +2071,9 @@ fn main() {
         .with_assets(controls::Assets)
         .with_http_client(rich_message::http_client())
         .run(move |cx: &mut App| {
+            cx.text_system()
+                .add_fonts(controls::fonts())
+                .expect("load bundled Fluxer fonts");
             input::init(cx);
             cx.bind_keys([
                 KeyBinding::new("enter", Submit, Some("TextInput")),

@@ -1,0 +1,74 @@
+[
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-Regular.woff2",
+    "source_sha256": "0e0cf8d44c556bd6882552cba5f57cad5b0f1de69d790255951f5086a6b0f4f0",
+    "native": "FluxerSans-Regular.ttf",
+    "native_sha256": "b9f12bfb958a090d3f71b2db68c5e1192aab53d4634acced694fa2331c05e127"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-Medium.woff2",
+    "source_sha256": "b801fccf0ab6d917d16724d685b7b6f88d894504a2b860d8f10d9f4a0a43d6ac",
+    "native": "FluxerSans-Medium.ttf",
+    "native_sha256": "f455b9c6f1900bd1ce7bc00b12ee9745f3fbee703d809fd023cbc575e9313af3"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-SemiBold.woff2",
+    "source_sha256": "86787ec2363f23ad8def22848649ec76e00c97d5ed1d5823a846fae326ce3615",
+    "native": "FluxerSans-SemiBold.ttf",
+    "native_sha256": "dab57c301687b9ef8b998f04e6ab22abdbaa0259553ff071fe091d499a45379c"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-Bold.woff2",
+    "source_sha256": "e24292013967952cc84985c6d691c87b561037f8adeb4f240ff70a67266f36d4",
+    "native": "FluxerSans-Bold.ttf",
+    "native_sha256": "d95e149579a7655ea61021631b5c60ab8f8734cb3b432449f4710b3013839c3c"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-Italic.woff2",
+    "source_sha256": "4318b3cd228792b7ef24f8b2ecbf0b2a922257c2996817c7b500ff7793214201",
+    "native": "FluxerSans-Italic.ttf",
+    "native_sha256": "b262f7e028e3b842dba035fee40ec8b63a92efa093f34747ccf6d5680429490f"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-MediumItalic.woff2",
+    "source_sha256": "a7813216c2d272c35f4d477336ae81c941441c3eae0932c16f2e41743fec7c1b",
+    "native": "FluxerSans-MediumItalic.ttf",
+    "native_sha256": "b7149701e7204ecfa9539026000da0a523d0860071ef149d5856601efc910eb2"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-SemiBoldItalic.woff2",
+    "source_sha256": "4d3a5828c4891c797a97651b137bda483f75f384cc9b56e67426fb63c1b76c27",
+    "native": "FluxerSans-SemiBoldItalic.ttf",
+    "native_sha256": "b63116a0397b100046c58abcaff1740889f9bc93c1769391c13b758207174d0f"
+  },
+  {
+    "source": "packages/fonts/files/FluxerSans/FluxerSans-BoldItalic.woff2",
+    "source_sha256": "712d327ee9be8ec05f238b115326d78d8888f659e37a09cf76943ff98ac95db5",
+    "native": "FluxerSans-BoldItalic.ttf",
+    "native_sha256": "e6ced45a929525cbf1fef03669f4920508331e3ad86391400737fd1aa8b10b92"
+  },
+  {
+    "source": "packages/fonts/files/FluxerMono/FluxerMono-Regular.woff2",
+    "source_sha256": "a6f1f68d101a7fa1de24cbe18439320447b6edb06e29724c573f38dadcebc37d",
+    "native": "FluxerMono-Regular.ttf",
+    "native_sha256": "b274cf426d6529c1ff71e47efda62b24508999f77ea1c12fa1ed08dbddf8a6f2"
+  },
+  {
+    "source": "packages/fonts/files/FluxerMono/FluxerMono-Bold.woff2",
+    "source_sha256": "832bbbe0693dc49434afa042efe1e5fb18466c7eff66fbff8112c4c08c64a4ea",
+    "native": "FluxerMono-Bold.ttf",
+    "native_sha256": "6da59209e9adc8d73786e9ab7f70e05a4eac3427609441bd4766be8b6a10c54b"
+  },
+  {
+    "source": "packages/fonts/files/FluxerMono/FluxerMono-Italic.woff2",
+    "source_sha256": "b5c2d4ce820854b48ec8a8575d3f0460a9e6dcc11d2b41ba958097e00ce403ef",
+    "native": "FluxerMono-Italic.ttf",
+    "native_sha256": "bf73b91439e2a4f776a35e02b0342588ebb3ab9fb15a5e6abbbb66e471d3b747"
+  },
+  {
+    "source": "packages/fonts/files/FluxerMono/FluxerMono-BoldItalic.woff2",
+    "source_sha256": "df41b2436dec4f558fe6123de977f29bf423300f8a2740e5399dad2638f99e59",
+    "native": "FluxerMono-BoldItalic.ttf",
+    "native_sha256": "dc6abf698550732067a552d9f735b75e7d79f25b2f5258cc17fa72c0e371b5da"
+  }
+]

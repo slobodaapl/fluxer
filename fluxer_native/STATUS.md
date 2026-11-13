@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 60 input/emoji/attachment/search/media/viewer/UI control tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 87 input/emoji/attachment/search/media/viewer/message presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-326 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+353 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -310,3 +310,22 @@ timeline focus, and two-choice confirmation traps with opening-key-release
 protection. The API/client/media worker layers are unchanged by this pass.
 See [UI_UX.md](UI_UX.md) for the source-backed audit and remaining UI priorities,
 and [REVIEW.md](REVIEW.md) for U1–U5 and pending real-account acceptance.
+
+The next conversation presentation pass reuses the existing Rust Markdown parser
+(`packages/markdown_parser/rust`) directly. Source grouping rules include the
+seven-minute group-start window, local date dividers and reply/type/webhook/flag
+boundaries; cozy rows use 40px avatars, 22px lines and compact continuations.
+Rich readonly text shares measurement, wrapping, hit testing and copy indices;
+formatting, links, mentions, inline/code-block backgrounds, spoiler conceal/reveal
+and bounded custom-emoji images retain selection. Hidden spoilers are omitted
+from selection copy; the explicit Copy Message action retains raw source, as in
+Fluxer. Source Fluxer Sans/Mono faces are bundled with provenance and OFL notices.
+Replies use contextual previews and existing jump navigation; image attachments
+use source size bounds without a repeated file card. Public discovery metadata
+is forwarded to the UI for source link trust/routing without extra requests.
+
+Full Markdown/UI parity remains incomplete: heading sizes, nested list/table
+layout, syntax highlighting, timestamp widgets, jumbo/animated emoji treatment,
+profile/role popovers, full density/locale/hour-cycle preference migration and
+trust-preference editing still need work. See message_markup.rs scope notes and
+REVIEW.md M1–M4; live account acceptance remains pending.

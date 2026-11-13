@@ -424,6 +424,27 @@ pub(super) fn slider(
             cx.stop_propagation();
         })
 }
+pub(super) fn fonts() -> Vec<std::borrow::Cow<'static, [u8]>> {
+    vec![
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-Regular.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-Medium.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-SemiBold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-Bold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-Italic.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!(
+            "../assets/fonts/FluxerSans-MediumItalic.ttf"
+        )),
+        std::borrow::Cow::Borrowed(include_bytes!(
+            "../assets/fonts/FluxerSans-SemiBoldItalic.ttf"
+        )),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerSans-BoldItalic.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerMono-Regular.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerMono-Bold.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerMono-Italic.ttf")),
+        std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FluxerMono-BoldItalic.ttf")),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::quantize;

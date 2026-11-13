@@ -45,7 +45,7 @@ impl Fluxer {
             (
                 &sam,
                 480,
-                "**Bold**, *italic*, __underline__, ~~strikethrough~~ and **nested *formatting***.",
+                "**Bold**, *italic*, __underline__, ~~strikethrough~~ and **nested *formatting* together**.",
             ),
             (
                 &sam,

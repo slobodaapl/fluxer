@@ -43,11 +43,29 @@ Controls use consistent geometry and named tooltips rather than platform emoji.
   controls. The native gain scale remains its existing linear 0–2 range;
   Fluxer's nonlinear boost curve has not been migrated in this UI pass.
 
+## Conversation presentation follow-up
+
+The next pass implements source-defined cozy grouping and date separators, rich
+selectable text using Fluxer's existing Rust parser, source fonts, inline/code
+backgrounds, concealed/revealed spoilers, resolved mention labels, bounded custom
+emoji images, contextual replies and image attachments without duplicate file
+cards. The parser/document cache is bounded, and selection copy follows visible
+rendered content. Explicit Copy Message still copies source Markdown.
+
+Inline links use actual discovery metadata and user trusted-domain settings;
+known accessible channel/message destinations use existing navigation commands.
+Unknown external destinations show Fluxer's destination confirmation. No new
+server requests were added to infer link or profile behavior.
+
+Still partial: larger heading sizes, nested lists/tables/alert cards, syntax
+highlighting, timestamp widgets, animated/jumbo emoji, profile/role popovers,
+compact density and locale/hour-cycle preferences, and editing trust settings.
+These limitations are tracked with M1–M4 in REVIEW.md.
+
 ## Next priorities
 
-1. Message grouping, date separators, inline markdown/custom emoji, reply context,
-   image presentation and density settings. Removing buttons improves scanning;
-   the remaining message presentation still needs source-level parity.
+1. Finish block presentation (heading hierarchy, nested lists, code tools and
+   tables), compact/density preferences and the remaining rich-text interactions.
 2. A unified modal/popover system: focus trapping, dismissal, anchoring, screen
    bounds, accessible names and consistent confirmations across all surfaces.
 3. Responsive behavior at short/minimum window sizes, larger text, long names,
@@ -61,7 +79,7 @@ Controls use consistent geometry and named tooltips rather than platform emoji.
 5. Member/profile and channel/guild context menus, unread/mention hierarchy,
    quick switching, inbox and remaining feature areas in `parity.json`.
 
-The full local gate passes 326 tests, strict workspace Clippy, formatting and the
+The full local gate passes 353 tests, strict workspace Clippy, formatting and the
 47-area source inventory. Offline Wayland checks verified actual SVG rendering,
 hover and right-click menus, Delete/Pin cancellation after Tab wrapping, and
 slider dragging, arrow adjustment and range limits. These checks opened no real

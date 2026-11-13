@@ -119,6 +119,9 @@ impl Fluxer {
                 .child(
                     quiet_button(("reply-source", message.id.0), name)
                         .py_0()
+                        .h(px(20.))
+                        .line_height(px(18.))
+                        .flex_shrink_0()
                         .text_size(px(12.))
                         .max_w(px(140.))
                         .overflow_hidden()

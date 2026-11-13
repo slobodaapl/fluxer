@@ -43,7 +43,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings.",
-      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
+      "evidence": "Source-defined cozy message grouping/date dividers; existing Rust Markdown parser drives selectable formatting, spoilers, mentions and bounded inline custom emoji. Replies/link navigation reuse existing commands. See STATUS.md and REVIEW.md M1\u2013M4 for partial scope and pending acceptance."
     },
     {
       "id": "code_highlighting",
