@@ -23,7 +23,7 @@ typedef struct {
     AVChannelLayout audio_layout;
     double origin;
 } FluxDecoder;
-typedef struct { int kind, width, height; double pts; unsigned char *data; size_t len; } FluxDecoded;
+typedef struct { int kind, width, height; double pts, duration; unsigned char *data; size_t len; } FluxDecoded;
 static void error_text(char *out, size_t len, int err) { if (av_strerror(err, out, len) < 0) snprintf(out, len, "FFmpeg error %d", err); }
 static AVCodecContext *open_codec(AVFormatContext *f, int index, char *error, size_t len) {
     if (index < 0) return NULL;
@@ -32,6 +32,11 @@ static AVCodecContext *open_codec(AVFormatContext *f, int index, char *error, si
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
     if (!ctx) { snprintf(error, len, "Out of memory"); return NULL; }
     int r = avcodec_parameters_to_context(ctx, s->codecpar);
+    if (s->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        // Bound decoder surfaces and thread-local copies even for hostile files.
+        ctx->max_pixels = 4096LL * 2304;
+        ctx->thread_count = 4;
+    }
     if (r >= 0) r = avcodec_open2(ctx, codec, NULL);
     if (r < 0) { error_text(error, len, r); avcodec_free_context(&ctx); }
     return ctx;
@@ -77,8 +82,9 @@ static int convert_frame(FluxDecoder *d, int stream, FluxDecoded *out, char *err
     AVFrame *f = d->frame; AVStream *s = d->format->streams[stream];
     int64_t ts = f->best_effort_timestamp;
     out->pts = ts == AV_NOPTS_VALUE ? -1 : (double)ts * av_q2d(s->time_base) - d->origin;
+    out->duration = f->duration > 0 ? (double)f->duration * av_q2d(s->time_base) : 0;
     if (stream == d->vi) {
-        if (f->width <= 0 || f->height <= 0 || f->width > 8192 || f->height > 8192) { snprintf(error, len, "Invalid video dimensions"); return -1; }
+        if (f->width <= 0 || f->height <= 0 || (int64_t)f->width * f->height > 4096LL * 2304) { snprintf(error, len, "Invalid video dimensions"); return -1; }
         d->scale = sws_getCachedContext(d->scale, f->width, f->height, f->format, f->width, f->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!d->scale) { snprintf(error, len, "Unable to convert video"); return -1; }
         out->kind = 1; out->width = f->width; out->height = f->height; out->len = (size_t)f->width * f->height * 4;
