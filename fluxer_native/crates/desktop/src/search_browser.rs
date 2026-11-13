@@ -160,6 +160,14 @@ impl Fluxer {
         let Some(channel_id) = self.state.selected_channel else {
             return;
         };
+        self.open_pins_for(channel_id, cx);
+    }
+    pub(super) fn open_pins_for(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        if !message_links::can_follow_channel(&self.state, channel_id, None) {
+            self.error = Some("You do not have access to the linked channel.".into());
+            cx.notify();
+            return;
+        }
         self.search_ui.open = Some(BrowserTab::Pins);
         self.search_ui.pins_context = Some(channel_id);
         self.pane = Pane::Chat;

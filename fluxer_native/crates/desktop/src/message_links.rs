@@ -216,29 +216,14 @@ impl Fluxer {
             }
         }
     }
-    fn follow_message_channel(
+    pub(super) fn follow_message_channel(
         &mut self,
         channel: Snowflake,
         scope: Option<Option<Snowflake>>,
         message: Option<Snowflake>,
         cx: &mut Context<Self>,
     ) {
-        let allowed = self
-            .state
-            .channels
-            .get(&channel)
-            .zip(self.state.current_user.as_ref())
-            .is_some_and(|(channel, user)| {
-                channel.kind != ChannelType::Category
-                    && scope.is_none_or(|scope| {
-                        scope_matches(scope, channel.guild_id, channel.kind.is_private())
-                    })
-                    && self
-                        .state
-                        .permissions_for(channel.id, user.id)
-                        .contains(Permissions::VIEW_CHANNEL)
-            });
-        if !allowed {
+        if !can_follow_channel(&self.state, channel, scope) {
             self.error = Some("You do not have access to the linked channel.".into());
             cx.notify();
             return;
@@ -398,6 +383,26 @@ impl Fluxer {
     }
 }
 
+pub(super) fn can_follow_channel(
+    state: &ClientState,
+    channel: Snowflake,
+    scope: Option<Option<Snowflake>>,
+) -> bool {
+    state
+        .channels
+        .get(&channel)
+        .zip(state.current_user.as_ref())
+        .is_some_and(|(channel, user)| {
+            channel.kind != ChannelType::Category
+                && scope.is_none_or(|scope| {
+                    scope_matches(scope, channel.guild_id, channel.kind.is_private())
+                })
+                && state
+                    .permissions_for(channel.id, user.id)
+                    .contains(Permissions::VIEW_CHANNEL)
+        })
+}
+
 fn safe_url(raw: &str) -> Option<Url> {
     let raw = raw.trim();
     if raw.chars().any(|character| character.is_control()) {
@@ -509,9 +514,33 @@ fn scope_matches(scope: Option<Snowflake>, guild: Option<Snowflake>, private: bo
 #[cfg(test)]
 mod tests {
     use super::{
-        covers_host, instance_policy, internal_route, safe_url, scope_matches, trusted_host,
+        can_follow_channel, covers_host, instance_policy, internal_route, safe_url, scope_matches,
+        trusted_host,
     };
     use fluxer_core::Snowflake;
+    #[test]
+    fn channel_link_actions_require_live_access_without_requiring_cached_history() {
+        let mut state = fluxer_core::ClientState::demo();
+        state.messages.clear();
+        assert!(can_follow_channel(&state, 11.into(), None));
+        assert!(can_follow_channel(&state, 40.into(), None));
+        assert!(
+            !can_follow_channel(&state, 10.into(), None),
+            "categories are not message destinations"
+        );
+        assert!(!can_follow_channel(&state, 999.into(), None));
+        let user = state.current_user.as_ref().unwrap().id;
+        state.guilds.get_mut(&Snowflake(1)).unwrap().roles[0].permissions =
+            fluxer_core::Permissions::NONE;
+        assert!(
+            !can_follow_channel(&state, 11.into(), None),
+            "cached announcements cannot bypass revoked view permission"
+        );
+        state.guilds.get_mut(&Snowflake(1)).unwrap().owner_id = user;
+        assert!(can_follow_channel(&state, 11.into(), None));
+        state.current_user = None;
+        assert!(!can_follow_channel(&state, 11.into(), None));
+    }
     #[test]
     fn source_builtin_patterns_do_not_trust_lookalikes_or_extra_gg_subdomains() {
         for host in [

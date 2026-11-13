@@ -24,6 +24,7 @@ mod message_grouping;
 mod message_links;
 mod message_markup;
 mod outbox_view;
+mod pin_system_message;
 mod rich_message;
 mod scrollbar;
 mod search_browser;

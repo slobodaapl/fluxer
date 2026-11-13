@@ -262,6 +262,18 @@ impl ClientState {
             }]),
         );
         state.insert_message(forwarded);
+        // A historical pin announcement keeps working without an embedded
+        // referenced message. Its target is present in the offline worker too.
+        let mut pin = Message::text(1007.into(), 11.into(), alex.clone(), "");
+        pin.kind = 6;
+        pin.timestamp = "2026-11-12T09:37:00Z".into();
+        pin.message_reference = Some(MessageReference {
+            channel_id: 11.into(),
+            message_id: Some(1000.into()),
+            guild_id: Some(1.into()),
+            kind: 0,
+        });
+        state.insert_message(pin);
         state.relationships.insert(
             alex.id,
             Relationship {
