@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Credential-free message media. URLs come from messages or the selected
 //! instance's discovery document; account credentials never enter this client.
+use crate::{
+    Fluxer,
+    image_gallery::{ImageItem, safe_image_url},
+};
 use fluxer_core::{Attachment, Message, User};
 use gpui::{http_client, prelude::*, *};
 use serde_json::Value;
 use std::{
+    collections::BTreeSet,
     io::Read,
     sync::{Arc, Mutex, OnceLock, mpsc},
     time::Duration,
@@ -190,8 +195,20 @@ fn attachment_kind(attachment: &Attachment) -> MediaKind {
     }
 }
 
+fn attachment_expired(attachment: &Attachment) -> bool {
+    attachment.extra.get("expired").and_then(Value::as_bool) == Some(true)
+        || attachment
+            .extra
+            .get("expires_at")
+            .and_then(Value::as_str)
+            .and_then(|expires| chrono::DateTime::parse_from_rfc3339(expires).ok())
+            .is_some_and(|expires| {
+                expires.timestamp_millis() <= chrono::Utc::now().timestamp_millis()
+            })
+}
+
 fn attachment_url(attachment: &Attachment, preview: bool) -> Option<String> {
-    if attachment.extra.get("expired").and_then(Value::as_bool) == Some(true) {
+    if attachment_expired(attachment) {
         return None;
     }
     let proxy = attachment
@@ -275,14 +292,17 @@ impl Render for MediaTooltip {
 fn preview(
     id: String,
     url: String,
-    target: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
+    gallery: Arc<Vec<ImageItem>>,
+    index: usize,
+    natural_size: (Option<u32>, Option<u32>),
     max_size: (f32, f32),
+    cx: &mut Context<Fluxer>,
 ) -> AnyElement {
-    let (width, height) = dimensions(width, height, max_size);
+    let (width, height) = dimensions(natural_size.0, natural_size.1, max_size);
     div()
         .id(SharedString::from(id))
+        .focusable()
+        .tab_stop(true)
         .max_w_full()
         .overflow_hidden()
         .rounded_md()
@@ -303,16 +323,15 @@ fn preview(
                     div()
                         .text_size(px(12.))
                         .text_color(rgb(MUTED))
-                        .child("Preview unavailable · click to open original")
+                        .child("Preview unavailable · click to view image")
                         .into_any_element()
                 }),
         )
-        .when_some(target, |view, url| {
-            view.cursor_pointer().on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                cx.open_url(&url);
-            })
-        })
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.open_image_gallery(gallery.as_ref().clone(), index, window, cx);
+        }))
         .into_any_element()
 }
 
@@ -328,6 +347,11 @@ fn snapshot_media(snapshot: &Value) -> Message {
         .filter_map(|attachment| serde_json::from_value::<Attachment>(attachment.clone()).ok())
         .collect();
     let mut message = Message {
+        content: snapshot
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
         attachments,
         flags: snapshot
             .get("flags")
@@ -344,7 +368,7 @@ fn snapshot_media(snapshot: &Value) -> Message {
     message
 }
 
-pub fn media(message: &Message) -> AnyElement {
+pub fn media(message: &Message, cx: &mut Context<Fluxer>) -> AnyElement {
     let snapshots = message
         .extra
         .get("message_snapshots")
@@ -356,47 +380,97 @@ pub fn media(message: &Message) -> AnyElement {
             media_parts(
                 &snapshot_media(snapshot),
                 &format!("{}-snapshot-{index}", message.id),
+                cx,
             )
-        });
+        })
+        .collect::<Vec<_>>();
     div()
         .flex()
         .flex_col()
         .gap_2()
         .min_w_0()
-        .child(media_parts(message, &message.id.to_string()))
+        .child(media_parts(message, &message.id.to_string(), cx))
         .children(snapshots)
         .into_any_element()
 }
 
-fn media_parts(message: &Message, namespace: &str) -> AnyElement {
-    let attachments = message.attachments.iter().map(|attachment| {
-        let kind = attachment_kind(attachment);
-        let original = attachment_url(attachment, false);
-        if kind == MediaKind::Image
-            && let Some(url) = attachment_url(attachment, true)
-        {
-            let tooltip = format!("{} · {}", attachment.filename, byte_size(attachment.size));
-            return div()
-                .id(SharedString::from(format!(
-                    "attachment-image-{namespace}-{}",
-                    attachment.id
-                )))
-                .max_w_full()
-                .min_w_0()
-                .tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
-                .child(preview(
-                    format!("image-{namespace}-{}", attachment.id),
-                    url,
+/// Gallery entries retain their source attachment position so filtered files
+/// cannot shift the clicked image to a different attachment.
+fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
+    message
+        .attachments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, attachment)| {
+            if attachment_kind(attachment) != MediaKind::Image || attachment_expired(attachment) {
+                return None;
+            }
+            let source = attachment
+                .extra
+                .get("proxy_url")
+                .and_then(Value::as_str)
+                .and_then(safe_image_url)
+                .or_else(|| attachment.url.as_deref().and_then(safe_image_url))?;
+            let original = attachment.url.as_deref().and_then(safe_image_url);
+            Some((
+                index,
+                ImageItem {
+                    source,
                     original,
-                    attachment.width,
-                    attachment.height,
-                    (550., 350.),
-                ))
-                .into_any_element();
-        }
-        let view = div().flex().flex_col().gap_1().min_w_0();
-        let prefix =
-            if attachment.flags & (1 << 3) != 0 || attachment.filename.starts_with("SPOILER_") {
+                    name: attachment.filename.clone(),
+                    width: attachment.width,
+                    height: attachment.height,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn media_parts(message: &Message, namespace: &str, cx: &mut Context<Fluxer>) -> AnyElement {
+    let indexed_gallery = attachment_gallery(message);
+    let gallery = Arc::new(
+        indexed_gallery
+            .iter()
+            .map(|(_, item)| item.clone())
+            .collect::<Vec<_>>(),
+    );
+    let attachments = message
+        .attachments
+        .iter()
+        .enumerate()
+        .map(|(source_index, attachment)| {
+            let kind = attachment_kind(attachment);
+            let original = attachment_url(attachment, false);
+            if kind == MediaKind::Image
+                && let Some(url) = attachment_url(attachment, true)
+                && let Some(index) = indexed_gallery
+                    .iter()
+                    .position(|(index, _)| *index == source_index)
+            {
+                let tooltip = format!("{} · {}", attachment.filename, byte_size(attachment.size));
+                return div()
+                    .id(SharedString::from(format!(
+                        "attachment-image-{namespace}-{}",
+                        attachment.id
+                    )))
+                    .max_w_full()
+                    .min_w_0()
+                    .tooltip(move |_, cx| cx.new(|_| MediaTooltip(tooltip.clone())).into())
+                    .child(preview(
+                        format!("image-{namespace}-{}", attachment.id),
+                        url,
+                        gallery.clone(),
+                        index,
+                        (attachment.width, attachment.height),
+                        (550., 350.),
+                        cx,
+                    ))
+                    .into_any_element();
+            }
+            let view = div().flex().flex_col().gap_1().min_w_0();
+            let prefix = if attachment.flags & (1 << 3) != 0
+                || attachment.filename.starts_with("SPOILER_")
+            {
                 "Spoiler · "
             } else if attachment.flags & (1 << 4) != 0
                 || attachment.extra.get("nsfw").and_then(Value::as_bool) == Some(true)
@@ -409,22 +483,24 @@ fn media_parts(message: &Message, namespace: &str) -> AnyElement {
                     _ => "",
                 }
             };
-        view.child(open_card(
-            format!("attachment-{namespace}-{}", attachment.id),
-            format!("{prefix}{}", attachment.filename),
-            format!(
-                "{} · {}",
-                byte_size(attachment.size),
-                if original.is_some() {
-                    "Open original"
-                } else {
-                    "File unavailable"
-                }
-            ),
-            original,
-        ))
-        .into_any_element()
-    });
+            view.child(open_card(
+                format!("attachment-{namespace}-{}", attachment.id),
+                format!("{prefix}{}", attachment.filename),
+                format!(
+                    "{} · {}",
+                    byte_size(attachment.size),
+                    if original.is_some() {
+                        "Open original"
+                    } else {
+                        "File unavailable"
+                    }
+                ),
+                original,
+            ))
+            .into_any_element()
+        })
+        .collect::<Vec<_>>();
+    let spoilered = spoilered_embed_urls(&message.content);
     let embeds = message
         .extra
         .get("embeds")
@@ -433,7 +509,18 @@ fn media_parts(message: &Message, namespace: &str) -> AnyElement {
         .flatten()
         .enumerate()
         .filter(|_| message.flags & (1 << 2) == 0)
-        .map(|(index, embed)| render_embed(namespace, index, embed));
+        .map(|(index, embed)| {
+            if embed_is_spoiler(embed, &spoilered) {
+                div()
+                    .text_size(px(12.))
+                    .text_color(rgb(MUTED))
+                    .child("Spoiler · preview hidden")
+                    .into_any_element()
+            } else {
+                render_embed(namespace, index, embed, cx)
+            }
+        })
+        .collect::<Vec<_>>();
     div()
         .flex()
         .flex_col()
@@ -450,20 +537,168 @@ fn string_at<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
 }
+
+/// SpoilerUtils.canonicalizeMediaUrl: YouTube variants share a video key;
+/// attachment signing fields do not change which concealed media is matched.
+fn canonical_media_url(raw: &str) -> Option<String> {
+    let mut url = http_client::Url::parse(raw).ok()?;
+    let host = url.host_str().unwrap_or_default();
+    if matches!(
+        host,
+        "www.youtube.com" | "youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtu.be"
+    ) {
+        let video = if host == "youtu.be" {
+            url.path()
+                .strip_prefix('/')
+                .and_then(|path| path.split('/').next())
+                .map(str::to_owned)
+        } else if url.path() == "/watch" {
+            url.query_pairs()
+                .find(|(key, _)| key == "v")
+                .map(|(_, value)| value.into_owned())
+        } else {
+            ["/shorts/", "/v/", "/embed/"].iter().find_map(|prefix| {
+                url.path()
+                    .strip_prefix(prefix)
+                    .and_then(|path| path.split('/').next())
+                    .map(str::to_owned)
+            })
+        };
+        if let Some(video) = video.filter(|video| !video.is_empty()) {
+            return Some(format!("youtube:{video}"));
+        }
+    }
+    if let Some(query) = url.query() {
+        let fields: Vec<_> = query
+            .split('&')
+            .filter(|field| {
+                if field.is_empty() || *field == "=" {
+                    return false;
+                }
+                let key = http_client::Url::parse(&format!("https://field.invalid/?{field}"))
+                    .ok()
+                    .and_then(|url| url.query_pairs().next().map(|(key, _)| key.into_owned()));
+                !matches!(key.as_deref(), Some("ex" | "is" | "hm" | "uc"))
+            })
+            .collect();
+        let query = fields.join("&");
+        url.set_query((!query.is_empty()).then_some(&query));
+    }
+    let mut canonical = url.to_string();
+    if canonical.ends_with('/') {
+        canonical.pop();
+    }
+    Some(canonical)
+}
+
+/// Mirrors the source's non-greedy ||...|| and HTTP URL scans without parsing
+/// message Markdown a second time. Only closed spoiler pairs participate.
+fn spoilered_embed_urls(content: &str) -> BTreeSet<String> {
+    let mut urls = BTreeSet::new();
+    let mut rest = content;
+    while let Some(open) = rest.find("||") {
+        rest = &rest[open + 2..];
+        let Some(close) = rest.find("||") else { break };
+        let body = &rest[..close];
+        let mut index = 0;
+        while index < body.len() {
+            let tail = &body[index..];
+            if !(tail
+                .get(..7)
+                .is_some_and(|start| start.eq_ignore_ascii_case("http://"))
+                || tail
+                    .get(..8)
+                    .is_some_and(|start| start.eq_ignore_ascii_case("https://")))
+            {
+                index += tail.chars().next().unwrap().len_utf8();
+                continue;
+            }
+            let end = tail
+                .find(|ch: char| ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\''))
+                .unwrap_or(tail.len());
+            if let Some(url) = canonical_media_url(&tail[..end]) {
+                urls.insert(url);
+            }
+            // URL_REGEX is global and nonoverlapping: a second http:// inside
+            // a URL's path does not start another URL match.
+            index += end;
+        }
+        rest = &rest[close + 2..];
+    }
+    urls
+}
+
+fn embed_is_spoiler(embed: &Value, spoilered: &BTreeSet<String>) -> bool {
+    if spoilered.is_empty() {
+        return false;
+    }
+    let mut urls = Vec::new();
+    urls.extend(string_at(embed, "url"));
+    urls.extend(
+        embed
+            .get("provider")
+            .and_then(|provider| string_at(provider, "url")),
+    );
+    for key in ["image", "thumbnail", "video", "audio"] {
+        if let Some(media) = embed.get(key) {
+            urls.extend(string_at(media, "url"));
+            urls.extend(string_at(media, "proxy_url"));
+        }
+    }
+    urls.into_iter()
+        .filter_map(canonical_media_url)
+        .any(|url| spoilered.contains(&url))
+}
+
 fn embed_image(embed: &Value) -> Option<(&Value, String)> {
-    ["image", "thumbnail"]
+    if embed.get("nsfw").and_then(Value::as_bool) == Some(true)
+        || embed.get("expired").and_then(Value::as_bool) == Some(true)
+    {
+        return None;
+    }
+    for image in ["image", "thumbnail"]
         .into_iter()
         .filter_map(|key| embed.get(key))
-        .find_map(|image| {
-            if image.get("flags").and_then(Value::as_u64).unwrap_or(0) & (1 << 4) != 0 {
-                return None;
-            }
-            string_at(image, "proxy_url")
-                .and_then(safe_url)
-                .map(|url| (image, url))
-        })
+    {
+        if image.get("flags").and_then(Value::as_u64).unwrap_or(0) & ((1 << 3) | (1 << 4)) != 0
+            || image.get("nsfw").and_then(Value::as_bool) == Some(true)
+            || image.get("expired").and_then(Value::as_bool) == Some(true)
+        {
+            return None;
+        }
+        if let Some(url) = string_at(image, "proxy_url").and_then(safe_image_url) {
+            return Some((image, url));
+        }
+    }
+    None
 }
-fn render_embed(message: &str, index: usize, embed: &Value) -> AnyElement {
+fn embed_gallery_item(embed: &Value) -> Option<ImageItem> {
+    let (image, source) = embed_image(embed)?;
+    Some(ImageItem {
+        original: string_at(image, "url")
+            .and_then(safe_image_url)
+            .or_else(|| Some(source.clone())),
+        source,
+        name: string_at(image, "description")
+            .or_else(|| string_at(embed, "title"))
+            .unwrap_or("Image")
+            .to_owned(),
+        width: image
+            .get("width")
+            .and_then(Value::as_u64)
+            .and_then(|value| value.try_into().ok()),
+        height: image
+            .get("height")
+            .and_then(Value::as_u64)
+            .and_then(|value| value.try_into().ok()),
+    })
+}
+fn render_embed(
+    message: &str,
+    index: usize,
+    embed: &Value,
+    cx: &mut Context<Fluxer>,
+) -> AnyElement {
     let link = string_at(embed, "url").and_then(safe_url);
     let color = embed
         .get("color")
@@ -542,20 +777,15 @@ fn render_embed(message: &str, index: usize, embed: &Value) -> AnyElement {
             );
         }
     }
-    if let Some((image, url)) = embed_image(embed) {
+    if let Some(item) = embed_gallery_item(embed) {
         view = view.child(preview(
             format!("embed-image-{message}-{index}"),
-            url.clone(),
-            link.clone().or(Some(url)),
-            image
-                .get("width")
-                .and_then(Value::as_u64)
-                .and_then(|n| n.try_into().ok()),
-            image
-                .get("height")
-                .and_then(Value::as_u64)
-                .and_then(|n| n.try_into().ok()),
+            item.source.clone(),
+            Arc::new(vec![item.clone()]),
+            0,
+            (item.width, item.height),
             (400., 300.),
+            cx,
         ));
     }
     if let Some(video) = embed
@@ -664,6 +894,7 @@ mod tests {
             &json!({"content":"forwarded", "flags":4, "attachments":[{"id":"9","filename":"note.txt","url":"https://cdn.example/note"}, {"invalid":true}], "embeds":[{"title":"Link"}], "message_snapshots":[{"attachments":[{"id":"11","filename":"nested.txt"}]}]}),
         );
         assert_eq!(snapshot.attachments.len(), 1);
+        assert_eq!(snapshot.content, "forwarded");
         assert_eq!(snapshot.attachments[0].filename, "note.txt");
         assert_eq!(snapshot.flags, 4);
         assert_eq!(snapshot.extra.get("embeds").unwrap()[0]["title"], "Link");
@@ -682,6 +913,117 @@ mod tests {
         assert!(
             embed_image(&json!({"image":{"proxy_url":"https://proxy.example/a","flags":16}}))
                 .is_none()
+        );
+    }
+    #[test]
+    fn image_gallery_filters_hidden_files_and_maps_exact_clicked_attachment_position() {
+        let message:Message=serde_json::from_value(json!({"id":"100","channel_id":"10","author":{"id":"1","username":"A"},"attachments":[
+            {"id":"1","filename":"first.png","content_type":"image/png","url":"https://cdn.example/one?signature=x","proxy_url":"https://proxy.example/one?width=400"},
+            {"id":"2","filename":"note.txt","content_type":"text/plain","url":"https://cdn.example/note"},
+            {"id":"3","filename":"SPOILER_secret.png","content_type":"image/png","url":"https://cdn.example/secret"},
+            {"id":"4","filename":"second.png","content_type":"image/png","url":"https://cdn.example/two"},
+            {"id":"5","filename":"sensitive.png","content_type":"image/png","flags":16,"url":"https://cdn.example/sensitive"},
+            {"id":"6","filename":"expired.png","content_type":"image/png","expired":true,"url":"https://cdn.example/expired"},
+            {"id":"7","filename":"nsfw.png","content_type":"image/png","nsfw":true,"url":"https://cdn.example/nsfw"},
+            {"id":"8","filename":"old.png","content_type":"image/png","expires_at":"2000-01-01T00:00:00Z","url":"https://cdn.example/old"}
+        ]})).unwrap();
+        let gallery = attachment_gallery(&message);
+        assert_eq!(
+            gallery.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            vec![0, 3]
+        );
+        let clicked = gallery.iter().position(|(index, _)| *index == 3).unwrap();
+        let opened = crate::image_gallery::ImageGallery::new(
+            gallery.into_iter().map(|(_, item)| item).collect(),
+            clicked,
+        )
+        .unwrap();
+        assert_eq!(opened.current().unwrap().name, "second.png");
+        assert_eq!(opened.items[0].source, "https://proxy.example/one");
+        assert_eq!(
+            opened.items[0].original.as_deref(),
+            Some("https://cdn.example/one?signature=x")
+        );
+        assert_eq!(
+            attachment_url(&message.attachments[0], true).as_deref(),
+            Some("https://proxy.example/one?width=400")
+        );
+        assert!(attachment_url(&message.attachments[7], true).is_none());
+    }
+    #[test]
+    fn embedded_image_viewer_uses_image_original_not_the_article_and_stays_scoped() {
+        let embed = json!({"url":"https://article.example/post","title":"Article","image":{"url":"https://images.example/original.png?signature=x","proxy_url":"https://proxy.example/image?width=400","width":800,"height":600}});
+        let item = embed_gallery_item(&embed).unwrap();
+        assert_eq!(
+            item.original.as_deref(),
+            Some("https://images.example/original.png?signature=x")
+        );
+        let gallery = crate::image_gallery::ImageGallery::new(vec![item], 0).unwrap();
+        assert_eq!(gallery.items.len(), 1);
+        assert_eq!(
+            gallery.current().unwrap().source,
+            "https://proxy.example/image"
+        );
+        let no_original=embed_gallery_item(&json!({"url":"https://article.example/post","thumbnail":{"proxy_url":"https://proxy.example/thumb"}})).unwrap();
+        assert_eq!(
+            no_original.original.as_deref(),
+            Some("https://proxy.example/thumb")
+        );
+        for hidden in [
+            json!({"nsfw":true,"image":{"proxy_url":"https://proxy.example/hidden"}}),
+            json!({"image":{"proxy_url":"https://proxy.example/hidden","nsfw":true}}),
+            json!({"image":{"proxy_url":"https://proxy.example/hidden","flags":16},"thumbnail":{"proxy_url":"https://proxy.example/also-hidden"}}),
+            json!({"image":{"proxy_url":"https://proxy.example/hidden","expired":true}}),
+        ] {
+            assert!(embed_gallery_item(&hidden).is_none());
+        }
+    }
+    #[test]
+    fn forward_snapshots_keep_gallery_and_spoiler_privacy_in_their_own_message_scope() {
+        let outer = snapshot_media(
+            &json!({"attachments":[{"id":"1","filename":"outer.png","content_type":"image/png","url":"https://cdn.example/outer"}]}),
+        );
+        let forwarded = snapshot_media(
+            &json!({"content":"||https://article.example/private||","attachments":[{"id":"1","filename":"forwarded.png","content_type":"image/png","url":"https://cdn.example/forwarded"}],"embeds":[{"url":"https://article.example/private","image":{"proxy_url":"https://proxy.example/private"}}]}),
+        );
+        assert_eq!(attachment_gallery(&outer)[0].1.name, "outer.png");
+        assert_eq!(attachment_gallery(&forwarded)[0].1.name, "forwarded.png");
+        let embed = &forwarded.extra["embeds"][0];
+        assert!(embed_is_spoiler(
+            embed,
+            &spoilered_embed_urls(&forwarded.content)
+        ));
+        assert!(!embed_is_spoiler(
+            embed,
+            &spoilered_embed_urls(&outer.content)
+        ));
+    }
+    #[test]
+    fn spoiler_url_matching_is_closed_nonoverlapping_and_canonicalizes_source_signatures() {
+        let urls = spoilered_embed_urls(
+            "public https://public.example ||HTTPS://cdn.example/attachments/1/2/image.png?ex=old&is=old&hm=old|| ||https://youtu.be/abc|| ||https://host.example/http://nested.example|| ||https://unclosed.example",
+        );
+        assert!(urls.contains("https://cdn.example/attachments/1/2/image.png"));
+        assert!(urls.contains("youtube:abc"));
+        assert!(urls.contains("https://host.example/http://nested.example"));
+        assert!(!urls.contains("http://nested.example"));
+        assert!(!urls.contains("https://unclosed.example"));
+        assert!(!urls.contains("https://public.example"));
+        assert!(embed_is_spoiler(
+            &json!({"image":{"url":"https://cdn.example/attachments/1/2/image.png?hm=new&ex=new&is=new"}}),
+            &urls
+        ));
+        assert!(embed_is_spoiler(
+            &json!({"url":"https://www.youtube.com/watch?v=abc"}),
+            &urls
+        ));
+        assert!(
+            spoilered_embed_urls(&format!(
+                "||https://host.example/{}||",
+                "http://nested.example/".repeat(2000)
+            ))
+            .len()
+                == 1
         );
     }
     #[test]
