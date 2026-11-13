@@ -46,9 +46,13 @@ impl Asset for BlurredImageAsset {
         let executor = cx.background_executor().clone();
         async move {
             let clear = clear.await?;
-            executor
+            let blurred = executor
                 .spawn(async move { blur_first_frame(&clear).map(Arc::new) })
-                .await
+                .await;
+            if blurred.is_ok() && std::env::var_os("FLUXER_GIF_PERF").is_some() {
+                eprintln!("CONCEALED_PREVIEW_READY");
+            }
+            blurred
         }
     }
 }
@@ -103,12 +107,20 @@ mod tests {
         assert_eq!(clear.frame_count(), 2);
         assert_eq!(&clear.as_bytes(0).unwrap()[..4], &[11, 29, 203, 255]);
         assert_eq!(&clear.as_bytes(1).unwrap()[..4], &[199, 31, 7, 255]);
-        assert!(concealed.as_bytes(0).unwrap().chunks_exact(4).all(|pixel| {
-            pixel[0].abs_diff(11) <= 1
-                && pixel[1].abs_diff(29) <= 1
-                && pixel[2].abs_diff(203) <= 1
-                && pixel[3] == 255
-        }));
+        assert!(
+            concealed
+                .as_bytes(0)
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| {
+                    pixel[0].abs_diff(11) <= 1
+                        && pixel[1].abs_diff(29) <= 1
+                        && pixel[2].abs_diff(203) <= 1
+                        && pixel[3] == 255
+                })
+        );
     }
 
     #[test]
@@ -120,8 +132,20 @@ mod tests {
         let clear = RenderImage::new(vec![Frame::new(checker)]);
         let concealed = blur_first_frame(&clear).unwrap();
         let bytes = concealed.as_bytes(0).unwrap();
-        let min = bytes.chunks_exact(4).map(|pixel| pixel[0]).min().unwrap();
-        let max = bytes.chunks_exact(4).map(|pixel| pixel[0]).max().unwrap();
+        let min = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .min()
+            .unwrap();
+        let max = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[0])
+            .max()
+            .unwrap();
         assert!(
             max - min < 20,
             "Original contrast255, blurredcontrast{}",

@@ -215,7 +215,7 @@ fn attachment_concealment(attachment: &Attachment) -> Option<Concealment> {
         None
     }
 }
-fn attachment_reveal_key(namespace: &str, id: fluxer_core::Snowflake) -> String {
+pub(super) fn attachment_reveal_key(namespace: &str, id: fluxer_core::Snowflake) -> String {
     format!("attachment:{}:{namespace}:{id}", namespace.len())
 }
 fn embed_reveal_key(namespace: &str, index: usize) -> String {
@@ -389,7 +389,26 @@ fn preview(
         .into_any_element()
 }
 
-fn concealment_pill(kind: Concealment) -> AnyElement {
+fn concealment_pill(kind: Concealment, compact: bool) -> AnyElement {
+    if compact {
+        return div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .bg(rgba(0x17131fd8))
+            .flex()
+            .items_center()
+            .gap_1()
+            .text_size(px(11.))
+            .text_color(rgb(TEXT))
+            .child(crate::controls::icon(crate::controls::Icon::Eye, 14.))
+            .child(if kind == Concealment::Sensitive {
+                "Sensitive"
+            } else {
+                "Spoiler"
+            })
+            .into_any_element();
+    }
     div()
         .px_3()
         .py_2()
@@ -431,6 +450,8 @@ fn concealed_preview(
     div()
         .id(SharedString::from(id))
         .relative()
+        .w(px(width))
+        .h(px(height))
         .focusable()
         .tab_stop(true)
         .max_w_full()
@@ -459,7 +480,7 @@ fn concealed_preview(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(concealment_pill(kind)),
+                .child(concealment_pill(kind, width < 180. || height < 96.)),
         )
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.stop_propagation();
@@ -747,7 +768,7 @@ fn media_parts(
                         .cursor_pointer()
                         .focusable()
                         .tab_stop(true)
-                        .child(concealment_pill(concealment))
+                        .child(concealment_pill(concealment, false))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.revealed_media.insert(key.clone());

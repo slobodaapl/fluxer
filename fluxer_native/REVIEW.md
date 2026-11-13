@@ -9,7 +9,7 @@ verification without treating their absence as approval of a manual test result.
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 386 tests, formatting, strict Clippy and the
+The UI refinement gate passes 393 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -24,6 +24,7 @@ Full feature parity remains in progress.
 | M4 | Reply and attachment presentation | Follow a reply to its original message; check missing references, forwards, images, spoilers/sensitive attachments and narrow-window wrapping. Images should retain aspect ratio without an extra file card underneath. | **Pending live/layout review.** Reference lookup uses existing cached/wire data and jump commands; media URL/privacy and bounded dimensions regressions pass. |
 | M5 | In-app image viewer | Click attachment, embed and forwarded images in chat and search/pins. Check fit at small/large window sizes, arrow-key browsing and wrapping, Escape/backdrop close, focus restoration and Tab confinement. Open original should use the existing link warning policy; cancel should return to the image. | **Pending real-account/subjective review.** Source-backed gallery/URL/privacy regressions pass; offline modal checks are recorded below. Video/audio playback, pan/zoom and full media-menu parity remain future work. |
 | M6 | Visible GIF playback | Check uploaded GIFs, animated-image embeds and forwarded GIFs while scrolling. Open one in the image modal; close it and resume chat. Try GIF autoplay disabled and hover. Concealed/sensitive media should stay hidden. | **Pending real-account/subjective review.** Source animated-proxy URLs, stable GPUI frame IDs, actual clip gating and generated GIF codec/policy fixtures implemented. MP4-backed GIFV playback, reduced-motion/save-data policy and full preference UI remain migration work. |
+| M7 | Preloaded concealed media | Scroll spoiler/sensitive pictures and GIFs into view. Expect a loaded blurred preview; first click reveals inline, second opens the viewer. Check concealment in embeds/forwards, keyboard activation, and gallery navigation before/after reveal. | **Pending real-account/subjective review.** Current policy preloads visible concealed previews and caches their decoded media; only blurred frame zero is painted before reveal. Expired/suppressed media stays unavailable. This supersedes earlier no-fetch behavior. |
 | U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
 | U7 | Message toolbar legibility | Hover short and wrapped messages, code and media; check React/Reply/More against the text beneath it. Select nearby text and open reactions. | **Pending subjective review.** Toolbar backing is solid with a stronger border/shadow, and paints after message text/media so content cannot paint through it. Hidden toolbars retain their existing visibility behavior. |
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
@@ -142,3 +143,35 @@ were used; no messages or uploads were sent, no capture was started, and the
 untrusted original was canceled before any browser navigation. Minimum-window
 modal usability, sustained real-account behavior and subjective acceptance
 remain pending as M5.
+
+
+## Current concealed-media policy
+
+Concealed images and GIFs now preload when their preview is visible and display a
+strongly blurred first frame with a reveal layer. The clear decoded media shares
+the normal image cache, so revealing does not start a second preview download.
+Concealed GIFs stay paused until revealed, and galleries omit unrevealed entries.
+Reveal state is scoped to the message/snapshot/media entry and clears on channel
+change and sign-out. This intentional preload policy supersedes earlier
+no-fetch expectations in the historical M4/M5 and fixture evidence above.
+Expired URLs and suppressed embeds remain excluded. ThumbHash is the source
+client's placeholder format; this implementation blurs the loaded image itself.
+
+
+## GIF and concealed-preview runtime evidence (2026-11-12)
+
+Generated GIF window captures contain changing source palette pixels, proving
+actual attachment/embed animation. The automatic overflow fixture moved GIFs out
+of view: 20,628 source palette pixels became zero, all GIF elements transitioned
+to clipped mode, and the settled image-render trace stopped changing. A separate
+concealed-first fixture logged both blurred previews ready before its programmed
+reveal. The selected GIF had one HTTP request before reveal and still one after;
+its animation began after reveal. This checks cache reuse with a fixture-driven
+state change; it is not a claim that the real-account click/keyboard review ran.
+
+Artifacts are in `target/qa/gif-animation/` and `target/qa/concealed-media/`.
+Source proxy requests were logged as animated=true, and no MP4 metadata URL was
+fetched. The GIFV fixture uses an actual GIF image fallback; native MP4/GIFV
+playback remains separate. Autoplay-disabled and pointer-hover policy has
+regression coverage; desktop input targeting was not stable enough to claim a
+complete interactive hover run. M6/M7 retain the hands-on checks.

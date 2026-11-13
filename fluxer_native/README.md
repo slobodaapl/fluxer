@@ -74,6 +74,9 @@ Visible chat GIFs and animated-image embeds play automatically, with clipped
 images paused. The account GIF autoplay setting is respected; disabled autoplay
 allows pointer-hover playback.
 
+Spoiler/sensitive image previews preload in the background and remain blurred
+until clicked. The first click reveals inline; another opens the viewer.
+
 Chat images open in an in-app viewer. Use Left/Right to browse the message's
 images, and Escape or the backdrop to close. **Open original** is available
 explicitly and follows the normal external-link warning policy.

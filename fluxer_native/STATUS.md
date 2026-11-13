@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 120 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 127 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-386 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+393 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -377,9 +377,8 @@ Open original is explicit and uses the existing trusted-domain warning policy;
 its warning appears above the viewer. The image proxy remains credential-free
 and bounded. Full-view proxy URLs remove only the source transform parameters;
 original links retain signatures. Embedded pictures target their media URL,
-while article titles keep their article link. Hidden/sensitive/expired images,
-suppressed embeds and spoiler-linked embeds are excluded from automatic previews
-and galleries. Media spoiler reveal/preferences, video/audio viewing, pan/zoom,
+while article titles keep their article link. Concealed previews now preload blurred and stay outside clear-image galleries
+until revealed; expired media and suppressed embeds remain unavailable. Media spoiler reveal/preferences, video/audio viewing, pan/zoom,
 download/copy/favorite controls and full media-viewer parity remain incomplete.
 
 The full gate passes 376 tests, including eight new gallery/privacy regressions.
@@ -401,8 +400,8 @@ A custom image element defers image loading and frame layout until its actual
 allocated bounds intersect both the viewport and ancestor scroll mask. Fully
 clipped images schedule no animation; chat images pause behind the image modal.
 The account's gif_auto_play setting is read from existing authoritative settings;
-disabled autoplay falls back to pointer hover. Hidden/sensitive/expired images
-and suppressed/spoiler-linked embeds retain their existing no-preview guards.
+disabled autoplay falls back to pointer hover. Concealed images and spoiler-linked embeds follow the blurred preload policy
+below; expired media and suppressed embeds remain unavailable.
 
 Generated GIFs validate real frame differences and proxy flag requirements.
 Visibility geometry, autoplay, actual codec timing and gallery URL regressions
@@ -410,3 +409,30 @@ bring the gate to 386 tests. Actual GIFV video decoding, reduced-motion/save-dat
 and keyboard-focus preference behavior remain separate parity work; a GIF image
 fallback inside a GIFV embed does not establish MP4 playback support. Live
 acceptance is tracked as M6 in REVIEW.md.
+
+
+## Concealed previews preload blurred (2026-11-12)
+
+Visible spoiler/sensitive image and GIF previews now load automatically. A
+custom asset shares the normal GPUI decoded-image cache and generates a separate,
+strongly blurred first frame on a background executor. The concealed renderer
+never receives the clear image as a fallback and never runs the GIF clock.
+First click reveals inline; subsequent activation opens the ordinary viewer.
+Unrevealed entries are excluded from galleries, while expired/suppressed media
+keeps its unavailable state. Spoiler-linked embeds hide their information until
+reveal, alongside the blurred selected media. Message/snapshot/media keys isolate
+reveals and channel/account transitions clear them.
+
+This supersedes the earlier no-fetch treatment and is the intended preview
+policy. No new API routes, authenticated media headers or preferences writes were
+added. The source client uses ThumbHash for placeholders; the native path uses a
+bounded first-frame downsample and Gaussian blur of the loaded image instead.
+Four blur regressions and three reveal-scope regressions bring the full gate to
+393 tests. Runtime evidence and remaining review are tracked under M6/M7.
+
+
+Runtime fixtures prove visible GIF frame changes, complete clip/idle behavior and
+preloaded blurred GIF cache reuse. The selected concealed GIF was decoded before
+a programmed reveal and generated no additional HTTP request when revealed.
+Only generated media was captured. Artifact paths and the remaining real-account,
+hover/keyboard and subjective checks are recorded in REVIEW.md.

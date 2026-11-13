@@ -6,6 +6,7 @@ mod avatar_images;
 mod call_view;
 mod chat_helpers;
 mod chat_view;
+mod concealed_image;
 mod controls;
 mod dropdown;
 mod emoji_picker;
@@ -269,6 +270,7 @@ struct Fluxer {
     message_content: MessageContent,
     message_links: MessageLinks,
     image_viewer: ImageViewer,
+    revealed_media: BTreeSet<String>,
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
@@ -371,6 +373,7 @@ impl Fluxer {
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
             image_viewer: ImageViewer::new(cx),
+            revealed_media: BTreeSet::new(),
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
@@ -722,6 +725,7 @@ impl Fluxer {
                             // discovery. Drop private UI while retaining public routing.
                             self.message_links.clear_prompt();
                             self.image_viewer.reset();
+                            self.revealed_media.clear();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;
@@ -730,6 +734,7 @@ impl Fluxer {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
                     if old != self.state.selected_channel {
+                        self.revealed_media.clear();
                         let draft = self
                             .state
                             .selected_channel
@@ -1595,6 +1600,7 @@ impl Fluxer {
         self.message_content.reset();
         self.message_links.reset();
         self.image_viewer.reset();
+        self.revealed_media.clear();
         self.editing = None;
         self.clear_viewer(cx);
     }

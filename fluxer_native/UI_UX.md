@@ -90,6 +90,17 @@ Offline opening, navigation, dismissal, warning cancellation, fit and error-stat
 checks are recorded under M5 in REVIEW.md. Pan/zoom, video/audio playback and the
 remaining media menu and accessibility semantics are still migration work.
 
+## Animated and concealed media follow-up
+
+GIF/animated-image previews use stable frame identities and actual viewport/scroll
+clipping. Clipped images stop scheduling animation, and account GIF autoplay is
+respected with hover playback when disabled. Image-modal playback remains local.
+Spoiler/sensitive media now preloads into the same cache and paints a blurred
+first frame until revealed; it stays outside clear-image galleries. This replaces
+the earlier no-fetch policy. ThumbHash is the source placeholder format; the
+current native treatment blurs loaded media. Native MP4/GIFV decoding, broader
+animation/accessibility preferences and live acceptance remain in REVIEW.md.
+
 ## Next priorities
 
 1. Finish block presentation (heading hierarchy, nested lists, code tools and

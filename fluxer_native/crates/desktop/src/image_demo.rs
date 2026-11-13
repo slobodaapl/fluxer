@@ -97,13 +97,13 @@ impl Fluxer {
         let mut blocked = make_message(
             30_003,
             3,
-            "These concealed and expired images must not be fetched automatically.",
+            "Concealed images preload blurred; click to reveal. Expired images stay unavailable.",
         );
         let mut spoiler = fixture_attachment(
             31_003,
             "SPOILER_hidden.png",
             &origin,
-            "/must-not-fetch/spoiler.png",
+            "/concealed/spoiler.png",
             120,
             60,
         );
@@ -112,7 +112,7 @@ impl Fluxer {
             31_004,
             "sensitive.png",
             &origin,
-            "/must-not-fetch/sensitive.png",
+            "/concealed/sensitive.png",
             120,
             60,
         );
@@ -131,6 +131,10 @@ impl Fluxer {
             .extra
             .insert("expires_at".into(), json!("2020-01-01T00:00:00Z"));
         blocked.attachments = vec![spoiler, sensitive, expired];
+        if std::env::args().any(|arg| arg == "--demo-concealed-first") {
+            blocked.id = Snowflake(29_999);
+            blocked.timestamp = "2026-11-12T18:00:00Z".into();
+        }
         self.state.messages.insert(
             channel,
             [direct, embed, forwarded, blocked]
@@ -201,6 +205,8 @@ fn image_fixture_server(large: bool) -> Result<String, String> {
         ("/portrait.png", pattern_png(90, 150, 1)?),
         ("/embed.png", pattern_png(120, 60, 2)?),
         ("/forwarded.png", pattern_png(120, 60, 3)?),
+        ("/concealed/spoiler.png", pattern_png(120, 60, 4)?),
+        ("/concealed/sensitive.png", pattern_png(120, 60, 5)?),
     ]);
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
@@ -212,10 +218,13 @@ fn image_fixture_server(large: bool) -> Result<String, String> {
             let method=first_line.next().unwrap_or_default();let path=first_line.next().unwrap_or_default().split('?').next().unwrap_or_default();
             let (status,mime,body):(&str,&str,&[u8])=if method!="GET"{("405 Method Not Allowed","text/plain",b"GET only")}
                 else if path.starts_with("/must-not-fetch/"){
-                    let case=match path{"/must-not-fetch/spoiler.png"=>"spoiler","/must-not-fetch/sensitive.png"=>"sensitive","/must-not-fetch/expired.png"=>"expired",_=>"unknown"};
+                    let case=match path{"/concealed/spoiler.png"=>"spoiler","/concealed/sensitive.png"=>"sensitive","/must-not-fetch/expired.png"=>"expired",_=>"unknown"};
                     eprintln!("[fluxer-demo-images] UNEXPECTED_BLOCKED_FETCH case={case}");
                     ("403 Forbidden","text/plain",b"Concealed fixture must not be fetched")
-                }else if let Some(bytes)=assets.get(path){("200 OK","image/png",bytes)}
+                }else if let Some(bytes)=assets.get(path){
+                    if path.starts_with("/concealed/"){let kind=if path.ends_with("spoiler.png"){"spoiler"}else{"sensitive"};eprintln!("[fluxer-demo-images] CONCEALED_FETCH kind={kind}");}
+                    ("200 OK","image/png",bytes)
+                }
                 else if path=="/article"{("200 OK","text/html; charset=utf-8",b"<!doctype html><title>Offline fixture article</title><p>This is a generated local article. Clicking its image should open the native image viewer.</p>")}
                 else{("404 Not Found","text/plain",b"No such fixture asset")};
             let header=format!("HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nContent-Security-Policy: default-src 'none'\r\nConnection: close\r\n\r\n",body.len());

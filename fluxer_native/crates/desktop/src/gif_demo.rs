@@ -39,7 +39,7 @@ impl Fluxer {
             .expect("ready demo account");
         let message = |id: u64, seconds: u8, text: String| {
             let mut message = Message::text(Snowflake(id), channel, author.clone(), text);
-            message.timestamp = format!("2026-11-12T18:00:{seconds:02}Z");
+            message.timestamp = format!("2026-11-12T18:{:02}:{:02}Z", seconds / 60, seconds % 60);
             message
         };
         let mut direct = message(
@@ -67,14 +67,14 @@ impl Fluxer {
         let mut hidden = message(
             40_002,
             2,
-            "Concealed GIFs below must never be fetched automatically.".into(),
+            "Concealed GIFs preload blurred and stay paused until revealed.".into(),
         );
         let mut spoiler = gif_attachment(
             41_001,
             "SPOILER_hidden.gif",
             &origin,
-            "/must-not-fetch/spoiler.gif",
-            "/must-not-fetch/spoiler.gif",
+            "/concealed/spoiler.gif",
+            "/concealed/spoiler.gif",
             gif_size,
         );
         spoiler.flags |= 1 << 3;
@@ -82,20 +82,26 @@ impl Fluxer {
             41_002,
             "sensitive.gif",
             &origin,
-            "/must-not-fetch/sensitive.gif",
-            "/must-not-fetch/sensitive.gif",
+            "/concealed/sensitive.gif",
+            "/concealed/sensitive.gif",
             gif_size,
         );
         sensitive.flags |= 1 << 4;
         sensitive.extra.insert("nsfw".into(), json!(true));
         hidden.attachments = vec![spoiler, sensitive];
+        if std::env::args().any(|arg| arg == "--demo-concealed-first") {
+            hidden.id = Snowflake(39_999);
+            hidden.timestamp = "2026-11-12T18:00:00Z".into();
+        }
+        let concealed_key =
+            rich_message::attachment_reveal_key(&hidden.id.to_string(), Snowflake(41_001));
         let mut messages = BTreeMap::from([
             (direct.id, direct),
             (embeds.id, embeds),
             (hidden.id, hidden),
         ]);
         let spacers = if std::env::args().any(|arg| arg == "--demo-gifs-overflow") {
-            80
+            100
         } else {
             0
         };
@@ -130,6 +136,22 @@ impl Fluxer {
         self.pane = Pane::Chat;
         self.status = "OFFLINE GIF FIXTURE · generated loopback media only".into();
         self.timeline.scroll_to_top_of_item(0);
+        if let Some(delay) = std::env::var("FLUXER_CONCEALED_DEMO_REVEAL_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+        {
+            cx.spawn(async move |entity, cx| {
+                Timer::after(Duration::from_millis(delay)).await;
+                let _ = entity.update(cx, |view, cx| {
+                    if view.state.selected_channel == Some(channel) {
+                        view.revealed_media.insert(concealed_key);
+                        eprintln!("CONCEALED_DEMO_REVEALED");
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
         // READY's pending scroll-to-bottom is applied after active-item scroll
         // during the first layout. Position this fixture once that has settled.
         cx.spawn(async move |entity, cx| {
@@ -253,17 +275,15 @@ fn gif_fixture_server() -> Result<(String, u64), String> {
             let parsed=reqwest::Url::parse(&format!("http://localhost{target}"));
             let path=target.split('?').next().unwrap_or_default();
             let animated=parsed.as_ref().is_ok_and(|url|url.query_pairs().any(|(key,value)|key=="animated"&&value=="true"));
-            let proxy=matches!(path,"/proxy-attachment.gif"|"/proxy-embed.gif"|"/proxy-gifv.gif");
+            let proxy=matches!(path,"/proxy-attachment.gif"|"/proxy-embed.gif"|"/proxy-gifv.gif")||path.starts_with("/concealed/");
             let direct=path=="/direct.gif";
             let (status,mime,body):(&str,&str,&[u8])=if method!="GET"{("405 Method Not Allowed","text/plain",b"GET only")}
-                else if path.starts_with("/must-not-fetch/"){
-                    let case=if path=="/must-not-fetch/spoiler.gif"{"spoiler"}else{"sensitive"};eprintln!("[fluxer-demo-gifs] UNEXPECTED_BLOCKED_FETCH case={case}");("403 Forbidden","text/plain",b"Concealed GIF must not be fetched")
-                }else if path=="/metadata-only.mp4"{eprintln!("[fluxer-demo-gifs] UNEXPECTED_VIDEO_FETCH");("404 Not Found","text/plain",b"Video metadata only; use the GIF image proxy")}
+                else if path=="/metadata-only.mp4"{eprintln!("[fluxer-demo-gifs] UNEXPECTED_VIDEO_FETCH");("404 Not Found","text/plain",b"Video metadata only; use the GIF image proxy")}
                 else if direct || proxy&&animated{("200 OK","image/gif",&gif)}
                 else if proxy{("200 OK","image/png",&poster)}
                 else if path=="/static-end.png"{("200 OK","image/png",&marker)}
                 else{("404 Not Found","text/plain",b"No such GIF fixture asset")};
-            if trace&&(direct||proxy){requests+=1;let kind=match path{"/direct.gif"=>"original","/proxy-attachment.gif"=>"attachment","/proxy-embed.gif"=>"embed",_=>"gifv"};eprintln!("[fluxer-demo-gifs] request={requests} kind={kind} animated={animated} response={mime}");}
+            if trace&&(direct||proxy){requests+=1;let kind=match path{"/direct.gif"=>"original","/proxy-attachment.gif"=>"attachment","/proxy-embed.gif"=>"embed","/proxy-gifv.gif"=>"gifv","/concealed/spoiler.gif"=>"concealed-spoiler",_=>"concealed-sensitive"};eprintln!("[fluxer-demo-gifs] request={requests} kind={kind} animated={animated} response={mime}");}
             let header=format!("HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",body.len());let _=socket.write_all(header.as_bytes());let _=socket.write_all(body);
         }
     }).map_err(|error|error.to_string())?;
