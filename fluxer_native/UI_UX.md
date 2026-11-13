@@ -140,3 +140,15 @@ purple box. Unicode emoji rendering is shared across picker, composer, messages
 and previews. Undo/redo preserves editing selections. Pin notices use compact
 system text with links to the target message and channel pins. Hands-on checks
 are U8/M8/E2/U9/N5; multi-stream review is deferred by the user.
+
+
+## Native media controls (2026-11-13)
+
+Audio and video use compact in-app cards with play/pause, time, seek, volume/mute,
+Open original and video full view. GIFV retains an image-like inline presentation
+with a GIF badge and opens full view on activation. Full view preserves the same
+player position, fits the source aspect ratio and keeps controls/focus within the
+modal. Search/pins reserve room for controls; concealed video displays a loaded,
+blurred paused preview. Status/progress stays within the player and expiry stays
+unavailable. Control interactions wake polling immediately; idle/unloaded players
+wait instead of running an eager animation loop. Real-user acceptance is M9.

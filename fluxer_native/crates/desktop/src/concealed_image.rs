@@ -68,7 +68,7 @@ fn scaled_dimensions(width: u32, height: u32, longest_edge: u32) -> Option<(u32,
     ))
 }
 
-fn blur_first_frame(clear: &RenderImage) -> Result<RenderImage, ImageCacheError> {
+pub(super) fn blur_first_frame(clear: &RenderImage) -> Result<RenderImage, ImageCacheError> {
     let invalid = || ImageCacheError::Asset("Invalid concealed image pixels".into());
     // Check the first frame before size(0), which indexes and would panic on
     // an empty decoded frame sequence.

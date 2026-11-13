@@ -17,6 +17,10 @@ mod image_gallery;
 mod image_viewer;
 mod input;
 mod media_animation;
+mod media_demo;
+mod media_download;
+mod media_player;
+mod media_player_view;
 mod message_actions;
 mod message_content;
 mod message_demo;
@@ -25,6 +29,7 @@ mod message_links;
 mod message_markup;
 mod outbox_view;
 mod pin_system_message;
+mod playable_media;
 mod rich_message;
 mod scrollbar;
 mod search_browser;
@@ -262,6 +267,7 @@ struct Fluxer {
     message_demo_started: bool,
     image_demo_started: bool,
     gif_demo_started: bool,
+    media_demo_started: bool,
     avatar_demo_endpoint: Option<String>,
     session_restoring: bool,
     session_restore_failed: bool,
@@ -273,6 +279,7 @@ struct Fluxer {
     message_content: MessageContent,
     message_links: MessageLinks,
     image_viewer: ImageViewer,
+    playback: media_player::PlaybackUi,
     revealed_media: BTreeSet<String>,
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
@@ -360,6 +367,7 @@ impl Fluxer {
             message_demo_started: false,
             image_demo_started: false,
             gif_demo_started: false,
+            media_demo_started: false,
             avatar_demo_endpoint: None,
             session_restoring,
             session_restore_failed: false,
@@ -376,6 +384,7 @@ impl Fluxer {
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
             image_viewer: ImageViewer::new(cx),
+            playback: media_player::PlaybackUi::new(cx),
             revealed_media: BTreeSet::new(),
             message_text: BTreeMap::new(),
             media_endpoint: None,
@@ -574,6 +583,7 @@ impl Fluxer {
                     picker.update(cx, |picker, cx| picker.dismiss(cx));
                 }
             }
+            cx.notify();
         })
         .detach();
         if let Some(controller) = view.controller.as_ref()
@@ -730,6 +740,7 @@ impl Fluxer {
                             // discovery. Drop private UI while retaining public routing.
                             self.message_links.clear_prompt();
                             self.image_viewer.reset();
+                            self.playback.reset(cx);
                             self.revealed_media.clear();
                             self.media_endpoint = None;
                             self.forwarding = None;
@@ -739,6 +750,7 @@ impl Fluxer {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
                     if old != self.state.selected_channel {
+                        self.playback.reset(cx);
                         self.revealed_media.clear();
                         let draft = self
                             .state
@@ -787,6 +799,7 @@ impl Fluxer {
                     self.maybe_demo_gifs(cx);
                     self.maybe_demo_avatars(cx);
                     self.maybe_demo_outbox(cx);
+                    self.maybe_demo_media(cx);
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
@@ -1186,6 +1199,7 @@ impl Fluxer {
         if self.message_actions.is_open()
             || self.message_links.is_open()
             || self.image_viewer.is_open()
+            || self.playback.modal.is_open()
         {
             return;
         }
@@ -1564,6 +1578,7 @@ impl Fluxer {
         self.message_content.reset();
         self.message_links.reset();
         self.image_viewer.reset();
+        self.playback.reset(cx);
         self.revealed_media.clear();
         self.editing = None;
         self.clear_viewer(cx);
@@ -1972,6 +1987,14 @@ impl Fluxer {
 impl Render for Fluxer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = std::time::Instant::now();
+        let output = self
+            .output_picker
+            .read(cx)
+            .selected()
+            .filter(|id| *id != "output:default")
+            .map(str::to_owned);
+        let retained_browser = self.playback_browser_keys();
+        self.playback.begin_frame(output, retained_browser, cx);
         self.video_stats.rendered(
             window,
             self.pane == Pane::Call
@@ -2039,16 +2062,17 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
-            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.image_viewer.is_open(){this.open_search(window,cx);}}))
+            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.image_viewer.is_open() { return; }
+                if this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
                 this.pane = Pane::Settings;
                 this.command(Command::RefreshDevices, cx);
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.playback.modal.is_open() {this.playback.close(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.image_viewer.is_open() {this.dismiss_image_viewer(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
                 if this.search_ui.confirm.is_some() && event.keystroke.key=="escape" {
@@ -2087,10 +2111,13 @@ impl Render for Fluxer {
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .child(self.message_action_overlay(window,cx))
-            .child(deferred(self.message_link_overlay(window,cx)).with_priority(6))
+            .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
-        let rendered = rendered.child(self.image_viewer_overlay(window, cx));
+        let rendered = rendered
+            .child(self.image_viewer_overlay(window, cx))
+            .child(self.playback.overlay(window, cx));
+        self.playback.finish_frame(cx);
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());
         rendered
@@ -2111,6 +2138,7 @@ fn main() {
                 || v == "--demo-gifs"
                 || v == "--demo-avatars"
                 || v == "--demo-outbox"
+                || v == "--demo-media"
         });
     Application::new()
         .with_assets(controls::Assets)

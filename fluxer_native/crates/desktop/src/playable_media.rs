@@ -285,7 +285,8 @@ pub(super) fn embed(
         .unwrap_or_default();
     let (kind, media) = if embed_type == "audio" {
         (PlayableKind::Audio, embed.get("audio")?)
-    } else if let Some(video) = embed.get("video").filter(|video| video.is_object()) {
+    } else {
+        let video = embed.get("video").filter(|video| video.is_object())?;
         (
             if embed_type == "gifv" {
                 PlayableKind::Gifv
@@ -294,8 +295,6 @@ pub(super) fn embed(
             },
             video,
         )
-    } else {
-        return None;
     };
     if expired(media, now_ms) {
         return None;
@@ -321,10 +320,15 @@ pub(super) fn embed(
     if kind == PlayableKind::Gifv && thumbnail.is_some_and(|thumbnail| expired(thumbnail, now_ms)) {
         return None;
     }
-    let poster_source = thumbnail
-        .and_then(|thumbnail| thumbnail.get("proxy_url"))
-        .and_then(Value::as_str)
-        .unwrap_or(raw_proxy);
+    let poster_source = if kind == PlayableKind::Gifv {
+        embed
+            .get("thumbnail")
+            .and_then(|value| value.get("proxy_url"))
+            .and_then(Value::as_str)
+            .unwrap_or(raw_proxy)
+    } else {
+        raw_proxy
+    };
     let mut hidden = combine_concealment(concealment(embed), concealment(media));
     if kind == PlayableKind::Gifv {
         hidden = combine_concealment(hidden, thumbnail.and_then(concealment));

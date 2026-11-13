@@ -30,6 +30,7 @@ pub(super) struct PlayerView {
     pub muted: bool,
     /// Linear volume normalized to 0..1.
     pub volume: f32,
+    pub can_open_original: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum PlayerAction {
@@ -40,6 +41,7 @@ pub(super) enum PlayerAction {
     OpenFullscreen,
     Close,
     Retry,
+    OpenOriginal,
 }
 pub(super) type PlayerCallback = Rc<dyn Fn(PlayerAction, &mut Window, &mut App)>;
 
@@ -53,6 +55,7 @@ pub(super) struct PlayerModal {
     mute: FocusHandle,
     volume: FocusHandle,
     close: FocusHandle,
+    original: FocusHandle,
 }
 impl PlayerModal {
     pub fn new(cx: &mut App) -> Self {
@@ -65,6 +68,7 @@ impl PlayerModal {
             mute: cx.focus_handle().tab_stop(true),
             volume: cx.focus_handle().tab_stop(true),
             close: cx.focus_handle().tab_stop(true),
+            original: cx.focus_handle().tab_stop(true),
         }
     }
     pub fn id(&self) -> Option<&str> {
@@ -100,6 +104,9 @@ impl PlayerModal {
             if valid_duration(view.duration).is_some() {
                 controls.push(self.seek.clone());
             }
+        }
+        if view.can_open_original {
+            controls.push(self.original.clone());
         }
         controls.push(self.close.clone());
         controls
@@ -304,6 +311,16 @@ fn controls(
             "Full view (F)",
             PlayerAction::OpenFullscreen,
             callback.clone(),
+            modal.map(|m| &m.original),
+        ));
+    }
+    if view.can_open_original {
+        row = row.child(action_button(
+            format!("{prefix}-original"),
+            Icon::Jump,
+            "Open original",
+            PlayerAction::OpenOriginal,
+            callback.clone(),
             None,
         ));
     }
@@ -364,6 +381,8 @@ fn video_surface(
     let click = callback.clone();
     let click_action = if view.error.is_some() {
         PlayerAction::Retry
+    } else if view.kind == PlayerKind::Gifv && !modal {
+        PlayerAction::OpenFullscreen
     } else {
         PlayerAction::PlayPause
     };
@@ -449,7 +468,11 @@ fn video_surface(
     surface.into_any_element()
 }
 
-pub(super) fn render_inline(view: &PlayerView, callback: PlayerCallback) -> AnyElement {
+pub(super) fn render_inline(
+    view: &PlayerView,
+    callback: PlayerCallback,
+    cx: &mut App,
+) -> AnyElement {
     let (width, height) = fit_size(view.width, view.height, 420., 300.);
     let key_view = view.clone();
     let keyboard = callback.clone();
@@ -485,6 +508,9 @@ pub(super) fn render_inline(view: &PlayerView, callback: PlayerCallback) -> AnyE
     if view.kind != PlayerKind::Audio {
         card = card.child(video_surface(view, callback.clone(), width, height, false));
     }
+    if view.kind == PlayerKind::Gifv {
+        return card.into_any_element();
+    }
     card = card.child(
         div()
             .w_full()
@@ -494,7 +520,7 @@ pub(super) fn render_inline(view: &PlayerView, callback: PlayerCallback) -> AnyE
             .text_size(px(12.))
             .text_color(rgb(TEXT))
             .text_ellipsis()
-            .child(view.title.clone()),
+            .child(emoji_sprites::unicode_text(&view.title, 12., false, cx)),
     );
     if view.kind == PlayerKind::Audio
         && let Some(status) = status(view)
@@ -510,6 +536,7 @@ pub(super) fn render_modal(
     modal: &PlayerModal,
     callback: PlayerCallback,
     window: &Window,
+    cx: &mut App,
 ) -> AnyElement {
     if modal.id() != Some(view.id.as_str()) {
         return div().into_any_element();
@@ -518,7 +545,7 @@ pub(super) fn render_modal(
         view.width,
         view.height,
         f32::from(window.viewport_size().width) - 48.,
-        f32::from(window.viewport_size().height) - 172.,
+        f32::from(window.viewport_size().height) - 190.,
     );
     let close = callback.clone();
     let keys = callback.clone();
@@ -567,13 +594,11 @@ pub(super) fn render_modal(
                 cx.stop_propagation();
                 if !event.keystroke.modifiers.modified()
                     && let Some(action) = keyboard_action(&key_view, &event.keystroke.key)
+                    && action != PlayerAction::OpenFullscreen
+                    && (!event.is_held
+                        || matches!(action, PlayerAction::Seek(_) | PlayerAction::Volume(_)))
                 {
-                    if action != PlayerAction::OpenFullscreen
-                        && (!event.is_held
-                            || matches!(action, PlayerAction::Seek(_) | PlayerAction::Volume(_)))
-                    {
-                        keys(action, window, cx);
-                    }
+                    keys(action, window, cx);
                 }
             })
             .child(
@@ -593,7 +618,7 @@ pub(super) fn render_modal(
                             .min_w_0()
                             .text_ellipsis()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(view.title.clone()),
+                            .child(emoji_sprites::unicode_text(&view.title, 12., false, cx)),
                     )
                     .child(action_button(
                         "media-player-close".into(),
@@ -615,6 +640,17 @@ pub(super) fn render_modal(
                         div()
                             .id("media-player-body")
                             .w(px(width.max(300.)))
+                            .flex_shrink_0()
+                            .when(view.kind != PlayerKind::Audio, |node| {
+                                node.h(px(height
+                                    + if view.error.is_none()
+                                        && valid_duration(view.duration).is_some()
+                                    {
+                                        72.
+                                    } else {
+                                        44.
+                                    }))
+                            })
                             .max_w_full()
                             .flex()
                             .flex_col()
@@ -626,8 +662,13 @@ pub(super) fn render_modal(
                                 s.child(video_surface(view, callback.clone(), width, height, true))
                             })
                             .when(view.kind == PlayerKind::Audio, |s| {
-                                s.child(div().p_4().child(view.title.clone()))
-                                    .children(status(view))
+                                s.child(div().p_4().child(emoji_sprites::unicode_text(
+                                    &view.title,
+                                    12.,
+                                    false,
+                                    cx,
+                                )))
+                                .children(status(view))
                             })
                             .child(div().p_2().child(controls(view, callback, Some(modal)))),
                     ),
@@ -686,6 +727,7 @@ mod tests {
             playing: false,
             muted: false,
             volume: 1.,
+            can_open_original: false,
         };
         assert_eq!(
             keyboard_action(&view, "right"),

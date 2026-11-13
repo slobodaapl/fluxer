@@ -479,11 +479,14 @@ impl Fluxer {
                                                 .when(!is_pin, |view| {
                                                     view.child(rich_message::media(
                                                         &message,
-                                                        !self.image_viewer.is_open(),
-                                                        media_animation::gif_autoplay(
-                                                            &self.state.user_settings,
-                                                        ),
+                                                        rich_message::MediaMotion {
+                                                            enabled: !(self.image_viewer.is_open() || self.playback.modal.is_open()),
+                                                            autoplay: media_animation::gif_autoplay(&self.state.user_settings),
+                                                            surface: "timeline",
+                                                        },
                                                         &self.revealed_media,
+                                                        &mut self.playback,
+                                                        window,
                                                         cx,
                                                     ))
                                                 })

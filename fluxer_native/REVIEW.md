@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 412 tests, formatting, strict Clippy and the
+The UI refinement gate passes 440 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -22,9 +22,10 @@ Full feature parity remains in progress.
 | M2 | Selectable formatting and spoilers | Select across bold/italic/underline/strike, links, code, quotes, Unicode and wrapped lines. Ctrl/Cmd+C should copy rendered text and omit concealed spoilers; click a spoiler to reveal it. Explicit Copy Message should retain Markdown source. | **Pending sustained usability review.** Existing composer/input regressions plus rich-run clipping, Unicode range, hidden-target/copy and soft-wrap emoji tests pass. Source fonts and actual inline backgrounds checked offline. |
 | M3 | Mentions, emoji and links | Compare known user/role/channel labels and custom emoji with Fluxer. Click a channel link and an old message link; inspect an untrusted external URL and cancel. Check registered emoji renames, failures and spoiler concealment. | **Pending real-account review.** Generated loopback emoji images and resolved labels checked; no external destination opened. Trust/host/scope fixtures pass. User/role popovers, animated/jumbo sizing, timestamps and full preference parity remain incomplete. |
 | M4 | Reply and attachment presentation | Follow a reply to its original message; check missing references, forwards, images, spoilers/sensitive attachments and narrow-window wrapping. Images should retain aspect ratio without an extra file card underneath. | **Pending live/layout review.** Reference lookup uses existing cached/wire data and jump commands; media URL/privacy and bounded dimensions regressions pass. |
-| M5 | In-app image viewer | Click attachment, embed and forwarded images in chat and search/pins. Check fit at small/large window sizes, arrow-key browsing and wrapping, Escape/backdrop close, focus restoration and Tab confinement. Open original should use the existing link warning policy; cancel should return to the image. | **Pending real-account/subjective review.** Source-backed gallery/URL/privacy regressions pass; offline modal checks are recorded below. Video/audio playback, pan/zoom and full media-menu parity remain future work. |
-| M6 | Visible GIF playback | Check uploaded GIFs, animated-image embeds and forwarded GIFs while scrolling. Open one in the image modal; close it and resume chat. Try GIF autoplay disabled and hover. Concealed/sensitive media should stay hidden. | **Pending real-account/subjective review.** Source animated-proxy URLs, stable GPUI frame IDs, actual clip gating and generated GIF codec/policy fixtures implemented. MP4-backed GIFV playback, reduced-motion/save-data policy and full preference UI remain migration work. |
+| M5 | In-app image viewer | Click attachment, embed and forwarded images in chat and search/pins. Check fit at small/large window sizes, arrow-key browsing and wrapping, Escape/backdrop close, focus restoration and Tab confinement. Open original should use the existing link warning policy; cancel should return to the image. | **Pending real-account/subjective review.** Source-backed gallery/URL/privacy regressions pass; offline modal checks are recorded below. Native video/audio is now covered by M9; pan/zoom and full media-menu parity remain future work. |
+| M6 | Visible GIF playback | Check uploaded GIFs, animated-image embeds and forwarded GIFs while scrolling. Open one in the image modal; close it and resume chat. Try GIF autoplay disabled and hover. Concealed/sensitive media should stay hidden. | **Pending real-account/subjective review.** Source animated-proxy URLs, stable GPUI frame IDs, actual clip gating and generated GIF codec/policy fixtures implemented. MP4-backed GIFV playback is implemented under M9; reduced-motion/save-data policy and full preference UI remain migration work. |
 | M7 | Preloaded concealed media | Scroll spoiler/sensitive pictures and GIFs into view. Expect a loaded blurred preview; first click reveals inline, second opens the viewer. Check concealment in embeds/forwards, keyboard activation, and gallery navigation before/after reveal. | **Pending real-account/subjective review.** Current policy preloads visible concealed previews and caches their decoded media; only blurred frame zero is painted before reveal. Expired/suppressed media stays unavailable. This supersedes earlier no-fetch behavior. |
+| M9 | Native audio/video and GIFV | Play MP4/WebM and audio attachments in chat, forwards and search/pins. Check pause/resume, seek, mute/volume, output device, Open original and full view/Escape. Try rotated phone video, GIFV with autoplay off/on, scroll-out/return, concealed/expired media, failures and channel changes. Test while voice/shared audio is active. | **Pending real-account, physical-device and subjective review.** Real codecs, HTTP contracts, private PipeWire PCM routing and generated app presentation/actions are checked below. Complete-file caching precedes playback; range startup, preference persistence, rate/PiP/subtitles/HDR and broader platform/codec coverage remain open. |
 | U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
 | U7 | Message toolbar legibility | Hover short and wrapped messages, code and media; check React/Reply/More against the text beneath it. Select nearby text and open reactions. | **Pending subjective review.** Toolbar backing is solid with a stronger border/shadow, and paints after message text/media so content cannot paint through it. Hidden toolbars retain their existing visibility behavior. |
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
@@ -225,3 +226,36 @@ line height follow normal chat. Before/after mock captures show horizontal
 sending/upload/error labels in `target/qa/pending-layout/`. The corrected desktop
 passes all 143 tests (one opt-in ignored), strict Clippy and formatting. Real-account
 send feel remains M8; this check establishes the persistent transient-state layout.
+
+
+## Native playback evidence (2026-11-13)
+
+The full gate passes 440 tests, strict Clippy, formatting and the feature inventory
+audit (13 opt-in tests remain ignored). Source-backed MIME/URL/proxy/concealment
+contracts, actual HTTP signed GET/privacy/redirect/truncation/cancellation/size/
+timeout tests, and generated MP4/H.264/AAC, WebM/VP8/Opus and WAV decoding tests
+are included. Timing regressions cover delayed audio, final-frame duration,
+one-frame loops, paused/end seeking, rapid seek supersession, rotation and SAR.
+
+Private PipeWire tests monitor only their own two synthetic sinks. Reported RMS
+was 0.212111 initially, 0.053028 after volume change, zero while muted/paused,
+0.084846 after seek and 0.084836 after switching to sink B, with sink A silent.
+Stop silenced both. The opt-in 1080p decoder/mailbox test measured 91 frames in
+3.005 s landscape and91 in 3.004 s rotated, clock ratios 0.999 and0.998. These are
+engine/mailbox results with simulated speaker timing, not display scanout or a
+physical GoXLR listening check. Logs are in `target/qa/native-playback/`.
+
+The loopback `--demo-media` app displays real decoded silent video, changing GIFV
+pixels, a blurred paused spoiler-video preview and an idle audio card. Its optional
+automation dispatches the actual player handlers for full view, pause, seek,
+resume and close; captures/logs show each phase. This is a fixture-driven action
+check, not a claim that pointer/keyboard input or live-account acceptance passed.
+Neither an expired file nor the ordinary audio tone was fetched automatically.
+The fixture uses no credentials, account writes, microphone or personal media.
+
+M9 remains pending for real files/devices, sustained playback in calls, full-view
+keyboard/focus usability and shared-audio integration. Large files currently wait
+for their complete bounded disk download before decoding. This is explicitly not
+progressive/range streaming. Per-player volume is local; full persisted preference
+and accessibility/motion migration, media gallery mixing and broader media menus
+remain part of parity work. Multi-stream review remains deferred by the user.

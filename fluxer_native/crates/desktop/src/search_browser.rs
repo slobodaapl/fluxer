@@ -406,6 +406,28 @@ impl Fluxer {
             .insert(snapshot.channel_id, snapshot);
         cx.notify();
     }
+    pub(super) fn playback_browser_keys(&self) -> std::collections::HashSet<String> {
+        let messages: Vec<&Message> = match self.search_ui.open {
+            Some(BrowserTab::Search) => self
+                .search_ui
+                .result
+                .as_ref()
+                .map(|snapshot| snapshot.messages.iter().collect())
+                .unwrap_or_default(),
+            Some(BrowserTab::Pins) => self
+                .search_ui
+                .pins_context
+                .and_then(|channel| self.search_ui.pins.get(&channel))
+                .map(|snapshot| snapshot.items.iter().map(|item| &item.message).collect())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        messages
+            .into_iter()
+            .flat_map(|message| rich_message::playable_keys(message, "browser"))
+            .collect()
+    }
+
     pub(super) fn visible_messages(&self) -> Vec<Message> {
         visible_window_messages(&self.state, &self.search_ui.histories)
     }
@@ -894,14 +916,23 @@ impl Fluxer {
             .child(
                 div()
                     .id(("browse-media", message.id.0))
-                    .max_h(px(180.))
-                    .overflow_hidden()
+                    .w_full()
+                    .min_w_0()
+                    .when(!rich_message::has_playable_media(&message), |view| {
+                        view.max_h(px(180.)).overflow_hidden()
+                    })
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(rich_message::media(
                         &message,
-                        !self.image_viewer.is_open(),
-                        media_animation::gif_autoplay(&self.state.user_settings),
+                        rich_message::MediaMotion {
+                            enabled: !(self.image_viewer.is_open()
+                                || self.playback.modal.is_open()),
+                            autoplay: media_animation::gif_autoplay(&self.state.user_settings),
+                            surface: "browser",
+                        },
                         &self.revealed_media,
+                        &mut self.playback,
+                        window,
                         cx,
                     )),
             )

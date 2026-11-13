@@ -48,7 +48,7 @@ The client uses the OS portal for Wayland screen selection. Application/system
 audio capture currently uses the existing Linux PipeWire engine.
 
 Chat shows discovered-instance avatars, inline image attachments, embed cards,
-and forwarded snapshots. Audio/video attachments open externally. Message bodies
+and forwarded snapshots. Audio/video attachments have native playback controls and an in-app full view. Message bodies
 support mouse and keyboard selection, Unicode word selection, and Ctrl/Cmd+C.
 The emoji picker searches the existing Fluxer catalog, including skin tones and
 community emoji in a compact popover using Fluxer’s bundled emoji artwork. Only visible rows are built; results and
@@ -61,8 +61,8 @@ counts without message content. Replies have a cancellable preview and author-me
 forwarding has a searchable destination picker. Reply intent and unsent drafts
 survive channel switching, and editing preserves the unsent composer draft.
 
-Native audio/video playback, full block-formatting parity, selection across
-messages, and selection autoscroll remain open. Attachment upload interoperability
+Full media-viewer parity, block-formatting parity, selection across messages,
+and selection autoscroll remain open. Attachment upload interoperability
 still needs real-client acceptance. Embed text is currently plain and is not selectable. These features do not
 establish complete messaging parity with the existing client.
 
@@ -200,3 +200,28 @@ message and the channel's pins instead of displaying a reply preview.
 `cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-outbox`
 opens persistent local-only sending, uploading and failed-message examples for
 layout review. These rows do not perform uploads or send account messages.
+
+
+Native file playback on Linux uses FFmpeg libraries (libavformat, libavcodec,
+libavutil, libswscale and libswresample) discovered through pkg-config at build
+time, plus the existing PipeWire output engine. Install their development headers
+to enable the backend. The regular application does not launch ffmpeg processes.
+Other platforms and missing-library builds show an unavailable-player error and
+retain Open original. Audio and video start on Play; MP4-backed GIFV loops muted
+when visible and allowed by GIF autoplay. Player volume/mute, seeking and full
+view are independent of the voice call. Closing/unmounting its message releases
+the player; normal playback continues when the message merely scrolls out of view.
+
+Media loads through credential-free HTTP into private temporary disk-cache files,
+with progress and cancellation. This implementation caches a complete file before
+opening it, up to 2 GiB per resource; progressive HTTP range playback remains
+future work. It does not pass remote URLs or playlists to the decoder. Source
+proxy URLs and signed fields are retained. Concealed media preloads paused and
+shows a blurred video frame until reveal; expired media is unavailable.
+
+`--demo-media` serves generated silent MP4/GIFV, a click-to-play Opus tone,
+concealed video and an expired attachment over loopback. It uses no account or
+capture. For automated local presentation checks only,
+`FLUXER_MEDIA_DEMO_AUTO_PLAY=1` starts the silent MP4 and
+`FLUXER_MEDIA_DEMO_ACTIONS=1` exercises full view/pause/seek/resume/close.
+The audio tone never autoplays. Pending acceptance is M9 in REVIEW.md.

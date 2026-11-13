@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 143 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 162 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-412 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+440 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -84,7 +84,7 @@ inline image attachments, file/audio/video cards, embeds, reply previews and
 flat forwarded snapshots (text and media). The GPUI image loader uses a separate
 credential-free HTTP client with four workers, pooled connections, bounded
 response bytes and timeouts. Spoiler/sensitive images remain hidden; expired
-attachments are unavailable. Native audio/video playback is still pending.
+attachments are unavailable. Native audio/video attachments now use the in-app player described below.
 
 Message bodies wrap at the window width and support mouse drag, Unicode word
 double-click, line triple-click, keyboard selection, and Ctrl/Cmd+C without
@@ -102,7 +102,7 @@ draft recovery, and forwarding via the keyboard destination picker. A loopback
 HTTP fixture verifies actual reply/forward request bodies and failed-reply draft
 retention without capture. Another fixture serves and decodes a PNG through the
 image worker. Live authenticated rich-chat interoperability remains unverified.
-Full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback,
+Full markdown/custom emoji rendering, authenticated upload interoperability, full media-viewer parity,
 cross-message selection, selection autoscroll and selectable embed text remain
 open; the parity ledger stays partial.
 
@@ -462,3 +462,46 @@ state, and denied history navigation is rejected before entering it.
 The full 412-test verification gate passes, including actual localhost send/upload
 fixtures. User-facing checks remain U8/M8/E2/U9/N5 in REVIEW.md. Multi-stream
 review is deferred at the user's request.
+
+
+## Native file audio/video playback (2026-11-13)
+
+Playable attachments and declared audio/video/GIFV embed resources now render
+native players in chat, flat forwards and search/pins. Audio and ordinary video
+start explicitly; GIFV follows viewport, focus and existing GIF autoplay gates,
+loops and stays muted. Normal audio/video continue while scrolled away; unmount,
+channel/account changes and retirement stop the owned player. Separate player
+instances isolate chat and browser-surface visibility and controls. Full view
+shares the current position/decoder with its inline instance and restores focus
+on close. Open original uses the existing link-warning policy. Search cards retain
+space for playback controls instead of clipping them to an image-preview height.
+
+A worker owns FFmpeg demux/decoders, bounded PCM/video queues, seek generations and
+PipeWire output. Video is converted directly to BGRA, including quarter-turn
+phone-video rotation and sample-aspect correction; the GPUI mailbox retains the
+latest frame, retires old atlas images and avoids redundant copies. Controls and
+teardown do not join/block the UI. Decoder allocation and thread limits apply
+before opening codecs. The PipeWire forwarding library is initialized before
+opening file output, as required when linked with LiveKit. Native FFmpeg receives
+only a local cached file with an ordinary-container/protocol whitelist.
+
+Four HTTP workers spool complete resources to private disk-cache files, bounded
+to 2 GiB each, with progress and cancellation. Signed query tokens survive source
+transforms, and account credentials are not copied to media requests. Concealed
+video preloads paused and paints a separately blurred frame; audio remains silent
+until explicit play/reveal. Superseded seeks are skipped before native I/O. Delayed
+audio, EOF display duration, paused/end seeks, retry and output lifecycle have
+regressions. The full gate passes 440 tests (13 opt-in tests ignored); desktop 162
+and media 51 ordinary tests pass. The opt-in 1080p30 decoder/mailbox test measured
+30.28 FPS landscape and 30.29 rotated, with clock ratios 0.999/0.998; this is not
+GUI scanout. An isolated PipeWire monitor verified actual decoded PCM, volume,
+mute, pause, seek, sink switching and stop using generated audio only.
+
+The generated app fixture proves native frame presentation, changing GIFV pixels,
+blurred video preloading, and programmatically dispatched full-view/pause/seek/
+resume/close actions through the real player handlers. No expired-media request
+or ordinary audio autoplay occurred. Artifact paths and live acceptance are M9
+in REVIEW.md. Remaining work includes progressive range/buffered startup, preference
+persistence/motion migration, playback rate/PiP/subtitles/HDR, arbitrary-angle or
+reflection transforms, more codec/platform coverage and native-media/shared-audio
+interoperability. Full feature parity remains incomplete.

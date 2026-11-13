@@ -118,6 +118,8 @@ impl FilePlayer {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             shared.frame = None;
             shared.pending_seek = true;
+            shared.snapshot.position = seconds.min(i64::MAX as f64 / 1e6);
+            shared.snapshot.status = FilePlaybackStatus::Loading;
             shared.seek_generation = shared.seek_generation.wrapping_add(1);
             let _ = self.tx.send(Command::Seek(
                 seconds.min(i64::MAX as f64 / 1e6),

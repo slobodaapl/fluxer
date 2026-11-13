@@ -529,11 +529,78 @@ fn snapshot_media(snapshot: &Value) -> Message {
     message
 }
 
+pub(super) fn has_playable_media(message: &Message) -> bool {
+    let now = chrono::Utc::now().timestamp_millis();
+    message
+        .attachments
+        .iter()
+        .any(|attachment| crate::playable_media::attachment(attachment, "preview", now).is_some())
+        || (!crate::playable_media::embeds_suppressed(message.flags)
+            && message
+                .extra
+                .get("embeds")
+                .and_then(Value::as_array)
+                .is_some_and(|embeds| {
+                    embeds.iter().enumerate().any(|(index, embed)| {
+                        crate::playable_media::embed(embed, "preview", index, false, now).is_some()
+                    })
+                }))
+        || message
+            .extra
+            .get("message_snapshots")
+            .and_then(Value::as_array)
+            .is_some_and(|snapshots| {
+                snapshots
+                    .iter()
+                    .any(|snapshot| has_playable_media(&snapshot_media(snapshot)))
+            })
+}
+
+pub(super) fn playable_keys(message: &Message, surface: &str) -> Vec<String> {
+    fn collect(message: &Message, namespace: &str, surface: &str, keys: &mut Vec<String>) {
+        let now = chrono::Utc::now().timestamp_millis();
+        for attachment in &message.attachments {
+            if let Some(source) = crate::playable_media::attachment(attachment, namespace, now) {
+                keys.push(format!("{surface}:{}", source.resource_key));
+            }
+        }
+        if !crate::playable_media::embeds_suppressed(message.flags)
+            && let Some(embeds) = message.extra.get("embeds").and_then(Value::as_array)
+        {
+            for (index, embed) in embeds.iter().enumerate() {
+                if let Some(source) =
+                    crate::playable_media::embed(embed, namespace, index, false, now)
+                {
+                    keys.push(format!("{surface}:{}", source.resource_key));
+                }
+            }
+        }
+    }
+    let mut keys = Vec::new();
+    collect(message, &message.id.to_string(), surface, &mut keys);
+    if let Some(snapshots) = message
+        .extra
+        .get("message_snapshots")
+        .and_then(Value::as_array)
+    {
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            collect(
+                &snapshot_media(snapshot),
+                &format!("{}-snapshot-{index}", message.id),
+                surface,
+                &mut keys,
+            );
+        }
+    }
+    keys
+}
+
 pub fn media(
     message: &Message,
-    tooltips_enabled: bool,
-    autoplay: bool,
+    motion: MediaMotion,
     revealed: &BTreeSet<String>,
+    players: &mut crate::media_player::PlaybackUi,
+    window: &Window,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
     let snapshots = message
@@ -547,9 +614,10 @@ pub fn media(
             media_parts(
                 &snapshot_media(snapshot),
                 &format!("{}-snapshot-{index}", message.id),
-                tooltips_enabled,
-                autoplay,
+                motion,
                 revealed,
+                players,
+                window,
                 cx,
             )
         })
@@ -562,9 +630,10 @@ pub fn media(
         .child(media_parts(
             message,
             &message.id.to_string(),
-            tooltips_enabled,
-            autoplay,
+            motion,
             revealed,
+            players,
+            window,
             cx,
         ))
         .children(snapshots)
@@ -616,14 +685,27 @@ fn attachment_gallery(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct MediaMotion {
+    pub enabled: bool,
+    pub autoplay: bool,
+    pub surface: &'static str,
+}
+
 fn media_parts(
     message: &Message,
     namespace: &str,
-    tooltips_enabled: bool,
-    autoplay: bool,
+    motion: MediaMotion,
     revealed: &BTreeSet<String>,
+    players: &mut crate::media_player::PlaybackUi,
+    window: &Window,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
+    let MediaMotion {
+        enabled: tooltips_enabled,
+        autoplay,
+        ..
+    } = motion;
     let indexed_gallery = attachment_gallery(message, namespace, revealed);
     let gallery = Arc::new(
         indexed_gallery
@@ -636,6 +718,16 @@ fn media_parts(
         .iter()
         .enumerate()
         .map(|(source_index, attachment)| {
+            if let Some(mut source) = crate::playable_media::attachment(
+                attachment,
+                namespace,
+                chrono::Utc::now().timestamp_millis(),
+            ) {
+                source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
+                let is_revealed =
+                    source.concealment.is_none() || revealed.contains(&source.reveal_key);
+                return players.render(source, is_revealed, autoplay, tooltips_enabled, window, cx);
+            }
             let kind = attachment_kind(attachment);
             let original = attachment_url(attachment, false);
             let reveal_key = attachment_reveal_key(namespace, attachment.id);
@@ -737,8 +829,20 @@ fn media_parts(
         .into_iter()
         .flatten()
         .enumerate()
-        .filter(|_| message.flags & (1 << 2) == 0)
+        .filter(|_| !crate::playable_media::embeds_suppressed(message.flags))
         .map(|(index, embed)| {
+            if let Some(mut source) = crate::playable_media::embed(
+                embed,
+                namespace,
+                index,
+                embed_is_spoiler(embed, &spoilered),
+                chrono::Utc::now().timestamp_millis(),
+            ) {
+                source.resource_key = format!("{}:{}", motion.surface, source.resource_key);
+                let is_revealed =
+                    source.concealment.is_none() || revealed.contains(&source.reveal_key);
+                return players.render(source, is_revealed, autoplay, tooltips_enabled, window, cx);
+            }
             let key = embed_reveal_key(namespace, index);
             if !revealed.contains(&key)
                 && let Some(concealment) = embed_concealment(embed, &spoilered)
@@ -1171,6 +1275,34 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use serde_json::json;
+    #[test]
+    fn virtualized_player_retention_tracks_surface_and_forwarded_resources() {
+        let attachment = |id, mime: &str| json!({"id":id,"filename":"fixture","size":10,"content_type":mime,"url":"https://media.example/file","proxy_url":"https://proxy.example/file?signature=kept"});
+        let message: Message = serde_json::from_value(
+            json!({"id":"55","channel_id":"1","author":{"id":"2","username":"Test"},
+                "attachments":[attachment("10","video/mp4"),attachment("11","image/png")],
+                "embeds":[{"type":"audio","audio":{"proxy_url":"https://proxy.example/audio"}}],
+                "message_snapshots":[{"attachments":[attachment("12","audio/ogg")]}]
+            }),
+        )
+        .unwrap();
+        let browser = playable_keys(&message, "browser");
+        let timeline = playable_keys(&message, "timeline");
+        assert_eq!(browser.len(), 3);
+        assert_eq!(timeline.len(), 3);
+        assert!(
+            browser
+                .iter()
+                .all(|key| key.starts_with("browser:") && !timeline.contains(key))
+        );
+        let mut suppressed = message;
+        suppressed.flags = 4;
+        suppressed.attachments[0]
+            .extra
+            .insert("expired".into(), json!(true));
+        assert_eq!(playable_keys(&suppressed, "browser").len(), 1);
+    }
+
     fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
         super::attachment_gallery(message, "test", &BTreeSet::new())
     }
