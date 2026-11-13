@@ -3,6 +3,10 @@
 //! from an embedded LiveKit API secret. Capture begins only when joining/sharing.
 
 mod audio;
+mod file_playback;
+pub use file_playback::{
+    FilePlaybackFrame, FilePlaybackOptions, FilePlaybackSnapshot, FilePlaybackStatus, FilePlayer,
+};
 mod microphone;
 mod microphone_device;
 mod pipewire_runtime;
