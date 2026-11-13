@@ -821,7 +821,12 @@ impl Fluxer {
                                     .text_ellipsis()
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(message.author.display_name().to_owned()),
+                                    .child(crate::emoji_sprites::unicode_text(
+                                        message.author.display_name(),
+                                        12.,
+                                        window.scale_factor() > 1.,
+                                        cx,
+                                    )),
                             )
                             .child(
                                 div()

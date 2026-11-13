@@ -95,7 +95,7 @@ impl Fluxer {
                     .justify_between()
                     .border_b_1()
                     .border_color(rgb(PANEL))
-                    .child(heading(title).flex_1().min_w_0())
+                    .child(div().font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0().child(crate::emoji_sprites::unicode_text(&title, 18., window.scale_factor() > 1., cx)))
                     .child(
                         div()
                             .flex()
@@ -409,7 +409,7 @@ impl Fluxer {
                                                 .items_center()
                                                 .child(
                                                     div().font_weight(FontWeight::SEMIBOLD).child(
-                                                        message.author.display_name().to_string(),
+                                                        crate::emoji_sprites::unicode_text(message.author.display_name(), 14., window.scale_factor() > 1., cx),
                                                     ),
                                                 )
                                                 .child(
@@ -501,16 +501,22 @@ impl Fluxer {
                                                         SharedString::from(format!(
                                                             "reaction-chip-{id}-{index}"
                                                         )),
-                                                        format!(
-                                                            "{} {}",
-                                                            if reaction.emoji.id.is_some() {
-                                                                format!(":{}:", reaction.emoji.name)
-                                                            } else {
-                                                                reaction.emoji.name.clone()
-                                                            },
-                                                            reaction.count
-                                                        ),
+                                                        "",
                                                     )
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(if let Some(emoji_id) = reaction.emoji.id {
+                                                        if let Some(endpoint) = self.media_endpoint.as_deref() {
+                                                            img(SharedString::from(format!("{}/emojis/{emoji_id}.webp?size=48", endpoint.trim_end_matches('/'))))
+                                                                .size(px(16.)).object_fit(ObjectFit::Contain).into_any_element()
+                                                        } else {
+                                                            div().size(px(16.)).into_any_element()
+                                                        }
+                                                    } else {
+                                                        crate::emoji_sprites::unicode_art(&reaction.emoji.name, 16., window.scale_factor() > 1., cx)
+                                                    })
+                                                    .child(reaction.count.to_string())
                                                     .h(px(24.))
                                                     .px_2()
                                                     .py_0()
@@ -617,13 +623,15 @@ impl Fluxer {
                                         .items_center()
                                         .gap_3()
                                         .child(
-                                            muted(format!(
-                                                "Replying to {} · {}",
-                                                message.author.display_name(),
-                                                chat_helpers::preview(message)
-                                            ))
-                                            .flex_1()
-                                            .min_w_0(),
+                                            div()
+                                                .text_color(rgb(MUTED))
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .child(crate::emoji_sprites::unicode_text(
+                                                    &format!("Replying to {} · {}", message.author.display_name(), chat_helpers::preview(message)),
+                                                    12., window.scale_factor() > 1., cx,
+                                                )),
                                         )
                                         .child(
                                             quiet_button(

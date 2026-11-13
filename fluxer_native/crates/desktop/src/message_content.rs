@@ -120,7 +120,13 @@ impl Fluxer {
                 .overflow_hidden()
                 .child(icon(Icon::Reply, 14.))
                 .child(
-                    quiet_button(("reply-source", message.id.0), name)
+                    quiet_button(("reply-source", message.id.0), "")
+                        .child(crate::emoji_sprites::unicode_text(
+                            &name,
+                            12.,
+                            window.scale_factor() > 1.,
+                            cx,
+                        ))
                         .py_0()
                         .h(px(20.))
                         .line_height(px(18.))

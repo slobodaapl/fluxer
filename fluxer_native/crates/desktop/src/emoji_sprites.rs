@@ -4,6 +4,114 @@ use crate::chat_helpers::EmojiSprite;
 use gpui::RenderImage;
 use std::{collections::HashMap, sync::Arc};
 
+impl gpui::Global for SpriteCache {}
+
+static STATIC_ENDPOINT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn configure_instance(document: Option<&serde_json::Value>) {
+    *STATIC_ENDPOINT.lock().unwrap() = document
+        .and_then(|document| document.pointer("/endpoints/static_cdn"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+        .map(|url| url.trim_end_matches('/').to_owned());
+}
+
+fn codepoints(text: &str) -> String {
+    // EmojiCodepointUtils.ts retains FE0F in ZWJ sequences except eye/speech.
+    let bare = text.replace('\u{fe0f}', "");
+    let source = if text.contains('\u{200d}') && bare != "👁\u{200d}🗨" {
+        text
+    } else {
+        &bare
+    };
+    source
+        .chars()
+        .map(|ch| format!("{:x}", ch as u32))
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+pub fn image_source(text: &str, high_dpi: bool, cx: &mut gpui::App) -> Option<gpui::ImageSource> {
+    if let Some(sprite) = crate::chat_helpers::unicode_sprite(text) {
+        if !cx.has_global::<SpriteCache>() {
+            cx.set_global(SpriteCache::new());
+        }
+        let (image, retired) = cx.global_mut::<SpriteCache>().get(sprite, high_dpi);
+        if let Some(retired) = retired {
+            cx.defer(move |cx| cx.drop_image(retired, None));
+        }
+        return image.map(Into::into);
+    }
+    if !crate::chat_helpers::unicode_catalog_contains(text) {
+        return None;
+    }
+    STATIC_ENDPOINT.lock().unwrap().as_ref().map(|endpoint| {
+        gpui::SharedString::from(format!("{endpoint}/emoji/{}.svg?v=2", codepoints(text))).into()
+    })
+}
+
+/// Shared by picker categories, reactions and other compact emoji labels.
+pub fn unicode_art(
+    text: &str,
+    font_size: f32,
+    high_dpi: bool,
+    cx: &mut gpui::App,
+) -> gpui::AnyElement {
+    use gpui::{prelude::*, *};
+    if let Some(source) = image_source(text, high_dpi, cx) {
+        img(source)
+            .flex_shrink_0()
+            .size(px(font_size))
+            .object_fit(ObjectFit::Contain)
+            .into_any_element()
+    } else if crate::chat_helpers::unicode_catalog_contains(text) {
+        // Known art awaiting instance configuration must not change to OS art.
+        div().flex_shrink_0().size(px(font_size)).into_any_element()
+    } else {
+        div()
+            .text_size(px(font_size))
+            .line_height(relative(1.))
+            .child(text.to_owned())
+            .into_any_element()
+    }
+}
+
+/// Inline art for compact static labels that do not have a selectable input.
+pub fn unicode_text(
+    text: &str,
+    font_size: f32,
+    high_dpi: bool,
+    cx: &mut gpui::App,
+) -> gpui::AnyElement {
+    use gpui::{prelude::*, *};
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut children = Vec::new();
+    let mut copied = 0;
+    for (start, grapheme) in text.grapheme_indices(true) {
+        if !crate::chat_helpers::unicode_catalog_contains(grapheme) {
+            continue;
+        }
+        if start > copied {
+            children.push(
+                div()
+                    .child(text[copied..start].to_owned())
+                    .into_any_element(),
+            );
+        }
+        children.push(unicode_art(grapheme, font_size, high_dpi, cx));
+        copied = start + grapheme.len();
+    }
+    if copied < text.len() {
+        children.push(div().child(text[copied..].to_owned()).into_any_element());
+    }
+    div()
+        .flex()
+        .items_center()
+        .text_size(px(font_size))
+        .children(children)
+        .into_any_element()
+}
+
 const CAPACITY: usize = 256;
 struct Entry {
     image: Arc<RenderImage>,
@@ -137,6 +245,15 @@ fn sheet_bytes(sheet: u8, high_dpi: bool) -> Option<&'static [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cdn_codepoints_match_source_variation_selector_rules() {
+        assert_eq!(codepoints("☺️"), "263a");
+        assert_eq!(codepoints("👁️‍🗨️"), "1f441-200d-1f5e8");
+        assert_eq!(codepoints("👩‍⚕️"), "1f469-200d-2695-fe0f");
+        assert_eq!(codepoints("🫱🏻‍🫲🏼"), "1faf1-1f3fb-200d-1faf2-1f3fc");
+        assert!(crate::chat_helpers::unicode_catalog_contains("🫱🏻‍🫲🏼"));
+        assert!(!crate::chat_helpers::unicode_catalog_contains("👨‍🦕"));
+    }
     #[test]
     fn crop_preserves_asset_pixels_and_converts_rgba_to_gpui_bgra() {
         let sheet = image::load_from_memory(sheet_bytes(0, false).unwrap())

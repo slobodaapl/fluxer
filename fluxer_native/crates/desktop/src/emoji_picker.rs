@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Bounded expression popover: cached catalog results and visible grid rows only.
 use super::*;
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-    time::Instant,
-};
+use std::{cell::Cell, rc::Rc, time::Instant};
 
 pub(super) const COLUMNS: usize = 8;
 const CELL: f32 = 40.;
 
 pub(super) struct EmojiPickerState {
     catalog: Option<chat_helpers::EmojiCatalog>,
-    sprites: RefCell<crate::emoji_sprites::SpriteCache>,
     high_dpi: Cell<bool>,
     custom_guild: Option<Snowflake>,
     custom_emojis: Option<serde_json::Value>,
@@ -30,7 +25,6 @@ impl EmojiPickerState {
     pub fn new() -> Self {
         Self {
             catalog: None,
-            sprites: RefCell::new(crate::emoji_sprites::SpriteCache::new()),
             high_dpi: Cell::new(false),
             custom_guild: None,
             custom_emojis: None,
@@ -239,36 +233,8 @@ impl Fluxer {
         .into_any_element()
     }
 
-    fn sprite_image(
-        &self,
-        sprite: chat_helpers::EmojiSprite,
-        cx: &mut Context<Self>,
-    ) -> Option<Arc<RenderImage>> {
-        let (image, evicted) = self
-            .emoji_picker
-            .sprites
-            .borrow_mut()
-            .get(sprite, self.emoji_picker.high_dpi.get());
-        if let Some(evicted) = evicted {
-            cx.defer(move |cx| cx.drop_image(evicted, None));
-        }
-        image
-    }
     fn unicode_art(&self, text: &str, size: f32, cx: &mut Context<Self>) -> AnyElement {
-        if let Some(sprite) = chat_helpers::unicode_sprite(text)
-            && let Some(image) = self.sprite_image(sprite, cx)
-        {
-            img(image)
-                .size(px(size))
-                .object_fit(ObjectFit::Contain)
-                .into_any_element()
-        } else {
-            div()
-                .text_size(px(size))
-                .line_height(relative(1.))
-                .child(text.to_owned())
-                .into_any_element()
-        }
+        crate::emoji_sprites::unicode_art(text, size, self.emoji_picker.high_dpi.get(), cx)
     }
 
     fn emoji_art(
@@ -298,23 +264,7 @@ impl Fluxer {
                 .child(choice.name.chars().take(2).collect::<String>())
                 .into_any_element();
         }
-        if let Some(sprite) = choice.sprite
-            && let Some(image) = self.sprite_image(sprite, cx)
-        {
-            return img(image)
-                .size(px(size))
-                .object_fit(ObjectFit::Contain)
-                .into_any_element();
-        }
-        div()
-            .size(px(size + 4.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(size))
-            .line_height(relative(1.))
-            .child(choice.label.clone())
-            .into_any_element()
+        self.unicode_art(&choice.label, size, cx)
     }
 }
 
