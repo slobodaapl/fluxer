@@ -344,7 +344,6 @@ impl Fluxer {
                                 },
                             ))
                             .child(self.message_bounds_marker(id))
-                            .child(toolbar)
                             .when(
                                 self.search_ui.highlight == Some((message.channel_id, message.id)),
                                 |view| {
@@ -485,7 +484,11 @@ impl Fluxer {
                                             ),
                                         ))
                                     }),
-                            );
+                            )
+                            // Paint the solid toolbar after text/media. Absolute
+                            // positioning alone does not put it above siblings;
+                            // selectable text used to paint through its backing.
+                            .child(toolbar);
                         // Keep exactly one scroll child per message. Dividers and
                         // inter-group spacing live INSIDE this wrapper, so history
                         // centering and roving keyboard indices remain unchanged.

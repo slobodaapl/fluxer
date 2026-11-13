@@ -9,7 +9,7 @@ verification without treating their absence as approval of a manual test result.
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 360 tests, formatting, strict Clippy and the
+The UI refinement gate passes 368 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -23,6 +23,7 @@ Full feature parity remains in progress.
 | M3 | Mentions, emoji and links | Compare known user/role/channel labels and custom emoji with Fluxer. Click a channel link and an old message link; inspect an untrusted external URL and cancel. Check registered emoji renames, failures and spoiler concealment. | **Pending real-account review.** Generated loopback emoji images and resolved labels checked; no external destination opened. Trust/host/scope fixtures pass. User/role popovers, animated/jumbo sizing, timestamps and full preference parity remain incomplete. |
 | M4 | Reply and attachment presentation | Follow a reply to its original message; check missing references, forwards, images, spoilers/sensitive attachments and narrow-window wrapping. Images should retain aspect ratio without an extra file card underneath. | **Pending live/layout review.** Reference lookup uses existing cached/wire data and jump commands; media URL/privacy and bounded dimensions regressions pass. |
 | U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
+| U7 | Message toolbar legibility | Hover short and wrapped messages, code and media; check React/Reply/More against the text beneath it. Select nearby text and open reactions. | **Pending subjective review.** Toolbar backing is solid with a stronger border/shadow, and paints after message text/media so content cannot paint through it. Hidden toolbars retain their existing visibility behavior. |
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
 | U3 | Search, pins and attachments | Browse results and pins; use corner actions, select text without jumping, and open a result. Add image/file attachments and check overlay controls, spoiler/retry/cancel and uncluttered empty composer. | **Pending subjective/live review.** Offline compact search layout, generated-file cards/spoiler concealment and confirmation cancellation checked. Existing upload/search/controller contracts pass. |
 | U4 | Keyboard and small windows | Use Tab/Shift+Tab, timeline Up/Down, menus and confirmation dialogs at 880×600. Try long channel/user/file names and increased text size. Controls should remain reachable, focus visible and dialogs on screen. | **Pending complete accessibility review.** Local keyboard/slider/menu fixtures pass; screen-reader semantics, preference migration and broader focus consistency remain incomplete. |
@@ -39,6 +40,7 @@ Full feature parity remains in progress.
 | E1 | Reaction picker feel | Open reactions repeatedly, search a Unicode/custom emoji, change skin tone, and add/remove a reaction. Icons should be centered and opening should feel immediate. | **Pending subjective/live check.** Sprite, search and virtualization fixtures pass; earlier local cold-open measurement was 112 ms. |
 | V1 | Shared audio with regular Fluxer | Have another client watch a stream with Include audio enabled. Check system/application selection, stereo, stream mute/gain, and microphone mute/deafen independence. | **Pending real-client audio check.** Generated selected-application audio → publication → decoded stereo passes plain/E2EE locally. |
 | V2 | Watching and stopping streams | Watch/re-watch another person's Live stream, use fullscreen/chat controls, then Stop Watching while voice continues. Check video smoothness, immediate local stop and absence of lingering stream audio. | **Pending sustained real-call check.** Local plain/E2EE lifecycle, 1080p30 throughput, teardown and mixed audio fixtures pass. |
+| V3 | Multiple streams and layouts | Watch two or more streams. Switch Tile all/Main stage, select different streams, resize the window and open chat. Check landscape/portrait layouts, per-stream audio and stopping one stream while the others continue. | **Pending real-call/subjective review.** Multiple watch subscriptions already exist; this pass adds an explicit local layout choice and tiling from actual stage bounds. Offline evidence is recorded below. |
 
 Successful microphone transmission with GoXLR Chat Mic was previously confirmed
 by the user. Session restore, joining voice, receiving audio and watching a stream
@@ -100,3 +102,19 @@ and a deliberately cleared avatar using the source default. Combining it with
 log are in `target/qa/avatar-images/`. No real voice connection, capture or account
 mutation was used. Real image changes, animated assets and two-client acceptance
 remain separate from these offline checks.
+
+
+## Stream layout and toolbar evidence (2026-11-12)
+
+Offline fixtures cover two and four simultaneous synthetic streams with mixed
+landscape/portrait shapes, plus the explicit main-stage mode. The hover toolbar
+was captured over a generated code message with its solid backing visible.
+Captures, logs and the full verification result are saved under
+`target/qa/stream-layouts/`. No account session, call or capture was opened by
+these fixtures. Live per-stream audio/stop behavior, layout switching during a
+real call, and subjective legibility remain pending as U7/V3.
+
+The animated single-stream fixture exercises the new grid with generated
+1080p30 frames: steady acceptance/presentation was approximately 30 FPS. Cleared
+Render followed Stop handling in 6.4 ms, with a 45.3 ms scheduled-action delay and
+a 241.3 ms next-frame callback; the latter includes platform frame scheduling.

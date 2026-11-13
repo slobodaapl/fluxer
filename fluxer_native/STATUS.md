@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 94 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 102 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-360 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+368 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -73,7 +73,7 @@ sign-in, voice join/leave/mute/deafen, gateway-backed participant rows beneath
 voice channels and a participant pane above voice-channel chat with state badges
 and exact-identity speaking indicators,
 audio device/DSP/gain/PTT/VAD/participant controls, microphone test/meters, incoming
-video with a focused stage, stream/member filmstrip, optional chat, fullscreen,
+video with adaptive tiles or a selected main stage, stream/member filmstrip, optional chat, fullscreen,
 independent stream audio controls and immediate Stop Watching, and display/window plus
 system/application audio sharing. Screen selection
 includes frame-rate and resolution choices. Live behavior remains subject to the
@@ -340,3 +340,24 @@ use source-style acronyms. The account dock/chat share the global-avatar helper.
 Call images use the joined voice community even while browsing another one.
 Static images are implemented; animation and system-bot branding are not claimed.
 See REVIEW.md P1/P2 for live checks. No REST/gateway interaction changed.
+
+
+## Stream layouts and toolbar follow-up (2026-11-12)
+
+Multiple incoming screen subscriptions now have an explicit Tile all/Main stage
+choice. The custom GPUI grid measures the actual stage after the surrounding
+layout, considers each video's aspect ratio and preserves uncropped Contain
+rendering. Layout/focus changes retain watch intent and decoded frames; per-tile
+mute/stop target their own stream. Reconnect preserves the chosen layout. Tiled
+mode removes duplicate watched thumbnails and compacts the participant strip.
+
+Offline two/four-stream and main-stage captures are in
+`target/qa/stream-layouts/`, alongside a hover-toolbar capture and the verification
+log. The toolbar uses solid contrasting backing, border and shadow and paints
+after the message body, preventing later text/media from covering its surface.
+The animated tiled renderer sustained approximately 30 accepted/rendered FPS
+after startup with synthetic 1080p30 frames. Scheduled Stop reached cleared Render
+in 6.4 ms after handling (45.3 ms action scheduling delay; next-frame callback
+241.3 ms, which includes platform scheduling). These are local presentation
+measurements, not network latency, physical scanout or real-call acceptance.
+Review items U7/V3 retain the subjective and two-client checks.

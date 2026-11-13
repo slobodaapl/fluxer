@@ -19,6 +19,8 @@ mod message_links;
 mod message_markup;
 mod rich_message;
 mod search_browser;
+mod stream_grid;
+mod stream_layout;
 mod stream_view;
 mod video_perf;
 
@@ -804,6 +806,9 @@ impl Fluxer {
                         }
                         if self.demo_stream {
                             self.install_stream_fixture(cx);
+                            if std::env::args().any(|arg| arg == "--demo-stream-main") {
+                                self.viewer.layout = stream_layout::StreamLayout::MainStage;
+                            }
                             if self.animation.is_some() {
                                 self.retire_stream_image("preview-1", cx);
                                 self.viewer.stop("preview-1");
@@ -1962,11 +1967,18 @@ impl Render for Fluxer {
         self.video_stats.rendered(
             window,
             self.pane == Pane::Call
-                && self
-                    .viewer
-                    .focused
-                    .as_ref()
-                    .is_some_and(|identity| self.viewer.frames.contains_key(identity)),
+                && match self.viewer.layout {
+                    stream_layout::StreamLayout::Tiled => self
+                        .viewer
+                        .desired
+                        .iter()
+                        .any(|identity| self.viewer.frames.contains_key(identity)),
+                    stream_layout::StreamLayout::MainStage => self
+                        .viewer
+                        .focused
+                        .as_ref()
+                        .is_some_and(|identity| self.viewer.frames.contains_key(identity)),
+                },
         );
         let content = if self.session_restoring {
             self.restoring_view(cx)

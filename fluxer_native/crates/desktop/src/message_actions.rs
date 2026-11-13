@@ -406,9 +406,9 @@ impl Fluxer {
             .items_center()
             .rounded_md()
             .border_1()
-            .border_color(rgb(0x484252))
-            .bg(rgb(PANEL))
-            .shadow_sm()
+            .border_color(rgb(0x5a526b))
+            .bg(rgb(0x302b3d))
+            .shadow_md()
             .invisible()
             .group_hover(group, |style| style.visible())
             .when(persistent, |toolbar| toolbar.visible());

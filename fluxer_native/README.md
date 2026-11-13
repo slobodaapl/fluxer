@@ -18,6 +18,10 @@ cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
 FLUXER_EMOJI_PERF=1 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-emoji
 # Offline landscape/portrait screen viewer, synthetic participants, no capture:
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream
+# Four simultaneous synthetic streams:
+cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream --demo-stream-many
+# Same offline streams with one selected on the main stage:
+cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream --demo-stream-main
 ```
 
 Normal launch restores the saved account on Linux using the OS Secret Service.
@@ -76,6 +80,12 @@ If requested audio cannot start, sharing stops with an error instead of silently
 falling back to video only. Application refresh uses a synchronized PipeWire
 inventory and preserves the selected source. Audio sharing on other platforms
 remains migration work.
+
+The incoming stream viewer supports watching several streams at once. **Tile
+all** fits the watched streams to the available stage, preserving each video's
+aspect ratio. **Main stage** enlarges the selected stream and keeps the others
+in the filmstrip. Click a tile to select its audio/stop controls, or double-click
+to put it on the main stage. Switching layouts keeps existing subscriptions.
 
 ## Validation
 

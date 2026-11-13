@@ -62,6 +62,23 @@ highlighting, timestamp widgets, animated/jumbo emoji, profile/role popovers,
 compact density and locale/hour-cycle preferences, and editing trust settings.
 These limitations are tracked with M1–M4 in REVIEW.md.
 
+## Stream layout and action-toolbar follow-up
+
+The stream viewer now offers **Tile all** and **Main stage**. Tiling uses the
+stage's actual allocated bounds, accounts for individual landscape/portrait
+ratios and evaluates both horizontal and vertical arrangements. Selecting a tile
+changes which stream its footer controls address; switching layouts does not
+restart subscriptions. Per-tile mute and stop remain available, with other
+watched streams retained. The main-stage layout keeps its stream filmstrip.
+
+The message hover toolbar now paints after message text/media and has a solid,
+more distinct backing, border and shadow. Its earlier paint order allowed later
+content to cover the backing and look like transparency. Hidden toolbar behavior
+is retained so invisible actions do not cover selectable message content.
+
+Real-call layout, per-stream audio/stop and subjective toolbar legibility remain
+explicit review items U7/V3 in REVIEW.md.
+
 ## Next priorities
 
 1. Finish block presentation (heading hierarchy, nested lists, code tools and

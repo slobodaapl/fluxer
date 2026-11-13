@@ -35,17 +35,19 @@ impl Element for StreamGrid {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let mut style = Style::default();
-        style.size = Size {
-            width: relative(1.).into(),
-            height: relative(1.).into(),
+        let style = Style {
+            size: Size {
+                width: relative(1.).into(),
+                height: relative(1.).into(),
+            },
+            min_size: Size {
+                width: px(0.).into(),
+                height: px(0.).into(),
+            },
+            flex_grow: 1.,
+            flex_shrink: 1.,
+            ..Default::default()
         };
-        style.min_size = Size {
-            width: px(0.).into(),
-            height: px(0.).into(),
-        };
-        style.flex_grow = 1.;
-        style.flex_shrink = 1.;
         (window.request_layout(style, [], cx), ())
     }
     fn prepaint(

@@ -130,7 +130,7 @@ pub fn tiled_layout(width: f32, height: f32, aspect_ratios: &[f32], gap: f32) ->
 /// For normal call counts examine every ordered row partition, in both axes.
 /// Larger rosters use bounded families of balanced counts and aspect weights
 /// (at most 200 candidate partitions, rather than exponentially many). Each
-/// candidate costs O(n + r log r) for n streams and r row-allocation priorities.
+/// candidate costs O(n + r log r) for n streams and r rows.
 fn partitions(aspects: &[f64]) -> Vec<Vec<usize>> {
     let count = aspects.len();
     if count <= EXHAUSTIVE_COUNT {
