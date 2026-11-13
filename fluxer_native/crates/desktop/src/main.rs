@@ -786,6 +786,7 @@ impl Fluxer {
                     self.maybe_demo_images(cx);
                     self.maybe_demo_gifs(cx);
                     self.maybe_demo_avatars(cx);
+                    self.maybe_demo_outbox(cx);
                 }
                 Event::SessionRestoring(restoring) => {
                     self.session_restoring = restoring;
@@ -2109,6 +2110,7 @@ fn main() {
                 || v == "--demo-images"
                 || v == "--demo-gifs"
                 || v == "--demo-avatars"
+                || v == "--demo-outbox"
         });
     Application::new()
         .with_assets(controls::Assets)

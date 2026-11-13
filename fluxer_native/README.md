@@ -195,3 +195,8 @@ scrollbar, and community selection uses a thin border. Ctrl/Cmd+Z undoes compose
 edits; Ctrl/Cmd+Shift+Z or Ctrl+Y redoes them. Picker, composer, messages and
 reactions share Fluxer's emoji artwork. Pin announcements link to their original
 message and the channel's pins instead of displaying a reply preview.
+
+
+`cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-outbox`
+opens persistent local-only sending, uploading and failed-message examples for
+layout review. These rows do not perform uploads or send account messages.

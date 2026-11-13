@@ -212,3 +212,16 @@ style found on the first demo launch was removed before installation. The
 subsequent pin-click/scrollbar-drag check stopped when the focus guard detected
 a different window; no successful interactive navigation/drag result is claimed.
 The fixture generated no production messages/uploads or microphone capture.
+
+
+## Pending status layout correction (2026-11-13)
+
+The user reported vertically stacked sending text in build `489049ac5`. The
+persistent `--demo-outbox` fixture reproduced delivery/error labels constrained
+to roughly one glyph wide. The status row now fills the message body width, its
+text takes the remaining flex space, and action icons keep their width. Pending
+body/attachment containers also have explicit width constraints; row spacing and
+line height follow normal chat. Before/after mock captures show horizontal
+sending/upload/error labels in `target/qa/pending-layout/`. The corrected desktop
+passes all 143 tests (one opt-in ignored), strict Clippy and formatting. Real-account
+send feel remains M8; this check establishes the persistent transient-state layout.

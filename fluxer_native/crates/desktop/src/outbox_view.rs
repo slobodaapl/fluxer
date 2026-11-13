@@ -7,6 +7,7 @@ use fluxer_client::{AttachmentStatus, PendingMessage, PendingMessageStatus};
 #[derive(Default)]
 pub(super) struct OutboxUi {
     pub channels: BTreeMap<Snowflake, Vec<PendingMessage>>,
+    fixture_started: bool,
     awaiting: BTreeSet<(Snowflake, u64)>,
     text: BTreeMap<(Snowflake, u64), Entity<TextInput>>,
 }
@@ -56,6 +57,35 @@ impl OutboxUi {
 }
 
 impl Fluxer {
+    /// Persistent local-only rows expose the transient delivery layout for review.
+    pub(super) fn maybe_demo_outbox(&mut self, cx: &mut Context<Self>) {
+        if !self.demo
+            || self.outbox.fixture_started
+            || self.state.current_user.is_none()
+            || !std::env::args().any(|arg| arg == "--demo-outbox")
+        {
+            return;
+        }
+        let Some(channel) = self.state.selected_channel else {
+            return;
+        };
+        self.outbox.fixture_started = true;
+        let rows = [
+            ("This pending message should read just like a normal chat message, with enough horizontal room for its words and Fluxer emoji 👋🏽 🎉.", PendingMessageStatus::Sending),
+            ("An attachment is uploading while the next draft remains available.", PendingMessageStatus::Sending),
+            ("A failed message should keep its normal text layout and offer a small retry control.", PendingMessageStatus::Failed("Offline example: connection interrupted".into())),
+        ].into_iter().enumerate().map(|(index, (content, status))| {
+            let attachments = if index == 1 { vec![fluxer_client::StagedAttachment {
+                id: 900_000, filename: "example-image.png".into(), size: 2048, mime_type: "image/png".into(), spoiler: false,
+                status: AttachmentStatus::Uploading, progress: 0.42, error: None, preview: None,
+            }] } else { vec![] };
+            PendingMessage { id: fluxer_client::next_pending_message_id(), content: content.into(), attachments, status, reply: None }
+        }).collect();
+        self.outbox.update(channel, rows);
+        self.timeline.scroll_to_bottom();
+        cx.notify();
+    }
+
     pub(super) fn send_optimistically(&mut self, content: String, cx: &mut Context<Self>) {
         let Some(channel) = self.state.selected_channel else {
             return;
@@ -210,7 +240,8 @@ impl Fluxer {
                     .min_w_0()
                     .flex_shrink_0()
                     .px(px(16.))
-                    .py_2()
+                    .py(px(message_grouping::COZY_SPACING_Y))
+                    .line_height(px(message_grouping::COZY_LINE_HEIGHT))
                     .flex()
                     .gap(px(message_grouping::COZY_GUTTER))
                     .child(
@@ -241,84 +272,97 @@ impl Fluxer {
                             .when_some(reply, |view, reply| view.child(reply))
                             .when(!pending.content.is_empty(), |view| {
                                 view.child(
-                                    div().opacity(if failed { 1. } else { 0.65 }).child(text),
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .opacity(if failed { 1. } else { 0.65 })
+                                        .child(text),
                                 )
                             })
                             .when(!pending.attachments.is_empty(), |view| {
-                                view.child(div().flex().flex_wrap().gap_2().children(
-                                    pending.attachments.iter().map(|stage| {
-                                        let image = if stage.spoiler {
-                                            None
-                                        } else {
-                                            self.attachment_preview(channel, stage, cx)
-                                        };
-                                        div()
-                                            .w(px(180.))
-                                            .rounded_md()
-                                            .overflow_hidden()
-                                            .bg(rgb(PANEL))
-                                            .border_1()
-                                            .border_color(rgb(if failed {
-                                                0xa54c62
+                                view.child(
+                                    div()
+                                        .w_full()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_wrap()
+                                        .gap_2()
+                                        .children(pending.attachments.iter().map(|stage| {
+                                            let image = if stage.spoiler {
+                                                None
                                             } else {
-                                                0x41394d
-                                            }))
-                                            .flex()
-                                            .flex_col()
-                                            .when_some(image, |view, image| {
-                                                view.child(
-                                                    img(image)
-                                                        .w_full()
-                                                        .h(px(100.))
-                                                        .object_fit(ObjectFit::Contain),
+                                                self.attachment_preview(channel, stage, cx)
+                                            };
+                                            div()
+                                                .w(px(180.))
+                                                .rounded_md()
+                                                .overflow_hidden()
+                                                .bg(rgb(PANEL))
+                                                .border_1()
+                                                .border_color(rgb(if failed {
+                                                    0xa54c62
+                                                } else {
+                                                    0x41394d
+                                                }))
+                                                .flex()
+                                                .flex_col()
+                                                .when_some(image, |view, image| {
+                                                    view.child(
+                                                        img(image)
+                                                            .w_full()
+                                                            .h(px(100.))
+                                                            .object_fit(ObjectFit::Contain),
+                                                    )
+                                                })
+                                                .child(
+                                                    div()
+                                                        .px_2()
+                                                        .py_1()
+                                                        .flex()
+                                                        .items_center()
+                                                        .gap_1()
+                                                        .child(icon(
+                                                            if stage.spoiler {
+                                                                Icon::EyeOff
+                                                            } else {
+                                                                Icon::File
+                                                            },
+                                                            14.,
+                                                        ))
+                                                        .child(
+                                                            div()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .text_size(px(12.))
+                                                                .text_ellipsis()
+                                                                .child(stage.filename.clone()),
+                                                        ),
                                                 )
-                                            })
-                                            .child(
-                                                div()
-                                                    .px_2()
-                                                    .py_1()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .child(icon(
-                                                        if stage.spoiler {
-                                                            Icon::EyeOff
-                                                        } else {
-                                                            Icon::File
-                                                        },
-                                                        14.,
-                                                    ))
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .text_size(px(12.))
-                                                            .text_ellipsis()
-                                                            .child(stage.filename.clone()),
-                                                    ),
-                                            )
-                                            .when(!failed, |view| {
-                                                view.child(
-                                                    div().h(px(2.)).bg(rgb(0x24202d)).child(
-                                                        div()
-                                                            .h_full()
-                                                            .w(relative(
-                                                                stage.progress.clamp(0., 1.),
-                                                            ))
-                                                            .bg(rgb(ACCENT)),
-                                                    ),
-                                                )
-                                            })
-                                    }),
-                                ))
+                                                .when(!failed, |view| {
+                                                    view.child(
+                                                        div().h(px(2.)).bg(rgb(0x24202d)).child(
+                                                            div()
+                                                                .h_full()
+                                                                .w(relative(
+                                                                    stage.progress.clamp(0., 1.),
+                                                                ))
+                                                                .bg(rgb(ACCENT)),
+                                                        ),
+                                                    )
+                                                })
+                                        })),
+                                )
                             })
                             .child(
                                 div()
+                                    .w_full()
+                                    .min_w_0()
                                     .flex()
                                     .items_center()
                                     .gap_1()
                                     .child(
                                         div()
+                                            .flex_1()
                                             .min_w_0()
                                             .text_size(px(11.))
                                             .text_color(rgb(if failed { 0xf18ca2 } else { MUTED }))
@@ -332,6 +376,7 @@ impl Fluxer {
                                                 "Retry message",
                                             )
                                             .size(px(24.))
+                                            .flex_shrink_0()
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
                                                     if let Some(message) = this
@@ -369,6 +414,7 @@ impl Fluxer {
                                             },
                                         )
                                         .size(px(24.))
+                                        .flex_shrink_0()
                                         .on_click(
                                             cx.listener(move |this, _, _, cx| {
                                                 this.command(
