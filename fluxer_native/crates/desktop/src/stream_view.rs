@@ -492,8 +492,13 @@ impl Fluxer {
                                             && !self.viewer.desired.is_empty()
                                         {
                                             format!(
-                                                "{} streams · {name} selected",
-                                                self.viewer.desired.len()
+                                                "{} stream{} · {name} selected",
+                                                self.viewer.desired.len(),
+                                                if self.viewer.desired.len() == 1 {
+                                                    ""
+                                                } else {
+                                                    "s"
+                                                }
                                             )
                                         } else {
                                             format!("{name}'s screen")

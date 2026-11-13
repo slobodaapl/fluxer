@@ -109,6 +109,9 @@ remain separate from these offline checks.
 Offline fixtures cover two and four simultaneous synthetic streams with mixed
 landscape/portrait shapes, plus the explicit main-stage mode. The hover toolbar
 was captured over a generated code message with its solid backing visible.
+Pointer checks in the offline fixture switched Tile all → Main stage, selected
+the other stream, switched back, and stopped only that tile while the remaining
+stream stayed visible. These validate local controls with synthetic frames.
 Captures, logs and the full verification result are saved under
 `target/qa/stream-layouts/`. No account session, call or capture was opened by
 these fixtures. Live per-stream audio/stop behavior, layout switching during a
