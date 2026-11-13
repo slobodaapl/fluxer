@@ -61,8 +61,8 @@ impl Fluxer {
             "GIF and GIFV embeds · their image proxies must request animated=true.".into(),
         );
         embeds.extra.insert("embeds".into(),json!([
-            {"type":"gif","url":format!("{origin}/direct.gif"),"image":{"url":format!("{origin}/direct.gif"),"proxy_url":format!("{origin}/proxy-embed.gif"),"width":120,"height":60,"content_type":"image/gif","flags":32,"animated":true}},
-            {"type":"gifv","url":format!("{origin}/gifv-metadata"),"image":{"url":format!("{origin}/direct.gif"),"proxy_url":format!("{origin}/proxy-gifv.gif"),"width":120,"height":60,"content_type":"image/gif","flags":32,"animated":true},"video":{"url":format!("{origin}/metadata-only.mp4"),"proxy_url":format!("{origin}/metadata-only.mp4"),"width":120,"height":60,"content_type":"video/mp4","flags":32}}
+            {"type":"image","url":format!("{origin}/direct.gif"),"thumbnail":{"url":format!("{origin}/direct.gif"),"proxy_url":format!("{origin}/proxy-embed.gif"),"width":120,"height":60,"content_type":"image/gif","flags":32,"animated":true}},
+            {"type":"gifv","url":format!("{origin}/gifv-metadata"),"thumbnail":{"url":format!("{origin}/direct.gif"),"proxy_url":format!("{origin}/proxy-gifv.gif"),"width":120,"height":60,"content_type":"image/gif","flags":32,"animated":true},"video":{"url":format!("{origin}/metadata-only.mp4"),"proxy_url":format!("{origin}/metadata-only.mp4"),"width":120,"height":60,"content_type":"video/mp4","flags":32}}
         ]));
         let mut hidden = message(
             40_002,
@@ -95,7 +95,7 @@ impl Fluxer {
             (hidden.id, hidden),
         ]);
         let spacers = if std::env::args().any(|arg| arg == "--demo-gifs-overflow") {
-            20
+            80
         } else {
             0
         };
@@ -123,10 +123,47 @@ impl Fluxer {
         });
         messages.insert(end.id, end);
         self.state.messages.insert(channel, messages);
+        if std::env::args().any(|arg| arg == "--demo-gifs-paused") {
+            self.state.user_settings = json!({"gif_auto_play":false});
+        }
         self.media_endpoint = Some(origin);
         self.pane = Pane::Chat;
         self.status = "OFFLINE GIF FIXTURE · generated loopback media only".into();
-        self.timeline.set_offset(point(px(0.), px(0.)));
+        self.timeline.scroll_to_top_of_item(0);
+        // READY's pending scroll-to-bottom is applied after active-item scroll
+        // during the first layout. Position this fixture once that has settled.
+        cx.spawn(async move |entity, cx| {
+            Timer::after(Duration::from_millis(250)).await;
+            let _ = entity.update(cx, |view, cx| {
+                if view.state.selected_channel == Some(channel) {
+                    view.timeline.scroll_to_top_of_item(0);
+                    eprintln!("GIF_DEMO_SCROLL_START");
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        // Optional, fixture-only transition: exercise clipping without sending
+        // pointer/keyboard events to any other desktop application.
+        if let Some(delay) = std::env::var("FLUXER_GIF_DEMO_SCROLL_MS")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok())
+        {
+            let last = self
+                .state
+                .channel_messages(channel)
+                .count()
+                .saturating_sub(1);
+            cx.spawn(async move |entity, cx| {
+                Timer::after(Duration::from_millis(delay)).await;
+                let _ = entity.update(cx, |view, cx| {
+                    view.timeline.scroll_to_top_of_item(last);
+                    eprintln!("GIF_DEMO_SCROLL_END");
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 }
@@ -149,7 +186,6 @@ fn gif_attachment(
         height: Some(60),
         flags: 1 << 5,
         extra: BTreeMap::from([("proxy_url".into(), json!(format!("{origin}{proxy}")))]),
-        ..Default::default()
     }
 }
 fn gif_frame(index: u32) -> image::RgbaImage {

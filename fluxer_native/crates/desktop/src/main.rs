@@ -10,10 +10,12 @@ mod controls;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
+mod gif_demo;
 mod image_demo;
 mod image_gallery;
 mod image_viewer;
 mod input;
+mod media_animation;
 mod message_actions;
 mod message_content;
 mod message_demo;
@@ -26,6 +28,7 @@ mod stream_grid;
 mod stream_layout;
 mod stream_view;
 mod video_perf;
+mod visible_image;
 
 use attachment_composer::AttachmentUi;
 use call_view::{StreamFrame, Viewer};
@@ -254,6 +257,7 @@ struct Fluxer {
     demo: bool,
     message_demo_started: bool,
     image_demo_started: bool,
+    gif_demo_started: bool,
     avatar_demo_endpoint: Option<String>,
     session_restoring: bool,
     session_restore_failed: bool,
@@ -350,6 +354,7 @@ impl Fluxer {
             demo,
             message_demo_started: false,
             image_demo_started: false,
+            gif_demo_started: false,
             avatar_demo_endpoint: None,
             session_restoring,
             session_restore_failed: false,
@@ -769,6 +774,7 @@ impl Fluxer {
                     self.maybe_demo_search(None, cx);
                     self.maybe_demo_messages(cx);
                     self.maybe_demo_images(cx);
+                    self.maybe_demo_gifs(cx);
                     self.maybe_demo_avatars(cx);
                 }
                 Event::SessionRestoring(restoring) => {
@@ -2114,6 +2120,7 @@ fn main() {
                 || v == "--demo-search"
                 || v == "--demo-messages"
                 || v == "--demo-images"
+                || v == "--demo-gifs"
                 || v == "--demo-avatars"
         });
     Application::new()

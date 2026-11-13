@@ -4,6 +4,8 @@
 use crate::{
     Fluxer,
     image_gallery::{ImageItem, safe_image_url},
+    media_animation::{animated_proxy_url, is_animated_image},
+    visible_image::VisibleImage,
 };
 use fluxer_core::{Attachment, Message, User};
 use gpui::{http_client, prelude::*, *};
@@ -218,10 +220,23 @@ fn attachment_url(attachment: &Attachment, preview: bool) -> Option<String> {
         .and_then(safe_url);
     let original = attachment.url.as_deref().and_then(safe_url);
     if preview {
-        proxy.or(original)
+        let url = proxy.or(original)?;
+        if attachment_animated(attachment) {
+            animated_proxy_url(&url, false)
+        } else {
+            Some(url)
+        }
     } else {
         original.or(proxy)
     }
+}
+
+fn attachment_animated(attachment: &Attachment) -> bool {
+    is_animated_image(
+        attachment.content_type.as_deref(),
+        &attachment.filename,
+        u64::from(attachment.flags),
+    )
 }
 
 fn dimensions(width: Option<u32>, height: Option<u32>, bounds: (f32, f32)) -> (f32, f32) {
@@ -289,16 +304,28 @@ impl Render for MediaTooltip {
     }
 }
 
+#[derive(Clone, Copy)]
+struct PreviewSettings {
+    natural_size: (Option<u32>, Option<u32>),
+    max_size: (f32, f32),
+    enabled: bool,
+    autoplay: bool,
+}
+
 fn preview(
     id: String,
     url: String,
     gallery: Arc<Vec<ImageItem>>,
     index: usize,
-    natural_size: (Option<u32>, Option<u32>),
-    max_size: (f32, f32),
+    settings: PreviewSettings,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
-    let (width, height) = dimensions(natural_size.0, natural_size.1, max_size);
+    let (width, height) = dimensions(
+        settings.natural_size.0,
+        settings.natural_size.1,
+        settings.max_size,
+    );
+    let frame_id = crate::media_animation::image_id(&id, &url);
     div()
         .id(SharedString::from(id))
         .focusable()
@@ -306,26 +333,28 @@ fn preview(
         .max_w_full()
         .overflow_hidden()
         .rounded_md()
+        .on_hover(cx.listener(|_, _, _, cx| cx.notify()))
         .child(
-            img(url)
-                .w(px(width))
-                .h(px(height))
-                .max_w_full()
-                .object_fit(ObjectFit::Contain)
-                .with_loading(|| {
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(MUTED))
-                        .child("Loading preview…")
-                        .into_any_element()
-                })
-                .with_fallback(|| {
-                    div()
-                        .text_size(px(12.))
-                        .text_color(rgb(MUTED))
-                        .child("Preview unavailable · click to view image")
-                        .into_any_element()
-                }),
+            VisibleImage::new(frame_id, width, height, move || {
+                img(url.clone())
+                    .object_fit(ObjectFit::Contain)
+                    .with_loading(|| {
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(MUTED))
+                            .child("Loading preview…")
+                            .into_any_element()
+                    })
+                    .with_fallback(|| {
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(MUTED))
+                            .child("Preview unavailable · click to view image")
+                            .into_any_element()
+                    })
+            })
+            .enabled(settings.enabled)
+            .autoplay(settings.autoplay),
         )
         .cursor_pointer()
         .on_click(cx.listener(move |this, _, window, cx| {
@@ -368,7 +397,12 @@ fn snapshot_media(snapshot: &Value) -> Message {
     message
 }
 
-pub fn media(message: &Message, tooltips_enabled: bool, cx: &mut Context<Fluxer>) -> AnyElement {
+pub fn media(
+    message: &Message,
+    tooltips_enabled: bool,
+    autoplay: bool,
+    cx: &mut Context<Fluxer>,
+) -> AnyElement {
     let snapshots = message
         .extra
         .get("message_snapshots")
@@ -381,6 +415,7 @@ pub fn media(message: &Message, tooltips_enabled: bool, cx: &mut Context<Fluxer>
                 &snapshot_media(snapshot),
                 &format!("{}-snapshot-{index}", message.id),
                 tooltips_enabled,
+                autoplay,
                 cx,
             )
         })
@@ -394,6 +429,7 @@ pub fn media(message: &Message, tooltips_enabled: bool, cx: &mut Context<Fluxer>
             message,
             &message.id.to_string(),
             tooltips_enabled,
+            autoplay,
             cx,
         ))
         .children(snapshots)
@@ -411,13 +447,17 @@ fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
             if attachment_kind(attachment) != MediaKind::Image || attachment_expired(attachment) {
                 return None;
             }
-            let source = attachment
+            let mut source = attachment
                 .extra
                 .get("proxy_url")
                 .and_then(Value::as_str)
                 .and_then(safe_image_url)
                 .or_else(|| attachment.url.as_deref().and_then(safe_image_url))?;
             let original = attachment.url.as_deref().and_then(safe_image_url);
+            let animated = attachment_animated(attachment);
+            if animated {
+                source = animated_proxy_url(&source, false)?;
+            }
             Some((
                 index,
                 ImageItem {
@@ -426,6 +466,7 @@ fn attachment_gallery(message: &Message) -> Vec<(usize, ImageItem)> {
                     name: attachment.filename.clone(),
                     width: attachment.width,
                     height: attachment.height,
+                    animated,
                 },
             ))
         })
@@ -436,6 +477,7 @@ fn media_parts(
     message: &Message,
     namespace: &str,
     tooltips_enabled: bool,
+    autoplay: bool,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
     let indexed_gallery = attachment_gallery(message);
@@ -476,8 +518,12 @@ fn media_parts(
                         url,
                         gallery.clone(),
                         index,
-                        (attachment.width, attachment.height),
-                        (550., 350.),
+                        PreviewSettings {
+                            natural_size: (attachment.width, attachment.height),
+                            max_size: (550., 350.),
+                            enabled: tooltips_enabled,
+                            autoplay,
+                        },
                         cx,
                     ))
                     .into_any_element();
@@ -532,7 +578,7 @@ fn media_parts(
                     .child("Spoiler · preview hidden")
                     .into_any_element()
             } else {
-                render_embed(namespace, index, embed, cx)
+                render_embed(namespace, index, embed, tooltips_enabled, autoplay, cx)
             }
         })
         .collect::<Vec<_>>();
@@ -671,6 +717,8 @@ fn embed_image(embed: &Value) -> Option<(&Value, String)> {
     {
         return None;
     }
+    // Choose the source's animated thumbnail for IMAGE embeds. Check privacy
+    // before reordering so choosing animation cannot reveal a concealed asset.
     for image in ["image", "thumbnail"]
         .into_iter()
         .filter_map(|key| embed.get(key))
@@ -681,6 +729,21 @@ fn embed_image(embed: &Value) -> Option<(&Value, String)> {
         {
             return None;
         }
+    }
+    let keys = if string_at(embed, "type") == Some("image")
+        && embed
+            .get("thumbnail")
+            .and_then(|image| image.get("flags"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            & (1 << 5)
+            != 0
+    {
+        ["thumbnail", "image"]
+    } else {
+        ["image", "thumbnail"]
+    };
+    for image in keys.into_iter().filter_map(|key| embed.get(key)) {
         if let Some(url) = string_at(image, "proxy_url").and_then(safe_image_url) {
             return Some((image, url));
         }
@@ -688,12 +751,21 @@ fn embed_image(embed: &Value) -> Option<(&Value, String)> {
     None
 }
 fn embed_gallery_item(embed: &Value) -> Option<ImageItem> {
-    let (image, source) = embed_image(embed)?;
+    let (image, mut source) = embed_image(embed)?;
+    let animated = is_animated_image(
+        string_at(image, "content_type"),
+        string_at(image, "url").unwrap_or(&source),
+        image.get("flags").and_then(Value::as_u64).unwrap_or(0),
+    );
+    if animated {
+        source = animated_proxy_url(&source, false)?;
+    }
     Some(ImageItem {
         original: string_at(image, "url")
             .and_then(safe_image_url)
             .or_else(|| Some(source.clone())),
         source,
+        animated,
         name: string_at(image, "description")
             .or_else(|| string_at(embed, "title"))
             .unwrap_or("Image")
@@ -712,6 +784,8 @@ fn render_embed(
     message: &str,
     index: usize,
     embed: &Value,
+    enabled: bool,
+    autoplay: bool,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {
     let link = string_at(embed, "url").and_then(safe_url);
@@ -798,8 +872,12 @@ fn render_embed(
             item.source.clone(),
             Arc::new(vec![item.clone()]),
             0,
-            (item.width, item.height),
-            (400., 300.),
+            PreviewSettings {
+                natural_size: (item.width, item.height),
+                max_size: (400., 300.),
+                enabled,
+                autoplay,
+            },
             cx,
         ));
     }
@@ -834,6 +912,52 @@ mod tests {
     use super::*;
     use core::prelude::v1::test;
     use serde_json::json;
+    #[test]
+    fn gif_attachment_and_embed_request_animation_in_chat_and_full_view() {
+        let attachment: Attachment = serde_json::from_value(json!({
+            "id":"7", "filename":"dance.gif", "content_type":"image/gif",
+            "url":"https://cdn.example/dance.gif?signature=a%2Fb",
+            "proxy_url":"https://proxy.example/dance.gif?width=320&format=png"
+        }))
+        .unwrap();
+        assert_eq!(
+            attachment_url(&attachment, true).as_deref(),
+            Some("https://proxy.example/dance.gif?width=320&animated=true")
+        );
+        let message = Message {
+            attachments: vec![attachment],
+            ..Default::default()
+        };
+        let items = attachment_gallery(&message)
+            .into_iter()
+            .map(|(_, item)| item)
+            .collect();
+        let gallery = crate::image_gallery::ImageGallery::new(items, 0).unwrap();
+        let item = gallery.current().unwrap();
+        assert!(item.animated);
+        assert_eq!(item.source, "https://proxy.example/dance.gif?animated=true");
+        assert_eq!(
+            item.original.as_deref(),
+            Some("https://cdn.example/dance.gif?signature=a%2Fb")
+        );
+        let embed = embed_gallery_item(&json!({"image":{
+            "url":"https://cdn.example/moving.webp", "proxy_url":"https://proxy.example/moving.webp?format=png", "flags":32
+        }})).unwrap();
+        assert!(embed.animated);
+        assert_eq!(
+            embed.source,
+            "https://proxy.example/moving.webp?animated=true"
+        );
+        let thumbnail = embed_gallery_item(&json!({"type":"image",
+            "image":{"proxy_url":"https://proxy.example/still.png"},
+            "thumbnail":{"proxy_url":"https://proxy.example/moving.gif","flags":32}
+        }))
+        .unwrap();
+        assert_eq!(
+            thumbnail.source,
+            "https://proxy.example/moving.gif?animated=true"
+        );
+    }
     #[test]
     fn urls_allow_only_credential_free_http() {
         for invalid in [

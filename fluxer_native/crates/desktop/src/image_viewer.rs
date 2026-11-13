@@ -322,7 +322,11 @@ impl Fluxer {
                                                     .child("You can still try Open original."),
                                             )
                                             .into_any_element()
-                                    }),
+                                    })
+                                    .id(media_animation::image_id(
+                                        "image-viewer-frame",
+                                        &item.source,
+                                    )),
                             ),
                     )
                     .when(multiple, |body| {

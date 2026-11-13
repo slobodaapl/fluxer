@@ -437,6 +437,7 @@ impl Fluxer {
                                     .child(rich_message::media(
                                         &message,
                                         !self.image_viewer.is_open(),
+                                        media_animation::gif_autoplay(&self.state.user_settings),
                                         cx,
                                     ))
                                     .when(!message.reactions.is_empty(), |view| {

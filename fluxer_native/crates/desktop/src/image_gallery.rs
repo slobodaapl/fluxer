@@ -10,6 +10,7 @@ pub struct ImageItem {
     pub name: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub animated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +35,10 @@ pub(super) fn safe_image_url(raw: &str) -> Option<String> {
     Some(url.into())
 }
 
-fn viewer_source(raw: &str) -> Option<String> {
+fn viewer_source(raw: &str, animated: bool) -> Option<String> {
+    if animated {
+        return crate::media_animation::animated_proxy_url(raw, true);
+    }
     let mut url = Url::parse(&safe_image_url(raw)?).ok()?;
     // MediaViewerItemUtils.getBaseProxyURL / MediaProxyUtils.stripMediaProxyParams.
     // Keep other parameters, including signed storage URLs and asset size.
@@ -65,7 +69,7 @@ impl ImageGallery {
             return None;
         }
         for item in &mut items {
-            item.source = viewer_source(&item.source)?;
+            item.source = viewer_source(&item.source, item.animated)?;
             if let Some(original) = &mut item.original {
                 *original = safe_image_url(original)?;
             }
@@ -112,6 +116,7 @@ mod tests {
             name: name.into(),
             width: Some(640),
             height: Some(480),
+            animated: false,
         }
     }
 

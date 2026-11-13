@@ -143,7 +143,7 @@ impl Element for VisibleImage {
             size: size(px(self.width).into(), px(self.height).into()),
             max_size: Size {
                 width: relative(1.).into(),
-                ..Default::default()
+                height: Length::Auto,
             },
             min_size: size(px(0.).into(), px(0.).into()),
             flex_shrink: 1.,
@@ -219,6 +219,20 @@ impl Element for VisibleImage {
         cx: &mut App,
     ) {
         if let Some(child) = child {
+            // The outer message/image container may be wider than the bitmap.
+            // Observe the actual clipped image edge so hover playback starts
+            // and stops even when the pointer stays inside that parent.
+            if self.enabled && !self.autoplay {
+                let visible = bounds
+                    .intersect(&window.content_mask().bounds)
+                    .intersect(&Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+                let hovered = visible.contains(&window.mouse_position());
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
+                    if phase.bubble() && visible.contains(&event.position) != hovered {
+                        window.refresh();
+                    }
+                });
+            }
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 child.paint(window, cx)
             });
@@ -272,6 +286,7 @@ fn trace(mode: ImageMode, changed: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::prelude::v1::test;
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
     }

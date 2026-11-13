@@ -14,6 +14,8 @@ Cargo workspace; its lockfile does not change the server workspace's resolution.
 ```sh
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo
+# Offline animated GIFs (append --demo-gifs-overflow for scrolling checks):
+cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-gifs
 # Offline image attachments, embeds and forwarded images:
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-images
 # Offline reaction picker (synthetic messages, no saved account):
@@ -67,6 +69,10 @@ establish complete messaging parity with the existing client.
 macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
 prerequisites; their builds and capture behavior have not yet been validated by
 this migration. Full cross-platform parity remains a release gate.
+
+Visible chat GIFs and animated-image embeds play automatically, with clipped
+images paused. The account GIF autoplay setting is respected; disabled autoplay
+allows pointer-hover playback.
 
 Chat images open in an in-app viewer. Use Left/Right to browse the message's
 images, and Escape or the backdrop to close. **Open original** is available

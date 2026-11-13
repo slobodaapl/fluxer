@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 110 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 120 input/emoji/attachment/search/media/viewer/message/avatar presentation tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, native audio/video playback, complete UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-376 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+386 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -386,3 +386,27 @@ The full gate passes 376 tests, including eight new gallery/privacy regressions.
 `--demo-images` uses loopback-generated images and exposes optional
 `--demo-images-large` and `--demo-image-error` cases. The review queue keeps
 real-account and subjective acceptance separate from local fixture checks.
+
+
+## Visible GIF playback (2026-11-12)
+
+Chat attachment/embedded GIFs and flagged animated images now receive stable
+GPUI image identities, enabling its existing GIF/animated-WebP decoder clock.
+Full-view image modal entries use the same animated source policy. Requests
+follow MediaProxyUtils: remove static encoding/quality choices, preserve proxy
+fit dimensions and signed fields, and set animated=true. The source animated
+thumbnail rule for IMAGE embeds is retained; original browser links stay intact.
+
+A custom image element defers image loading and frame layout until its actual
+allocated bounds intersect both the viewport and ancestor scroll mask. Fully
+clipped images schedule no animation; chat images pause behind the image modal.
+The account's gif_auto_play setting is read from existing authoritative settings;
+disabled autoplay falls back to pointer hover. Hidden/sensitive/expired images
+and suppressed/spoiler-linked embeds retain their existing no-preview guards.
+
+Generated GIFs validate real frame differences and proxy flag requirements.
+Visibility geometry, autoplay, actual codec timing and gallery URL regressions
+bring the gate to 386 tests. Actual GIFV video decoding, reduced-motion/save-data
+and keyboard-focus preference behavior remain separate parity work; a GIF image
+fallback inside a GIFV embed does not establish MP4 playback support. Live
+acceptance is tracked as M6 in REVIEW.md.
