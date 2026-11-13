@@ -23,12 +23,14 @@ impl Fluxer {
             .as_ref()
             .map(|user| user.display_name().to_owned())
             .unwrap_or_else(|| "Your account".into());
-        let user_id = self
+        let account_avatar = self
             .state
             .current_user
             .as_ref()
-            .map(|user| user.id)
-            .unwrap_or_default();
+            .map(|user| {
+                crate::avatar_images::user_avatar(user, self.media_endpoint.as_deref(), 24.)
+            })
+            .unwrap_or_else(|| voice_avatar(&name, Snowflake::default(), false, 24.));
         let tooltip: SharedString = name.clone().into();
         div()
             .w_full()
@@ -196,7 +198,7 @@ impl Fluxer {
                             .tooltip(move |_, cx| {
                                 cx.new(|_| AccountTooltip(tooltip.clone())).into()
                             })
-                            .child(voice_avatar(&name, user_id, false, 24.))
+                            .child(account_avatar)
                             .child(
                                 div()
                                     .flex_1()
@@ -408,9 +410,10 @@ impl Fluxer {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(voice_avatar(
-                                        &participant.display_name,
-                                        participant.user_id,
+                                    .child(crate::avatar_images::voice_avatar(
+                                        &participant,
+                                        guild,
+                                        self.media_endpoint.as_deref(),
                                         speaking,
                                         32.,
                                     ))

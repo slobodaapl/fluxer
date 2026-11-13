@@ -79,13 +79,31 @@ impl Fluxer {
         {
             return participant.display_name.clone();
         }
-        let user = identity
-            .strip_prefix("user_")
-            .and_then(|part| part.split('_').next())
-            .and_then(|id| id.parse::<u64>().ok())
-            .and_then(|id| self.state.users.get(&Snowflake(id)));
+        let user = self
+            .cached_stream_user(identity)
+            .and_then(|id| self.state.users.get(&id));
         user.map(|user| user.display_name().to_owned())
             .unwrap_or_else(|| "Screen share".into())
+    }
+
+    fn cached_stream_user(&self, identity: &str) -> Option<Snowflake> {
+        if let Some(channel) = self.state.voice.channel_id
+            && let Some(participant) = self
+                .state
+                .voice_participants(channel)
+                .into_iter()
+                .find(|participant| participant.livekit_identity.as_deref() == Some(identity))
+        {
+            return Some(participant.user_id);
+        }
+        let id = sdk_identity_user(identity)?;
+        (self.state.users.contains_key(&id)
+            || self
+                .state
+                .current_user
+                .as_ref()
+                .is_some_and(|user| user.id == id))
+        .then_some(id)
     }
 
     fn change_stream_audio(
@@ -125,23 +143,32 @@ impl Fluxer {
         let short = window.viewport_size().height < px(700.);
         let mut streams = self.available_streams.clone();
         streams.extend(self.viewer.desired.iter().cloned());
+        let voice_guild = self
+            .state
+            .voice
+            .channel_id
+            .and_then(|id| self.state.channels.get(&id))
+            .and_then(|channel| channel.guild_id);
         let members: Vec<_> = if let Some(channel) = self.state.voice.channel_id {
             self.state
                 .voice_participants(channel)
                 .into_iter()
                 .map(|participant| {
                     let speaking = self.participant_speaking(&participant, channel);
-                    (participant.display_name, participant.user_id, speaking)
+                    (
+                        participant.display_name,
+                        Some(participant.user_id),
+                        speaking,
+                    )
                 })
                 .collect()
         } else {
             self.participants
                 .iter()
-                .enumerate()
-                .map(|(index, (identity, (name, _)))| {
+                .map(|(identity, (name, _))| {
                     (
                         name.clone(),
-                        Snowflake(index as u64),
+                        self.cached_stream_user(identity),
                         self.active_speakers.contains(identity),
                     )
                 })
@@ -458,7 +485,26 @@ impl Fluxer {
                                             .flex_col()
                                             .items_center()
                                             .gap_2()
-                                            .child(voice_avatar(name, *user_id, *speaking, 30.))
+                                            .child(if let Some(user_id) = user_id {
+                                                crate::avatar_images::member_avatar(
+                                                    &self.state,
+                                                    *user_id,
+                                                    voice_guild,
+                                                    name,
+                                                    self.media_endpoint.as_deref(),
+                                                    *speaking,
+                                                    30.,
+                                                )
+                                            } else {
+                                                // SDK-only/offline preview names do not establish an
+                                                // account ID. Retain the neutral initials fallback.
+                                                voice_avatar(
+                                                    name,
+                                                    Snowflake::default(),
+                                                    *speaking,
+                                                    30.,
+                                                )
+                                            })
                                             .child(
                                                 div()
                                                     .w_full()
@@ -661,5 +707,39 @@ fn fixture_frame(index: usize, generation: u64) -> StreamFrame<Arc<RenderImage>>
         width,
         height,
         image,
+    }
+}
+
+// VoiceParticipantIdentity.ts: the connection suffix may itself contain `_`.
+fn sdk_identity_user(identity: &str) -> Option<Snowflake> {
+    let (user, connection) = identity.strip_prefix("user_")?.split_once('_')?;
+    if connection.is_empty() || user.is_empty() || !user.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    user.parse::<u64>().ok().filter(|id| *id > 0).map(Snowflake)
+}
+
+#[cfg(test)]
+mod avatar_identity_tests {
+    use super::sdk_identity_user;
+    use fluxer_core::Snowflake;
+    #[test]
+    fn sdk_identity_requires_real_user_prefix_and_nonempty_connection() {
+        assert_eq!(
+            sdk_identity_user("user_42_conn_with_underscores"),
+            Some(Snowflake(42))
+        );
+        for identity in [
+            "preview-0",
+            "42_connection",
+            "user_42",
+            "user_42_",
+            "user__connection",
+            "user_0_connection",
+            "user_abc_connection",
+            "user_+42_connection",
+        ] {
+            assert_eq!(sdk_identity_user(identity), None, "{identity}");
+        }
     }
 }
