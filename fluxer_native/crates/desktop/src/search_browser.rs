@@ -54,6 +54,10 @@ pub(super) struct SearchUi {
     demo_started: bool,
 }
 impl SearchUi {
+    pub(super) fn cached_text_keys(&self) -> impl Iterator<Item = (Snowflake, Snowflake)> + '_ {
+        self.text.keys().copied()
+    }
+
     pub fn return_to_latest_on_select(&mut self, channel: Snowflake) {
         self.returning_latest.insert(channel);
     }
@@ -654,6 +658,7 @@ impl Fluxer {
         let blocking = self.forwarding.is_some()
             || self.search_ui.confirm.is_some()
             || self.message_actions.is_blocking()
+            || self.message_links.is_open()
             || self.attachments.picker_open
             || self.session_restoring;
         auto_ack_policy(active, at_bottom, latest, manual, blocking)
@@ -720,6 +725,7 @@ impl Fluxer {
         &mut self,
         mut message: Message,
         pinned_at: Option<String>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let key = (message.channel_id, message.id);
@@ -727,13 +733,15 @@ impl Fluxer {
         if self.search_ui.text.len() > 96 {
             self.search_ui.text.clear();
         }
-        let input = self
-            .search_ui
-            .text
-            .entry(key)
-            .or_insert_with(|| cx.new(|cx| TextInput::read_only(&text, cx)))
-            .clone();
-        input.update(cx, |input, cx| input.update_read_only(&text, cx));
+        let document = self.message_document(&message, message_markup::MessageContext::Standard);
+        let input = if let Some(input) = self.search_ui.text.get(&key) {
+            input.update(cx, |input, cx| input.update_message_document(document, cx));
+            input.clone()
+        } else {
+            let input = self.message_text_input(document, window, cx);
+            self.search_ui.text.insert(key, input.clone());
+            input
+        };
         message.pinned |= pinned_at.is_some();
         let jump = message.clone();
         let direct = message.clone();
@@ -978,7 +986,7 @@ impl Fluxer {
                     body = body.child(
                         list(
                             self.search_ui.pins_list.clone(),
-                            cx.processor(|this, index: usize, _, cx| {
+                            cx.processor(|this, index: usize, window, cx| {
                                 let item = this
                                     .search_ui
                                     .pins_context
@@ -986,7 +994,12 @@ impl Fluxer {
                                     .and_then(|snapshot| snapshot.items.get(index))
                                     .cloned();
                                 item.map(|item| {
-                                    this.preview_card(item.message, Some(item.pinned_at), cx)
+                                    this.preview_card(
+                                        item.message,
+                                        Some(item.pinned_at),
+                                        window,
+                                        cx,
+                                    )
                                 })
                                 .unwrap_or_else(|| div().into_any_element())
                             }),
@@ -1093,7 +1106,7 @@ impl Fluxer {
                             body = body.child(
                                 list(
                                     self.search_ui.results_list.clone(),
-                                    cx.processor(|this, index: usize, _, cx| {
+                                    cx.processor(|this, index: usize, window, cx| {
                                         let message = this
                                             .search_ui
                                             .result
@@ -1101,7 +1114,9 @@ impl Fluxer {
                                             .and_then(|snapshot| snapshot.messages.get(index))
                                             .cloned();
                                         message
-                                            .map(|message| this.preview_card(message, None, cx))
+                                            .map(|message| {
+                                                this.preview_card(message, None, window, cx)
+                                            })
                                             .unwrap_or_else(|| div().into_any_element())
                                     }),
                                 )

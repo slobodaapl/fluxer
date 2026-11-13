@@ -259,6 +259,9 @@ impl Worker {
             self.emit(Event::Status("Sign in to your Fluxer instance".into()));
             return Ok(());
         };
+        self.emit(Event::InstancePresentation(Some(
+            saved.instance.document.clone(),
+        )));
         self.emit(Event::MediaEndpoint(
             saved
                 .instance
@@ -510,6 +513,7 @@ impl Worker {
         self.client = None;
         self.media = None;
         self.emit(Event::MediaEndpoint(None));
+        self.emit(Event::InstancePresentation(None));
         self.state = ClientState::default();
         self.state.settings.locale = self.locale.clone();
         self.demo = false;
@@ -1376,6 +1380,9 @@ impl Worker {
             self.emit(Event::Error(message));
         }
         self.client = Some(client.clone());
+        self.emit(Event::InstancePresentation(Some(
+            client.instance().document.clone(),
+        )));
         self.emit(Event::MediaEndpoint(
             client
                 .instance()

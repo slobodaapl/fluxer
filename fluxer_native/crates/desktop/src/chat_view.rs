@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use super::*;
 use crate::controls::{Icon, icon, icon_button, quiet_button};
-use crate::message_grouping::{message_layouts, COZY_AVATAR_SIZE, COZY_GUTTER, COZY_LINE_HEIGHT, COZY_SPACING_Y};
+use crate::message_grouping::{
+    COZY_AVATAR_SIZE, COZY_GUTTER, COZY_LINE_HEIGHT, COZY_SPACING_Y, message_layouts,
+};
 
 impl Fluxer {
     pub(super) fn chat(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -37,13 +39,23 @@ impl Fluxer {
                 .or_insert_with(|| cx.focus_handle());
             *handle = handle.clone().tab_stop(Some(*id) == tab_entry);
         }
+        self.message_content.retain_replies(selected, &visible);
+        let mut retained: BTreeSet<_> = messages.iter().map(|m| (m.channel_id, m.id)).collect();
+        retained.extend(self.search_ui.cached_text_keys());
+        retained.extend(
+            messages
+                .iter()
+                .filter_map(|m| chat_helpers::referenced_message(&self.state, m))
+                .map(|m| (m.channel_id, m.id)),
+        );
+        self.message_content.cache.retain_visible(&retained);
         for message in &messages {
-            let text = chat_helpers::display_text(message);
+            let document = self.message_document(message, message_markup::MessageContext::Standard);
             if let Some(input) = self.message_text.get(&message.id) {
-                input.update(cx, |input, cx| input.update_read_only(&text, cx));
+                input.update(cx, |input, cx| input.update_message_document(document, cx));
             } else {
-                self.message_text
-                    .insert(message.id, cx.new(|cx| TextInput::read_only(&text, cx)));
+                let input = self.message_text_input(document, window, cx);
+                self.message_text.insert(message.id, input);
             }
         }
         let can_attach = self.attachment_block_reason().is_none();
@@ -226,6 +238,7 @@ impl Fluxer {
                     .children(messages.into_iter().zip(layouts).map(|(message, layout)| {
                         let id = message.id;
                         let has_text = !chat_helpers::display_text(&message).is_empty();
+                        let reply_preview = self.message_reply_preview(&message, window, cx);
                         let row_focus = self
                             .message_actions
                             .row_focus
@@ -386,12 +399,7 @@ impl Fluxer {
                                                 }),
                                         )
                                     })
-                                    .when_some(
-                                        chat_helpers::reference_summary(&self.state, &message),
-                                        |view, summary| {
-                                            view.child(muted(summary).w_full().min_w_0())
-                                        },
-                                    )
+                                    .when_some(reply_preview, |view, preview| view.child(preview))
                                     .when(has_text, |view| {
                                         view.child(
                                             div()

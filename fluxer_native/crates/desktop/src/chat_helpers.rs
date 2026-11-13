@@ -468,30 +468,53 @@ pub fn reaction_key(emoji: &Emoji) -> String {
         .id
         .map_or_else(|| emoji.name.clone(), |id| format!("{}:{id}", emoji.name))
 }
-pub fn reference_summary(state: &ClientState, message: &Message) -> Option<String> {
+pub fn referenced_message(state: &ClientState, message: &Message) -> Option<Message> {
     let reference = message.message_reference.as_ref()?;
-    if reference.kind == 1 {
-        return Some("↪ Forwarded message".into());
-    }
     let source = reference.message_id.and_then(|id| {
         state
             .channel_messages(reference.channel_id)
             .find(|message| message.id == id)
     });
-    let source = source.cloned().or_else(|| {
+    source.cloned().or_else(|| {
         message
             .extra
             .get("referenced_message")
             .and_then(|value| serde_json::from_value::<Message>(value.clone()).ok())
-    });
-    Some(source.map_or_else(
-        || "↳ Original message unavailable".into(),
-        |message| format!("↳ {}: {}", message.author.display_name(), preview(&message)),
-    ))
+    })
+}
+type PreviewCache = std::sync::Mutex<std::collections::VecDeque<(String, String)>>;
+static PREVIEW_CACHE: OnceLock<PreviewCache> = OnceLock::new();
+pub fn clear_preview_cache() {
+    if let Some(cache) = PREVIEW_CACHE.get() {
+        cache.lock().expect("preview cache").clear();
+    }
 }
 pub fn preview(message: &Message) -> String {
-    let text = display_text(message);
-    if text.is_empty() {
+    // Plain snippets use Fluxer's restricted preview context. Keep a small
+    // source-keyed cache so a visible confirmation does not reparse each frame.
+    let source = display_text(message);
+    let key = format!(
+        "{}\0{}",
+        source,
+        serde_json::to_string(&message.mentions).unwrap_or_default()
+    );
+    let mut cache = PREVIEW_CACHE
+        .get_or_init(Default::default)
+        .lock()
+        .expect("preview cache");
+    if let Some((_, preview)) = cache.iter().find(|(old, _)| old == &key) {
+        return preview.clone();
+    }
+    let mut rendering = message.clone();
+    rendering.content = source;
+    let document = crate::message_markup::document(
+        &rendering,
+        &ClientState::default(),
+        None,
+        crate::message_markup::MessageContext::InlinePreview,
+    );
+    let text = document.copy_range(0..document.text.len(), &std::collections::BTreeSet::new());
+    let result = if text.is_empty() {
         if !message.attachments.is_empty() {
             "[Attachment]".into()
         } else {
@@ -503,8 +526,22 @@ pub fn preview(message: &Message) -> String {
             .unwrap_or_default()
             .chars()
             .take(160)
-            .collect()
+            .collect::<String>()
+    };
+    // Keys retain source bytes, so cap both entry count and total size.
+    if key.len() <= 64 * 1024 {
+        cache.push_back((key, result.clone()));
     }
+    while cache.len() > 32
+        || cache
+            .iter()
+            .map(|(key, value)| key.len() + value.len())
+            .sum::<usize>()
+            > 512 * 1024
+    {
+        cache.pop_front();
+    }
+    result
 }
 
 /// Forward snapshots are flat objects on the Fluxer wire, without an author

@@ -10,8 +10,10 @@ mod emoji_picker;
 mod emoji_sprites;
 mod input;
 mod message_actions;
+mod message_content;
 mod message_demo;
 mod message_grouping;
+mod message_links;
 mod message_markup;
 mod rich_message;
 mod search_browser;
@@ -34,6 +36,8 @@ use fluxer_media::{
 use gpui::{prelude::*, *};
 use input::TextInput;
 use message_actions::MessageActions;
+use message_content::MessageContent;
+use message_links::MessageLinks;
 use search_browser::{BrowserTab, SearchUi};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -248,6 +252,8 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
     message_actions: MessageActions,
+    message_content: MessageContent,
+    message_links: MessageLinks,
     message_text: BTreeMap<Snowflake, Entity<TextInput>>,
     media_endpoint: Option<String>,
     replies: BTreeMap<Snowflake, (Message, bool)>,
@@ -344,6 +350,8 @@ impl Fluxer {
                 input
             }),
             message_actions: MessageActions::new(cx),
+            message_content: MessageContent::default(),
+            message_links: MessageLinks::new(cx),
             message_text: BTreeMap::new(),
             media_endpoint: None,
             replies: BTreeMap::new(),
@@ -650,6 +658,13 @@ impl Fluxer {
             changed = true;
             match event {
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
+                Event::InstancePresentation(document) => {
+                    if let Some(document) = document {
+                        self.message_links.configure_instance(&document);
+                    } else {
+                        self.message_links.reset();
+                    }
+                }
                 Event::MessageForwarded { destination } => {
                     self.forwarding = None;
                     self.forward_pending = false;
@@ -682,6 +697,8 @@ impl Fluxer {
                             self.message_text.clear();
                             self.clear_browser();
                             self.message_actions.reset();
+                            self.message_content.reset();
+                            self.message_links.reset();
                             self.media_endpoint = None;
                             self.forwarding = None;
                             self.emoji_target = None;
@@ -1152,7 +1169,7 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.message_actions.is_open() {
+        if self.message_actions.is_open() || self.message_links.is_open() {
             return;
         }
         if self.search_ui.confirm.is_some() {
@@ -1534,6 +1551,8 @@ impl Fluxer {
         self.pending_replies.clear();
         self.clear_attachments(cx);
         self.message_actions.reset();
+        self.message_content.reset();
+        self.message_links.reset();
         self.editing = None;
         self.clear_viewer(cx);
     }
@@ -1990,6 +2009,7 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
                 if this.search_ui.confirm.is_some() && event.keystroke.key=="escape" {
                     this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
@@ -2027,6 +2047,7 @@ impl Render for Fluxer {
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .child(self.message_action_overlay(window,cx))
+            .child(self.message_link_overlay(window,cx))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
         self.schedule_history_center(window, cx);

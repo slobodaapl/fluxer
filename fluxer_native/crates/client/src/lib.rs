@@ -224,6 +224,8 @@ pub enum Event {
         preupload: bool,
     },
     MediaEndpoint(Option<String>),
+    /// Existing public discovery data for presentation/link routing; no new request.
+    InstancePresentation(Option<serde_json::Value>),
     MessageForwarded {
         destination: Snowflake,
     },

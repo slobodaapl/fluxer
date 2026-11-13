@@ -327,16 +327,14 @@ impl Fluxer {
                         }
                     }))
                     .child(heading("External link warning"))
-                    .child(
-                        div().mt_3().text_sm().child(format!(
+                    .child(div().mt_3().text_sm().child(format!(
                             "You are about to leave {}.",
                             self.message_links
                                 .policy
                                 .product_name
                                 .as_deref()
                                 .unwrap_or("Fluxer")
-                        )),
-                    )
+                        )))
                     .child(
                         div()
                             .mt_1()
