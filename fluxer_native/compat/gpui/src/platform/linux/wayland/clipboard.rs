@@ -15,9 +15,24 @@ use crate::{
     platform::linux::platform::read_fd,
 };
 
-/// Text mime types that we'll offer to other programs.
-pub(crate) const TEXT_MIME_TYPES: [&str; 3] =
-    ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+#[path = "clipboard_mime.rs"]
+mod clipboard_mime;
+
+fn entries(item: &ClipboardItem) -> Vec<clipboard_mime::Entry<'_>> {
+    item.entries()
+        .iter()
+        .map(|entry| match entry {
+            ClipboardEntry::String(text) => clipboard_mime::Entry::Text(text.text()),
+            ClipboardEntry::Image(image) => clipboard_mime::Entry::Image {
+                mime: image.format.mime_type(),
+                bytes: &image.bytes,
+            },
+        })
+        .collect()
+}
+pub(crate) fn offered_mime_types(item: &ClipboardItem) -> Vec<&'static str> {
+    clipboard_mime::offered(&entries(item))
+}
 pub(crate) const FILE_LIST_MIME_TYPE: &str = "text/uri-list";
 
 /// Text mime types that we'll accept from other programs.
@@ -179,19 +194,23 @@ impl Clipboard {
         self.self_mime.clone()
     }
 
-    pub fn send(&self, _mime_type: String, fd: OwnedFd) {
-        if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
-            self.send_internal(fd, text.as_bytes().to_owned());
+    pub fn send(&self, mime_type: String, fd: OwnedFd) {
+        if let Some(bytes) = self
+            .contents
+            .as_ref()
+            .and_then(|item| clipboard_mime::payload(&entries(item), &mime_type, &self.self_mime))
+        {
+            self.send_internal(fd, bytes);
         }
     }
 
-    pub fn send_primary(&self, _mime_type: String, fd: OwnedFd) {
-        if let Some(text) = self
+    pub fn send_primary(&self, mime_type: String, fd: OwnedFd) {
+        if let Some(bytes) = self
             .primary_contents
             .as_ref()
-            .and_then(|contents| contents.text())
+            .and_then(|item| clipboard_mime::payload(&entries(item), &mime_type, &self.self_mime))
         {
-            self.send_internal(fd, text.as_bytes().to_owned());
+            self.send_internal(fd, bytes);
         }
     }
 
