@@ -1147,3 +1147,47 @@ async fn explicit_read_unread_and_notification_changes_project_in_demo() {
     );
     assert!(settings.channel_overrides[&channel].mute_config.is_none());
 }
+
+#[tokio::test]
+async fn category_read_acknowledges_immediate_visible_message_children() {
+    let (mut worker, _) = demo();
+    let category = Snowflake(700);
+    worker.state.channels.insert(
+        category,
+        Channel {
+            id: category,
+            guild_id: Some(Snowflake(1)),
+            kind: ChannelType::Category,
+            ..Default::default()
+        },
+    );
+    worker
+        .state
+        .channels
+        .get_mut(&Snowflake(11))
+        .unwrap()
+        .parent_id = Some(category);
+    let nested = Snowflake(701);
+    worker.state.channels.insert(
+        nested,
+        Channel {
+            id: nested,
+            guild_id: Some(Snowflake(1)),
+            parent_id: Some(category),
+            kind: ChannelType::Category,
+            last_message_id: Some(Snowflake(55)),
+            ..Default::default()
+        },
+    );
+    worker
+        .command(Command::MarkChannelRead {
+            channel_id: category,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.read_states[&Snowflake(11)].last_message_id,
+        worker.state.channels[&Snowflake(11)].last_message_id
+    );
+    assert!(!worker.state.read_states.contains_key(&nested));
+}

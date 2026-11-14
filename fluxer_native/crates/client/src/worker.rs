@@ -799,7 +799,33 @@ impl Worker {
                     return Err(message);
                 }
             }
-            Command::MarkChannelRead { channel_id } => self.mark_read(vec![channel_id]).await?,
+            Command::MarkChannelRead { channel_id } => {
+                let channel = self
+                    .state
+                    .channels
+                    .get(&channel_id)
+                    .ok_or("Unknown channel")?;
+                let channels = if channel.kind == ChannelType::Category {
+                    self.state
+                        .channels
+                        .values()
+                        .filter(|child| {
+                            child.guild_id == channel.guild_id
+                                && child.parent_id == Some(channel_id)
+                                && child.kind.is_message_channel()
+                                && self.state.current_user.as_ref().is_some_and(|me| {
+                                    self.state
+                                        .permissions_for(child.id, me.id)
+                                        .contains(Permissions::VIEW_CHANNEL)
+                                })
+                        })
+                        .map(|child| child.id)
+                        .collect()
+                } else {
+                    vec![channel_id]
+                };
+                self.mark_read(channels).await?;
+            }
             Command::MarkGuildRead { guild_id } => {
                 let channels = self
                     .state
