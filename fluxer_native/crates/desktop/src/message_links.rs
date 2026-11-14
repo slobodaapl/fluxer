@@ -186,7 +186,16 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) {
         match target {
-            MessageTarget::User(_) | MessageTarget::Role(_) => {}
+            MessageTarget::User(id) => {
+                let user = self.profile_user(*id, &id.to_string());
+                let guild = self
+                    .state
+                    .selected_channel
+                    .and_then(|id| self.state.channels.get(&id))
+                    .and_then(|channel| channel.guild_id);
+                self.open_user_profile(user, guild, false, window.mouse_position(), window, cx);
+            }
+            MessageTarget::Role(_) => {}
             MessageTarget::Channel(channel) => {
                 self.follow_message_channel(*channel, None, None, cx)
             }

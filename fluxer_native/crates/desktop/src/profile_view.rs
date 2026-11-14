@@ -2,7 +2,7 @@
 //! Compact profile surface. Display precedence follows features/user/models/Profile.ts;
 //! geometry follows UserProfileSurfaceGeometry.ts. Remote bio remains inert text.
 use fluxer_client::{ProfileSnapshot, ProfileStatus};
-use fluxer_core::{Member, Role, Snowflake, User};
+use fluxer_core::{Member, ProfileDetails, Role, Snowflake, User};
 use gpui::{prelude::*, *};
 
 pub(super) struct ProfileOpen {
@@ -95,6 +95,10 @@ impl ProfilePopup {
         if self.open.as_ref().is_some_and(|open| {
             !open.webhook && open.user.id == snapshot.user_id && open.guild_id == snapshot.guild_id
         }) {
+            if !matches!(snapshot.status, ProfileStatus::Failed(_)) {
+                self.selected = 0;
+            }
+            self.armed = false;
             self.snapshot = Some(snapshot);
             cx.notify();
         }
@@ -170,6 +174,41 @@ impl ProfilePopup {
     }
 }
 
+fn label(text: &str, size: f32, cx: &mut App) -> AnyElement {
+    div()
+        .flex()
+        .flex_wrap()
+        .min_w_0()
+        .max_w_full()
+        .children(
+            text.split_inclusive(char::is_whitespace)
+                .map(|word| crate::emoji_sprites::unicode_text(word, size, false, cx)),
+        )
+        .into_any_element()
+}
+// AccentColorUtils.ts: effective profile accent, sampled avatar color,
+// source default-avatar palette, then the application's default accent.
+fn profile_accent(
+    user: &User,
+    global: Option<&ProfileDetails>,
+    member: Option<&ProfileDetails>,
+) -> u32 {
+    let explicit = member
+        .and_then(|p| p.accent_color)
+        .or_else(|| global.and_then(|p| p.accent_color));
+    if let Some(color) = explicit.or_else(|| {
+        user.extra
+            .get("avatar_color")
+            .and_then(serde_json::Value::as_i64)
+    }) {
+        return color as u32 & 0xffffff;
+    }
+    if user.avatar.is_none() {
+        return [0x4641d9, 0xf0b100, 0x00bba7, 0x2b7fff, 0xad46ff, 0x6a7282]
+            [(user.id.get() % 6) as usize];
+    }
+    0x4641d9
+}
 fn text_override<'a>(global: Option<&'a str>, member: Option<&'a str>) -> &'a str {
     member.or(global).unwrap_or("")
 }
@@ -238,13 +277,7 @@ impl Render for ProfilePopup {
                 .and_then(|p| p.banner.as_deref())
                 .or_else(|| global.and_then(|p| p.banner.as_deref()))
         };
-        let banner_color = if flags & 2 != 0 {
-            None
-        } else {
-            guild_profile
-                .and_then(|p| p.banner_color)
-                .or_else(|| global.and_then(|p| p.banner_color))
-        };
+        let accent_color = profile_accent(user, global, guild_profile);
         let banner_url = banner.and_then(|hash| {
             crate::avatar_images::profile_banner_url(
                 user.id,
@@ -273,23 +306,23 @@ impl Render for ProfilePopup {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
-                    .child(name.to_owned()),
+                    .child(label(name, 20., cx)),
             );
         if name != user.display_name() {
-            content = content.child(
-                div()
-                    .text_size(px(14.))
-                    .child(user.display_name().to_owned()),
-            );
+            content = content.child(div().text_size(px(14.)).child(label(
+                user.display_name(),
+                14.,
+                cx,
+            )));
         }
         content = content.child(
             div()
                 .text_size(px(13.))
                 .text_color(rgb(0xb5bac1))
-                .child(user.username.clone()),
+                .child(label(&user.username, 13., cx)),
         );
         if !pronouns.is_empty() {
-            content = content.child(div().text_size(px(12.)).child(pronouns.to_owned()));
+            content = content.child(div().text_size(px(12.)).child(label(pronouns, 12., cx)));
         }
         if user.bot {
             content = content.child(
@@ -300,7 +333,7 @@ impl Render for ProfilePopup {
             );
         }
         if !bio.is_empty() {
-            content = content.child(div().mt_2().text_size(px(13.)).child(bio.to_owned()));
+            content = content.child(div().mt_2().text_size(px(13.)).child(label(bio, 13., cx)));
         }
         if !open.webhook && user.id.get() != 0 {
             // packages/snowflake/src/Snowflake.ts: Fluxer uses the 2015 epoch.
@@ -374,9 +407,19 @@ impl Render for ProfilePopup {
                                     .rounded_md()
                                     .px_2()
                                     .py_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
                                     .bg(rgb(0x383a40))
+                                    .child(div().size(px(6.)).rounded_full().flex_shrink_0().bg(
+                                        rgb(if role.color == 0 {
+                                            0x99aab5
+                                        } else {
+                                            role.color & 0xffffff
+                                        }),
+                                    ))
                                     .text_size(px(12.))
-                                    .child(role.name.clone())
+                                    .child(label(&role.name, 12., cx))
                             })),
                     );
             }
@@ -465,7 +508,7 @@ impl Render for ProfilePopup {
             .relative()
             .h(px(105.))
             .flex_shrink_0()
-            .bg(rgb(banner_color.unwrap_or(0x46414f) as u32 & 0xffffff))
+            .bg(rgb(accent_color))
             .when_some(banner_url, |view, url| {
                 view.child(img(url).w_full().h(px(105.)).object_fit(ObjectFit::Cover))
             })
@@ -518,8 +561,30 @@ impl Render for ProfilePopup {
 
 #[cfg(test)]
 mod tests {
-    use super::{placement, text_override};
+    use super::{placement, profile_accent, text_override};
+    use fluxer_core::{ProfileDetails, User};
     use gpui::{point, px, size};
+    #[test]
+    fn accent_uses_profile_then_avatar_then_source_defaults_including_black() {
+        let mut user = User {
+            id: 1.into(),
+            ..Default::default()
+        };
+        assert_eq!(profile_accent(&user, None, None), 0xf0b100);
+        user.extra
+            .insert("avatar_color".into(), serde_json::json!(0x112233));
+        assert_eq!(profile_accent(&user, None, None), 0x112233);
+        let global = ProfileDetails {
+            accent_color: Some(0x445566),
+            ..Default::default()
+        };
+        let member = ProfileDetails {
+            accent_color: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(profile_accent(&user, Some(&global), None), 0x445566);
+        assert_eq!(profile_accent(&user, Some(&global), Some(&member)), 0);
+    }
     #[test]
     fn member_empty_text_overrides_global() {
         assert_eq!(text_override(Some("global"), Some("")), "");

@@ -36,6 +36,10 @@ mod navigation_actions;
 mod outbox_view;
 mod pin_system_message;
 mod playable_media;
+mod profile_app;
+mod profile_demo;
+mod profile_triggers;
+mod profile_view;
 mod rich_message;
 mod scrollbar;
 mod search_browser;
@@ -299,6 +303,7 @@ struct Fluxer {
     composer: Entity<TextInput>,
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
+    profile_ui: profile_view::ProfileUi,
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
@@ -406,6 +411,7 @@ impl Fluxer {
             }),
             context: context_actions::ContextUi::new(cx),
             media_ui: media_actions::MediaUi::default(),
+            profile_ui: profile_view::ProfileUi::new(cx),
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
@@ -517,6 +523,22 @@ impl Fluxer {
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
         window.focus(&view.focus);
+        cx.subscribe(
+            &view.profile_ui.popup,
+            |this, _, event: &profile_view::ProfileAction, cx| {
+                if let profile_view::ProfileAction::Retry { user_id, guild_id } = event {
+                    this.command(
+                        Command::LoadUserProfile {
+                            user_id: *user_id,
+                            guild_id: *guild_id,
+                            force: true,
+                        },
+                        cx,
+                    );
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&view.input_picker, |this, _, selected: &Selected, cx| {
             this.command(Command::SetInputDevice(selected.0.clone()), cx);
         })
@@ -646,6 +668,7 @@ impl Fluxer {
         view.schedule_context_demo(window, cx);
         view.schedule_media_menu_demo(window, cx);
         view.schedule_read_menu_demo(window, cx);
+        view.schedule_profile_demo(window, cx);
         view
     }
 
@@ -722,6 +745,10 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::UserProfile(snapshot) => self
+                    .profile_ui
+                    .popup
+                    .update(cx, |popup, cx| popup.apply_snapshot(snapshot, cx)),
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
                     avatar_images::configure_instance(document.as_ref());
@@ -756,9 +783,24 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
+                    if self
+                        .profile_ui
+                        .popup
+                        .read(cx)
+                        .current_scope()
+                        .is_some_and(|(_, guild)| {
+                            guild.is_some_and(|id| !self.state.guilds.contains_key(&id))
+                        })
+                    {
+                        self.profile_ui.reset(cx);
+                    }
+                    if old != self.state.selected_channel {
+                        self.profile_ui.reset(cx);
+                    }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.reset_context_menu(cx);
                         self.media_ui.reset();
+                        self.profile_ui.reset(cx);
                         self.context.user_audio.clear();
                         self.context.connection_audio.clear();
                     }
@@ -1809,40 +1851,82 @@ impl Fluxer {
                                             .py_1()
                                             .rounded_md()
                                             .bg(rgb(if speaking { 0x302e3d } else { PANEL }))
-                                            .child(avatar_images::voice_avatar(
-                                                &participant,
-                                                channel.guild_id,
-                                                self.media_endpoint.as_deref(),
-                                                speaking,
-                                                24.,
-                                            ))
+                                            .child(
+                                                self.profile_trigger(
+                                                    div()
+                                                        .id((
+                                                            "sidebar-profile-avatar",
+                                                            participant.user_id.0,
+                                                        ))
+                                                        .size(px(24.))
+                                                        .child(avatar_images::voice_avatar(
+                                                            &participant,
+                                                            channel.guild_id,
+                                                            self.media_endpoint.as_deref(),
+                                                            speaking,
+                                                            24.,
+                                                        )),
+                                                    self.profile_user(
+                                                        participant.user_id,
+                                                        &participant.display_name,
+                                                    ),
+                                                    channel.guild_id,
+                                                    false,
+                                                    cx,
+                                                ),
+                                            )
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
-                                                    .text_size(px(12.))
-                                                    .text_color(rgb(
-                                                        if speaking || participant.is_current_user {
-                                                            TEXT
-                                                        } else {
-                                                            MUTED
-                                                        },
-                                                    ))
-                                                    .text_ellipsis()
-                                                    .child(emoji_sprites::unicode_text(
-                                                        &format!(
-                                                            "{}{}",
-                                                            participant.display_name,
-                                                            if participant.is_current_user {
-                                                                " (you)"
-                                                            } else {
-                                                                ""
-                                                            }
+                                                    .flex()
+                                                    .items_center()
+                                                    .child(
+                                                        self.profile_trigger(
+                                                            div()
+                                                                .id((
+                                                                    "sidebar-profile-name",
+                                                                    participant.user_id.0,
+                                                                ))
+                                                                .min_w_0()
+                                                                .max_w_full()
+                                                                .text_ellipsis()
+                                                                .text_size(px(12.))
+                                                                .text_color(rgb(
+                                                                    if speaking
+                                                                        || participant
+                                                                            .is_current_user
+                                                                    {
+                                                                        TEXT
+                                                                    } else {
+                                                                        MUTED
+                                                                    },
+                                                                ))
+                                                                .child(
+                                                                    emoji_sprites::unicode_text(
+                                                                        &participant.display_name,
+                                                                        12.,
+                                                                        false,
+                                                                        cx,
+                                                                    ),
+                                                                ),
+                                                            self.profile_user(
+                                                                participant.user_id,
+                                                                &participant.display_name,
+                                                            ),
+                                                            channel.guild_id,
+                                                            false,
+                                                            cx,
                                                         ),
-                                                        12.,
-                                                        false,
-                                                        cx,
-                                                    )),
+                                                    )
+                                                    .when(participant.is_current_user, |view| {
+                                                        view.child(
+                                                            div()
+                                                                .text_size(px(12.))
+                                                                .text_color(rgb(MUTED))
+                                                                .child(" (you)"),
+                                                        )
+                                                    }),
                                             )
                                             .when(participant.connection_count > 1, |view| {
                                                 view.child(
@@ -2179,6 +2263,7 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.playback.modal.is_open() {this.playback.close(window,cx);cx.stop_propagation();return;}
@@ -2220,6 +2305,7 @@ impl Render for Fluxer {
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
             .child(self.media_transfer_overlay(cx))
+            .child(self.profile_ui.popup.clone())
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))

@@ -270,6 +270,7 @@ impl Fluxer {
     }
     pub(super) fn context_menu_open(&self, cx: &App) -> bool {
         self.context.menu.read(cx).is_open()
+            || self.profile_ui.is_open(cx)
             || self.message_links.input_context_menu_open(cx)
             || [
                 &self.composer,
@@ -427,6 +428,7 @@ impl Fluxer {
                     .map(|p| p.display_name)
                     .unwrap_or_else(|| user.to_string());
                 items.push(Item::Header(name));
+                items.push(action("view-profile", "View profile", Icon::Eye));
                 let identities = audio_identities(self.participants.keys(), *user);
                 if self.state.voice.channel_id == Some(*channel) && !identities.is_empty() {
                     let settings = self
@@ -743,6 +745,21 @@ impl Fluxer {
             (Target::Stream(_), "stream-tiles") => self.viewer.layout = StreamLayout::Tiled,
             (Target::Stream(_), "fullscreen") => window.toggle_fullscreen(),
             (Target::Stream(_), "stream-chat") => self.viewer.chat_open = !self.viewer.chat_open,
+            (Target::User { channel, user }, "view-profile") => {
+                let guild = self
+                    .state
+                    .channels
+                    .get(channel)
+                    .and_then(|channel| channel.guild_id);
+                self.open_user_profile(
+                    self.profile_user(*user, &user.to_string()),
+                    guild,
+                    false,
+                    window.mouse_position(),
+                    window,
+                    cx,
+                );
+            }
             (Target::User { user, .. }, "user-mute") => {
                 if let Some(muted) = muted {
                     self.change_user_audio(*user, AudioChange::Mute(muted), cx);

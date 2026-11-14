@@ -189,10 +189,10 @@ actions; they are not a claim of identical classic menu contents.
 
 Prioritized remaining menu work:
 
-1. Member/profile menus, DM creation, roles and community moderation. These need
+1. Full profile/relationship menus, DM creation, roles and community moderation. These need
    their actual transport/UI plus source permission and hierarchy checks.
 2. Full own-stream source/quality/privacy menus, per-device submenus, remembered
-   preferences and member/profile popovers. Existing local playback controls are
+   preferences and full profile interactions. Existing local playback controls are
    not server mute/deafen, notification mute or moderation.
 
 Review is U10 in REVIEW.md. Multi-stream layout acceptance remains deferred.
@@ -233,3 +233,19 @@ Guild.effectiveMessageNotifications; and UserGuildSettingsResponse. Thread
 notification options require their separate membership transport and remain
 unavailable here. Review is U12; no full notification-settings modal or delivery
 parity is claimed. The next implementation priority is audio-device recovery.
+
+
+## Profile identity clicks (2026-11-13)
+
+Avatar and name clicks open a compact anchored card, using source profile reads,
+community display rules and opaque backing. Identity clicks are confined to the
+actual image/name elements: avatar gutters keep their layout but carry no handler;
+voice rows, card/filmstrip backgrounds, account-row padding and gaps stay inert.
+Name elements shrink to their text instead of stretching across their parent.
+Right-click voice menus retain their independent targets. Enter/Space activate
+focused identity elements, and profile focus gates background chat shortcuts.
+
+The current card presents genuine profile data and Copy ID/Retry. Full modal,
+relationship/DM/moderation controls, rich biography links and broader profile
+presentation remain future work. Review is P3. Audio-device recovery remains the
+next planned implementation priority.

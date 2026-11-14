@@ -57,7 +57,7 @@ impl Fluxer {
             if let Some(input) = self.message_text.get(&message.id) {
                 input.update(cx, |input, cx| input.update_message_document(document, cx));
             } else {
-                let input = self.message_text_input(document, window, cx);
+                let input = self.message_text_input(document, message.channel_id, window, cx);
                 self.message_text.insert(message.id, input);
             }
         }
@@ -277,15 +277,8 @@ impl Fluxer {
                                 let gutter = if is_pin {
                                     pin_system_message::gutter()
                                 } else if layout.starts_group {
-                                    div()
-                                        .w(px(COZY_AVATAR_SIZE))
-                                        .flex_shrink_0()
-                                        .pt(px(2.))
-                                        .child(rich_message::avatar(
-                                            &message.author,
-                                            self.media_endpoint.as_deref(),
-                                            COZY_AVATAR_SIZE,
-                                        ))
+                                    div().w(px(COZY_AVATAR_SIZE)).flex_shrink_0().pt(px(2.))
+                                        .child(self.profile_trigger(div().id(("profile-avatar",id.0)).size(px(COZY_AVATAR_SIZE)).child(rich_message::avatar(&message.author,self.media_endpoint.as_deref(),COZY_AVATAR_SIZE)),message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx))
                                         .into_any_element()
                                 } else {
                                     div()
@@ -413,9 +406,9 @@ impl Fluxer {
                                                 .gap_2()
                                                 .items_center()
                                                 .child(
-                                                    div().font_weight(FontWeight::SEMIBOLD).child(
+                                                    div().id(("profile-name",id.0)).font_weight(FontWeight::SEMIBOLD).child(
                                                         crate::emoji_sprites::unicode_text(message.author.display_name(), 14., window.scale_factor() > 1., cx),
-                                                    ),
+                                                    ).map(|view|self.profile_trigger(view,message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx)),
                                                 )
                                                 .child(
                                                     div()

@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 493 tests, formatting, strict Clippy and the
+The UI refinement gate passes 502 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -18,6 +18,7 @@ Full feature parity remains in progress.
 |---|---|---|---|
 | P1 | Community and voice profile images | Check community icons, the in-voice sidebar, voice participant cards and the stream viewer filmstrip against regular Fluxer. Try a community-specific avatar, a global avatar and no avatar; speaking rings and mute/live badges should remain visible. | **Pending real-account review.** Source URL/member precedence/default asset tests and local image fixture checks are recorded below. |
 | P2 | Image fallback and updates | Check a community without an icon, a missing image, an avatar cleared in community settings, and an avatar changed while connected. Switch communities while remaining in a call; call images should retain the joined community's avatar context. | **Pending live/hot-update review.** Shared credential-free image loading, source defaults, member AVATAR_UNSET, safe identity resolution and image-error fallbacks implemented. Animated image behavior remains future work. |
+| P3 | Profile popup and click targets | Click only the actual avatar or name in chat, search/pins, voice rows/cards, call filmstrip and your account dock. Clicking adjacent gutters, gaps or empty row space should not open it. Check mentions, community nickname/avatar/banner flags, roles, bio, limited/unavailable data, Retry, Escape/outside close and keyboard focus restoration. Try short windows and long profiles. | **Pending real-account and subjective review.** Local profile GET/lifecycle fixtures and owned popup captures pass; click boundaries are checked separately below. Full profile modal/actions and rich biography interactions remain open. |
 | M1 | Grouping and conversation density | Compare repeated authors, long conversations, replies and midnight boundaries with Fluxer. Same-author continuations should share a header; a new group starts after seven minutes from its first message. Check hover timestamps and old-message jumps. | **Pending live/subjective review.** Eight source-rule tests, ten source-executed cases and offline date/group rendering checked. Cozy layout implemented; compact/density preference migration remains open. |
 | M2 | Selectable formatting and spoilers | Select across bold/italic/underline/strike, links, code, quotes, Unicode and wrapped lines. Ctrl/Cmd+C should copy rendered text and omit concealed spoilers; click a spoiler to reveal it. Explicit Copy Message should retain Markdown source. | **Pending sustained usability review.** Existing composer/input regressions plus rich-run clipping, Unicode range, hidden-target/copy and soft-wrap emoji tests pass. Source fonts and actual inline backgrounds checked offline. |
 | M3 | Mentions, emoji and links | Compare known user/role/channel labels and custom emoji with Fluxer. Click a channel link and an old message link; inspect an untrusted external URL and cancel. Check registered emoji renames, failures and spoiler concealment. | **Pending real-account review.** Generated loopback emoji images and resolved labels checked; no external destination opened. Trust/host/scope fixtures pass. User/role popovers, animated/jumbo sizing, timestamps and full preference parity remain incomplete. |
@@ -402,3 +403,36 @@ and ordinary restart with real settings. Separate thread membership gateway
 projection and full forum unread/notification-delivery parity remain incomplete.
 Community suppression/mobile-push toggles and unread-badge customization are not
 part of these compact menus. Multi-stream layout review stays deferred.
+
+
+## P3 profile-popup evidence (2026-11-13)
+
+`target/qa/profiles/` retains scoped offline screenshots, keyboard/pointer results
+and the 502-test gate log (13 opt-in ignored), source audit, formatting and strict
+workspace Clippy. The popup uses an opaque source-sized panel, banner/overlapping
+avatar and scrollable content. Generated fixtures cover basic/edge/long/error/
+limited/webhook states. Keyboard checks activate a real identity trigger, Copy ID
+to an external clipboard reader (synthetic ID only), Retry and Escape. Live calls,
+physical audio and production account mutations were not used.
+
+Private loopback tests assert the real profile GET query including optional guild
+scope and both mutual flags, deduplication and partial-user handling. Lifecycle
+tests cover force refresh, stale/out-of-order results, account reset/invalidation,
+expiry/capacity, limited data and async failures. Popup tests cover bounds, empty
+member overrides and source accent precedence, including black. Existing avatar
+policy tests cover guild overrides and cleared-avatar flags.
+
+Manual acceptance remains pending for real avatars/banners, nicknames and role
+changes, profile permissions/limited accounts, mouse/keyboard behavior while in a
+call, cross-community search results, moving between monitors and subjective
+layout. Full modal, rich/selectable biography, badges/connected accounts,
+relationship/DM actions and live refresh of an already-open completed card remain
+migration work. Multi-stream review is still deferred.
+
+
+The click-area refinement separates image/name targets from voice/sidebar/dock/
+filmstrip row containers, removes the stretched chat-avatar gutter target and
+keeps names at intrinsic text width. Existing whole-row right-click voice menus
+are independent. The final pointer check records image/name versus adjacent-gap
+activation in `hitbox-check.json`; broader real-account pointer acceptance remains
+pending.

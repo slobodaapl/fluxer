@@ -244,3 +244,11 @@ source mute durations, unmute, All messages/Only mentions/Nothing and inherited
 channel defaults. These settings are independent of voice playback mute. Thread
 membership notification controls and full notification delivery remain migration
 work. Cross-client acceptance is tracked in REVIEW.md (U12).
+
+
+Click a user's actual avatar/name (or a user mention) to open an in-app profile
+popup. Chat/search/pins and voice identity surfaces share the same profile reads,
+with community-specific data where supplied. Cards support Escape/outside close,
+keyboard activation, bounded placement and Retry; surrounding row/gutter space is
+not a profile trigger. Full profile actions and rich biography interaction remain
+migration work. Review checks are P3 in REVIEW.md.

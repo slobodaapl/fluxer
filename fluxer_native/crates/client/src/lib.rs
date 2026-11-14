@@ -58,7 +58,7 @@ pub struct ProfileSnapshot {
     pub user_id: Snowflake,
     pub guild_id: Option<Snowflake>,
     pub status: ProfileStatus,
-    pub profile: Option<fluxer_core::UserProfile>,
+    pub profile: Option<Box<fluxer_core::UserProfile>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileStatus {

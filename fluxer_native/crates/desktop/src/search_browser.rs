@@ -833,7 +833,7 @@ impl Fluxer {
             input.update(cx, |input, cx| input.update_message_document(document, cx));
             input.clone()
         } else {
-            let input = self.message_text_input(document, window, cx);
+            let input = self.message_text_input(document, message.channel_id, window, cx);
             self.search_ui.text.insert(key, input.clone());
             input
         };
@@ -890,20 +890,37 @@ impl Fluxer {
                     .items_center()
                     .gap_2()
                     .pr(px(64.))
-                    .child(rich_message::avatar(
-                        &message.author,
-                        self.media_endpoint.as_deref(),
-                        26.,
-                    ))
+                    .child(
+                        self.profile_trigger(
+                            div()
+                                .id(("browse-profile-avatar", message.id.0))
+                                .size(px(26.))
+                                .child(rich_message::avatar(
+                                    &message.author,
+                                    self.media_endpoint.as_deref(),
+                                    26.,
+                                )),
+                            message.author.clone(),
+                            self.state
+                                .channels
+                                .get(&message.channel_id)
+                                .and_then(|channel| channel.guild_id),
+                            crate::profile_triggers::message_is_webhook(&message),
+                            cx,
+                        ),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
+                            .items_start()
                             .gap_1()
                             .child(
                                 div()
+                                    .id(("browse-profile-name", message.id.0))
+                                    .max_w_full()
                                     .text_ellipsis()
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -912,7 +929,19 @@ impl Fluxer {
                                         12.,
                                         window.scale_factor() > 1.,
                                         cx,
-                                    )),
+                                    ))
+                                    .map(|view| {
+                                        self.profile_trigger(
+                                            view,
+                                            message.author.clone(),
+                                            self.state
+                                                .channels
+                                                .get(&message.channel_id)
+                                                .and_then(|channel| channel.guild_id),
+                                            crate::profile_triggers::message_is_webhook(&message),
+                                            cx,
+                                        )
+                                    }),
                             )
                             .child(
                                 div()

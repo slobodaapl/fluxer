@@ -41,6 +41,7 @@ impl Fluxer {
     pub(super) fn message_text_input(
         &self,
         document: Arc<MessageDocument>,
+        channel: Snowflake,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
@@ -48,8 +49,18 @@ impl Fluxer {
         cx.subscribe_in(
             &input,
             window,
-            |this, _, event: &input::MessageActivated, window, cx| {
-                this.activate_message_target(&event.target, window, cx);
+            move |this, _, event: &input::MessageActivated, window, cx| {
+                if let message_markup::MessageTarget::User(id) = event.target {
+                    let guild = this
+                        .state
+                        .channels
+                        .get(&channel)
+                        .and_then(|channel| channel.guild_id);
+                    let user = this.profile_user(id, &id.to_string());
+                    this.open_user_profile(user, guild, false, window.mouse_position(), window, cx);
+                } else {
+                    this.activate_message_target(&event.target, window, cx);
+                }
             },
         )
         .detach();
@@ -105,7 +116,7 @@ impl Fluxer {
             input.update(cx, |input, cx| input.update_message_document(document, cx));
             input.clone()
         } else {
-            let input = self.message_text_input(document, window, cx);
+            let input = self.message_text_input(document, source.channel_id, window, cx);
             self.message_content.replies.insert(key, input.clone());
             input
         };

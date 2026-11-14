@@ -35,15 +35,15 @@ impl ProfileState {
     }
     fn insert(&mut self, key: Key, profile: UserProfile) {
         self.prune();
-        if !self.cache.contains_key(&key) && self.cache.len() >= MAX_PROFILES {
-            if let Some(oldest) = self
+        if !self.cache.contains_key(&key)
+            && self.cache.len() >= MAX_PROFILES
+            && let Some(oldest) = self
                 .cache
                 .iter()
                 .min_by_key(|(_, (at, _))| *at)
                 .map(|(key, _)| *key)
-            {
-                self.cache.remove(&oldest);
-            }
+        {
+            self.cache.remove(&oldest);
         }
         self.cache.insert(key, (Instant::now(), profile));
     }
@@ -83,7 +83,7 @@ impl Worker {
             user_id: key.0,
             guild_id: key.1,
             status,
-            profile,
+            profile: profile.map(Box::new),
         }));
     }
     pub(super) fn load_user_profile(
@@ -227,16 +227,14 @@ impl Worker {
                     false
                 };
                 let mut member_changed = false;
-                if !profile.profile_limited {
-                    if let (Some(guild), Some(member)) =
+                if !profile.profile_limited
+                    && let (Some(guild), Some(member)) =
                         (event.key.1, profile.guild_member.as_ref())
-                    {
-                        member_changed =
-                            self.state.members.get(&(guild, event.key.0)) != Some(member);
-                        self.state
-                            .members
-                            .insert((guild, event.key.0), member.clone());
-                    }
+                {
+                    member_changed = self.state.members.get(&(guild, event.key.0)) != Some(member);
+                    self.state
+                        .members
+                        .insert((guild, event.key.0), member.clone());
                 }
                 if changed || current_changed || member_changed {
                     self.snapshot();

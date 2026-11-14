@@ -14,13 +14,13 @@ Pending real-account, device and usability checks are tracked in
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 209 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 212 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-493 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+502 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -622,3 +622,32 @@ separate membership gateway changes, full forum unread behavior, notification
 suppression/mobile settings UI and complete native notification delivery remain
 migration work. Cross-client persistence and subjective acceptance are U12 in
 REVIEW.md. Existing manual-review items remain pending.
+
+
+## Profile popups (2026-11-13)
+
+Click an author's avatar/name in chat, search/pins, a voice participant's image/name,
+the call filmstrip identity or your account image/name to open an anchored profile
+card. User mentions also open profiles in their originating channel's community
+context. Only the image and name hit areas activate it; surrounding gutters, row
+padding and gaps do not. Keyboard Enter/Space works on the same identity targets.
+The opaque card follows source dimensions, flips/clamps inside the viewport and
+scrolls in short windows. It shows avatar/banner, display name/username, pronouns,
+plain biography, account/community join dates and role chips when available, plus
+real Copy ID and Retry actions. Escape/outside click dismiss and restore focus.
+
+Profiles use the source GET query and an asynchronous worker, deduplicate concurrent
+requests, cache each user/community scope for 60 seconds and cap retained profiles
+at 128. Expired entries are pruned on subsequent loads/insertion; account/READY and
+membership updates/removals invalidate caches. Partial user/member updates preserve missing
+fields while explicit nulls clear them. Limited profiles do not refill stripped
+biography/pronouns; webhooks show supplied identity without fetching an account.
+Global/community avatar and banner flags, accents and default colors follow the
+source display rules. Large profile payloads are boxed to keep ordinary worker
+events small. The 502-test gate includes six backend lifecycle/wire cases and three
+popup/appearance policy tests. Review is P3 in REVIEW.md.
+
+Full profile modal, rich/selectable biography interactions, connected-account and
+badge presentation, relationship/DM/moderation actions, profile animation and live
+refresh of an already-open completed profile remain migration work. Source data
+is retained for later parity work; these cards do not claim full profile coverage.

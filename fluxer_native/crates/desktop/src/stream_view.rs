@@ -783,7 +783,7 @@ impl Fluxer {
                                                     .items_center()
                                                     .gap_2()
                                                     .child(if let Some(user_id) = user_id {
-                                                        crate::avatar_images::member_avatar(
+                                                        self.profile_trigger(div().id(SharedString::from(format!("filmstrip-profile-avatar-{}",identity.as_deref().unwrap_or(name)))).size(px(30.)).child(crate::avatar_images::member_avatar(
                                                             &self.state,
                                                             *user_id,
                                                             voice_guild,
@@ -791,7 +791,7 @@ impl Fluxer {
                                                             self.media_endpoint.as_deref(),
                                                             *speaking,
                                                             30.,
-                                                        )
+                                                        )),self.profile_user(*user_id,name),voice_guild,false,cx).into_any_element()
                                                     } else {
                                                         // SDK-only/offline preview names do not establish an
                                                         // account ID. Retain the neutral initials fallback.
@@ -803,13 +803,14 @@ impl Fluxer {
                                                         )
                                                     })
                                                     .child(
-                                                        div()
-                                                            .w_full()
+                                                        div().id(SharedString::from(format!("filmstrip-profile-name-{}",identity.as_deref().unwrap_or(name))))
+                                                            .max_w_full()
                                                             .text_center()
                                                             .text_ellipsis()
                                                             .text_size(px(10.))
                                                             .text_color(rgb(MUTED))
-                                                            .child(name.clone()),
+                                                            .child(name.clone())
+                                                            .when_some(*user_id,|view,id|self.profile_trigger(view,self.profile_user(id,name),voice_guild,false,cx)),
                                                     )
                                             },
                                         )),

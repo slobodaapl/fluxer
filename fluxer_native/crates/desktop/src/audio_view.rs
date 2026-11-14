@@ -206,16 +206,32 @@ impl Fluxer {
                             .tooltip(move |_, cx| {
                                 cx.new(|_| AccountTooltip(tooltip.clone())).into()
                             })
-                            .child(account_avatar)
                             .child(
                                 div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(name),
+                                    .id("account-profile-avatar")
+                                    .size(px(24.))
+                                    .child(account_avatar)
+                                    .when_some(self.state.current_user.clone(), |view, user| {
+                                        self.profile_trigger(view, user, None, false, cx)
+                                    }),
+                            )
+                            .child(
+                                div().flex_1().min_w_0().flex().items_center().child(
+                                    div()
+                                        .id("account-profile-name")
+                                        .min_w_0()
+                                        .max_w_full()
+                                        .text_ellipsis()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(name)
+                                        .when_some(
+                                            self.state.current_user.clone(),
+                                            |view, user| {
+                                                self.profile_trigger(view, user, None, false, cx)
+                                            },
+                                        ),
+                                ),
                             ),
                     )
                     .child(
@@ -426,22 +442,39 @@ impl Fluxer {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .child(crate::avatar_images::voice_avatar(
-                                        &participant,
-                                        guild,
-                                        self.media_endpoint.as_deref(),
-                                        speaking,
-                                        32.,
-                                    ))
+                                    .child(
+                                        self.profile_trigger(
+                                            div()
+                                                .id(("voice-profile-avatar", index))
+                                                .size(px(32.))
+                                                .child(crate::avatar_images::voice_avatar(
+                                                    &participant,
+                                                    guild,
+                                                    self.media_endpoint.as_deref(),
+                                                    speaking,
+                                                    32.,
+                                                )),
+                                            self.profile_user(
+                                                participant.user_id,
+                                                &participant.display_name,
+                                            ),
+                                            guild,
+                                            false,
+                                            cx,
+                                        ),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
                                             .min_w_0()
                                             .flex()
                                             .flex_col()
+                                            .items_start()
                                             .gap_1()
                                             .child(
                                                 div()
+                                                    .id(("voice-profile-name", index))
+                                                    .max_w_full()
                                                     .text_size(px(12.))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .text_ellipsis()
@@ -453,7 +486,19 @@ impl Fluxer {
                                                         } else {
                                                             ""
                                                         }
-                                                    )),
+                                                    ))
+                                                    .map(|view| {
+                                                        self.profile_trigger(
+                                                            view,
+                                                            self.profile_user(
+                                                                participant.user_id,
+                                                                &participant.display_name,
+                                                            ),
+                                                            guild,
+                                                            false,
+                                                            cx,
+                                                        )
+                                                    }),
                                             )
                                             .child(voice_badges(&participant, false)),
                                     )
