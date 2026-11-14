@@ -33,6 +33,49 @@ impl User {
     }
 }
 
+/// Profile response, scoped by the request's optional guild.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProfileDetails {
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub banner: Option<String>,
+    #[serde(default)]
+    pub pronouns: Option<String>,
+    #[serde(default)]
+    pub banner_color: Option<i64>,
+    #[serde(default)]
+    pub accent_color: Option<i64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub user: User,
+    #[serde(default)]
+    pub user_profile: ProfileDetails,
+    #[serde(default)]
+    pub guild_member_profile: Option<ProfileDetails>,
+    #[serde(default)]
+    pub guild_member: Option<Member>,
+    #[serde(default)]
+    pub timezone_offset: Option<i32>,
+    #[serde(default)]
+    pub profile_badges: Vec<Value>,
+    #[serde(default)]
+    pub hidden_profile_badge_count: u64,
+    #[serde(default)]
+    pub mutual_friends: Option<Vec<User>>,
+    #[serde(default)]
+    pub mutual_guilds: Option<Vec<Value>>,
+    #[serde(default)]
+    pub connected_accounts: Option<Vec<Value>>,
+    #[serde(default)]
+    pub profile_limited: bool,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
 /// Numeric channel types from ChannelConstants.ts. Unknown values are preserved
 /// so introducing a server feature does not invalidate READY.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,6 +261,8 @@ pub struct Member {
     pub mute: bool,
     #[serde(default)]
     pub deaf: bool,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionOverwrite {

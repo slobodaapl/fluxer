@@ -53,7 +53,26 @@ use std::{
     thread,
 };
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProfileSnapshot {
+    pub user_id: Snowflake,
+    pub guild_id: Option<Snowflake>,
+    pub status: ProfileStatus,
+    pub profile: Option<fluxer_core::UserProfile>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileStatus {
+    Loading,
+    Ready,
+    Failed(String),
+}
+
 pub enum Command {
+    LoadUserProfile {
+        user_id: Snowflake,
+        guild_id: Option<Snowflake>,
+        force: bool,
+    },
     RestoreSession,
     Login {
         instance: String,
@@ -266,6 +285,7 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    UserProfile(ProfileSnapshot),
     MessageAckResult {
         channel_id: Snowflake,
         message_id: Snowflake,

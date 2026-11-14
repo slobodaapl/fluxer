@@ -22,6 +22,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 mod attachment_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
+#[path = "worker_profile.rs"]
+mod profile_flow;
 
 type Result<T> = std::result::Result<T, String>;
 const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
@@ -130,6 +132,7 @@ impl VoiceTarget {
 
 pub(crate) struct Worker {
     navigation: navigation_flow::NavigationState,
+    profiles: profile_flow::ProfileState,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     saved_session: Option<SavedSession>,
@@ -181,6 +184,7 @@ impl Worker {
     ) -> Self {
         Self {
             navigation: navigation_flow::NavigationState::new(),
+            profiles: profile_flow::ProfileState::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             saved_session: None,
@@ -366,6 +370,7 @@ impl Worker {
         loop {
             enum Incoming {
                 Navigation(Option<navigation_flow::NavigationEvent>),
+                Profile(Option<profile_flow::ProfileEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
@@ -384,6 +389,7 @@ impl Worker {
             }
             let incoming = tokio::select! {
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
+                event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
@@ -396,6 +402,11 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::Profile(Some(event)) => {
+                    self.profile_event(event);
+                    Ok(())
+                }
+                Incoming::Profile(None) => Ok(()),
                 Incoming::Navigation(Some(event)) => {
                     self.navigation_event(event);
                     Ok(())
@@ -482,6 +493,7 @@ impl Worker {
 
     async fn reset(&mut self) {
         self.clear_navigation();
+        self.clear_profiles();
         self.clear_attachments();
         if let Some(task) = self.restore_task.take() {
             task.abort();
@@ -748,6 +760,11 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::LoadUserProfile {
+                user_id,
+                guild_id,
+                force,
+            } => self.load_user_profile(user_id, guild_id, force),
             Command::SelectGuild { guild_id } => {
                 self.selected_guild = Some(guild_id);
                 if !self.demo {
@@ -1703,6 +1720,16 @@ impl Worker {
                     && name != "READY"
                 {
                     return Ok(());
+                }
+                if matches!(
+                    name.as_str(),
+                    "READY"
+                        | "USER_UPDATE"
+                        | "GUILD_MEMBER_UPDATE"
+                        | "GUILD_MEMBER_REMOVE"
+                        | "GUILD_DELETE"
+                ) {
+                    self.invalidate_profiles();
                 }
                 if name == "VOICE_SERVER_UPDATE" {
                     let update: VoiceServerUpdate = serde_json::from_value(data).map_err(error)?;

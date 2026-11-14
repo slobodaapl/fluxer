@@ -10,6 +10,7 @@ fluxer-protocol.workspace = true
 fluxer-media.workspace = true
 fluxer-session = { path = "../session" }
 serde_json.workspace = true
+reqwest = { version = "=0.12.24", default-features = false }
 image = {version="0.25",default-features=false,features=["png","jpeg","gif","webp"]}
 tempfile = "3"
 mime_guess = "2"

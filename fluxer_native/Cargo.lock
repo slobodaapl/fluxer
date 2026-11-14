@@ -2096,6 +2096,7 @@ dependencies = [
  "futures-util",
  "image",
  "mime_guess",
+ "reqwest",
  "serde_json",
  "tempfile",
  "tokio",
