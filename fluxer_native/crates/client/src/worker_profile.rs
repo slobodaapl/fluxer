@@ -3,6 +3,9 @@ use crate::{ProfileSnapshot, ProfileStatus};
 use fluxer_core::{ProfileDetails, UserProfile};
 use tokio::time::Instant;
 type Key = (Snowflake, Option<Snowflake>);
+const PROFILE_TTL: Duration = Duration::from_secs(60);
+// Idle cache is bounded even if the worker receives no further profile loads.
+const MAX_PROFILES: usize = 128;
 struct Job {
     token: u64,
     task: JoinHandle<()>,
@@ -27,6 +30,23 @@ pub(super) struct ProfileState {
     pub rx: async_mpsc::UnboundedReceiver<ProfileEvent>,
 }
 impl ProfileState {
+    fn prune(&mut self) {
+        self.cache.retain(|_, (at, _)| at.elapsed() < PROFILE_TTL);
+    }
+    fn insert(&mut self, key: Key, profile: UserProfile) {
+        self.prune();
+        if !self.cache.contains_key(&key) && self.cache.len() >= MAX_PROFILES {
+            if let Some(oldest) = self
+                .cache
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(key, _)| *key)
+            {
+                self.cache.remove(&oldest);
+            }
+        }
+        self.cache.insert(key, (Instant::now(), profile));
+    }
     pub fn new() -> Self {
         let (tx, rx) = async_mpsc::unbounded_channel();
         Self {
@@ -73,9 +93,13 @@ impl Worker {
         force: bool,
     ) {
         let key = (user_id, guild_id);
+        self.profiles.prune();
+        if force {
+            self.profiles.cache.remove(&key);
+        }
         if !force
             && let Some((at, profile)) = self.profiles.cache.get(&key)
-            && at.elapsed() < Duration::from_secs(60)
+            && at.elapsed() < PROFILE_TTL
         {
             self.profile_snapshot(key, ProfileStatus::Ready, Some(profile.clone()));
             return;
@@ -109,9 +133,7 @@ impl Worker {
                     .and_then(|id| self.state.members.get(&(id, user_id)).cloned()),
                 ..Default::default()
             };
-            self.profiles
-                .cache
-                .insert(key, (Instant::now(), profile.clone()));
+            self.profiles.insert(key, profile.clone());
             self.profile_snapshot(key, ProfileStatus::Ready, Some(profile));
             return;
         }
@@ -163,11 +185,21 @@ impl Worker {
             if incoming_id != event.key.0.to_string() {
                 return Err("Profile response user does not match request".into());
             }
-            if let Some(existing) = self.state.users.get(&event.key.0) {
+            if let Some(existing) = self.state.users.get(&event.key.0).or_else(|| {
+                self.state
+                    .current_user
+                    .as_ref()
+                    .filter(|current| current.id == event.key.0)
+            }) {
                 merge_missing(user, serde_json::to_value(existing).map_err(error)?);
             }
             let user = wire["user"].clone();
             if let Some(member) = wire.get_mut("guild_member").filter(|v| v.is_object()) {
+                if let Some(member_user) = member.get_mut("user") {
+                    merge_missing(member_user, user.clone());
+                } else {
+                    member["user"] = user;
+                }
                 if let Some(existing) = event
                     .key
                     .1
@@ -175,17 +207,41 @@ impl Worker {
                 {
                     merge_missing(member, serde_json::to_value(existing).map_err(error)?);
                 }
-                if member.get("user").is_none() {
-                    member["user"] = user;
-                }
             }
             serde_json::from_value::<UserProfile>(wire).map_err(error)
         });
         match result {
             Ok(profile) => {
-                self.profiles
-                    .cache
-                    .insert(event.key, (Instant::now(), profile.clone()));
+                let changed = self.state.users.get(&event.key.0) != Some(&profile.user);
+                self.state.users.insert(event.key.0, profile.user.clone());
+                let current_changed = if self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|user| user.id == event.key.0)
+                {
+                    let changed = self.state.current_user.as_ref() != Some(&profile.user);
+                    self.state.current_user = Some(profile.user.clone());
+                    changed
+                } else {
+                    false
+                };
+                let mut member_changed = false;
+                if !profile.profile_limited {
+                    if let (Some(guild), Some(member)) =
+                        (event.key.1, profile.guild_member.as_ref())
+                    {
+                        member_changed =
+                            self.state.members.get(&(guild, event.key.0)) != Some(member);
+                        self.state
+                            .members
+                            .insert((guild, event.key.0), member.clone());
+                    }
+                }
+                if changed || current_changed || member_changed {
+                    self.snapshot();
+                }
+                self.profiles.insert(event.key, profile.clone());
                 self.profile_snapshot(event.key, ProfileStatus::Ready, Some(profile));
             }
             Err(message) => self.profile_snapshot(event.key, ProfileStatus::Failed(message), None),
@@ -269,6 +325,166 @@ mod tests {
         )));
         worker.invalidate_profiles();
         assert!(worker.profiles.cache.is_empty());
+    }
+    fn worker() -> (Worker, mpsc::Receiver<Event>) {
+        let (tx, rx) = mpsc::channel();
+        (Worker::new(tx, Arc::new(Mutex::new(BTreeMap::new()))), rx)
+    }
+    fn wire(bio: Option<&str>, limited: bool) -> Value {
+        json!({"user":{"id":"42","username":"test"}, "user_profile":{"bio":bio},
+            "guild_member_profile":null, "profile_limited":limited})
+    }
+    fn install_job(worker: &mut Worker, key: Key, token: u64) {
+        worker.profiles.jobs.insert(
+            key,
+            Job {
+                token,
+                task: tokio::spawn(pending()),
+            },
+        );
+    }
+    #[tokio::test]
+    async fn expiry_prunes_all_scopes_and_cache_is_bounded() {
+        let (mut worker, _) = worker();
+        let key = (42.into(), None);
+        worker
+            .profiles
+            .cache
+            .insert(key, (Instant::now() - PROFILE_TTL, UserProfile::default()));
+        worker.load_user_profile(99.into(), None, false);
+        assert!(!worker.profiles.cache.contains_key(&key));
+        for id in 0..(MAX_PROFILES as u64 + 10) {
+            worker
+                .profiles
+                .insert((id.into(), None), UserProfile::default());
+        }
+        assert_eq!(worker.profiles.cache.len(), MAX_PROFILES);
+    }
+    #[tokio::test]
+    async fn force_and_account_reset_reject_old_results_and_limited_response_stays_limited() {
+        let (mut worker, rx) = worker();
+        let key = (42.into(), Some(8.into()));
+        let instance =
+            Instance::from_endpoints("http://127.0.0.1:1/api", "ws://127.0.0.1:1/gateway").unwrap();
+        worker.client = Some(Client::new(instance).unwrap());
+        worker.profiles.insert(
+            key,
+            UserProfile {
+                user_profile: ProfileDetails {
+                    bio: Some("private".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        worker.load_user_profile(key.0, key.1, true);
+        let old = worker.profiles.jobs[&key].token;
+        assert!(!worker.profiles.cache.contains_key(&key));
+        worker.load_user_profile(key.0, key.1, true);
+        let current = worker.profiles.jobs[&key].token;
+        assert_ne!(old, current);
+        worker.profile_event(ProfileEvent {
+            epoch: worker.profiles.epoch,
+            key,
+            token: old,
+            result: Ok(wire(Some("stale"), false)),
+        });
+        assert!(!worker.profiles.cache.contains_key(&key));
+        worker.profile_event(ProfileEvent {
+            epoch: worker.profiles.epoch,
+            key,
+            token: current,
+            result: Ok(wire(None, true)),
+        });
+        let profile = &worker.profiles.cache[&key].1;
+        assert!(profile.profile_limited);
+        assert!(profile.user_profile.bio.is_none());
+        assert!(profile.guild_member_profile.is_none());
+        let epoch = worker.profiles.epoch;
+        install_job(&mut worker, key, 500);
+        worker.clear_profiles();
+        worker.profile_event(ProfileEvent {
+            epoch,
+            key,
+            token: 500,
+            result: Ok(wire(Some("old account"), false)),
+        });
+        assert!(worker.profiles.cache.is_empty());
+        assert!(worker.profiles.jobs.is_empty());
+        assert!(rx.try_iter().any(|e| matches!(
+            e,
+            Event::UserProfile(ProfileSnapshot {
+                status: ProfileStatus::Ready,
+                ..
+            })
+        )));
+    }
+    #[tokio::test]
+    async fn read_error_is_reported_and_retry_remains_available() {
+        let (mut worker, rx) = worker();
+        let instance =
+            Instance::from_endpoints("http://127.0.0.1:1/api", "ws://127.0.0.1:1/gateway").unwrap();
+        worker.client = Some(Client::new(instance).unwrap());
+        let key = (42.into(), None);
+        worker.load_user_profile(key.0, key.1, false);
+        let event = tokio::time::timeout(Duration::from_secs(5), worker.profiles.rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(event.result.is_err());
+        worker.profile_event(event);
+        assert!(worker.profiles.jobs.is_empty());
+        assert!(worker.profiles.cache.is_empty());
+        assert!(rx.try_iter().any(|e| matches!(
+            e,
+            Event::UserProfile(ProfileSnapshot {
+                status: ProfileStatus::Failed(_),
+                ..
+            })
+        )));
+        worker.load_user_profile(key.0, key.1, false);
+        assert!(worker.profiles.jobs.contains_key(&key));
+        worker.invalidate_profiles();
+        assert!(worker.profiles.jobs.is_empty());
+    }
+    #[tokio::test]
+    async fn profile_updates_shared_user_and_member_without_erasing_partial_fields() {
+        let (mut worker, _) = worker();
+        let key = (42.into(), Some(8.into()));
+        let user = User {
+            id: key.0,
+            username: "old".into(),
+            avatar: Some("old avatar".into()),
+            global_name: Some("kept".into()),
+            ..Default::default()
+        };
+        worker.state.users.insert(key.0, user.clone());
+        worker.state.current_user = Some(user.clone());
+        worker.state.members.insert(
+            (key.1.unwrap(), key.0),
+            fluxer_core::Member {
+                user,
+                roles: vec![9.into()],
+                ..Default::default()
+            },
+        );
+        install_job(&mut worker, key, 1);
+        worker.profile_event(ProfileEvent { epoch: worker.profiles.epoch, key, token: 1, result: Ok(json!({"user":{"id":"42","username":"new","avatar":null},"user_profile":{},"guild_member":{"nick":"nick"}})) });
+        let user = &worker.state.users[&key.0];
+        assert_eq!(user.username, "new");
+        assert_eq!(user.global_name.as_deref(), Some("kept"));
+        assert_eq!(user.avatar, None);
+        assert_eq!(worker.state.current_user.as_ref(), Some(user));
+        let member = &worker.state.members[&(key.1.unwrap(), key.0)];
+        assert_eq!(member.roles, vec![9.into()]);
+        assert_eq!(member.nick.as_deref(), Some("nick"));
+        assert_eq!(member.user, *user);
+        install_job(&mut worker, key, 2);
+        worker.profile_event(ProfileEvent { epoch: worker.profiles.epoch, key, token: 2, result: Ok(json!({"user":{"id":"42","username":"new"},"user_profile":{},"profile_limited":true,"guild_member":{"roles":[]}})) });
+        assert_eq!(
+            worker.state.members[&(key.1.unwrap(), key.0)].roles,
+            vec![9.into()]
+        );
     }
     #[test]
     fn merge_preserves_explicit_nulls_and_unknown_fields() {
