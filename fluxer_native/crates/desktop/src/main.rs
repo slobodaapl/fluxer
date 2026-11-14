@@ -32,6 +32,7 @@ mod message_demo;
 mod message_grouping;
 mod message_links;
 mod message_markup;
+mod navigation_actions;
 mod outbox_view;
 mod pin_system_message;
 mod playable_media;
@@ -644,6 +645,7 @@ impl Fluxer {
         }
         view.schedule_context_demo(window, cx);
         view.schedule_media_menu_demo(window, cx);
+        view.schedule_read_menu_demo(window, cx);
         view
     }
 
@@ -1700,6 +1702,7 @@ impl Fluxer {
                         let voice = channel.kind.is_voice();
                         if channel.kind == ChannelType::Category {
                             return div()
+                                .id(("category", id.0))
                                 .px_3()
                                 .pt_4()
                                 .pb_1()
@@ -1711,8 +1714,16 @@ impl Fluxer {
                                     false,
                                     cx,
                                 ))
+                                .map(|view| {
+                                    context_actions::trigger(
+                                        view,
+                                        context_actions::Target::Channel(id),
+                                        cx,
+                                    )
+                                })
                                 .into_any_element();
                         }
+                        let notifications_muted = self.channel_notifications_muted(channel);
                         let label = format!("{}  {}", if voice { "◉" } else { "#" }, channel.name);
                         let roster = if voice {
                             self.voice_sidebar_participants(id)
@@ -1738,14 +1749,24 @@ impl Fluxer {
                                     } else {
                                         PANEL
                                     }))
-                                    .when(self.state.is_unread(id), |view| {
-                                        view.text_color(rgb(TEXT)).font_weight(FontWeight::SEMIBOLD)
-                                    })
+                                    .when(
+                                        self.state.is_unread(id) && !notifications_muted,
+                                        |view| {
+                                            view.text_color(rgb(TEXT))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                        },
+                                    )
                                     .child(
                                         div().flex_1().min_w_0().text_ellipsis().child(
                                             emoji_sprites::unicode_text(&label, 14., false, cx),
                                         ),
                                     )
+                                    .when(notifications_muted, |view| {
+                                        view.child(
+                                            controls::icon(controls::Icon::NotificationsOff, 14.)
+                                                .text_color(rgb(MUTED)),
+                                        )
+                                    })
                                     .when(voice, |view| {
                                         view.child(
                                             div()

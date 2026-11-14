@@ -189,12 +189,9 @@ actions; they are not a claim of identical classic menu contents.
 
 Prioritized remaining menu work:
 
-1. Channel/community Mark as read, Mark unread and notification mute controls.
-   Implement explicit manual acknowledgements and source settings transport;
-   automatic visible-history acknowledgements must not be repurposed here.
-2. Member/profile menus, DM creation, roles and community moderation. These need
+1. Member/profile menus, DM creation, roles and community moderation. These need
    their actual transport/UI plus source permission and hierarchy checks.
-3. Full own-stream source/quality/privacy menus, per-device submenus, remembered
+2. Full own-stream source/quality/privacy menus, per-device submenus, remembered
    preferences and member/profile popovers. Existing local playback controls are
    not server mute/deafen, notification mute or moderation.
 
@@ -213,8 +210,26 @@ background transfers avoid adding permanent button banks to chat. Still-image
 copy supplies image bytes to other Wayland applications. Text menus use current
 selection/history and restrict read-only/secret fields. Review is M10/U11.
 
-Next expansion: channel/community read and notification controls, using the
-classic client's explicit acknowledgement and settings transport. After that,
+Channel/community read and notification controls are implemented below. Next,
 prioritize audio resilience (device hotplug, disconnect/reconnect and restoration)
 alongside the existing real-device review queue. Full profile/moderation and
 persisted preference parity remain open.
+
+
+## Read and notification controls (2026-11-13)
+
+Read actions and notification settings live in context menus. Category headings
+now accept right-click/Shift+F10. Mute durations and notification levels use compact
+menu pages with a Back row, preserving the anchor and existing focus/dismissal
+behavior. The selected level and inherited effective level remain distinct; direct
+unmute does not claim to clear inherited category/community mute. Muted channels
+show a small bell-slash indicator and no longer use unread emphasis. Message Mark
+unread uses the manual read-state path and blocks immediate viewport re-ACK.
+
+Source references: ReadStateCommands.ts; read_states/ReadStateAckMachine.ts;
+UserGuildSettingsCommands.ts and UserGuildSettings.ts; ChannelMenuItems.tsx;
+CategoryMenuData.tsx; GuildMenuData.tsx; MuteOptions.ts and TimeWindowPresets.ts;
+Guild.effectiveMessageNotifications; and UserGuildSettingsResponse. Thread
+notification options require their separate membership transport and remain
+unavailable here. Review is U12; no full notification-settings modal or delivery
+parity is claimed. The next implementation priority is audio-device recovery.

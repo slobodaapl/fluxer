@@ -9,7 +9,7 @@ feedback against its specific scenario without treating it as broader acceptance
 
 Implementation is on `yolo/gpui`. Attachment work started from build
 `bb3f36d37`; use the current native window title to record the build being reviewed.
-The UI refinement gate passes 485 tests, formatting, strict Clippy and the
+The UI refinement gate passes 493 tests, formatting, strict Clippy and the
 feature inventory audit; source-reference fixtures and scope are recorded in
 STATUS.md. The holistic UI audit and follow-up priorities are in [UI_UX.md](UI_UX.md).
 Full feature parity remains in progress.
@@ -28,6 +28,7 @@ Full feature parity remains in progress.
 | M9 | Native audio/video and GIFV | Play MP4/WebM and audio attachments in chat, forwards and search/pins. Check pause/resume, seek, mute/volume, output device, Open original and full view/Escape. Try rotated phone video, GIFV with autoplay off/on, scroll-out/return, concealed/expired media, failures and channel changes. Test while voice/shared audio is active. | **Pending real-account, physical-device and subjective review.** Real codecs, HTTP contracts, private PipeWire PCM routing and generated app presentation/actions are checked below. Complete-file caching precedes playback; range startup, preference persistence, rate/PiP/subtitles/HDR and broader platform/codec coverage remain open. |
 | M10 | Media context menus and export | Right-click or Shift+F10 on attachments, image/video embeds, forwards, search/pins and both viewers. Check Save as, Copy image, Copy media link, Open original and message actions. Concealed/expired/download-hidden media must not expose download actions. Close a menu with Escape before closing its viewer. | **Pending real-account and subjective review.** Source policy, atomic export, image conversion and stale-target tests pass. External Wayland PNG copy is verified. Native Save dialog opens; end-to-end picker completion remains unverified. See evidence below. |
 | U11 | Text editing context menus | Select text in the composer and use right-click/Shift+F10 to Undo/Redo, Cut/Copy/Paste, Delete and Select all. Check emoji/Unicode, selection preservation, read-only external URL fields and secret fields. | **Pending sustained usability review.** Unicode/history, selection and restricted-action tests pass; owned offline keyboard checks are recorded below. |
+| U12 | Read and notification controls | Use channel/community/category Mark as read, then message Mark unread; it should remain unread while that channel stays open. Leave/return or explicitly mark read. Try each mute duration, unmute, default/explicit notification levels and a muted parent category/community. Confirm persistence and read markers in regular Fluxer after reopening. Check DM scope and permission changes. | **Pending real-account, cross-client and subjective review.** Exact local POST/PATCH contracts, real response-shaped settings decoding, source defaults/mention rules and generated menu actions are verified below. Thread notification writes are intentionally unavailable pending membership transport. |
 | U1 | Conversation density and contextual actions | Compare a busy channel with regular Fluxer. Hover a message and use right-click/Shift+F10; React/Reply/More should appear without moving content. Copy selected text, edit/reply/forward, and cancel Delete/Pin confirmations. | **Pending subjective/live review.** Offline SVG, hover/right-click, keyboard menu, confirmation opening-release guard and Tab-wrap/Enter-on-Cancel checked; no real messages or pins changed. |
 | U7 | Message toolbar legibility | Hover short and wrapped messages, code and media; check React/Reply/More against the text beneath it. Select nearby text and open reactions. | **Pending subjective review.** Toolbar backing is solid with a stronger border/shadow, and paints after message text/media so content cannot paint through it. Hidden toolbars retain their existing visibility behavior. |
 | U2 | Audio settings and account dock | Check the compact name/mic/deafen/settings dock, connected/reconnecting/share/disconnect states, real device dropdowns, volume sliders and DSP switches. Use mouse drag, arrows and Home/End. | **Pending device/live review.** Offline layout, slider drag/fine adjustment/range limits checked without starting microphone capture. Native gain curve still uses its existing linear 0–2 scale. |
@@ -372,3 +373,32 @@ synthetic Unicode text to an external reader. No message was submitted. The fina
 nonblocking clipboard build also passed the external generated-PNG pixel check.
 Pointer targeting and full real-account search/pins interactions remain manual
 review items; these fixture captures do not establish broader acceptance.
+
+
+## U12 read/notification evidence (2026-11-13)
+
+`target/qa/read-notifications/` contains owned offline fixture captures and the
+493-test gate log (13 opt-in ignored), with source audit, formatting and strict
+workspace Clippy. Keyboard checks open the duration and notification pages,
+return through Back, choose a fifteen-minute mute and an explicit notification
+level, and activate message Mark unread and channel Mark as read. The sidebar
+muted icon and inherited Only mentions label were visually checked. The fixture
+uses the real worker's offline read/settings handlers. These are local synthetic
+state changes, with no production account mutations, physical audio or capture.
+
+Private loopback HTTP tests assert actual manual/bulk acknowledgement and settings
+PATCH paths and bodies, including manual flags, server-supplied cursor/count/version
+and indefinite mute serialization without inner channel IDs. Core fixtures cover
+record-keyed settings responses, preserved settings fields, duration milliseconds,
+large-community defaults, expiry and mention filtering. The implemented legacy
+ACK fallback and private settings endpoint still need cross-client review. A category test verifies
+immediate children and excludes nested categories. Stale/manual ACK routing uses
+the existing source-backed reducer and manual unread is fenced against viewport
+ACKs; failures restore a worker snapshot.
+
+Remaining manual checks: cross-client persistence/markers, keyboard and pointer
+usability under real gateway updates, timed expiry in normal use, permission loss,
+and ordinary restart with real settings. Separate thread membership gateway
+projection and full forum unread/notification-delivery parity remain incomplete.
+Community suppression/mobile-push toggles and unread-badge customization are not
+part of these compact menus. Multi-stream layout review stays deferred.

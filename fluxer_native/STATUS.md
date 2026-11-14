@@ -10,17 +10,17 @@ Pending real-account, device and usability checks are tracked in
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |
-| Core state | 45 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
+| Core state | 48 tests: wire IDs, permissions, READY projection, message deltas, reads, typing, forwarding destinations, voice controls and gateway participant rosters | Full gateway event catalog, permission edge cases, all feature state |
 | HTTP/gateway | 71 tests: source-backed discovery/Origin/headers/IP/browser handoff, message references, bidirectional desktop zstd codec, heartbeat/reconnect/resume and voice signaling | Native passkey/SSO/CAPTCHA workflows, authenticated upload interoperability and broader REST coverage |
 | Native media | Builds; synthetic two-client LiveKit audio/video exchange passed; capture lifecycle tests | Authenticated Fluxer calls, OS capture/consent, hardware changes, encryption interoperability |
 | Linux audio | Existing shared-audio routing reused; exact PipeWire microphone sources and logical output sinks; 18 graph/identity/PCM regression tests pass | Actual application/system-audio sharing with a second Fluxer client |
-| GPUI | Executable builds/links; Wayland demo visually verified; 207 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
+| GPUI | Executable builds/links; Wayland demo visually verified; 209 input/emoji/attachment/search/media/viewer/message/avatar/Wayland/context-menu tests pass; focused viewer visually checked at minimum size and with landscape/portrait sources | Interactive keyboard/accessibility review, full markdown/custom emoji rendering, authenticated upload interoperability, complete media-viewer and UI parity |
 | Audio management | Physical input → WebRTC DSP → gain/PTT/VAD → native publication; participant mixer/mute, output gain, exact logical sink routing and meters; 42 media tests pass | Acoustic AEC validation, automatic hotplug fallback, global OS PTT, advanced voice effects |
 | Session persistence | 7 codec/isolation tests plus real encrypted OS-vault synthetic CRUD passed; tokens/instance/locale/selection restore across cold startup | Linux Secret Service backend implemented; macOS/Windows backends, multi-account switching and full preference migration remain open |
 | Client orchestration | 83 tests: real password/token/IP/browser sign-in, READY bootstrap, selected-guild subscription, gateway Live discovery, viewer keys, capture-state races, replies and forwarding | Actual two-account Fluxer login/chat/call/share validation |
 
 `scripts/verify.sh` passes source audit, formatting, strict workspace Clippy and
-485 tests. The complete opt-in LiveKit audio/video loopback now passes, including
+493 tests. The complete opt-in LiveKit audio/video loopback now passes, including
 screen unwatch while fresh microphone audio continues and microphone restoration
 after deafen. A pinned workspace-local SDK patch retains the RTC receiver through
 explicit unsubscribe, restores it through normal renderer/decryption hooks and
@@ -591,3 +591,34 @@ requires an explicit Copy action when the app lacks focus. The standard text
 inputs also offer selection-aware Undo/Redo, Cut/Copy/Paste, Delete and Select all;
 read-only and secret fields restrict their actions. See M10/U11 in REVIEW.md for
 verified scope and remaining acceptance, including native Save dialog completion.
+
+
+## Explicit reads and notification settings (2026-11-13)
+
+Channel/community menus now offer Mark as read when applicable. Category headings
+have context menus and acknowledge their immediate readable children. Message
+menus offer Mark unread for cached messages; manual unread suppresses automatic
+viewport acknowledgement until an explicit read or leaving the channel. Explicit
+read commands use the classic batched acknowledgement endpoint and its legacy
+fallback, rather than reusing the monotonic viewport-ack command. Permission and
+source mention rules, server ACK versions, failures and pending ACK cancellation
+are checked at the worker boundary.
+
+Channel, category, community and private-conversation notification menus support
+All messages, Only mentions and Nothing, with category/community inheritance on
+channel overrides. Mute supports the classic duration presets and indefinite
+mute; unmute clears the direct override, while inherited mute remains in effect.
+Sidebar rows show a small muted-notifications icon. READY and gateway settings
+updates preserve unrelated fields; PATCH sends the source override-map shape and
+retains existing overrides/collapse state. Large-community defaults and expired
+mute configurations follow source rules. These controls are server notification
+preferences, separate from voice playback mute/volume.
+
+The 493-test gate includes real private-loopback POST/PATCH contract fixtures,
+record-keyed READY settings, mention filtering, category read, inherited settings
+and offline menu checks. Thread notification writes remain deferred because they
+use membership flags. Thread read filtering currently uses projected membership;
+separate membership gateway changes, full forum unread behavior, notification
+suppression/mobile settings UI and complete native notification delivery remain
+migration work. Cross-client persistence and subjective acceptance are U12 in
+REVIEW.md. Existing manual-review items remain pending.

@@ -17,6 +17,7 @@ pub(super) enum MessageAction {
     Forward,
     Copy,
     Jump,
+    MarkUnread,
     Pin,
     Edit,
     Delete,
@@ -29,6 +30,7 @@ impl MessageAction {
             Self::Forward => "Forward",
             Self::Copy => "Copy text",
             Self::Jump => "Jump to message",
+            Self::MarkUnread => "Mark unread",
             Self::Pin => {
                 if pinned {
                     "Unpin message"
@@ -47,6 +49,7 @@ impl MessageAction {
             Self::Forward => Icon::Forward,
             Self::Copy => Icon::Copy,
             Self::Jump => Icon::Jump,
+            Self::MarkUnread => Icon::MarkUnread,
             Self::Pin => Icon::Pin,
             Self::Edit => Icon::Edit,
             Self::Delete => Icon::Delete,
@@ -243,6 +246,15 @@ impl Fluxer {
             actions.push(MessageAction::Forward);
         }
         actions.push(MessageAction::Copy);
+        if permissions.contains(Permissions::VIEW_CHANNEL)
+            && self
+                .state
+                .messages
+                .get(&message.channel_id)
+                .is_some_and(|messages| messages.contains_key(&message.id))
+        {
+            actions.push(MessageAction::MarkUnread);
+        }
         if !timeline {
             actions.push(MessageAction::Jump);
         }
@@ -339,6 +351,12 @@ impl Fluxer {
                 cx.write_to_clipboard(ClipboardItem::new_string(chat_helpers::display_text(
                     &message,
                 )));
+                if let Some(focus) = self.message_actions.previous_focus.take() {
+                    focus.focus(window);
+                }
+            }
+            MessageAction::MarkUnread => {
+                self.mark_message_unread(&message, cx);
                 if let Some(focus) = self.message_actions.previous_focus.take() {
                     focus.focus(window);
                 }

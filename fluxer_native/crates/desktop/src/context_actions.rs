@@ -5,6 +5,7 @@ use crate::context_menu::{
     ContextMenu, ContextMenuCallback, ContextMenuEvent, ContextMenuItem as Item,
 };
 use crate::controls::Icon;
+use crate::navigation_actions::NavigationPage;
 use crate::stream_layout::StreamLayout;
 use std::{cell::Cell, rc::Rc};
 
@@ -36,6 +37,8 @@ impl UserAudioOverride {
 }
 pub(super) struct ContextUi {
     pub menu: Entity<ContextMenu>,
+    pub page: NavigationPage,
+    pub anchor: Point<Pixels>,
     target: Option<Target>,
     generation: u64,
     pub user_audio: BTreeMap<Snowflake, UserAudioOverride>,
@@ -46,6 +49,8 @@ impl ContextUi {
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
         Self {
             menu: cx.new(ContextMenu::new),
+            page: NavigationPage::Main,
+            anchor: Point::default(),
             target: None,
             generation: 0,
             user_audio: BTreeMap::new(),
@@ -95,7 +100,7 @@ pub(super) fn trigger(
             }
         }))
 }
-fn action(id: &str, label: &str, icon: Icon) -> Item {
+pub(super) fn action(id: &str, label: &str, icon: Icon) -> Item {
     Item::Action {
         id: id.into(),
         label: label.into(),
@@ -371,6 +376,9 @@ impl Fluxer {
             })
     }
     fn context_items(&self, target: &Target, window: &Window) -> Vec<Item> {
+        if self.context.page != NavigationPage::Main {
+            return self.navigation_page_items(target);
+        }
         let mut items = Vec::new();
         match target {
             Target::Media(reference) => return self.media_context_items(reference),
@@ -489,10 +497,10 @@ impl Fluxer {
             }
             Target::Channel(id) => {
                 if let Some(channel) = self.state.channels.get(id) {
-                    items.extend([
-                        Item::Header(channel.display_name()),
-                        action("channel-open", "Open chat", Icon::Chat),
-                    ]);
+                    items.push(Item::Header(channel.display_name()));
+                    if channel.kind != ChannelType::Category {
+                        items.push(action("channel-open", "Open chat", Icon::Chat));
+                    }
                     if channel.kind.is_voice() {
                         if self.state.voice.channel_id == Some(*id) {
                             items.push(action("disconnect", "Disconnect", Icon::PhoneOff));
@@ -504,6 +512,7 @@ impl Fluxer {
                             items.push(action("channel-join", "Join voice", Icon::Headphones));
                         }
                     }
+                    items.extend(self.navigation_items(target));
                     items.push(Item::Separator);
                     if self
                         .message_links
@@ -525,6 +534,9 @@ impl Fluxer {
                 items.extend([
                     Item::Header(name),
                     action("community-open", "Open community", Icon::Home),
+                ]);
+                items.extend(self.navigation_items(target));
+                items.extend([
                     Item::Separator,
                     action("copy-community", "Copy community ID", Icon::Copy),
                 ]);
@@ -536,6 +548,16 @@ impl Fluxer {
         &mut self,
         target: Target,
         anchor: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_context_menu_page(target, anchor, NavigationPage::Main, window, cx);
+    }
+    pub(super) fn open_context_menu_page(
+        &mut self,
+        target: Target,
+        anchor: Point<Pixels>,
+        page: NavigationPage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -551,6 +573,8 @@ impl Fluxer {
         self.dismiss_message_actions(window, cx);
         self.emoji_target = None;
         self.command_if_live(Command::SetPushToTalkPressed(false), cx);
+        self.context.page = page;
+        self.context.anchor = anchor;
         let items = self.context_items(&target, window);
         self.context.generation = self.context.generation.wrapping_add(1);
         let generation = self.context.generation;
@@ -576,6 +600,9 @@ impl Fluxer {
                 }
                 let close = matches!(event, ContextMenuEvent::Action(_));
                 this.perform_context_action(&target, event, window, cx);
+                if this.context.generation != generation {
+                    return;
+                }
                 if close {
                     this.context.target = None;
                 } else {
@@ -670,6 +697,9 @@ impl Fluxer {
     ) {
         if self.demo_stream && std::env::var_os("FLUXER_CONTEXT_DEMO_TARGET").is_some() {
             eprintln!("CONTEXT_DEMO_EVENT target={target:?} event={event:?}");
+        }
+        if self.perform_navigation_action(target, &event, window, cx) {
+            return;
         }
         let id = event_id(&event).unwrap_or_default();
         let muted = if let ContextMenuEvent::Toggle(_, value) = event {

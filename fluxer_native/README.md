@@ -235,3 +235,12 @@ viewers and honor concealed/expired/channel-hidden media policy. Save uses the
 system file dialog and background atomic export; clipboard images are exported
 as PNG. Standard text inputs expose selection-aware editing menus, including
 Undo/Redo. Remaining manual acceptance is tracked in REVIEW.md (M10/U11).
+
+
+Channel/community/category context menus provide explicit Mark as read and
+persisted notification preferences. Message menus offer Mark unread, which holds
+automatic acknowledgement while the channel stays open. Notification menus have
+source mute durations, unmute, All messages/Only mentions/Nothing and inherited
+channel defaults. These settings are independent of voice playback mute. Thread
+membership notification controls and full notification delivery remain migration
+work. Cross-client acceptance is tracked in REVIEW.md (U12).
