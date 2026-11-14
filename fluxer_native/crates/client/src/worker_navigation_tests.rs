@@ -1120,7 +1120,7 @@ async fn explicit_read_unread_and_notification_changes_project_in_demo() {
     );
     worker
         .set_notifications(
-            Some(Snowflake(10)),
+            Some(Snowflake(1)),
             Some(channel),
             Some(true),
             Some(900),
@@ -1128,9 +1128,7 @@ async fn explicit_read_unread_and_notification_changes_project_in_demo() {
         )
         .await
         .unwrap();
-    let settings = worker
-        .state
-        .guild_notification_settings(Some(Snowflake(10)));
+    let settings = worker.state.guild_notification_settings(Some(Snowflake(1)));
     let row = &settings.channel_overrides[&channel];
     assert!(row.muted);
     assert_eq!(row.message_notifications, 2);
@@ -1139,12 +1137,10 @@ async fn explicit_read_unread_and_notification_changes_project_in_demo() {
         Some(900_000)
     );
     worker
-        .set_notifications(Some(Snowflake(10)), Some(channel), Some(false), None, None)
+        .set_notifications(Some(Snowflake(1)), Some(channel), Some(false), None, None)
         .await
         .unwrap();
-    let settings = worker
-        .state
-        .guild_notification_settings(Some(Snowflake(10)));
+    let settings = worker.state.guild_notification_settings(Some(Snowflake(1)));
     assert_eq!(
         settings.channel_overrides[&channel].message_notifications,
         2

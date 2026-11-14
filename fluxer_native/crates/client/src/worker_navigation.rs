@@ -852,16 +852,9 @@ impl Worker {
         if previous.0 == 0 {
             return Err("No previous readable message".into());
         }
-        let count = self.state.current_user.as_ref().map_or(0, |me| {
-            messages
-                .values()
-                .filter(|m| {
-                    (m.id.0 >> 22) > (previous.0 >> 22)
-                        && m.author.id != me.id
-                        && (m.mention_everyone || m.mentions.iter().any(|u| u.id == me.id))
-                })
-                .count() as u32
-        });
+        let count = self.state.manual_ack_mention_count(channel, previous);
+        // Cancel a pending automatic acknowledgement before issuing a manual one.
+        self.navigation.acks.remove(&channel);
         let mut response = Value::Null;
         if !self.demo {
             let client = self.client()?.clone();
@@ -924,6 +917,22 @@ impl Worker {
         seconds: Option<u64>,
         level: Option<u8>,
     ) -> Result<()> {
+        if let Some(id) = channel {
+            let target = self
+                .state
+                .channels
+                .get(&id)
+                .ok_or("Unknown notification channel")?;
+            if target.guild_id != guild
+                || target.kind.is_thread()
+                || !target.kind.is_message_channel()
+                    && target.kind != fluxer_core::ChannelType::Category
+            {
+                return Err("Channel does not support notification settings in this scope".into());
+            }
+        } else if guild.is_some_and(|id| !self.state.guilds.contains_key(&id)) {
+            return Err("Unknown notification community".into());
+        }
         if level.is_some_and(|n| n > 3) {
             return Err("Invalid notification level".into());
         }

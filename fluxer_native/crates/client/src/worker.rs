@@ -808,7 +808,28 @@ impl Worker {
                     .filter(|c| {
                         c.guild_id == Some(guild_id)
                             && c.kind.is_message_channel()
-                            && self.state.is_unread(c.id)
+                            && self.state.current_user.as_ref().is_some_and(|me| {
+                                self.state
+                                    .permissions_for(c.id, me.id)
+                                    .contains(Permissions::VIEW_CHANNEL)
+                            })
+                            && if c.kind.is_thread() {
+                                self.state.thread_guilds.contains(&guild_id)
+                                    && ((c.extra.get("member").is_some_and(|v| !v.is_null())
+                                        && self.state.is_unread(c.id))
+                                        || self
+                                            .state
+                                            .read_states
+                                            .get(&c.id)
+                                            .is_some_and(|r| r.mention_count > 0))
+                            } else {
+                                self.state.is_unread(c.id)
+                                    || self
+                                        .state
+                                        .read_states
+                                        .get(&c.id)
+                                        .is_some_and(|r| r.mention_count > 0)
+                            }
                     })
                     .map(|c| c.id)
                     .collect();
@@ -817,7 +838,12 @@ impl Worker {
             Command::MarkMessageUnread {
                 channel_id,
                 message_id,
-            } => self.mark_unread(channel_id, message_id).await?,
+            } => {
+                if let Err(err) = self.mark_unread(channel_id, message_id).await {
+                    self.snapshot();
+                    return Err(err);
+                }
+            }
             Command::SetGuildNotificationSettings {
                 guild_id,
                 muted,

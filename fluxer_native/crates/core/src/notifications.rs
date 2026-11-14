@@ -115,6 +115,64 @@ pub struct ChannelNotificationSettings {
     pub effective_message_notifications: i8,
 }
 impl ClientState {
+    /// ReadStateEntry.computeMentionCountAfterAck scans buffered messages by timestamp.
+    pub fn manual_ack_mention_count(&self, channel_id: Snowflake, previous: Snowflake) -> u32 {
+        let Some(me) = self.current_user.as_ref() else {
+            return 0;
+        };
+        let Some(channel) = self.channels.get(&channel_id) else {
+            return 0;
+        };
+        let settings = self.guild_notification_settings(channel.guild_id);
+        let suppressed = |key: &str| {
+            settings
+                .extra
+                .get(key)
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        };
+        let roles = channel
+            .guild_id
+            .and_then(|guild| self.members.get(&(guild, me.id)))
+            .map(|member| &member.roles);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let muted = settings.is_muted(now)
+            || settings
+                .channel_overrides
+                .get(&channel_id)
+                .is_some_and(|c| c.is_muted(now));
+        let non_member_thread =
+            channel.kind.is_thread() && channel.extra.get("member").is_none_or(Value::is_null);
+        self.messages
+            .get(&channel_id)
+            .into_iter()
+            .flat_map(|messages| messages.values())
+            .filter(|message| {
+                (message.id.0 >> 22) > (previous.0 >> 22)
+                    && !self
+                        .relationships
+                        .get(&message.author.id)
+                        .is_some_and(|r| r.is_blocked())
+                    && (message.mentions.iter().any(|user| user.id == me.id)
+                        || (!suppressed("suppress_everyone")
+                            && message.mention_everyone
+                            && !non_member_thread)
+                        || (!suppressed("suppress_roles")
+                            && roles.is_some_and(|roles| {
+                                message
+                                    .mention_roles
+                                    .iter()
+                                    .any(|role| roles.contains(role))
+                            }))
+                        || (channel.kind.is_private() && !muted))
+            })
+            .count()
+            .min(u32::MAX as usize) as u32
+    }
     pub fn guild_notification_settings(&self, guild_id: Option<Snowflake>) -> UserGuildSettings {
         self.user_guild_settings
             .get(&guild_id)
@@ -127,7 +185,11 @@ impl ClientState {
         channel_id: Snowflake,
         now_ms: i64,
     ) -> ChannelNotificationSettings {
-        let settings = self.guild_notification_settings(guild_id);
+        let default_settings = UserGuildSettings::default();
+        let settings = self
+            .user_guild_settings
+            .get(&guild_id)
+            .unwrap_or(&default_settings);
         let direct = settings.channel_overrides.get(&channel_id);
         let parent = guild_id
             .and_then(|_| self.channels.get(&channel_id)?.parent_id)
@@ -211,5 +273,49 @@ mod tests {
             MuteConfig::for_seconds(900, 0).selected_time_window,
             Some(900_000)
         );
+    }
+    #[test]
+    fn manual_mentions_follow_block_suppression_roles_and_private_mute() {
+        let mut state = ClientState::demo();
+        let channel = Snowflake(11);
+        let me = state.current_user.as_ref().unwrap().id;
+        let guild = state.channels[&channel].guild_id.unwrap();
+        state.members.insert(
+            (guild, me),
+            crate::Member {
+                user: state.current_user.clone().unwrap(),
+                roles: vec![Snowflake(90)],
+                ..Default::default()
+            },
+        );
+        state.messages.remove(&channel);
+        let previous = Snowflake(10 << 22);
+        let author = crate::User {
+            id: Snowflake(900),
+            username: "author".into(),
+            ..Default::default()
+        };
+        let mut role = crate::Message::text(Snowflake(11 << 22), channel, author.clone(), "role");
+        role.mention_roles.push(Snowflake(90));
+        let mut everyone =
+            crate::Message::text(Snowflake(12 << 22), channel, author.clone(), "all");
+        everyone.mention_everyone = true;
+        let mut direct = crate::Message::text(Snowflake(13 << 22), channel, author, "direct");
+        direct.mentions.push(state.current_user.clone().unwrap());
+        for m in [role, everyone, direct] {
+            state.insert_message(m);
+        }
+        assert_eq!(state.manual_ack_mention_count(channel, previous), 3);
+        state.merge_user_guild_settings(json!({"guild_id":guild.to_string(),"suppress_roles":true,"suppress_everyone":true})).unwrap();
+        assert_eq!(state.manual_ack_mention_count(channel, previous), 1);
+        state.relationships.insert(
+            Snowflake(900),
+            crate::Relationship {
+                id: Snowflake(900),
+                kind: 2,
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.manual_ack_mention_count(channel, previous), 0);
     }
 }

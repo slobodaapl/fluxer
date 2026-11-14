@@ -186,7 +186,11 @@ impl Fixture {
                                 ("GET","/api/v1/channels/100/messages/pins?limit=25&before=2026%2D11%2D12T12%3A00%3A00%2E000Z")=>(200,json!({"items":[{"message":message(301,100),"pinned_at":"2026-11-11T12:00:00.000Z"}],"has_more":false})),
                                 ("DELETE","/api/v1/channels/100/pins/300")=>{assert!(bytes.is_empty());(403,json!({"code":"MISSING_PERMISSIONS"}))},
                                 ("PUT","/api/v1/channels/100/pins/1000")=>{assert!(bytes.is_empty());(200,Value::Null)},
-                                ("POST","/api/v1/read-states/ack")=>(200,json!({"read_states":[{"id":"103","last_message_id":"1200","mention_count":7,"version":"9"}]})),
+                                ("POST","/api/v1/read-states/ack")=>{
+                                    if body["read_states"][0]["channel_id"] == "100" { (200,json!({"read_states":[{"id":"100","last_message_id":body["read_states"][0]["message_id"],"mention_count":4,"version":"10"}]})) }
+                                    else {(200,json!({"read_states":[{"id":"103","last_message_id":"1200","mention_count":7,"version":"9"}]}))}
+                                },
+                                ("PATCH","/api/v1/users/@me/guilds/10/settings")=>(200,json!({})),
                                 _=>panic!("unexpected navigation request {first}"),
                             };respond(&mut socket,status,response).await;
                         });
@@ -593,5 +597,92 @@ async fn pins_page_by_timestamp_and_failed_mutation_preserves_real_message_state
             .await
             .iter()
             .any(|r| r.path.contains("read-states/ack"))
+    );
+}
+
+#[tokio::test]
+async fn explicit_read_unread_and_notifications_use_wire_contract() {
+    let fixture = Fixture::new().await;
+    let (controller, mut seen) = fixture.controller().await;
+    fixture
+        .dispatch
+        .send(json!({"op":0,"t":"MESSAGE_CREATE","s":2,"d":message(999,100)}))
+        .unwrap();
+    seen.until(&controller, |s| {
+        s.state
+            .messages
+            .get(&100.into())
+            .is_some_and(|m| m.contains_key(&999.into()))
+    })
+    .await;
+    controller
+        .send(Command::MarkMessageUnread {
+            channel_id: 100.into(),
+            message_id: 1000.into(),
+        })
+        .unwrap();
+    seen.until(&controller, |s| {
+        s.state
+            .read_states
+            .get(&100.into())
+            .is_some_and(|r| r.manual_ack && r.version.as_deref() == Some("10"))
+    })
+    .await;
+    assert_eq!(
+        seen.state.read_states[&100.into()].last_message_id,
+        Some(999.into())
+    );
+    assert_eq!(seen.state.read_states[&100.into()].mention_count, 4);
+    controller
+        .send(Command::MarkChannelRead {
+            channel_id: 100.into(),
+        })
+        .unwrap();
+    seen.until(&controller, |s| {
+        s.state
+            .read_states
+            .get(&100.into())
+            .is_some_and(|r| !r.manual_ack && r.last_message_id == Some(1000.into()))
+    })
+    .await;
+    controller
+        .send(Command::SetChannelNotificationSettings {
+            guild_id: Some(10.into()),
+            channel_id: 100.into(),
+            muted: Some(true),
+            mute_seconds: None,
+            message_notifications: Some(2),
+        })
+        .unwrap();
+    seen.until(&controller, |s| {
+        s.state
+            .guild_notification_settings(Some(10.into()))
+            .channel_overrides
+            .get(&100.into())
+            .is_some_and(|row| row.muted)
+    })
+    .await;
+    let requests = fixture.requests.lock().await;
+    let acks: Vec<_> = requests
+        .iter()
+        .filter(|r| r.path == "/api/v1/read-states/ack")
+        .collect();
+    assert_eq!(acks.len(), 2);
+    assert_eq!(
+        acks[0].body,
+        json!({"read_states":[{"channel_id":"100","message_id":"999","manual":true,"mention_count":0}]})
+    );
+    assert_eq!(
+        acks[1].body,
+        json!({"read_states":[{"channel_id":"100","message_id":"1000"}]})
+    );
+    let settings = requests
+        .iter()
+        .find(|r| r.path == "/api/v1/users/@me/guilds/10/settings")
+        .unwrap();
+    assert_eq!(settings.method, "PATCH");
+    assert_eq!(
+        settings.body,
+        json!({"channel_overrides":{"100":{"channel_id":"100","collapsed":false,"message_notifications":2,"muted":true,"mute_config":null}}})
     );
 }
