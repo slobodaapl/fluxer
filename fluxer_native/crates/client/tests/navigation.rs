@@ -683,6 +683,6 @@ async fn explicit_read_unread_and_notifications_use_wire_contract() {
     assert_eq!(settings.method, "PATCH");
     assert_eq!(
         settings.body,
-        json!({"channel_overrides":{"100":{"channel_id":"100","collapsed":false,"message_notifications":2,"muted":true,"mute_config":null}}})
+        json!({"channel_overrides":{"100":{"collapsed":false,"message_notifications":2,"muted":true,"mute_config":null}}})
     );
 }

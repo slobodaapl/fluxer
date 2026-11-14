@@ -10,6 +10,7 @@ pub struct MuteConfig {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChannelNotificationOverride {
+    #[serde(skip_serializing)]
     pub channel_id: Snowflake,
     #[serde(default)]
     pub collapsed: bool,
@@ -89,7 +90,17 @@ fn overrides<'de, D: serde::Deserializer<'de>>(
     let rows: Vec<Value> = match value {
         Value::Null => vec![],
         Value::Array(v) => v,
-        Value::Object(v) => v.into_values().collect(),
+        Value::Object(v) => v
+            .into_iter()
+            .map(|(id, mut value)| {
+                if let Some(object) = value.as_object_mut() {
+                    object
+                        .entry("channel_id".to_owned())
+                        .or_insert(Value::String(id));
+                }
+                value
+            })
+            .collect(),
         _ => return Err(serde::de::Error::custom("invalid channel overrides")),
     };
     let mut out = BTreeMap::new();
@@ -179,6 +190,50 @@ impl ClientState {
             .cloned()
             .unwrap_or_default()
     }
+    /// UserGuildSettings.getGuildMessageNotifications, including Guild's
+    /// large-community default. Explicit user settings always take precedence.
+    pub fn guild_effective_message_notifications(&self, guild_id: Option<Snowflake>) -> i8 {
+        if let Some(level) = self
+            .user_guild_settings
+            .get(&guild_id)
+            .map(|s| s.message_notifications)
+            .filter(|n| *n != -1 && *n != 3)
+        {
+            return level;
+        }
+        let Some(guild) = guild_id.and_then(|id| self.guilds.get(&id)) else {
+            return 0;
+        };
+        let default = guild
+            .extra
+            .get("default_message_notifications")
+            .and_then(Value::as_i64)
+            .and_then(|v| i8::try_from(v).ok())
+            .unwrap_or(0);
+        // Guild.normalizeMemberCount defaults missing member_count to zero.
+        let members = guild
+            .extra
+            .get("member_count")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let large_feature = guild
+            .extra
+            .get("features")
+            .and_then(Value::as_array)
+            .is_some_and(|features| {
+                features.iter().any(|feature| {
+                    matches!(
+                        feature.as_str(),
+                        Some("LARGE_GUILD_OVERRIDE" | "VERY_LARGE_GUILD")
+                    )
+                })
+            });
+        if members >= 0 && (members > 250 || large_feature) {
+            1
+        } else {
+            default
+        }
+    }
     pub fn channel_notification_settings(
         &self,
         guild_id: Option<Snowflake>,
@@ -214,19 +269,7 @@ impl ClientState {
                         .map(|c| c.message_notifications)
                         .filter(|n| (0..=2).contains(n))
                 })
-                .or_else(|| {
-                    (0..=2)
-                        .contains(&settings.message_notifications)
-                        .then_some(settings.message_notifications)
-                })
-                .or_else(|| {
-                    guild_id
-                        .and_then(|id| self.guilds.get(&id))
-                        .and_then(|g| g.extra.get("default_message_notifications"))
-                        .and_then(Value::as_i64)
-                        .and_then(|v| i8::try_from(v).ok())
-                })
-                .unwrap_or(0),
+                .unwrap_or_else(|| self.guild_effective_message_notifications(guild_id)),
         }
     }
 }
@@ -257,6 +300,13 @@ mod tests {
         assert_eq!(settings.message_notifications, 1);
         assert_eq!(settings.extra["suppress_roles"], true);
         assert_eq!(settings.channel_overrides.len(), 1);
+        state.apply_gateway("USER_GUILD_SETTINGS_UPDATE", json!({"guild_id":"10","channel_overrides":{"12":{"collapsed":true,"muted":false,"message_notifications":2,"mute_config":null}}})).unwrap();
+        let map_settings = state.guild_notification_settings(guild);
+        assert_eq!(
+            map_settings.channel_overrides[&Snowflake(12)].channel_id,
+            Snowflake(12)
+        );
+        assert!(map_settings.channel_overrides[&Snowflake(12)].collapsed);
         state
             .apply_gateway(
                 "USER_GUILD_SETTINGS_UPDATE",
@@ -317,5 +367,64 @@ mod tests {
             },
         );
         assert_eq!(state.manual_ack_mention_count(channel, previous), 0);
+    }
+    #[test]
+    fn effective_guild_notification_defaults_follow_large_guild_rules() {
+        let mut state = ClientState::default();
+        let id = Snowflake(10);
+        let mut guild = crate::Guild {
+            id,
+            ..Default::default()
+        };
+        guild
+            .extra
+            .insert("default_message_notifications".into(), json!(0));
+        guild.extra.insert("member_count".into(), json!(250));
+        state.guilds.insert(id, guild);
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 0);
+        state
+            .guilds
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("member_count".into(), json!(251));
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 1);
+        let guild = state.guilds.get_mut(&id).unwrap();
+        guild.extra.insert("member_count".into(), json!(1));
+        guild
+            .extra
+            .insert("features".into(), json!(["VERY_LARGE_GUILD"]));
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 1);
+        state
+            .guilds
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("member_count".into(), json!(-1));
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 0);
+        state
+            .guilds
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("member_count".into(), json!(0));
+        state
+            .guilds
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("features".into(), json!(["LARGE_GUILD_OVERRIDE"]));
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 1);
+        state
+            .merge_user_guild_settings(json!({"guild_id":"10","message_notifications":2}))
+            .unwrap();
+        assert_eq!(state.guild_effective_message_notifications(Some(id)), 2);
+        assert_eq!(
+            state
+                .channel_notification_settings(Some(id), Snowflake(11), 0)
+                .effective_message_notifications,
+            2
+        );
+        assert_eq!(state.guild_effective_message_notifications(None), 0);
     }
 }
