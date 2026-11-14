@@ -104,6 +104,50 @@ pub(super) fn user_avatar_url(user: &User, media: Option<&str>) -> Option<String
         user.avatar.as_deref()?,
     )
 }
+pub(super) fn profile_banner_url(
+    user: Snowflake,
+    guild: Option<Snowflake>,
+    hash: &str,
+    media: Option<&str>,
+) -> Option<String> {
+    let mut url = if let Some(guild) = guild {
+        media_url(
+            media,
+            &[
+                "guilds",
+                &guild.to_string(),
+                "users",
+                &user.to_string(),
+                "banners",
+            ],
+            hash,
+        )
+    } else {
+        media_url(media, &["banners", &user.to_string()], hash)
+    }?;
+    // Profile banners are wide assets; source AvatarUtils snaps these to 1024.
+    let mut parsed = Url::parse(&url).ok()?;
+    parsed.set_query(Some("size=1024"));
+    url = parsed.into();
+    Some(url)
+}
+pub(super) fn profile_avatar(
+    user: &User,
+    member: Option<&fluxer_core::Member>,
+    guild: Option<Snowflake>,
+    media: Option<&str>,
+    size: f32,
+) -> AnyElement {
+    let url = member_avatar_url(
+        user.id,
+        guild,
+        user.avatar.as_deref(),
+        member.and_then(|m| m.avatar.as_deref()),
+        member.and_then(|m| m.profile_flags).unwrap_or(0) & 1 != 0,
+        media,
+    );
+    render_avatar(user.id, user.display_name(), url, false, size)
+}
 fn guild_icon_url(guild: &Guild, media: Option<&str>) -> Option<String> {
     media_url(
         media,
