@@ -753,6 +753,235 @@ impl Worker {
         self.persist_selection().await;
         Ok(())
     }
+    pub(super) async fn mark_read(&mut self, channels: Vec<Snowflake>) -> Result<()> {
+        let entries: Vec<_> = channels
+            .into_iter()
+            .filter_map(|id| {
+                self.state
+                    .channels
+                    .get(&id)
+                    .and_then(|c| c.last_message_id)
+                    .map(|message| (id, message))
+            })
+            .collect();
+        for chunk in entries.chunks(100) {
+            let rows: Vec<_> = chunk
+                .iter()
+                .map(|(channel, message)| json!({"channel_id":channel,"message_id":message}))
+                .collect();
+            let mut response = Value::Null;
+            if !self.demo {
+                let client = self.client()?.clone();
+                let body = json!({"read_states":rows});
+                match client
+                    .request(
+                        fluxer_protocol::Method::POST,
+                        "/read-states/ack",
+                        Some(&body),
+                    )
+                    .await
+                {
+                    Err(fluxer_protocol::Error::Api {
+                        status: 404 | 405, ..
+                    }) => {
+                        client
+                            .request(
+                                fluxer_protocol::Method::POST,
+                                "/read-states/ack-bulk",
+                                Some(&body),
+                            )
+                            .await
+                            .map_err(error)?;
+                    }
+                    Err(e) => return Err(error(e)),
+                    Ok(body) => response = body,
+                }
+            }
+            let returned: Vec<fluxer_core::ReadState> = response
+                .get("read_states")
+                .map(|v| self.state.decode_api(v.clone()).map_err(error))
+                .transpose()?
+                .unwrap_or_default();
+            for (channel, message) in chunk {
+                self.navigation.acks.remove(channel);
+                if response.get("read_states").is_some() {
+                    if let Some(read) = self.state.read_states.get_mut(channel) {
+                        read.manual_ack = false;
+                    }
+                    continue;
+                }
+                let read =
+                    self.state
+                        .read_states
+                        .entry(*channel)
+                        .or_insert(fluxer_core::ReadState {
+                            id: *channel,
+                            ..Default::default()
+                        });
+                read.last_message_id = Some(*message);
+                read.mention_count = 0;
+                read.manual_ack = false;
+            }
+            for row in returned {
+                if let Some(message) = row.last_message_id {
+                    self.state.apply_gateway("MESSAGE_ACK", json!({"channel_id":row.id,"message_id":message,"mention_count":row.mention_count,"version":row.version})).map_err(error)?;
+                }
+            }
+        }
+        self.snapshot();
+        Ok(())
+    }
+    pub(super) async fn mark_unread(
+        &mut self,
+        channel: Snowflake,
+        message: Snowflake,
+    ) -> Result<()> {
+        let messages = self
+            .state
+            .messages
+            .get(&channel)
+            .ok_or("Message is not cached")?;
+        if !messages.contains_key(&message) {
+            return Err("Message is not cached".into());
+        }
+        let previous = messages
+            .range(..message)
+            .next_back()
+            .map(|(id, _)| *id)
+            .unwrap_or(Snowflake((message.0 >> 22).saturating_sub(1) << 22));
+        if previous.0 == 0 {
+            return Err("No previous readable message".into());
+        }
+        let count = self.state.current_user.as_ref().map_or(0, |me| {
+            messages
+                .values()
+                .filter(|m| {
+                    (m.id.0 >> 22) > (previous.0 >> 22)
+                        && m.author.id != me.id
+                        && (m.mention_everyone || m.mentions.iter().any(|u| u.id == me.id))
+                })
+                .count() as u32
+        });
+        let mut response = Value::Null;
+        if !self.demo {
+            let client = self.client()?.clone();
+            let body = json!({"read_states":[{"channel_id":channel,"message_id":previous,"mention_count":count,"manual":true}]});
+            match client
+                .request(
+                    fluxer_protocol::Method::POST,
+                    "/read-states/ack",
+                    Some(&body),
+                )
+                .await
+            {
+                Err(fluxer_protocol::Error::Api {
+                    status: 404 | 405, ..
+                }) => {
+                    client
+                        .request(
+                            fluxer_protocol::Method::POST,
+                            &format!("/channels/{channel}/messages/{previous}/ack"),
+                            Some(&json!({"manual":true,"mention_count":count})),
+                        )
+                        .await
+                        .map_err(error)?;
+                }
+                Err(e) => return Err(error(e)),
+                Ok(body) => response = body,
+            }
+        }
+        self.navigation.acks.remove(&channel);
+        let read = self
+            .state
+            .read_states
+            .entry(channel)
+            .or_insert(fluxer_core::ReadState {
+                id: channel,
+                ..Default::default()
+            });
+        if response.get("read_states").is_none() {
+            read.last_message_id = Some(previous);
+            read.mention_count = count;
+            read.manual_ack = true;
+        }
+        if let Some(rows) = response.get("read_states") {
+            let rows: Vec<fluxer_core::ReadState> =
+                self.state.decode_api(rows.clone()).map_err(error)?;
+            for row in rows {
+                if let Some(id) = row.last_message_id {
+                    self.state.apply_gateway("MESSAGE_ACK", json!({"channel_id":row.id,"message_id":id,"mention_count":row.mention_count,"version":row.version,"manual":true})).map_err(error)?;
+                }
+            }
+        }
+        self.snapshot();
+        Ok(())
+    }
+    pub(super) async fn set_notifications(
+        &mut self,
+        guild: Option<Snowflake>,
+        channel: Option<Snowflake>,
+        muted: Option<bool>,
+        seconds: Option<u64>,
+        level: Option<u8>,
+    ) -> Result<()> {
+        if level.is_some_and(|n| n > 3) {
+            return Err("Invalid notification level".into());
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let mut settings = self.state.guild_notification_settings(guild);
+        let config = if muted == Some(true) {
+            seconds.map(|s| fluxer_core::MuteConfig::for_seconds(s, now))
+        } else {
+            None
+        };
+        let body = if let Some(id) = channel {
+            let entry = settings
+                .channel_overrides
+                .entry(id)
+                .or_insert_with(|| fluxer_core::ChannelNotificationOverride::new(id));
+            if let Some(muted) = muted {
+                entry.muted = muted;
+                entry.mute_config = config;
+            }
+            if let Some(level) = level {
+                entry.message_notifications = level as i8;
+            }
+            json!({"channel_overrides":settings.channel_overrides})
+        } else {
+            let mut body = serde_json::Map::new();
+            if let Some(muted) = muted {
+                settings.muted = muted;
+                settings.mute_config = config;
+                body.insert("muted".into(), json!(muted));
+                body.insert("mute_config".into(), json!(settings.mute_config));
+            }
+            if let Some(level) = level {
+                settings.message_notifications = level as i8;
+                body.insert("message_notifications".into(), json!(level));
+            }
+            Value::Object(body)
+        };
+        if !self.demo {
+            self.client()?
+                .request(
+                    fluxer_protocol::Method::PATCH,
+                    &format!(
+                        "/users/@me/guilds/{}/settings",
+                        guild.map_or_else(|| "@me".to_string(), |id| id.to_string())
+                    ),
+                    Some(&body),
+                )
+                .await
+                .map_err(error)?;
+        }
+        self.state.user_guild_settings.insert(guild, settings);
+        self.snapshot();
+        Ok(())
+    }
     pub(super) fn acknowledge_visible_message(
         &mut self,
         channel: Snowflake,

@@ -34,6 +34,7 @@ pub struct ClientState {
     pub messages: BTreeMap<Snowflake, BTreeMap<Snowflake, Message>>,
     pub members: BTreeMap<(Snowflake, Snowflake), Member>,
     pub read_states: BTreeMap<Snowflake, ReadState>,
+    pub user_guild_settings: BTreeMap<Option<Snowflake>, UserGuildSettings>,
     pub relationships: BTreeMap<Snowflake, Relationship>,
     pub presences: BTreeMap<Snowflake, Presence>,
     /// Keyed by (user, connection) to retain simultaneous voice connections.
@@ -51,6 +52,22 @@ pub struct ClientState {
     local_message_counter: u64,
 }
 impl ClientState {
+    pub fn merge_user_guild_settings(&mut self, data: Value) -> Result<(), StateError> {
+        let guild_id = match data.get("guild_id").and_then(Value::as_str) {
+            Some("@me") | None => None,
+            Some(id) => id.parse().ok(),
+        };
+        let existing = self.guild_notification_settings(guild_id);
+        let mut merged = serde_json::to_value(existing).expect("settings serialize");
+        if let (Some(target), Some(updates)) = (merged.as_object_mut(), data.as_object()) {
+            for (key, value) in updates {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+        let settings = decode("USER_GUILD_SETTINGS_UPDATE", merged)?;
+        self.user_guild_settings.insert(guild_id, settings);
+        Ok(())
+    }
     /// REST/search/pin payloads use the same compact user references as gateway
     /// dispatches. Hydrate from the bound account cache before schema decoding.
     /// Decoding alone does not insert messages or advance read cursors.
@@ -442,6 +459,9 @@ impl ClientState {
             );
         }
         match event {
+            "USER_GUILD_SETTINGS_UPDATE" => {
+                self.merge_user_guild_settings(data)?;
+            }
             "READY" => {
                 #[derive(Deserialize)]
                 struct Ready {
@@ -454,6 +474,8 @@ impl ClientState {
                     users: Vec<User>,
                     #[serde(default)]
                     read_states: Vec<ReadState>,
+                    #[serde(default)]
+                    user_guild_settings: Vec<Value>,
                     #[serde(default)]
                     relationships: Vec<Relationship>,
                     #[serde(default)]
@@ -507,6 +529,9 @@ impl ClientState {
                 }
                 for channel in ready.private_channels {
                     next.channels.insert(channel.id, channel);
+                }
+                for settings in ready.user_guild_settings {
+                    next.merge_user_guild_settings(settings)?;
                 }
                 for read in ready.read_states {
                     next.read_states.insert(read.id, read);

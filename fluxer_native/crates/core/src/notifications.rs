@@ -1,0 +1,215 @@
+use crate::{ClientState, Snowflake};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MuteConfig {
+    pub selected_time_window: Option<u64>,
+    pub end_time: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChannelNotificationOverride {
+    pub channel_id: Snowflake,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default = "inherit")]
+    pub message_notifications: i8,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub mute_config: Option<MuteConfig>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+fn unset() -> i8 {
+    -1
+}
+fn inherit() -> i8 {
+    3
+}
+impl ChannelNotificationOverride {
+    pub fn new(channel_id: Snowflake) -> Self {
+        Self {
+            channel_id,
+            collapsed: false,
+            message_notifications: 3,
+            muted: false,
+            mute_config: None,
+            extra: BTreeMap::new(),
+        }
+    }
+    pub fn is_muted(&self, now_ms: i64) -> bool {
+        active(self.muted, self.mute_config.as_ref(), now_ms)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UserGuildSettings {
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub mute_config: Option<MuteConfig>,
+    #[serde(default = "unset")]
+    pub message_notifications: i8,
+    #[serde(default, deserialize_with = "overrides")]
+    pub channel_overrides: BTreeMap<Snowflake, ChannelNotificationOverride>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+impl Default for UserGuildSettings {
+    fn default() -> Self {
+        Self {
+            muted: false,
+            mute_config: None,
+            message_notifications: -1,
+            channel_overrides: BTreeMap::new(),
+            extra: BTreeMap::new(),
+        }
+    }
+}
+impl UserGuildSettings {
+    pub fn is_muted(&self, now_ms: i64) -> bool {
+        active(self.muted, self.mute_config.as_ref(), now_ms)
+    }
+}
+impl MuteConfig {
+    pub fn for_seconds(seconds: u64, now_ms: i64) -> Self {
+        let end = now_ms.saturating_add((seconds.saturating_mul(1000)).min(i64::MAX as u64) as i64);
+        Self {
+            selected_time_window: Some(seconds.saturating_mul(1000)),
+            end_time: chrono::DateTime::from_timestamp_millis(end)
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+        }
+    }
+}
+fn overrides<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<BTreeMap<Snowflake, ChannelNotificationOverride>, D::Error> {
+    let value = Value::deserialize(d)?;
+    let rows: Vec<Value> = match value {
+        Value::Null => vec![],
+        Value::Array(v) => v,
+        Value::Object(v) => v.into_values().collect(),
+        _ => return Err(serde::de::Error::custom("invalid channel overrides")),
+    };
+    let mut out = BTreeMap::new();
+    for row in rows {
+        let entry: ChannelNotificationOverride =
+            serde_json::from_value(row).map_err(serde::de::Error::custom)?;
+        out.insert(entry.channel_id, entry);
+    }
+    Ok(out)
+}
+fn active(muted: bool, config: Option<&MuteConfig>, now_ms: i64) -> bool {
+    muted
+        && config
+            .and_then(|c| c.end_time.as_deref())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .is_none_or(|end| end.timestamp_millis() > now_ms)
+}
+#[derive(Clone, Debug)]
+pub struct ChannelNotificationSettings {
+    pub explicit_muted: bool,
+    pub effective_muted: bool,
+    pub message_notifications: i8,
+    pub effective_message_notifications: i8,
+}
+impl ClientState {
+    pub fn guild_notification_settings(&self, guild_id: Option<Snowflake>) -> UserGuildSettings {
+        self.user_guild_settings
+            .get(&guild_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    pub fn channel_notification_settings(
+        &self,
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        now_ms: i64,
+    ) -> ChannelNotificationSettings {
+        let settings = self.guild_notification_settings(guild_id);
+        let direct = settings.channel_overrides.get(&channel_id);
+        let parent = guild_id
+            .and_then(|_| self.channels.get(&channel_id)?.parent_id)
+            .filter(|id| {
+                self.channels
+                    .get(id)
+                    .is_some_and(|c| c.kind == crate::ChannelType::Category)
+            })
+            .and_then(|id| settings.channel_overrides.get(&id));
+        let explicit_muted = direct.is_some_and(|c| c.is_muted(now_ms));
+        ChannelNotificationSettings {
+            explicit_muted,
+            effective_muted: explicit_muted
+                || parent.is_some_and(|c| c.is_muted(now_ms))
+                || active(settings.muted, settings.mute_config.as_ref(), now_ms),
+            message_notifications: direct.map_or(3, |c| c.message_notifications),
+            effective_message_notifications: direct
+                .map(|c| c.message_notifications)
+                .filter(|n| (0..=2).contains(n))
+                .or_else(|| {
+                    parent
+                        .map(|c| c.message_notifications)
+                        .filter(|n| (0..=2).contains(n))
+                })
+                .or_else(|| {
+                    (0..=2)
+                        .contains(&settings.message_notifications)
+                        .then_some(settings.message_notifications)
+                })
+                .or_else(|| {
+                    guild_id
+                        .and_then(|id| self.guilds.get(&id))
+                        .and_then(|g| g.extra.get("default_message_notifications"))
+                        .and_then(Value::as_i64)
+                        .and_then(|v| i8::try_from(v).ok())
+                })
+                .unwrap_or(0),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn gateway_merges_preserves_and_clears_overrides_and_resolves_expiry() {
+        let mut state = ClientState::default();
+        state.apply_gateway("READY", json!({"user":{"id":"1","username":"a"},"user_guild_settings":[{"guild_id":"10","muted":true,"mute_config":{"selected_time_window":900000,"end_time":"2026-01-01T00:15:00Z"},"suppress_roles":true,"channel_overrides":[{"channel_id":"11","muted":true,"message_notifications":2}]}]})).unwrap();
+        let guild = Some(Snowflake(10));
+        assert!(state.guild_notification_settings(guild).is_muted(0));
+        assert!(!state.guild_notification_settings(guild).is_muted(i64::MAX));
+        assert!(
+            state
+                .channel_notification_settings(guild, Snowflake(11), 0)
+                .explicit_muted
+        );
+        state
+            .apply_gateway(
+                "USER_GUILD_SETTINGS_UPDATE",
+                json!({"guild_id":"10","message_notifications":1}),
+            )
+            .unwrap();
+        let settings = state.guild_notification_settings(guild);
+        assert_eq!(settings.message_notifications, 1);
+        assert_eq!(settings.extra["suppress_roles"], true);
+        assert_eq!(settings.channel_overrides.len(), 1);
+        state
+            .apply_gateway(
+                "USER_GUILD_SETTINGS_UPDATE",
+                json!({"guild_id":"10","channel_overrides":null}),
+            )
+            .unwrap();
+        assert!(
+            state
+                .guild_notification_settings(guild)
+                .channel_overrides
+                .is_empty()
+        );
+        assert_eq!(
+            MuteConfig::for_seconds(900, 0).selected_time_window,
+            Some(900_000)
+        );
+    }
+}

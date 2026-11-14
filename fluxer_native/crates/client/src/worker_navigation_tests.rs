@@ -1087,3 +1087,67 @@ async fn demo_archive_search_then_jump_and_latest_exercise_real_commands_without
     );
     assert!(worker.media.is_none());
 }
+
+#[tokio::test]
+async fn explicit_read_unread_and_notification_changes_project_in_demo() {
+    let (mut worker, _) = demo();
+    let channel = Snowflake(11);
+    for message in messages(100, 102) {
+        worker.state.insert_message(message);
+    }
+    worker.mark_unread(channel, Snowflake(102)).await.unwrap();
+    assert_eq!(
+        worker.state.read_states[&channel].last_message_id,
+        Some(Snowflake(101))
+    );
+    assert!(worker.state.read_states[&channel].manual_ack);
+    assert!(
+        worker
+            .acknowledge_visible_message(channel, Snowflake(102))
+            .is_err()
+    );
+    worker
+        .state
+        .channels
+        .get_mut(&channel)
+        .unwrap()
+        .last_message_id = Some(Snowflake(102));
+    worker.mark_read(vec![channel]).await.unwrap();
+    assert!(!worker.state.read_states[&channel].manual_ack);
+    assert_eq!(
+        worker.state.read_states[&channel].last_message_id,
+        Some(Snowflake(102))
+    );
+    worker
+        .set_notifications(
+            Some(Snowflake(10)),
+            Some(channel),
+            Some(true),
+            Some(900),
+            Some(2),
+        )
+        .await
+        .unwrap();
+    let settings = worker
+        .state
+        .guild_notification_settings(Some(Snowflake(10)));
+    let row = &settings.channel_overrides[&channel];
+    assert!(row.muted);
+    assert_eq!(row.message_notifications, 2);
+    assert_eq!(
+        row.mute_config.as_ref().unwrap().selected_time_window,
+        Some(900_000)
+    );
+    worker
+        .set_notifications(Some(Snowflake(10)), Some(channel), Some(false), None, None)
+        .await
+        .unwrap();
+    let settings = worker
+        .state
+        .guild_notification_settings(Some(Snowflake(10)));
+    assert_eq!(
+        settings.channel_overrides[&channel].message_notifications,
+        2
+    );
+    assert!(settings.channel_overrides[&channel].mute_config.is_none());
+}

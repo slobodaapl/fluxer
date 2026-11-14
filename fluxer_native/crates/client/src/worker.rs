@@ -799,6 +799,50 @@ impl Worker {
                     return Err(message);
                 }
             }
+            Command::MarkChannelRead { channel_id } => self.mark_read(vec![channel_id]).await?,
+            Command::MarkGuildRead { guild_id } => {
+                let channels = self
+                    .state
+                    .channels
+                    .values()
+                    .filter(|c| {
+                        c.guild_id == Some(guild_id)
+                            && c.kind.is_message_channel()
+                            && self.state.is_unread(c.id)
+                    })
+                    .map(|c| c.id)
+                    .collect();
+                self.mark_read(channels).await?;
+            }
+            Command::MarkMessageUnread {
+                channel_id,
+                message_id,
+            } => self.mark_unread(channel_id, message_id).await?,
+            Command::SetGuildNotificationSettings {
+                guild_id,
+                muted,
+                mute_seconds,
+                message_notifications,
+            } => {
+                self.set_notifications(guild_id, None, muted, mute_seconds, message_notifications)
+                    .await?
+            }
+            Command::SetChannelNotificationSettings {
+                guild_id,
+                channel_id,
+                muted,
+                mute_seconds,
+                message_notifications,
+            } => {
+                self.set_notifications(
+                    guild_id,
+                    Some(channel_id),
+                    muted,
+                    mute_seconds,
+                    message_notifications,
+                )
+                .await?
+            }
             Command::DemoSearch => self.seed_demo_search()?,
             Command::SetDraft(content) => {
                 let channel = self.selected()?;

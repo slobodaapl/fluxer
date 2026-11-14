@@ -126,6 +126,29 @@ pub enum Command {
         channel_id: Snowflake,
         message_id: Snowflake,
     },
+    MarkChannelRead {
+        channel_id: Snowflake,
+    },
+    MarkGuildRead {
+        guild_id: Snowflake,
+    },
+    MarkMessageUnread {
+        channel_id: Snowflake,
+        message_id: Snowflake,
+    },
+    SetGuildNotificationSettings {
+        guild_id: Option<Snowflake>,
+        muted: Option<bool>,
+        mute_seconds: Option<u64>,
+        message_notifications: Option<u8>,
+    },
+    SetChannelNotificationSettings {
+        guild_id: Option<Snowflake>,
+        channel_id: Snowflake,
+        muted: Option<bool>,
+        mute_seconds: Option<u64>,
+        message_notifications: Option<u8>,
+    },
     StageFiles {
         channel_id: Snowflake,
         paths: Vec<std::path::PathBuf>,
