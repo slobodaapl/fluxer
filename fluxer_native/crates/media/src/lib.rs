@@ -2066,10 +2066,10 @@ mod room_cancellation_tests {
         let identity = room.local_participant().identity();
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if let Some(RoomEvent::ParticipantConnected(p)) = events.recv().await {
-                    if p.identity() == identity {
-                        break;
-                    }
+                if let Some(RoomEvent::ParticipantConnected(p)) = events.recv().await
+                    && p.identity() == identity
+                {
+                    break;
                 }
             }
         })
@@ -2104,10 +2104,10 @@ mod room_cancellation_tests {
         assert!(job.await.unwrap_err().is_cancelled());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if let Some(RoomEvent::ParticipantDisconnected(p)) = events.recv().await {
-                    if p.identity() == identity {
-                        break;
-                    }
+                if let Some(RoomEvent::ParticipantDisconnected(p)) = events.recv().await
+                    && p.identity() == identity
+                {
+                    break;
                 }
             }
         })

@@ -594,7 +594,12 @@ impl Worker {
                 VoiceTimeout,
                 VoiceRetry,
                 VoiceConnect(
-                    std::result::Result<(MediaEngine, Result<MediaEvents>), tokio::task::JoinError>,
+                    Box<
+                        std::result::Result<
+                            (MediaEngine, Result<MediaEvents>),
+                            tokio::task::JoinError,
+                        >,
+                    >,
                 ),
                 BeginIpPoll,
                 IpPoll(
@@ -624,7 +629,7 @@ impl Worker {
                 event = receive_media(&mut self.media_events) => Incoming::Media(event),
                 _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
                 _ = voice_timeout(self.voice_recovery_at) => Incoming::VoiceRetry,
-                result = voice_connect_result(&mut self.voice_connect) => Incoming::VoiceConnect(result),
+                result = voice_connect_result(&mut self.voice_connect) => Incoming::VoiceConnect(Box::new(result)),
                 _ = voice_timeout(self.pending_ip.as_ref().and_then(|pending|pending.next_poll)) => Incoming::BeginIpPoll,
                 result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
                 _ = voice_timeout(self.pending_browser.as_ref().and_then(|pending|pending.next_poll))=>Incoming::BeginBrowserPoll,
@@ -781,7 +786,7 @@ impl Worker {
                     self.media_events = None;
                     Ok(())
                 }
-                Incoming::VoiceConnect(result) => self.finish_voice_connect(result).await,
+                Incoming::VoiceConnect(result) => self.finish_voice_connect(*result).await,
                 Incoming::VoiceRetry => self.retry_voice().await,
                 Incoming::VoiceTimeout => {
                     self.voice_join_deadline = None;

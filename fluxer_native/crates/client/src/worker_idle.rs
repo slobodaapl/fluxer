@@ -102,21 +102,6 @@ mod linux {
         }
         true
     }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn idle_resume_and_replaced_afk_notifications_are_fenced() {
-            let (mut idle, mut afk) = (false, false);
-            assert!(apply(Kind::Idle, true, 1, &mut idle, &mut afk));
-            assert!(!apply(Kind::Afk(0), true, 1, &mut idle, &mut afk));
-            assert_eq!((idle, afk), (true, false));
-            assert!(apply(Kind::Afk(1), true, 1, &mut idle, &mut afk));
-            assert!(apply(Kind::Idle, false, 1, &mut idle, &mut afk));
-            assert!(apply(Kind::Afk(1), false, 1, &mut idle, &mut afk));
-            assert_eq!((idle, afk), (false, false));
-        }
-    }
     pub struct Watch {
         stop: Arc<AtomicBool>,
         pub timeout: Arc<AtomicU32>,
@@ -203,6 +188,21 @@ mod linux {
             }
         }
         None
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn idle_resume_and_replaced_afk_notifications_are_fenced() {
+            let (mut idle, mut afk) = (false, false);
+            assert!(apply(Kind::Idle, true, 1, &mut idle, &mut afk));
+            assert!(!apply(Kind::Afk(0), true, 1, &mut idle, &mut afk));
+            assert_eq!((idle, afk), (true, false));
+            assert!(apply(Kind::Afk(1), true, 1, &mut idle, &mut afk));
+            assert!(apply(Kind::Idle, false, 1, &mut idle, &mut afk));
+            assert!(apply(Kind::Afk(1), false, 1, &mut idle, &mut afk));
+            assert_eq!((idle, afk), (false, false));
+        }
     }
 }
 #[cfg(target_os = "linux")]
