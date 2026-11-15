@@ -3055,3 +3055,36 @@ async fn remote_call_controls_are_serialized_fenced_and_cancelled() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn voice_changes_and_leave_during_gateway_reconnect_are_replayed_in_order() {
+    let (mut worker, _) = worker();
+    let (tx, mut rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(tx);
+    worker.gateway_ready = true;
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 9.into(),
+        connection_id: Some("old".into()),
+    });
+    worker.gateway(GatewayEvent::Reconnecting).await.unwrap();
+    worker.command(Command::SetMute(true)).await.unwrap();
+    assert!(matches!(
+        rx.recv().await,
+        Some(GatewayCommand::VoiceState(_))
+    ));
+    worker.leave_voice(true).await.unwrap();
+    assert!(matches!(
+        rx.recv().await,
+        Some(GatewayCommand::VoiceState(_))
+    ));
+    worker.gateway(GatewayEvent::Connected).await.unwrap();
+    match rx.recv().await.unwrap() {
+        GatewayCommand::VoiceState(state) => {
+            assert_eq!(state.channel_id, None);
+            assert_eq!(state.connection_id.as_deref(), Some("old"));
+        }
+        _ => panic!("expected replayed voice leave"),
+    }
+    assert!(rx.try_recv().is_err());
+}

@@ -188,6 +188,8 @@ pub(crate) struct Worker {
     pending_voice_server: Option<VoiceServerUpdate>,
     voice_credentials: Option<VoiceServerUpdate>,
     voice_join_deadline: Option<tokio::time::Instant>,
+    pending_voice_leave: Option<VoiceStateUpdate>,
+    voice_sync_pending: bool,
     server_muted: bool,
     server_deafened: bool,
     demo: bool,
@@ -256,6 +258,8 @@ impl Worker {
             pending_voice_server: None,
             voice_credentials: None,
             voice_join_deadline: None,
+            pending_voice_leave: None,
+            voice_sync_pending: false,
             server_muted: false,
             server_deafened: false,
             demo: false,
@@ -747,6 +751,8 @@ impl Worker {
         }
         self.gateway_events = None;
         self.gateway_ready = false;
+        self.pending_voice_leave = None;
+        self.voice_sync_pending = false;
         self.last_sequence = None;
         self.expected_user_id = None;
         self.selected_guild = None;
@@ -2239,7 +2245,10 @@ impl Worker {
         Ok(())
     }
 
-    async fn update_voice(&self) -> Result<()> {
+    async fn update_voice(&mut self) -> Result<()> {
+        if !self.gateway_ready && self.voice_target.is_some() {
+            self.voice_sync_pending = true;
+        }
         if let Some(target) = &self.voice_target {
             self.gateway_commands
                 .as_ref()
@@ -2289,13 +2298,11 @@ impl Worker {
         self.emit(Event::VoiceStatus(VoiceStatus::Disconnected));
         self.emit(Event::SharedAudioStatus(false));
         if notify_gateway && let (Some(target), Some(tx)) = (target, &self.gateway_commands) {
-            let _ = tx
-                .send(GatewayCommand::VoiceState(target.payload(
-                    &self.state,
-                    true,
-                    &self.watched_streams,
-                )))
-                .await;
+            let payload = target.payload(&self.state, true, &self.watched_streams);
+            if !self.gateway_ready {
+                self.pending_voice_leave = Some(payload.clone());
+            }
+            let _ = tx.send(GatewayCommand::VoiceState(payload)).await;
         }
         self.snapshot();
         disconnected
@@ -2310,6 +2317,18 @@ impl Worker {
             }
             GatewayEvent::Connected => {
                 self.gateway_ready = true;
+                // The socket discards voice updates before authentication. Replay
+                // the latest local intent, including a leave, after RESUME/READY.
+                if let Some(leave) = self.pending_voice_leave.take()
+                    && let Some(tx) = &self.gateway_commands
+                {
+                    tx.send(GatewayCommand::VoiceState(leave))
+                        .await
+                        .map_err(|_| "Gateway is disconnected".to_owned())?;
+                }
+                if std::mem::take(&mut self.voice_sync_pending) {
+                    self.update_voice().await?;
+                }
                 self.emit(Event::Status("Connected".into()));
                 self.sync_selected_guild().await?;
                 if let Some((_, channel, start)) = self.member_list_subscription {
@@ -2334,6 +2353,8 @@ impl Worker {
                 }
                 self.gateway_ready = false;
                 self.synced_guilds.clear();
+                self.pending_voice_leave = None;
+                self.voice_sync_pending = false;
                 self.leave_voice(false).await?;
                 self.emit(Event::Status("Gateway disconnected".into()));
             }
