@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Local media playback with asynchronous decoding and teardown.
 use std::{
+    io::{Read, Seek},
     path::PathBuf,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Arc, Mutex, mpsc},
 };
 
@@ -63,7 +65,16 @@ enum Command {
     Output(Option<String>),
     Stop,
 }
+pub trait PlaybackSource: Read + Seek + Send {}
+impl<T: Read + Seek + Send> PlaybackSource for T {}
+enum Source {
+    Path(PathBuf),
+    Reader(Box<dyn PlaybackSource>),
+}
 pub struct FilePlayer {
+    cancel: Arc<AtomicBool>,
+    interrupt: Arc<AtomicU64>,
+    ready: Arc<AtomicBool>,
     tx: mpsc::Sender<Command>,
     shared: Arc<Mutex<Shared>>,
 }
@@ -72,9 +83,34 @@ impl FilePlayer {
         Self::open_impl(path, options, false)
     }
     fn open_impl(path: PathBuf, options: FilePlaybackOptions, fake: bool) -> Result<Self, String> {
+        let path =
+            std::fs::canonicalize(path).map_err(|e| format!("Cannot open media file: {e}"))?;
+        Self::open_source_impl(
+            Source::Path(path),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+            options,
+            fake,
+        )
+    }
+    pub fn open_reader(
+        source: Box<dyn PlaybackSource>,
+        cancel: Arc<AtomicBool>,
+        interrupt: Arc<AtomicU64>,
+        options: FilePlaybackOptions,
+    ) -> Result<Self, String> {
+        Self::open_source_impl(Source::Reader(source), cancel, interrupt, options, false)
+    }
+    fn open_source_impl(
+        source: Source,
+        cancel: Arc<AtomicBool>,
+        interrupt: Arc<AtomicU64>,
+        options: FilePlaybackOptions,
+        fake: bool,
+    ) -> Result<Self, String> {
         #[cfg(not(ffmpeg_file_playback))]
         {
-            let _ = (path, options, fake);
+            let _ = (source, cancel, interrupt, options, fake);
             Err("Native file playback requires FFmpeg on Linux".into())
         }
         #[cfg(ffmpeg_file_playback)]
@@ -82,9 +118,6 @@ impl FilePlayer {
             if !options.volume.is_finite() {
                 return Err("Invalid volume".into());
             }
-
-            let path =
-                std::fs::canonicalize(path).map_err(|e| format!("Cannot open media file: {e}"))?;
             let shared = Arc::new(Mutex::new(Shared {
                 snapshot: FilePlaybackSnapshot {
                     status: FilePlaybackStatus::Loading,
@@ -100,11 +133,19 @@ impl FilePlayer {
             }));
             let (tx, rx) = mpsc::channel();
             let worker_shared = shared.clone();
+            let ready = Arc::new(AtomicBool::new(false));
+            let worker_ready = ready.clone();
             std::thread::Builder::new()
                 .name("file-playback".into())
-                .spawn(move || native::run(path, options, fake, rx, worker_shared))
+                .spawn(move || native::run(source, options, fake, rx, worker_shared, worker_ready))
                 .map_err(|e| e.to_string())?;
-            Ok(Self { tx, shared })
+            Ok(Self {
+                tx,
+                shared,
+                cancel,
+                interrupt,
+                ready,
+            })
         }
     }
     pub fn play(&self) {
@@ -118,6 +159,9 @@ impl FilePlayer {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             shared.frame = None;
             shared.pending_seek = true;
+            if self.ready.load(Ordering::Acquire) {
+                self.interrupt.fetch_add(1, Ordering::AcqRel);
+            }
             shared.snapshot.position = seconds.min(i64::MAX as f64 / 1e6);
             shared.snapshot.status = FilePlaybackStatus::Loading;
             shared.seek_generation = shared.seek_generation.wrapping_add(1);
@@ -139,6 +183,7 @@ impl FilePlayer {
         let _ = self.tx.send(Command::Output(id));
     }
     pub fn stop(&self) {
+        self.cancel.store(true, Ordering::Release);
         let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         shared.frame = None;
         shared.pending_seek = true;
@@ -188,6 +233,13 @@ mod native {
     }
     unsafe extern "C" {
         fn flux_decoder_open(path: *const c_char, error: *mut c_char, len: usize) -> *mut c_void;
+        fn flux_decoder_open_io(
+            opaque: *mut c_void,
+            read: unsafe extern "C" fn(*mut c_void, *mut u8, c_int) -> c_int,
+            seek: unsafe extern "C" fn(*mut c_void, i64, c_int) -> i64,
+            error: *mut c_char,
+            len: usize,
+        ) -> *mut c_void;
         fn flux_decoder_free(p: *mut c_void);
         fn flux_decoder_has_audio(p: *mut c_void) -> c_int;
         fn flux_decoder_duration(p: *mut c_void) -> f64;
@@ -200,6 +252,53 @@ mod native {
             len: usize,
         ) -> c_int;
         fn flux_decoder_data_free(p: *mut c_void);
+    }
+    struct ReaderState {
+        source: Box<dyn PlaybackSource>,
+        error: Option<String>,
+    }
+    unsafe extern "C" fn read_source(opaque: *mut c_void, buffer: *mut u8, size: c_int) -> c_int {
+        if size <= 0 {
+            return -5;
+        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let state = unsafe { &mut *(opaque as *mut ReaderState) };
+            let output = unsafe { std::slice::from_raw_parts_mut(buffer, size as usize) };
+            match state.source.read(output) {
+                Ok(0) => -541478725,
+                Ok(n) => {
+                    state.error = None;
+                    n as c_int
+                }
+                Err(error) => {
+                    state.error = Some(error.to_string());
+                    -5
+                }
+            }
+        }))
+        .unwrap_or(-5)
+    }
+    unsafe extern "C" fn seek_source(opaque: *mut c_void, offset: i64, whence: c_int) -> i64 {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            use std::io::SeekFrom;
+            let source = &mut unsafe { &mut *(opaque as *mut ReaderState) }.source;
+            if whence & 0x10000 != 0 {
+                let pos = source.stream_position()?;
+                let end = source.seek(SeekFrom::End(0))?;
+                source.seek(SeekFrom::Start(pos))?;
+                return i64::try_from(end).map_err(|_| std::io::Error::other("source too large"));
+            }
+            let seek = match whence & !0x20000 {
+                0 if offset >= 0 => SeekFrom::Start(offset as u64),
+                1 => SeekFrom::Current(offset),
+                2 => SeekFrom::End(offset),
+                _ => return Err(std::io::Error::other("invalid seek")),
+            };
+            i64::try_from(source.seek(seek)?).map_err(|_| std::io::Error::other("source too large"))
+        }))
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(-1)
     }
     struct Decoder(*mut c_void);
     impl Drop for Decoder {
@@ -346,23 +445,55 @@ mod native {
         0.0
     }
     pub(super) fn run(
-        path: PathBuf,
+        source: Source,
         mut options: FilePlaybackOptions,
         fake: bool,
         rx: mpsc::Receiver<Command>,
         shared: Arc<Mutex<Shared>>,
+        ready: Arc<AtomicBool>,
     ) {
-        let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
-            failed(&shared, "Invalid file path".into());
-            return;
-        };
         let mut error = [0 as c_char; 512];
-        let p = unsafe { flux_decoder_open(path.as_ptr(), error.as_mut_ptr(), error.len()) };
+        let (mut reader, path) = match source {
+            Source::Reader(reader) => (
+                Some(ReaderState {
+                    source: reader,
+                    error: None,
+                }),
+                None,
+            ),
+            Source::Path(path) => (None, Some(path)),
+        };
+        let p = if let Some(reader) = reader.as_mut() {
+            unsafe {
+                flux_decoder_open_io(
+                    (reader as *mut ReaderState).cast(),
+                    read_source,
+                    seek_source,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            }
+        } else if let Some(path) = path {
+            let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+                failed(&shared, "Invalid file path".into());
+                return;
+            };
+            unsafe { flux_decoder_open(path.as_ptr(), error.as_mut_ptr(), error.len()) }
+        } else {
+            unreachable!()
+        };
         if p.is_null() {
-            failed(&shared, error_text(&error));
+            failed(
+                &shared,
+                reader
+                    .as_ref()
+                    .and_then(|reader| reader.error.clone())
+                    .unwrap_or_else(|| error_text(&error)),
+            );
             return;
         }
         let decoder = Decoder(p);
+        ready.store(true, Ordering::Release);
         let has_audio = unsafe { flux_decoder_has_audio(p) != 0 };
         let duration = unsafe { flux_decoder_duration(p) };
         let mut playing = options.autoplay;
@@ -627,7 +758,20 @@ mod native {
                 let result =
                     unsafe { flux_decoder_next(p, &mut decoded, error.as_mut_ptr(), error.len()) };
                 if result < 0 {
-                    failed(&shared, error_text(&error));
+                    if shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .pending_seek
+                    {
+                        continue;
+                    }
+                    failed(
+                        &shared,
+                        reader
+                            .as_ref()
+                            .and_then(|reader| reader.error.clone())
+                            .unwrap_or_else(|| error_text(&error)),
+                    );
                     break;
                 }
                 if result == 0 {
@@ -779,6 +923,55 @@ mod tests {
         assert!(status.success());
         path
     }
+    #[test]
+    fn custom_reader_rejects_playlist_inputs() {
+        let playlist =
+            b"#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nfile:///etc/passwd\n#EXT-X-ENDLIST\n"
+                .to_vec();
+        let player = FilePlayer::open_source_impl(
+            Source::Reader(Box::new(std::io::Cursor::new(playlist))),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+            FilePlaybackOptions::default(),
+            true,
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while player.snapshot().status != FilePlaybackStatus::Failed {
+            assert!(Instant::now() < deadline, "playlist was not rejected");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn custom_reader_decodes_and_seeks_generated_mp4() {
+        let path = fixture("mp4", "libx264", "aac");
+        let bytes = std::fs::read(&path).unwrap();
+        let player = FilePlayer::open_source_impl(
+            Source::Reader(Box::new(std::io::Cursor::new(bytes))),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+            FilePlaybackOptions::default(),
+            true,
+        )
+        .unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.width == 64
+        });
+        assert!(player.take_frame().is_some());
+        player.seek(2.0);
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Paused && s.position >= 1.9
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while player.take_frame().is_none() {
+            assert!(Instant::now() < deadline, "seek preview did not arrive");
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(player);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn mp4_and_webm_controls_and_frames() {
         for (ext, video, audio) in [("mp4", "libx264", "aac"), ("webm", "libvpx", "libopus")] {

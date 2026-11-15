@@ -6,6 +6,7 @@ mod audio;
 mod file_playback;
 pub use file_playback::{
     FilePlaybackFrame, FilePlaybackOptions, FilePlaybackSnapshot, FilePlaybackStatus, FilePlayer,
+    PlaybackSource,
 };
 mod microphone;
 mod microphone_device;

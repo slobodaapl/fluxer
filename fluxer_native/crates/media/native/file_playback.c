@@ -14,6 +14,7 @@
 // All handles are owned by one Rust playback worker.
 typedef struct {
     AVFormatContext *format;
+    AVIOContext *custom_io;
     AVCodecContext *video, *audio;
     int vi, ai, draining, active, eof, flush_video, flush_audio;
     AVPacket *packet;
@@ -47,15 +48,10 @@ void flux_decoder_free(FluxDecoder *d) {
     if (!d) return;
     avcodec_free_context(&d->video); avcodec_free_context(&d->audio);
     av_packet_free(&d->packet); av_frame_free(&d->frame); avformat_close_input(&d->format);
+    avio_context_free(&d->custom_io);
     sws_freeContext(d->scale); swr_free(&d->resample); av_channel_layout_uninit(&d->audio_layout); free(d);
 }
-FluxDecoder *flux_decoder_open(const char *path, char *error, size_t len) {
-    FluxDecoder *d = calloc(1, sizeof(*d)); if (!d) { snprintf(error, len, "Out of memory"); return NULL; }
-    AVDictionary *opts = NULL;
-    av_dict_set(&opts, "protocol_whitelist", "file", 0);
-    av_dict_set(&opts, "format_whitelist", "mov,matroska,webm,mp3,ogg,wav,flac,aac,mpegts,mpeg,avi,gif,asf,ape,opus", 0);
-    int r = avformat_open_input(&d->format, path, NULL, &opts);
-    av_dict_free(&opts);
+static FluxDecoder *finish_open(FluxDecoder *d, int r, char *error, size_t len) {
     if (r >= 0) r = avformat_find_stream_info(d->format, NULL);
     if (r < 0) { error_text(error, len, r); goto fail; }
     d->vi = av_find_best_stream(d->format, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
@@ -70,9 +66,37 @@ FluxDecoder *flux_decoder_open(const char *path, char *error, size_t len) {
     return d;
 fail: flux_decoder_free(d); return NULL;
 }
+FluxDecoder *flux_decoder_open(const char *path, char *error, size_t len) {
+    FluxDecoder *d = calloc(1, sizeof(*d)); if (!d) { snprintf(error, len, "Out of memory"); return NULL; }
+    AVDictionary *opts = NULL;
+    av_dict_set(&opts, "protocol_whitelist", "file", 0);
+    av_dict_set(&opts, "format_whitelist", "mov,matroska,webm,mp3,ogg,wav,flac,aac,mpegts,mpeg,avi,gif,asf,ape,opus", 0);
+    int r = avformat_open_input(&d->format, path, NULL, &opts);
+    av_dict_free(&opts);
+    return finish_open(d, r, error, len);
+}
+FluxDecoder *flux_decoder_open_io(void *opaque, int (*read_packet)(void *, uint8_t *, int),
+                                  int64_t (*seek)(void *, int64_t, int), char *error, size_t len) {
+    FluxDecoder *d = calloc(1, sizeof(*d)); if (!d) { snprintf(error, len, "Out of memory"); return NULL; }
+    uint8_t *buffer = av_malloc(32768);
+    if (!buffer) { snprintf(error, len, "Out of memory"); free(d); return NULL; }
+    d->custom_io = avio_alloc_context(buffer, 32768, 0, opaque, read_packet, NULL, seek);
+    if (!d->custom_io) { av_free(buffer); free(d); snprintf(error, len, "Out of memory"); return NULL; }
+    d->format = avformat_alloc_context();
+    if (!d->format) { snprintf(error, len, "Out of memory"); flux_decoder_free(d); return NULL; }
+    d->format->pb = d->custom_io;
+    d->format->flags |= AVFMT_FLAG_CUSTOM_IO;
+    AVDictionary *opts = NULL;
+    av_dict_set(&opts, "protocol_whitelist", "", 0);
+    av_dict_set(&opts, "format_whitelist", "mov,matroska,webm,mp3,ogg,wav,flac,aac,mpegts,mpeg,avi,gif,asf,ape,opus", 0);
+    int r = avformat_open_input(&d->format, NULL, NULL, &opts);
+    av_dict_free(&opts);
+    return finish_open(d, r, error, len);
+}
 int flux_decoder_has_audio(FluxDecoder *d) { return d->audio != NULL; }
 double flux_decoder_duration(FluxDecoder *d) { return d->format->duration == AV_NOPTS_VALUE ? -1 : (double)d->format->duration / AV_TIME_BASE; }
 int flux_decoder_seek(FluxDecoder *d, double seconds, char *error, size_t len) {
+    if (d->format->pb) { d->format->pb->error = 0; d->format->pb->eof_reached = 0; }
     int r = avformat_seek_file(d->format, -1, INT64_MIN, (int64_t)((seconds + d->origin) * AV_TIME_BASE), INT64_MAX, AVSEEK_FLAG_BACKWARD);
     if (r < 0) { error_text(error, len, r); return 0; }
     if (d->video) avcodec_flush_buffers(d->video);

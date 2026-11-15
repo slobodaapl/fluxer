@@ -31,6 +31,7 @@ mod media_download;
 mod media_export;
 mod media_player;
 mod media_player_view;
+mod media_range;
 mod member_view;
 mod message_actions;
 mod message_content;

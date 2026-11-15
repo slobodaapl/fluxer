@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub(super) const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const WORKERS: usize = 4;
 
 pub(super) struct Download {
@@ -112,7 +112,7 @@ fn service() -> &'static mpsc::SyncSender<Job> {
 // underlying async client's timeout separately bounds the whole transfer.
 // Do not use async read_timeout here: reqwest 0.12.24 constructs its read timer
 // outside the blocking client's Tokio reactor when the response body is read.
-fn client_builder(read_timeout: Duration) -> reqwest::blocking::ClientBuilder {
+pub(super) fn client_builder(read_timeout: Duration) -> reqwest::blocking::ClientBuilder {
     reqwest::blocking::ClientBuilder::from(
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
@@ -130,7 +130,7 @@ fn client_builder(read_timeout: Duration) -> reqwest::blocking::ClientBuilder {
     .timeout(read_timeout)
 }
 
-fn cache_directory() -> Result<PathBuf, String> {
+pub(super) fn cache_directory() -> Result<PathBuf, String> {
     // /tmp is RAM-backed on the development desktop. Large files belong in the
     // application's disk cache, not a shared temporary-memory filesystem.
     let base = std::env::var_os("XDG_CACHE_HOME")
@@ -200,7 +200,7 @@ fn fetch_to(
     Ok(file)
 }
 
-fn copy_bounded(
+pub(super) fn copy_bounded(
     mut source: impl Read,
     mut target: impl Write,
     limit: u64,

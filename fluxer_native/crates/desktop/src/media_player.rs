@@ -151,8 +151,38 @@ impl MediaPlayer {
         if let Some(file) = self.file.clone() {
             self.open_file(file);
         } else {
-            match Download::start(self.source.source.clone(), self.source.size) {
-                Ok(download) => self.download = Some(download),
+            let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let interrupt = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let source = crate::media_range::RangeReader::new(
+                self.source.source.clone(),
+                self.source.size,
+                cancel.clone(),
+                interrupt.clone(),
+            );
+            let defaults = self.source.kind.defaults();
+            match source.and_then(|source| {
+                FilePlayer::open_reader(
+                    Box::new(source),
+                    cancel,
+                    interrupt,
+                    FilePlaybackOptions {
+                        autoplay: false,
+                        looping: defaults.looping,
+                        muted: self.muted,
+                        volume: self.volume,
+                        output_device: self.output.clone(),
+                    },
+                )
+            }) {
+                Ok(player) => {
+                    self.player = Some(player);
+                    self.last_policy = false;
+                    if let Some(position) = self.pending_seek.take()
+                        && let Some(player) = &self.player
+                    {
+                        player.seek(position);
+                    }
+                }
                 Err(error) => self.download_error = Some(error),
             }
         }
