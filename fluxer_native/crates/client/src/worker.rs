@@ -2112,6 +2112,9 @@ impl Worker {
                             .cloned()
                     {
                         self.reconcile_attachment_message(&message);
+                        if !self.demo && let Some(account)=self.state.current_user.as_ref() {
+                            self.emit(Event::LiveMessageCreated {account_id:account.id,message:Box::new(message)});
+                        }
                     }
                     if matches!(
                         name.as_str(),

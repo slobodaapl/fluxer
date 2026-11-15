@@ -19,6 +19,7 @@ futures = "0.3"
 reqwest = { version = "=0.12.24", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 chrono = "=0.4.45"
 tempfile = "3"
+zbus = "=5.19.0"
 fluxer_markdown_parser = { path = "../../../packages/markdown_parser/rust" }
 
 # Exercise the vendored Wayland serial/pipe helpers in the normal native gate.

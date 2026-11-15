@@ -299,6 +299,7 @@ pub enum VoiceStatus {
 }
 
 pub enum Event {
+    LiveMessageCreated {account_id:Snowflake,message:Box<fluxer_core::Message>},
     UserProfile(ProfileSnapshot),
     MessageAckResult {
         channel_id: Snowflake,

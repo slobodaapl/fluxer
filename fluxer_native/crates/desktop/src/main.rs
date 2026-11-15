@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
 mod composer_candidates;
+mod desktop_notifications;
 mod composer_slowmode;
 mod audio_view;
 mod avatar_demo;
@@ -305,6 +306,7 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
     slowmode: composer_slowmode::Slowmode,
+    native_notifications: desktop_notifications::DesktopNotifications,
     composer_member_query: Option<(Snowflake,String)>,
     composer_query_generation: u64,
     context: context_actions::ContextUi,
@@ -411,6 +413,7 @@ impl Fluxer {
             pane: Pane::Chat,
             selected_guild: None,
             slowmode: composer_slowmode::Slowmode::default(),
+            native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             composer_member_query: None,
             composer_query_generation: 0,
             composer: cx.new(|cx| {
@@ -637,6 +640,7 @@ impl Fluxer {
         .detach();
         cx.observe_window_activation(window, |this, window, cx| {
             this.media_ui.active = window.is_window_active();
+            this.notification_focus(window.is_window_active());
             if !window.is_window_active() {
                 this.command(Command::SetPushToTalkPressed(false), cx);
                 for picker in [
@@ -671,6 +675,7 @@ impl Fluxer {
                 Timer::after(cadence).await;
                 match entity.update(cx, |view, cx| {
                     view.poll(cx);
+                    view.poll_notifications(cx);
                     view.tick_slowmode(cx);
                     !view.viewer.desired.is_empty()
                 }) {
@@ -770,6 +775,7 @@ impl Fluxer {
                     .profile_ui
                     .popup
                     .update(cx, |popup, cx| popup.apply_snapshot(snapshot, cx)),
+                Event::LiveMessageCreated {account_id,message} => self.live_message_notification(account_id,&message,cx),
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
                     avatar_images::configure_instance(document.as_ref());

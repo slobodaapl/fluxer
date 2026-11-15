@@ -564,6 +564,7 @@ impl Fluxer {
                     })))
                 })))
                 .child(audio_description("Sliders: arrow keys fine-tune; Home and End set the limits."))
+                .child(self.notification_settings(cx))
                 .child(audio_section("Account").child(div().flex().items_center().gap_3()
                     .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(rgb(MUTED)).text_ellipsis().child(self.state.current_user.as_ref().map(|user|user.display_name().to_owned()).unwrap_or_else(||"Offline preview".into())))
                     .child(quiet_button("settings-sign-out","Sign out").on_click(cx.listener(|this,_,_,cx|this.logout(cx)))))))

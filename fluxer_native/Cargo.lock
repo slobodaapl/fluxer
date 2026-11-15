@@ -2139,6 +2139,7 @@ dependencies = [
  "smallvec",
  "tempfile",
  "unicode-segmentation",
+ "zbus",
 ]
 
 [[package]]
