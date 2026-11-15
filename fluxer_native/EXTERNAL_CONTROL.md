@@ -14,7 +14,9 @@ For a dedicated mute button use `mute`; it always requests muted rather than
 toggling. Other commands are `unmute`, `toggle-deafen`, `deafen`, `undeafen`,
 `disconnect`, `stop-sharing`, `status` and `watch`. Methods return an error if
 there is no current call or the call changed before the action executed. The
-script requires `gdbus` (GLib's D-Bus command-line client).
+script requires `gdbus` (GLib's D-Bus command-line client). A sandboxed button
+host needs access to `app.fluxer.Native` on the session bus, or its host-command
+facility.
 
 Equivalent direct call:
 

@@ -95,3 +95,21 @@ sharing/watching; timed presence across account/reconnect; OS notification click
 sounds and cross-client read state; actual StreamDeck button and live state
 feedback. Record outcomes against the review IDs in `REVIEW.md` and per-lane QA
 notes; do not infer hardware or full migration acceptance from fixtures.
+
+## Installed build
+
+`29a36327b-local` is installed atomically at `target/debug/fluxer-desktop` and
+running with GDB and private Vulkan validation enabled. A read-only runtime
+check confirmed a restored current user, restore complete/no restore failure,
+and no active voice channel. The audio-preference file hash matches its value
+before restart. `scripts/fluxer-call status` succeeds against the real session
+bus with API version 1 and truthful disconnected/no-share state. No mutating
+call action was issued to the live account.
+
+Runtime logs are under the directory recorded in `/tmp/fluxer-live-debug-dir`;
+installed binary metadata and the offline QA captures are under
+`target/qa/expansion2-2026-11-15/`. The full final gate log is
+`/tmp/fluxer-expansion2-verify8.log` (638 passed, 14 ignored). Existing uncommitted
+audio/DSP work remains present and unstaged; its pre-integration backup is
+retained. Documentation-only commits following the installed build do not change
+its executable code.
