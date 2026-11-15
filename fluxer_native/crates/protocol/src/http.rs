@@ -175,7 +175,8 @@ impl Client {
     /// pinned to this instance; redirects never forward the account token.
     /// No mutation is retried automatically, preventing accidental duplicate sends.
     pub async fn channel_slowmode(&self, channel: &str) -> Result<Value> {
-        self.request(Method::GET, &format!("/channels/{channel}/slowmode"), None).await
+        self.request(Method::GET, &format!("/channels/{channel}/slowmode"), None)
+            .await
     }
 
     pub async fn request(&self, method: Method, path: &str, body: Option<&Value>) -> Result<Value> {

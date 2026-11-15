@@ -280,9 +280,8 @@ impl Fluxer {
                     )
                     .child(
                         icon_button("voice-settings", Icon::Settings, "Voice and audio settings")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.pane = Pane::Settings;
-                                this.command(Command::RefreshDevices, cx);
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings(settings_view::Section::Voice, window, cx);
                             })),
                     ),
             )
@@ -542,11 +541,10 @@ impl Fluxer {
             .into_any_element()
     }
 
-    pub(super) fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn voice_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         div().id("settings-body").flex_1().min_w_0().h_full().overflow_y_scroll().p_6()
             .child(div().w_full().max_w(px(720.)).flex().flex_col().gap_5()
-                .child(div().flex().items_center().gap_3().child(heading("Voice & audio")).child(div().flex_1())
-                    .child(icon_button("back-chat",Icon::Back,"Back to chat").on_click(cx.listener(|this,_,_,cx|{this.pane=Pane::Chat;cx.notify();}))))
+                .child(heading("Voice & audio"))
                 .child(audio_description("Changes apply immediately. Microphone testing starts only when you choose to test it."))
                 .child(audio_section("Devices").child(div().flex().items_center().justify_between().child(audio_description("Choose where you speak and listen."))
                     .child(icon_button("refresh-devices",Icon::Refresh,"Refresh audio devices").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshDevices,cx)))))
@@ -564,10 +562,7 @@ impl Fluxer {
                     })))
                 })))
                 .child(audio_description("Sliders: arrow keys fine-tune; Home and End set the limits."))
-                .child(self.notification_settings(cx))
-                .child(audio_section("Account").child(div().flex().items_center().gap_3()
-                    .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(rgb(MUTED)).text_ellipsis().child(self.state.current_user.as_ref().map(|user|user.display_name().to_owned()).unwrap_or_else(||"Offline preview".into())))
-                    .child(quiet_button("settings-sign-out","Sign out").on_click(cx.listener(|this,_,_,cx|this.logout(cx)))))))
+)
             .into_any_element()
     }
 

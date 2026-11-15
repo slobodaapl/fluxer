@@ -328,7 +328,10 @@ pub enum DirectMessageStatus {
 }
 
 pub enum Event {
-    LiveMessageCreated {account_id:Snowflake,message:Box<fluxer_core::Message>},
+    LiveMessageCreated {
+        account_id: Snowflake,
+        message: Box<fluxer_core::Message>,
+    },
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,
@@ -381,8 +384,16 @@ pub enum Event {
         selected_guild: Option<Snowflake>,
     },
     State(Box<ClientState>),
-    ChannelSlowmode { channel_id: Snowflake, rate_limit_per_user: u32, retry_after: std::time::Duration, can_bypass: bool },
-    MessageRateLimited { channel_id: Snowflake, retry_after: std::time::Duration },
+    ChannelSlowmode {
+        channel_id: Snowflake,
+        rate_limit_per_user: u32,
+        retry_after: std::time::Duration,
+        can_bypass: bool,
+    },
+    MessageRateLimited {
+        channel_id: Snowflake,
+        retry_after: std::time::Duration,
+    },
     MessageSent {
         channel_id: Snowflake,
         content: String,

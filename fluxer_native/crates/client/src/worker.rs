@@ -1921,20 +1921,20 @@ impl Worker {
             .gateway_commands
             .as_ref()
             .ok_or("Gateway is disconnected")?;
-        if let Some((guild, channel, _)) = self.member_list_subscription {
-            if next.is_none_or(|(g, c, _)| (g, c) != (guild, channel)) {
-                tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"member_list_channels":{channel.to_string():[]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
-            }
+        if let Some((guild, channel, _)) = self.member_list_subscription
+            && next.is_none_or(|(g, c, _)| (g, c) != (guild, channel))
+        {
+            tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"member_list_channels":{channel.to_string():[]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
         }
         if let Some((guild, channel, start)) = next {
             tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"active":true,"member_list_channels":{channel.to_string():[[start,(start+99).min(100_000)]]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
         }
         self.member_list_subscription = next;
-        if let Some((guild, channel, start)) = next {
-            if let Some(list) = self.state.member_lists.get_mut(&(guild, channel)) {
-                list.rows
-                    .retain(|index, _| *index >= start && *index <= start.saturating_add(99));
-            }
+        if let Some((guild, channel, start)) = next
+            && let Some(list) = self.state.member_lists.get_mut(&(guild, channel))
+        {
+            list.rows
+                .retain(|index, _| *index >= start && *index <= start.saturating_add(99));
         }
         Ok(())
     }
@@ -2337,18 +2337,32 @@ impl Worker {
                         self.pending_voice_server = Some(update);
                     }
                 } else {
-                    let new_live_message = name=="MESSAGE_CREATE" && data.get("channel_id").and_then(Value::as_str).and_then(|id|id.parse::<Snowflake>().ok()).zip(data.get("id").and_then(Value::as_str).and_then(|id|id.parse::<Snowflake>().ok())).is_some_and(|(channel,id)|!self.state.messages.get(&channel).is_some_and(|messages|messages.contains_key(&id)));
+                    let new_live_message = name == "MESSAGE_CREATE"
+                        && data
+                            .get("channel_id")
+                            .and_then(Value::as_str)
+                            .and_then(|id| id.parse::<Snowflake>().ok())
+                            .zip(
+                                data.get("id")
+                                    .and_then(Value::as_str)
+                                    .and_then(|id| id.parse::<Snowflake>().ok()),
+                            )
+                            .is_some_and(|(channel, id)| {
+                                !self
+                                    .state
+                                    .messages
+                                    .get(&channel)
+                                    .is_some_and(|messages| messages.contains_key(&id))
+                            });
                     let previous_voice = self.state.voice.clone();
                     self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
-                    if name == "GUILD_MEMBER_LIST_UPDATE" {
-                        if let Some((guild, channel, _)) = self.member_list_subscription {
-                            if let Some(list) = self.state.member_lists.get_mut(&(guild, channel)) {
-                                list.identity =
-                                    self.member_list_identity.clone().unwrap_or_default();
-                            }
-                        }
+                    if name == "GUILD_MEMBER_LIST_UPDATE"
+                        && let Some((guild, channel, _)) = self.member_list_subscription
+                        && let Some(list) = self.state.member_lists.get_mut(&(guild, channel))
+                    {
+                        list.identity = self.member_list_identity.clone().unwrap_or_default();
                     }
                     self.navigation_gateway(&name, &data);
                     if name == "MESSAGE_CREATE"
@@ -2368,8 +2382,14 @@ impl Worker {
                             .cloned()
                     {
                         self.reconcile_attachment_message(&message);
-                        if !self.demo && new_live_message && let Some(account)=self.state.current_user.as_ref() {
-                            self.emit(Event::LiveMessageCreated {account_id:account.id,message:Box::new(message)});
+                        if !self.demo
+                            && new_live_message
+                            && let Some(account) = self.state.current_user.as_ref()
+                        {
+                            self.emit(Event::LiveMessageCreated {
+                                account_id: account.id,
+                                message: Box::new(message),
+                            });
                         }
                     }
                     if matches!(

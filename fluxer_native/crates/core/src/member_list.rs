@@ -25,8 +25,9 @@ pub fn member_list_identity(guild: &Guild, channel: &Channel) -> String {
     let input = tokens.join(",");
     let bytes = input.as_bytes();
     let mut hash = 0u32;
-    for block in bytes.chunks_exact(4) {
-        let mut k = u32::from_le_bytes(block.try_into().unwrap());
+    let (blocks, rest) = bytes.as_chunks::<4>();
+    for block in blocks {
+        let mut k = u32::from_le_bytes(*block);
         k = k
             .wrapping_mul(0xcc9e2d51)
             .rotate_left(15)
@@ -37,7 +38,6 @@ pub fn member_list_identity(guild: &Guild, channel: &Channel) -> String {
             .wrapping_mul(5)
             .wrapping_add(0xe6546b64);
     }
-    let rest = bytes.chunks_exact(4).remainder();
     if !rest.is_empty() {
         let mut k = 0u32;
         for (i, byte) in rest.iter().enumerate() {

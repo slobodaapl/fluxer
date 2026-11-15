@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
-mod composer_candidates;
-mod desktop_notifications;
-mod quick_switcher;
-mod composer_slowmode;
 mod audio_view;
 mod avatar_demo;
 mod avatar_images;
 mod call_view;
 mod chat_helpers;
 mod chat_view;
+mod composer_candidates;
+mod composer_slowmode;
 mod concealed_image;
 mod context_actions;
 mod context_menu;
 mod controls;
+mod desktop_notifications;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
@@ -48,9 +47,11 @@ mod profile_app;
 mod profile_demo;
 mod profile_triggers;
 mod profile_view;
+mod quick_switcher;
 mod rich_message;
 mod scrollbar;
 mod search_browser;
+mod settings_view;
 mod stream_grid;
 mod stream_layout;
 mod stream_view;
@@ -309,12 +310,14 @@ struct Fluxer {
     session_restore_failed: bool,
     session_context_loaded: bool,
     pane: Pane,
+    settings_section: settings_view::Section,
+    settings_return: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
     quick_switcher: quick_switcher::QuickSwitcher,
-    composer_member_query: Option<(Snowflake,String)>,
+    composer_member_query: Option<(Snowflake, String)>,
     composer_query_generation: u64,
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
@@ -424,6 +427,8 @@ impl Fluxer {
             session_restore_failed: false,
             session_context_loaded: false,
             pane: Pane::Chat,
+            settings_section: settings_view::Section::Voice,
+            settings_return: Pane::Chat,
             selected_guild: None,
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
@@ -648,7 +653,8 @@ impl Fluxer {
             this.stage_clipboard_image(image, cx);
         })
         .detach();
-        cx.observe(&view.quick_switcher.input,|_,_,cx|cx.notify()).detach();
+        cx.observe(&view.quick_switcher.input, |_, _, cx| cx.notify())
+            .detach();
         cx.observe(&view.composer, |this, _, cx| {
             this.refresh_composer_completion(cx);
             this.schedule_composer_member_query(cx);
@@ -722,7 +728,7 @@ impl Fluxer {
         view.schedule_read_menu_demo(window, cx);
         view.schedule_profile_demo(window, cx);
         view.schedule_composer_demo(window, cx);
-        view.schedule_quick_switcher_demo(window,cx);
+        view.schedule_quick_switcher_demo(window, cx);
         view
     }
 
@@ -815,7 +821,10 @@ impl Fluxer {
                     .profile_ui
                     .popup
                     .update(cx, |popup, cx| popup.apply_snapshot(snapshot, cx)),
-                Event::LiveMessageCreated {account_id,message} => self.live_message_notification(account_id,&message,cx),
+                Event::LiveMessageCreated {
+                    account_id,
+                    message,
+                } => self.live_message_notification(account_id, &message, cx),
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
                     avatar_images::configure_instance(document.as_ref());
@@ -850,7 +859,9 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
-                    if previous_user != self.state.current_user.as_ref().map(|user|user.id) { self.slowmode = composer_slowmode::Slowmode::default(); }
+                    if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.slowmode = composer_slowmode::Slowmode::default();
+                    }
                     self.refresh_composer_completion(cx);
                     if self
                         .profile_ui
@@ -1282,15 +1293,32 @@ impl Fluxer {
                         self.cancel_edit(cx);
                     }
                 }
-                Event::ChannelSlowmode {channel_id,rate_limit_per_user,retry_after,can_bypass} => {
-                    if let Some(channel)=self.state.channels.get_mut(&channel_id) {channel.rate_limit_per_user=rate_limit_per_user;}
-                    self.slowmode.server_bypass.insert(channel_id,can_bypass);
-                    self.slowmode.retry(channel_id,if can_bypass {Duration::ZERO} else {retry_after});
+                Event::ChannelSlowmode {
+                    channel_id,
+                    rate_limit_per_user,
+                    retry_after,
+                    can_bypass,
+                } => {
+                    if let Some(channel) = self.state.channels.get_mut(&channel_id) {
+                        channel.rate_limit_per_user = rate_limit_per_user;
+                    }
+                    self.slowmode.server_bypass.insert(channel_id, can_bypass);
+                    self.slowmode.retry(
+                        channel_id,
+                        if can_bypass {
+                            Duration::ZERO
+                        } else {
+                            retry_after
+                        },
+                    );
                 }
-                Event::MessageRateLimited { channel_id, retry_after } => {
-                    self.slowmode.server_bypass.insert(channel_id,false);
-                    self.slowmode.retry(channel_id,retry_after);
-                },
+                Event::MessageRateLimited {
+                    channel_id,
+                    retry_after,
+                } => {
+                    self.slowmode.server_bypass.insert(channel_id, false);
+                    self.slowmode.retry(channel_id, retry_after);
+                }
                 Event::MessageSent { channel_id, .. } => {
                     self.slowmode.sent(channel_id);
                     // Delivery completion belongs to the outbox. Never clear a
@@ -1476,10 +1504,20 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.open { return; }
+        if self.quick_switcher.open {
+            return;
+        }
         if self.composer.focus_handle(cx).is_focused(window) {
-            if self.composer.read(cx).is_composing() || self.composer.read(cx).completion_enter_guard { return; }
-            if self.composer.update(cx, |input,cx| input.completion_key("enter",false,window,cx)) { return; }
+            if self.composer.read(cx).is_composing()
+                || self.composer.read(cx).completion_enter_guard
+            {
+                return;
+            }
+            if self.composer.update(cx, |input, cx| {
+                input.completion_key("enter", false, window, cx)
+            }) {
+                return;
+            }
         }
         if self.context_menu_open(cx)
             || self.message_actions.is_open()
@@ -2451,7 +2489,7 @@ impl Render for Fluxer {
                 }
                 Pane::Friends => self.friends_view(window, cx),
                 Pane::Call => self.call_view(window, cx),
-                Pane::Settings => self.settings(cx),
+                Pane::Settings => self.settings_shell(cx),
                 Pane::Screens => self.screens(cx),
             };
             div()
@@ -2459,7 +2497,9 @@ impl Render for Fluxer {
                 .flex_1()
                 .min_h_0()
                 .when(
-                    !(self.pane == Pane::Call && (self.viewer.expanded || window.is_fullscreen())),
+                    self.pane != Pane::Settings
+                        && !(self.pane == Pane::Call
+                            && (self.viewer.expanded || window.is_fullscreen())),
                     |view| {
                         view.child(self.rail(cx)).when(
                             !(self.pane == Pane::Chat
@@ -2486,12 +2526,11 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 if this.context_menu_open(cx) || this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
-                this.pane = Pane::Settings;
-                this.command(Command::RefreshDevices, cx);
-                this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
+                this.open_settings(settings_view::Section::Voice, window, cx);
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
+                if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
@@ -2545,7 +2584,7 @@ impl Render for Fluxer {
         let rendered = rendered
             .child(self.image_viewer_overlay(window, cx))
             .child(self.playback.overlay(window, cx))
-            .child(self.quick_switcher_overlay(window,cx));
+            .child(self.quick_switcher_overlay(window, cx));
         self.playback.finish_frame(cx);
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());
@@ -2587,10 +2626,10 @@ fn main() {
                 KeyBinding::new("escape", PickerDismiss, Some("ChatPicker")),
                 KeyBinding::new("ctrl-q", Quit, None),
                 KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("ctrl-k",OpenQuickSwitcher,None),
-                KeyBinding::new("ctrl-t",OpenQuickSwitcher,None),
-                KeyBinding::new("cmd-k",OpenQuickSwitcher,None),
-                KeyBinding::new("cmd-t",OpenQuickSwitcher,None),
+                KeyBinding::new("ctrl-k", OpenQuickSwitcher, None),
+                KeyBinding::new("ctrl-t", OpenQuickSwitcher, None),
+                KeyBinding::new("cmd-k", OpenQuickSwitcher, None),
+                KeyBinding::new("cmd-t", OpenQuickSwitcher, None),
                 KeyBinding::new("ctrl-f", OpenSearch, None),
                 KeyBinding::new("cmd-f", OpenSearch, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),

@@ -829,8 +829,7 @@ impl Fluxer {
             }
             (Target::SelfVoice(_), "stop-share") => self.command_if_live(Command::StopShare, cx),
             (Target::SelfVoice(_), "voice-settings") => {
-                self.pane = Pane::Settings;
-                self.command_if_live(Command::RefreshDevices, cx);
+                self.open_settings(settings_view::Section::Voice, window, cx);
             }
             (Target::SelfVoice(_) | Target::Channel(_), "disconnect") => {
                 self.command_if_live(Command::LeaveVoice, cx)

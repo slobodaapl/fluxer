@@ -129,8 +129,10 @@ mod tests {
     fn accounts_are_isolated_and_invalid_file_is_not_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audio.json");
-        let mut first = AudioPreferences::default();
-        first.input = "input:usb".into();
+        let mut first = AudioPreferences {
+            input: "input:usb".into(),
+            ..Default::default()
+        };
         first.users.insert(
             "123".into(),
             UserAudioPreference {

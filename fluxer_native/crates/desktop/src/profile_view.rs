@@ -97,13 +97,6 @@ impl ProfilePopup {
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
-    pub fn close_after_action(&mut self, cx: &mut Context<Self>) {
-        self.open = None;
-        self.snapshot = None;
-        self.previous_focus = None;
-        cx.emit(ProfileAction::Closed);
-        cx.notify();
-    }
     pub fn current_scope(&self) -> Option<(Snowflake, Option<Snowflake>)> {
         self.open.as_ref().map(|open| (open.user.id, open.guild_id))
     }
@@ -220,14 +213,14 @@ impl ProfilePopup {
         ) {
             return;
         }
-        if let Some(open) = &self.open {
-            if let Some(action) = open.friend_action {
-                self.relationship_status = Some(RelationshipMutationStatus::Pending);
-                cx.emit(ProfileAction::Relationship {
-                    user_id: open.user.id,
-                    action,
-                });
-            }
+        if let Some(open) = &self.open
+            && let Some(action) = open.friend_action
+        {
+            self.relationship_status = Some(RelationshipMutationStatus::Pending);
+            cx.emit(ProfileAction::Relationship {
+                user_id: open.user.id,
+                action,
+            });
         }
     }
     pub fn apply_dm_status(

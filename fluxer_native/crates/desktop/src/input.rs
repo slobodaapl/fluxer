@@ -3,10 +3,10 @@ use crate::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::message_markup::{MessageDocument, MessageTarget};
 use std::ops::Range;
 use std::{collections::BTreeSet, sync::Arc};
-#[path = "inline_emoji.rs"]
-mod inline_emoji;
 #[path = "composer_completion.rs"]
 pub mod composer_completion;
+#[path = "inline_emoji.rs"]
+mod inline_emoji;
 #[path = "message_text.rs"]
 mod message_text;
 
@@ -434,22 +434,58 @@ impl TextInput {
     }
 
     pub fn completion_trigger(&self) -> Option<composer_completion::Trigger> {
-        let trigger = composer_completion::trigger(&self.content, self.selected_range.clone(), self.marked_range.is_some())?;
+        let trigger = composer_completion::trigger(
+            &self.content,
+            self.selected_range.clone(),
+            self.marked_range.is_some(),
+        )?;
         (self.completion_dismissed.as_ref() != Some(&trigger)).then_some(trigger)
     }
-    pub fn is_composing(&self) -> bool { self.marked_range.is_some() }
-    pub fn set_completion_choices(&mut self, choices: Vec<composer_completion::Choice>, cx: &mut Context<Self>) {
-        if self.completion_choices != choices { self.completion_choices = choices; self.completion_index = 0; cx.notify(); }
+    pub fn is_composing(&self) -> bool {
+        self.marked_range.is_some()
     }
-    pub fn completion_key(&mut self, key: &str, held: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(trigger) = self.completion_trigger() else { return false; };
-        if self.completion_choices.is_empty() { return false; }
+    pub fn set_completion_choices(
+        &mut self,
+        choices: Vec<composer_completion::Choice>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.completion_choices != choices {
+            self.completion_choices = choices;
+            self.completion_index = 0;
+            cx.notify();
+        }
+    }
+    pub fn completion_key(
+        &mut self,
+        key: &str,
+        held: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(trigger) = self.completion_trigger() else {
+            return false;
+        };
+        if self.completion_choices.is_empty() {
+            return false;
+        }
         match key {
-            "up" => self.completion_index = self.completion_index.checked_sub(1).unwrap_or(self.completion_choices.len()-1),
-            "down" => self.completion_index = (self.completion_index+1)%self.completion_choices.len(),
-            "escape" => { self.completion_dismissed = Some(trigger); self.completion_choices.clear(); },
+            "up" => {
+                self.completion_index = self
+                    .completion_index
+                    .checked_sub(1)
+                    .unwrap_or(self.completion_choices.len() - 1)
+            }
+            "down" => {
+                self.completion_index = (self.completion_index + 1) % self.completion_choices.len()
+            }
+            "escape" => {
+                self.completion_dismissed = Some(trigger);
+                self.completion_choices.clear();
+            }
             "enter" | "tab" => {
-                if held { return true; }
+                if held {
+                    return true;
+                }
                 self.completion_enter_guard = key == "enter";
                 let insert = format!("{} ", self.completion_choices[self.completion_index].insert);
                 self.history.group = None;
@@ -457,13 +493,16 @@ impl TextInput {
                 self.selected_range = trigger.range;
                 self.replace_text_in_range(None, &insert, window, cx);
                 // Preserve the pre-completion caret, not the internal replacement selection.
-                if let Some(last) = self.history.undo.last_mut() { *last = before; }
+                if let Some(last) = self.history.undo.last_mut() {
+                    *last = before;
+                }
                 self.history.group = None;
                 self.completion_choices.clear();
-            },
+            }
             _ => return false,
         }
-        cx.notify(); true
+        cx.notify();
+        true
     }
     pub fn insert_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.history.group = None;
@@ -767,10 +806,14 @@ impl TextInput {
             .unwrap_or(if end { self.content.len() } else { 0 })
     }
     fn up(&mut self, _: &Up, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.completion_key("up", false, window, cx) { self.vertical(-1, false, cx); }
+        if !self.completion_key("up", false, window, cx) {
+            self.vertical(-1, false, cx);
+        }
     }
     fn down(&mut self, _: &Down, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.completion_key("down", false, window, cx) { self.vertical(1, false, cx); }
+        if !self.completion_key("down", false, window, cx) {
+            self.vertical(1, false, cx);
+        }
     }
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
         self.vertical(-1, true, cx);
@@ -1731,25 +1774,142 @@ fn decoration_runs(
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let popup = self.completion_trigger().and_then(|_| {
-            if self.completion_choices.is_empty() || !self.focus_handle.is_focused(window) { return None; }
+            if self.completion_choices.is_empty() || !self.focus_handle.is_focused(window) {
+                return None;
+            }
             let bounds = self.last_bounds?;
-            let caret = self.last_layout.as_ref()?.position_for_index(self.cursor_offset());
-            let origin = point((bounds.left()+caret.x-self.scroll_x).clamp(bounds.left(),bounds.right()), (bounds.top()+caret.y-self.scroll_y).clamp(bounds.top(),bounds.bottom()));
+            let caret = self
+                .last_layout
+                .as_ref()?
+                .position_for_index(self.cursor_offset());
+            let origin = point(
+                (bounds.left() + caret.x - self.scroll_x).clamp(bounds.left(), bounds.right()),
+                (bounds.top() + caret.y - self.scroll_y).clamp(bounds.top(), bounds.bottom()),
+            );
             let first = self.completion_index.saturating_sub(5);
-            Some(gpui::deferred(gpui::anchored().position_mode(gpui::AnchoredPositionMode::Window).position(origin).anchor(gpui::Corner::BottomLeft).snap_to_window_with_margin(px(8.)).child(
-                div().id("composer-completion").occlude().w(px(320.)).p_1().rounded_md().bg(rgb(0x24212d)).border_1().border_color(rgb(0x494253)).shadow_lg()
-                    .on_scroll_wheel(cx.listener(|this,event: &gpui::ScrollWheelEvent,window,cx| { let delta=event.delta.pixel_delta(px(38.)).y; if delta != px(0.) { this.completion_key(if delta < px(0.) {"down"} else {"up"},false,window,cx); } cx.stop_propagation(); }))
-                    .children(self.completion_choices.iter().enumerate().skip(first).take(6).map(|(index, choice)| {
-                        div().id(("completion-row",index)).h(px(38.)).px_2().flex().items_center().gap_2().rounded_sm().when(index == self.completion_index, |v| v.bg(rgb(0x443853)))
-                            .child(div().relative().w(px(26.)).h(px(26.)).child(if let Some(user) = &choice.user {
-                                crate::avatar_images::user_avatar(user,choice.media.as_deref(),26.)
-                            } else if let Some(url) = &choice.image {
-                                gpui::img(SharedString::from(url.clone())).size(px(26.)).object_fit(gpui::ObjectFit::Contain).into_any_element()
-                            } else { div().text_size(px(18.)).child(choice.glyph.clone()).into_any_element() }).when_some(choice.status,|view,color|view.child(div().absolute().right_0().bottom_0().size(px(8.)).rounded_full().border_1().border_color(rgb(0x24212d)).bg(rgb(color)))))
-                            .child(div().flex_1().min_w_0().child(div().text_size(px(13.)).text_ellipsis().child(choice.label.clone())).child(div().text_size(px(10.)).text_color(rgb(0xa59caf)).text_ellipsis().child(choice.detail.clone())))
-                            .on_mouse_down(MouseButton::Left,cx.listener(move |this, _, window, cx| { this.completion_index=index; this.completion_key("tab",false,window,cx); cx.stop_propagation(); }))
-                    }))
-            )).with_priority(2).into_any_element())
+            Some(
+                gpui::deferred(
+                    gpui::anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Window)
+                        .position(origin)
+                        .anchor(gpui::Corner::BottomLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .id("composer-completion")
+                                .occlude()
+                                .w(px(320.))
+                                .p_1()
+                                .rounded_md()
+                                .bg(rgb(0x24212d))
+                                .border_1()
+                                .border_color(rgb(0x494253))
+                                .shadow_lg()
+                                .on_scroll_wheel(cx.listener(
+                                    |this, event: &gpui::ScrollWheelEvent, window, cx| {
+                                        let delta = event.delta.pixel_delta(px(38.)).y;
+                                        if delta != px(0.) {
+                                            this.completion_key(
+                                                if delta < px(0.) { "down" } else { "up" },
+                                                false,
+                                                window,
+                                                cx,
+                                            );
+                                        }
+                                        cx.stop_propagation();
+                                    },
+                                ))
+                                .children(
+                                    self.completion_choices
+                                        .iter()
+                                        .enumerate()
+                                        .skip(first)
+                                        .take(6)
+                                        .map(|(index, choice)| {
+                                            div()
+                                                .id(("completion-row", index))
+                                                .h(px(38.))
+                                                .px_2()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .rounded_sm()
+                                                .when(index == self.completion_index, |v| {
+                                                    v.bg(rgb(0x443853))
+                                                })
+                                                .child(
+                                                    div()
+                                                        .relative()
+                                                        .w(px(26.))
+                                                        .h(px(26.))
+                                                        .child(if let Some(user) = &choice.user {
+                                                            crate::avatar_images::user_avatar(
+                                                                user,
+                                                                choice.media.as_deref(),
+                                                                26.,
+                                                            )
+                                                        } else if let Some(url) = &choice.image {
+                                                            gpui::img(SharedString::from(
+                                                                url.clone(),
+                                                            ))
+                                                            .size(px(26.))
+                                                            .object_fit(gpui::ObjectFit::Contain)
+                                                            .into_any_element()
+                                                        } else {
+                                                            div()
+                                                                .text_size(px(18.))
+                                                                .child(choice.glyph.clone())
+                                                                .into_any_element()
+                                                        })
+                                                        .when_some(choice.status, |view, color| {
+                                                            view.child(
+                                                                div()
+                                                                    .absolute()
+                                                                    .right_0()
+                                                                    .bottom_0()
+                                                                    .size(px(8.))
+                                                                    .rounded_full()
+                                                                    .border_1()
+                                                                    .border_color(rgb(0x24212d))
+                                                                    .bg(rgb(color)),
+                                                            )
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(13.))
+                                                                .text_ellipsis()
+                                                                .child(choice.label.clone()),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(10.))
+                                                                .text_color(rgb(0xa59caf))
+                                                                .text_ellipsis()
+                                                                .child(choice.detail.clone()),
+                                                        ),
+                                                )
+                                                .on_mouse_down(
+                                                    MouseButton::Left,
+                                                    cx.listener(move |this, _, window, cx| {
+                                                        this.completion_index = index;
+                                                        this.completion_key(
+                                                            "tab", false, window, cx,
+                                                        );
+                                                        cx.stop_propagation();
+                                                    }),
+                                                )
+                                        }),
+                                ),
+                        ),
+                )
+                .with_priority(2)
+                .into_any_element(),
+            )
         });
         let editor = div()
             .flex()

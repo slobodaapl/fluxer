@@ -383,12 +383,12 @@ async fn dropping_background_search_cancels_a_stalled_response_body() {
 
 #[tokio::test]
 async fn slowmode_snapshot_uses_exact_authenticated_source_get() {
-    let body=json!({"rate_limit_per_user":15,"retry_after_ms":2500,"can_bypass":false});
-    let mut server=Server::new(vec![Reply::json(200,body.clone())]).await;
-    let client=client(&server.origin);
-    assert_eq!(client.channel_slowmode("11").await.unwrap(),body);
-    let request=server.next().await;
-    assert_eq!(request.line,"GET /api/v1/channels/11/slowmode HTTP/1.1");
+    let body = json!({"rate_limit_per_user":15,"retry_after_ms":2500,"can_bypass":false});
+    let mut server = Server::new(vec![Reply::json(200, body.clone())]).await;
+    let client = client(&server.origin);
+    assert_eq!(client.channel_slowmode("11").await.unwrap(), body);
+    let request = server.next().await;
+    assert_eq!(request.line, "GET /api/v1/channels/11/slowmode HTTP/1.1");
     assert!(request.body.is_empty());
     assert!(request.headers.contains_key("authorization"));
 }

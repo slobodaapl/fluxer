@@ -75,34 +75,31 @@ impl Fluxer {
             Timer::after(Duration::from_millis(800)).await;
             let _ = handle.update(cx, |_, window, cx| {
                 let _ = entity.update(cx, |view, cx| {
-                    if mode == "slowmode" {
-                        if let Some(id) = view.state.selected_channel {
-                            if let Some(channel) = view.state.channels.get_mut(&id) {
-                                channel.rate_limit_per_user = 15;
-                            }
-                            // Restrict the synthetic current account only, leaving fixture targets visible.
-                            if let Some(user) = view.state.current_user.as_ref() {
-                                if let Some(guild) = view
-                                    .state
-                                    .channels
-                                    .get(&id)
-                                    .and_then(|c| c.guild_id)
-                                    .and_then(|id| view.state.guilds.get_mut(&id))
-                                {
-                                    guild.owner_id = Snowflake(999);
-                                    for role in &mut guild.roles {
-                                        role.permissions = fluxer_core::Permissions::VIEW_CHANNEL
-                                            | fluxer_core::Permissions::SEND_MESSAGES;
-                                    }
-                                    if let Some(member) =
-                                        view.state.members.get_mut(&(guild.id, user.id))
-                                    {
-                                        member.roles.clear();
-                                    }
-                                }
-                            }
-                            view.slowmode.sent(id);
+                    if mode == "slowmode"
+                        && let Some(id) = view.state.selected_channel
+                    {
+                        if let Some(channel) = view.state.channels.get_mut(&id) {
+                            channel.rate_limit_per_user = 15;
                         }
+                        // Restrict the synthetic current account only, leaving fixture targets visible.
+                        if let Some(user) = view.state.current_user.as_ref()
+                            && let Some(guild) = view
+                                .state
+                                .channels
+                                .get(&id)
+                                .and_then(|c| c.guild_id)
+                                .and_then(|id| view.state.guilds.get_mut(&id))
+                        {
+                            guild.owner_id = Snowflake(999);
+                            for role in &mut guild.roles {
+                                role.permissions = fluxer_core::Permissions::VIEW_CHANNEL
+                                    | fluxer_core::Permissions::SEND_MESSAGES;
+                            }
+                            if let Some(member) = view.state.members.get_mut(&(guild.id, user.id)) {
+                                member.roles.clear();
+                            }
+                        }
+                        view.slowmode.sent(id);
                     }
                     let text = match mode.as_str() {
                         "channel" => "Meet in #",

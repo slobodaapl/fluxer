@@ -552,7 +552,10 @@ async fn one_to_one_dm_uses_recipient_id_request_shape() {
     let result = client.create_dm("42").await.unwrap();
     assert_eq!(result["id"], "90");
     let request = requests.recv().await.unwrap();
-    assert!(request.starts_with("POST /api/v1/users/@me/channels "), "{request}");
+    assert!(
+        request.starts_with("POST /api/v1/users/@me/channels "),
+        "{request}"
+    );
     let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body, json!({"recipient_id":"42"}));
 }

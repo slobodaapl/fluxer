@@ -64,10 +64,6 @@ impl Dropdown {
         }
     }
 
-    pub fn focus(&self, window: &mut Window, _: &mut Context<Self>) {
-        window.focus(&self.focus);
-    }
-
     pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         if self.open {
             self.open = false;

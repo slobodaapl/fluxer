@@ -364,27 +364,25 @@ fn delivery(
                     return;
                 };
                 for signal in signals {
-                    if let Ok((id, action)) = signal.body().deserialize::<(u32, String)>() {
-                        if action == "default"
-                            && let Ok(mut targets) = targets.lock()
-                            && let Some(target) = targets.remove(&id)
-                        {
-                            let _ = clicked.send(Feedback::Click(target));
-                        }
+                    if let Ok((id, action)) = signal.body().deserialize::<(u32, String)>()
+                        && action == "default"
+                        && let Ok(mut targets) = targets.lock()
+                        && let Some(target) = targets.remove(&id)
+                    {
+                        let _ = clicked.send(Feedback::Click(target));
                     }
                 }
             });
             service = Some(Freedesktop(connection));
         }
-        if let Some(service) = &service {
-            if let Some(id) = show_alert(service, &alert, &feedback)
-                && let Ok(mut targets) = targets.lock()
-            {
-                if targets.len() >= 256 {
-                    targets.clear();
-                }
-                targets.insert(id, alert.target);
+        if let Some(service) = &service
+            && let Some(id) = show_alert(service, &alert, &feedback)
+            && let Ok(mut targets) = targets.lock()
+        {
+            if targets.len() >= 256 {
+                targets.clear();
             }
+            targets.insert(id, alert.target);
         }
     }
 }
@@ -542,7 +540,7 @@ impl Fluxer {
     pub(super) fn notification_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::controls::toggle;
         div().flex().flex_col().gap_3().child(heading("Notifications"))
-            .children([("desktop","Desktop notifications",self.native_notifications.preferences.desktop),("sound","Message sounds",self.native_notifications.preferences.sound),("privacy","Hide notification message previews",self.native_notifications.preferences.hide_preview),("streamer","Streamer mode · suppress notifications and sounds",self.native_notifications.preferences.streamer)].into_iter().map(|(id,label,enabled)|div().flex().items_center().gap_3().child(div().flex_1().child(label)).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match id{"desktop"=>this.native_notifications.preferences.desktop=!enabled,"sound"=>this.native_notifications.preferences.sound=!enabled,"privacy"=>this.native_notifications.preferences.hide_preview=!enabled,_=>this.native_notifications.preferences.streamer=!enabled};this.native_notifications.save();cx.notify();})))))
+            .children([("desktop","Desktop notifications",self.native_notifications.preferences.desktop),("sound","Message sounds",self.native_notifications.preferences.sound),("privacy","Hide notification message previews",self.native_notifications.preferences.hide_preview),("streamer","Streamer mode · suppress notifications and sounds",self.native_notifications.preferences.streamer)].into_iter().map(|(id,label,enabled)|div().flex().items_center().gap_3().child(div().flex_1().child(label)).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match id{"desktop"=>this.native_notifications.preferences.desktop= !enabled,"sound"=>this.native_notifications.preferences.sound= !enabled,"privacy"=>this.native_notifications.preferences.hide_preview= !enabled,_=>this.native_notifications.preferences.streamer= !enabled};this.native_notifications.save();cx.notify();})))))
             .when_some(self.native_notifications.status.clone(),|view,error|view.child(div().text_size(px(12.)).text_color(rgb(0xf0a1b5)).child(error)))
             .child(muted("Only new messages notify. Do Not Disturb, muted channels and message notification settings apply.")).into_any_element()
     }
