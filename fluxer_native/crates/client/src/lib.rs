@@ -2,6 +2,7 @@
 //! Tokio worker; GPUI sends commands and polls coalesced presentation events.
 mod attachments;
 mod audio_preferences;
+pub use audio_preferences::UserAudioPreference;
 mod navigation;
 mod worker;
 
@@ -255,6 +256,10 @@ pub enum Command {
     RefreshDevices,
     SetInputDevice(String),
     SetOutputDevice(String),
+    SetUserAudioPreference {
+        user: Snowflake,
+        preference: UserAudioPreference,
+    },
     SetDsp(AudioSettings),
     SetMixer(AudioMixSettings),
     SetPushToTalkPressed(bool),
@@ -385,6 +390,7 @@ pub enum Event {
         mixer: AudioMixSettings,
         input: (String, String),
         output: (String, String),
+        users: std::collections::BTreeMap<String, UserAudioPreference>,
     },
     ScreenSources(Vec<ScreenSource>),
     AudioApplications(Vec<fluxer_media::AudioApplication>),

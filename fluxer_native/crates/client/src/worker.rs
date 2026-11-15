@@ -533,13 +533,13 @@ impl Worker {
                     {
                         self.emit(Event::Error(message));
                     }
-                    if let (Some(media), Ok(Ok(result))) = (&mut self.media, result) {
-                        if let Some(devices) = media.finish_device_recovery(result) {
-                            self.remember_device_labels(&devices);
-                            if last_devices.as_ref() != Some(&devices) {
-                                last_devices = Some(devices.clone());
-                                self.emit(Event::Devices(devices));
-                            }
+                    if let (Some(media), Ok(Ok(result))) = (&mut self.media, result)
+                        && let Some(devices) = media.finish_device_recovery(result)
+                    {
+                        self.remember_device_labels(&devices);
+                        if last_devices.as_ref() != Some(&devices) {
+                            last_devices = Some(devices.clone());
+                            self.emit(Event::Devices(devices));
                         }
                     }
                     Ok(())
@@ -1407,6 +1407,18 @@ impl Worker {
                 }
                 result.map_err(error)?;
             }
+            Command::SetUserAudioPreference { user, preference } => {
+                if preference
+                    .gain
+                    .is_some_and(|g| !g.is_finite() || !(0.0..=2.0).contains(&g))
+                {
+                    return Err("Invalid user audio preference".into());
+                }
+                self.audio_preferences
+                    .users
+                    .insert(user.to_string(), preference);
+                self.persist_audio_preferences();
+            }
             Command::SetDsp(settings) => {
                 self.media()?.configure(settings.clone()).map_err(error)?;
                 self.audio_preferences.dsp = settings;
@@ -1716,6 +1728,7 @@ impl Worker {
                 self.audio_preferences.output.clone(),
                 self.audio_preferences.output_label.clone(),
             ),
+            users: self.audio_preferences.users.clone(),
         });
         self.saved_session = Some(SavedSession {
             instance: client.instance().clone(),
@@ -2227,6 +2240,21 @@ impl Worker {
                     }
                     self.sync_stream_availability().await?;
                     self.snapshot();
+                    if name == "READY" {
+                        self.emit(Event::AudioPreferences {
+                            dsp: self.audio_preferences.dsp.clone(),
+                            mixer: self.audio_preferences.mixer.clone(),
+                            input: (
+                                self.audio_preferences.input.clone(),
+                                self.audio_preferences.input_label.clone(),
+                            ),
+                            output: (
+                                self.audio_preferences.output.clone(),
+                                self.audio_preferences.output_label.clone(),
+                            ),
+                            users: self.audio_preferences.users.clone(),
+                        });
+                    }
                     if name == "READY" && self.restoring_gateway {
                         self.restoring_gateway = false;
                         self.emit(Event::SessionRestoring(false));

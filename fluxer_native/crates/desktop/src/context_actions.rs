@@ -21,8 +21,8 @@ pub(super) enum Target {
 }
 #[derive(Default, Clone, Copy)]
 pub(super) struct UserAudioOverride {
-    muted: Option<bool>,
-    gain: Option<f32>,
+    pub(super) muted: Option<bool>,
+    pub(super) gain: Option<f32>,
 }
 impl UserAudioOverride {
     pub fn apply(self, mut settings: ParticipantAudioSettings) -> ParticipantAudioSettings {
@@ -628,6 +628,17 @@ impl Fluxer {
     }
     fn change_user_audio(&mut self, user: Snowflake, change: AudioChange, cx: &mut Context<Self>) {
         change.remember(self.context.user_audio.entry(user).or_default());
+        let saved = self.context.user_audio[&user];
+        self.command_if_live(
+            Command::SetUserAudioPreference {
+                user,
+                preference: fluxer_client::UserAudioPreference {
+                    muted: saved.muted,
+                    gain: saved.gain,
+                },
+            },
+            cx,
+        );
         for identity in audio_identities(self.participants.keys(), user) {
             self.recompute_connection_audio(&identity, cx);
         }

@@ -8,6 +8,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct UserAudioPreference {
+    pub muted: Option<bool>,
+    pub gain: Option<f32>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AudioPreferences {
@@ -17,6 +22,7 @@ pub(crate) struct AudioPreferences {
     pub output_label: String,
     pub dsp: AudioSettings,
     pub mixer: AudioMixSettings,
+    pub users: BTreeMap<String, UserAudioPreference>,
 }
 impl Default for AudioPreferences {
     fn default() -> Self {
@@ -27,6 +33,7 @@ impl Default for AudioPreferences {
             output_label: "System Default".into(),
             dsp: AudioSettings::default(),
             mixer: AudioMixSettings::default(),
+            users: BTreeMap::new(),
         }
     }
 }
@@ -57,7 +64,15 @@ pub(crate) fn load(key: &str) -> Result<AudioPreferences, String> {
         return Err("Audio preferences location unavailable".into());
     };
     let prefs = read(&path)?.remove(key).unwrap_or_default();
-    if !prefs.mixer.validate() || prefs.input.is_empty() || prefs.output.is_empty() {
+    if !prefs.mixer.validate()
+        || prefs.input.is_empty()
+        || prefs.output.is_empty()
+        || prefs.users.iter().any(|(id, p)| {
+            id.parse::<fluxer_core::Snowflake>().is_err()
+                || p.gain
+                    .is_some_and(|gain| !gain.is_finite() || !(0.0..=2.0).contains(&gain))
+        })
+    {
         return Err("Saved audio preferences are invalid".into());
     }
     Ok(prefs)
@@ -91,6 +106,13 @@ mod tests {
         let path = dir.path().join("audio.json");
         let mut first = AudioPreferences::default();
         first.input = "input:usb".into();
+        first.users.insert(
+            "123".into(),
+            UserAudioPreference {
+                muted: Some(true),
+                gain: Some(0.5),
+            },
+        );
         save_at(&path, "https://one.example::1", &first).unwrap();
         save_at(
             &path,
@@ -100,6 +122,11 @@ mod tests {
         .unwrap();
         let stored = read(&path).unwrap();
         assert_eq!(stored["https://one.example::1"].input, "input:usb");
+        assert_eq!(
+            stored["https://one.example::1"].users["123"].gain,
+            Some(0.5)
+        );
+        assert!(stored["https://one.example::2"].users.is_empty());
         assert_eq!(stored["https://one.example::2"].input, "input:default");
         std::fs::write(&path, b"broken").unwrap();
         assert!(save_at(&path, "https://one.example::1", &first).is_err());

@@ -1049,7 +1049,22 @@ impl Fluxer {
                     mixer,
                     input,
                     output,
+                    users,
                 } => {
+                    self.context.user_audio = users
+                        .into_iter()
+                        .filter_map(|(id, preference)| {
+                            id.parse().ok().map(|id| {
+                                (
+                                    id,
+                                    context_actions::UserAudioOverride {
+                                        muted: preference.muted,
+                                        gain: preference.gain,
+                                    },
+                                )
+                            })
+                        })
+                        .collect();
                     self.dsp = dsp;
                     self.mixer = mixer;
                     let mode = match self.mixer.input_mode {
