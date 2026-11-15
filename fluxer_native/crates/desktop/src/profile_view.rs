@@ -8,6 +8,7 @@ use fluxer_client::{
 use fluxer_core::{Member, ProfileDetails, Role, Snowflake, User};
 use gpui::{prelude::*, *};
 
+#[derive(Clone)]
 pub(super) struct ProfileOpen {
     pub user: User,
     pub guild_id: Option<Snowflake>,
@@ -71,6 +72,7 @@ pub(super) struct ProfilePopup {
     selected: usize,
     armed: bool,
     copied: bool,
+    presenting_loading: bool,
     confirm_blocked_dm: bool,
     confirm_block: bool,
     dm_status: Option<DirectMessageStatus>,
@@ -88,6 +90,7 @@ impl ProfilePopup {
             selected: 0,
             armed: false,
             copied: false,
+            presenting_loading: false,
             confirm_blocked_dm: false,
             confirm_block: false,
             dm_status: None,
@@ -106,6 +109,7 @@ impl ProfilePopup {
         }
         self.open = Some(config);
         self.snapshot = None;
+        self.presenting_loading = true;
         self.scroll = ScrollHandle::new();
         self.selected = 0;
         self.armed = false;
@@ -287,6 +291,11 @@ impl ProfilePopup {
         }
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presenting_loading && event.keystroke.key != "escape" {
+            self.armed = false;
+            cx.stop_propagation();
+            return;
+        }
         match event.keystroke.key.as_str() {
             "escape" => {
                 if self.confirm_blocked_dm || self.confirm_block {
@@ -336,6 +345,11 @@ impl ProfilePopup {
         cx.stop_propagation();
     }
     fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.presenting_loading {
+            self.armed = false;
+            cx.stop_propagation();
+            return;
+        }
         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
             let armed = std::mem::take(&mut self.armed);
             if armed && !event.keystroke.modifiers.modified() {
@@ -427,6 +441,107 @@ fn placement(anchor: Point<Pixels>, viewport: Size<Pixels>) -> (Point<Pixels>, f
         width,
         height,
     )
+}
+
+impl ProfilePopup {
+    fn surface(&self, content: AnyElement, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(open) = &self.open else {
+            return div().into_any_element();
+        };
+        let (origin, width, height) = placement(open.anchor, window.viewport_size());
+        deferred(
+            anchored()
+                .position_mode(AnchoredPositionMode::Window)
+                .position(origin)
+                .anchor(Corner::TopLeft)
+                .snap_to_window_with_margin(px(8.))
+                .child(
+                    div()
+                        .id("native-profile-popup")
+                        .track_focus(&self.focus)
+                        .occlude()
+                        .w(px(width))
+                        .max_h(px(height))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(0x4c4458))
+                        .bg(rgb(0x232428))
+                        .text_color(rgb(0xf2f3f5))
+                        .shadow_lg()
+                        .on_mouse_down_out(
+                            cx.listener(|this, _, window, cx| this.dismiss(window, cx)),
+                        )
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .capture_key_down(cx.listener(Self::key_down))
+                        .capture_key_up(cx.listener(Self::key_up))
+                        .child(content),
+                ),
+        )
+        .with_priority(9)
+        .into_any_element()
+    }
+    fn loading_surface(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        // Match the classic popout skeleton: reserve the banner/avatar geometry,
+        // without briefly presenting a different accent, avatar or partial bio.
+        self.surface(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(
+                    div().relative().h(px(105.)).bg(rgb(0x35363c)).child(
+                        div()
+                            .absolute()
+                            .left(px(10.))
+                            .top(px(55.))
+                            .size(px(88.))
+                            .rounded_full()
+                            .border_4()
+                            .border_color(rgb(0x232428))
+                            .bg(rgb(0x44464e)),
+                    ),
+                )
+                .child(
+                    div()
+                        .pt(px(52.))
+                        .pb_6()
+                        .px_3()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(div().w(px(145.)).h(px(18.)).rounded_md().bg(rgb(0x35363c)))
+                        .child(div().w(px(95.)).h(px(12.)).rounded_md().bg(rgb(0x35363c)))
+                        .child(
+                            div()
+                                .mt_2()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .text_size(px(12.))
+                                .text_color(rgb(0xb5bac1))
+                                .child(
+                                    crate::controls::icon(crate::controls::Icon::Refresh, 14.)
+                                        .with_animation(
+                                            "profile-loading",
+                                            Animation::new(std::time::Duration::from_millis(900))
+                                                .repeat(),
+                                            |icon, delta| {
+                                                icon.with_transformation(Transformation::rotate(
+                                                    percentage(delta),
+                                                ))
+                                            },
+                                        ),
+                                )
+                                .child("Loading profile…"),
+                        ),
+                )
+                .into_any_element(),
+            window,
+            cx,
+        )
+    }
 }
 
 impl Render for ProfilePopup {
@@ -567,6 +682,33 @@ impl Render for ProfilePopup {
                 open.media_endpoint.as_deref(),
             )
         });
+        let avatar_url = crate::avatar_images::profile_avatar_url(
+            user,
+            member,
+            open.guild_id,
+            open.media_endpoint.as_deref(),
+        );
+        // Use the same URL/resource keys as Img, sharing its in-flight work and
+        // decoded cache. Errors are settled too: show the normal accent/default
+        // avatar instead of keeping a failed image behind an endless spinner.
+        let mut assets_pending = false;
+        for url in [banner_url.as_ref(), avatar_url.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            assets_pending |= window
+                .use_asset::<ImgResourceLoader>(&Resource::Uri(url.clone().into()), cx)
+                .is_none();
+        }
+        let metadata_pending = !open.webhook
+            && self
+                .snapshot
+                .as_ref()
+                .is_none_or(|snapshot| matches!(snapshot.status, ProfileStatus::Loading));
+        self.presenting_loading = metadata_pending || assets_pending;
+        if self.presenting_loading {
+            return self.loading_surface(window, cx);
+        }
         let avatar = crate::avatar_images::profile_avatar(
             user,
             member,
@@ -574,7 +716,6 @@ impl Render for ProfilePopup {
             open.media_endpoint.as_deref(),
             80.,
         );
-        let (origin, width, height) = placement(open.anchor, window.viewport_size());
         let mut content = div()
             .flex()
             .flex_col()
@@ -902,7 +1043,13 @@ impl Render for ProfilePopup {
             .flex_shrink_0()
             .bg(rgb(accent_color))
             .when_some(banner_url, |view, url| {
-                view.child(img(url).w_full().h(px(105.)).object_fit(ObjectFit::Cover))
+                view.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .overflow_hidden()
+                        .child(img(url).size_full().object_fit(ObjectFit::Cover)),
+                )
             })
             .child(
                 div()
@@ -915,39 +1062,11 @@ impl Render for ProfilePopup {
                     .p_1()
                     .child(avatar),
             );
-        deferred(
-            anchored()
-                .position_mode(AnchoredPositionMode::Window)
-                .position(origin)
-                .anchor(Corner::TopLeft)
-                .snap_to_window_with_margin(px(8.))
-                .child(
-                    div()
-                        .id("native-profile-popup")
-                        .track_focus(&self.focus)
-                        .occlude()
-                        .w(px(width))
-                        .max_h(px(height))
-                        .overflow_y_scroll()
-                        .track_scroll(&self.scroll)
-                        .rounded_lg()
-                        .border_1()
-                        .border_color(rgb(0x4c4458))
-                        .bg(rgb(0x232428))
-                        .text_color(rgb(0xf2f3f5))
-                        .shadow_lg()
-                        .on_mouse_down_out(
-                            cx.listener(|this, _, window, cx| this.dismiss(window, cx)),
-                        )
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .capture_key_down(cx.listener(Self::key_down))
-                        .capture_key_up(cx.listener(Self::key_up))
-                        .child(header)
-                        .child(content),
-                ),
+        self.surface(
+            div().child(header).child(content).into_any_element(),
+            window,
+            cx,
         )
-        .with_priority(9)
-        .into_any_element()
     }
 }
 

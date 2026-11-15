@@ -9,6 +9,10 @@ impl Fluxer {
         let Ok(mode) = std::env::var("FLUXER_PROFILE_DEMO") else {
             return;
         };
+        if matches!(mode.as_str(), "loading" | "loading-error") {
+            self.schedule_profile_background_demo(mode == "loading-error", window, cx);
+            return;
+        }
         if !matches!(
             mode.as_str(),
             "basic" | "edge" | "long" | "error" | "limited" | "webhook" | "keyboard" | "hitboxes"
@@ -52,4 +56,129 @@ impl Fluxer {
             });
         }).detach();
     }
+}
+
+impl Fluxer {
+    fn schedule_profile_background_demo(
+        &self,
+        fail: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(endpoint) = delayed_profile_images(fail) else {
+            return;
+        };
+        let handle = window.window_handle();
+        cx.spawn(async move |entity, cx| {
+            Timer::after(Duration::from_millis(800)).await;
+            let mut fixture = None;
+            let _ = handle.update(cx, |_, window, cx| {
+                let _ = entity.update(cx, |view, cx| {
+                    let mut user = view.profile_user(Snowflake(101), "Alex");
+                    user.avatar = Some("fixture_avatar".into());
+                    let open = profile_view::ProfileOpen {
+                        user: user.clone(),
+                        guild_id: None,
+                        member: None,
+                        roles: vec![],
+                        media_endpoint: Some(endpoint),
+                        community_name: None,
+                        anchor: point(px(330.), px(100.)),
+                        webhook: false,
+                        can_message: false,
+                        blocked: false,
+                        friend_action: None,
+                        can_relationship: false,
+                    };
+                    let snapshot = fluxer_client::ProfileSnapshot {
+                        user_id: user.id,
+                        guild_id: None,
+                        status: fluxer_client::ProfileStatus::Ready,
+                        profile: Some(Box::new(fluxer_core::UserProfile {
+                            user,
+                            user_profile: fluxer_core::ProfileDetails {
+                                banner: Some("fixture_banner".into()),
+                                accent_color: Some(0x5865f2),
+                                bio: Some(
+                                    "Delayed image fixture. Reopens with the same cached assets."
+                                        .into(),
+                                ),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        })),
+                    };
+                    view.profile_ui.popup.update(cx, |popup, cx| {
+                        popup.open(open.clone(), window, cx);
+                        popup.apply_snapshot(snapshot.clone(), cx);
+                    });
+                    fixture = Some((open, snapshot));
+                });
+            });
+            Timer::after(Duration::from_secs(3)).await;
+            if let Some((open, snapshot)) = fixture {
+                let _ = handle.update(cx, |_, window, cx| {
+                    let _ = entity.update(cx, |view, cx| {
+                        view.profile_ui.popup.update(cx, |popup, cx| {
+                            popup.dismiss(window, cx);
+                            popup.open(open, window, cx);
+                            popup.apply_snapshot(snapshot, cx);
+                            eprintln!("PROFILE_ASSET_REOPEN");
+                        })
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+}
+fn delayed_profile_images(fail: bool) -> Option<String> {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+    let endpoint = format!("http://{}", listener.local_addr().ok()?);
+    std::thread::spawn(move || {
+        let banners = Arc::new(AtomicUsize::new(0));
+        let avatars = Arc::new(AtomicUsize::new(0));
+        for mut stream in listener.incoming().flatten() {
+            let banners = banners.clone();
+            let avatars = avatars.clone();
+            std::thread::spawn(move || {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+                let mut request = [0u8; 4096];
+                let Ok(count) = stream.read(&mut request) else {
+                    return;
+                };
+                let banner =
+                    String::from_utf8_lossy(&request[..count]).starts_with("GET /banners/");
+                let request_count = if banner {
+                    banners.fetch_add(1, Ordering::Relaxed)
+                } else {
+                    avatars.fetch_add(1, Ordering::Relaxed)
+                } + 1;
+                eprintln!(
+                    "PROFILE_ASSET_REQUEST kind={} count={request_count}",
+                    if banner { "banner" } else { "avatar" }
+                );
+                std::thread::sleep(Duration::from_millis(if banner { 1200 } else { 300 }));
+                let bytes = include_bytes!("../../../../fluxer_app/src/media/images/avatars/1.png");
+                let status = if fail && banner {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = stream.write_all(bytes);
+            });
+        }
+    });
+    Some(endpoint)
 }

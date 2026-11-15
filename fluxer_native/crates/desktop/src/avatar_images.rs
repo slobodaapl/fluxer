@@ -138,15 +138,23 @@ pub(super) fn profile_avatar(
     media: Option<&str>,
     size: f32,
 ) -> AnyElement {
-    let url = member_avatar_url(
+    let url = profile_avatar_url(user, member, guild, media);
+    render_avatar(user.id, user.display_name(), url, false, size)
+}
+pub(super) fn profile_avatar_url(
+    user: &User,
+    member: Option<&fluxer_core::Member>,
+    guild: Option<Snowflake>,
+    media: Option<&str>,
+) -> Option<String> {
+    member_avatar_url(
         user.id,
         guild,
         user.avatar.as_deref(),
         member.and_then(|m| m.avatar.as_deref()),
         member.and_then(|m| m.profile_flags).unwrap_or(0) & 1 != 0,
         media,
-    );
-    render_avatar(user.id, user.display_name(), url, false, size)
+    )
 }
 fn guild_icon_url(guild: &Guild, media: Option<&str>) -> Option<String> {
     media_url(
