@@ -973,6 +973,46 @@ async fn demo_never_initializes_capture_or_claims_voice_transmission() {
 }
 
 #[tokio::test]
+async fn replacement_revokes_pending_share_and_advertises_no_stream_without_capture() {
+    let (mut worker, events) = worker();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("replacement".into()),
+    });
+    worker.state.voice.join(100.into());
+    worker.state.voice.set_muted(true);
+    worker.state.voice.screen_share = true;
+    worker.pending_share = Some(PendingShare {
+        audio: Some(SharedAudioSelection::System),
+    });
+    worker.active_share_audio = true;
+    assert!(worker.revoke_share_for_replacement());
+    assert!(worker.pending_share.is_none());
+    assert!(!worker.active_share_audio && !worker.state.voice.screen_share);
+    assert!(worker.state.voice.muted);
+    assert!(worker.media.is_none(), "revocation must not create capture");
+    worker.state.voice.disconnect();
+    worker.state.voice.join(100.into());
+    let (tx, mut gateway) = async_mpsc::channel(1);
+    worker.gateway_commands = Some(tx);
+    worker.update_voice().await.unwrap();
+    match gateway.recv().await.unwrap() {
+        GatewayCommand::VoiceState(payload) => {
+            assert!(!payload.self_stream);
+            assert!(payload.self_mute);
+        }
+        _ => panic!("expected voice state"),
+    }
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::SharedAudioStatus(false)))
+    );
+    assert!(!worker.revoke_share_for_replacement());
+}
+
+#[tokio::test]
 async fn capture_events_drive_sharing_state_gateway_and_ui_without_opening_media() {
     let (mut worker, events) = worker();
     worker.voice_target = Some(VoiceTarget {

@@ -2544,6 +2544,24 @@ impl Worker {
         Ok(())
     }
 
+    /// Revoke old share intent before a replacement room tears down capture.
+    /// MediaEngineFacade.stopActiveScreenShareForTeardown and
+    /// VoiceEngineV2AppScreenShareStateSync drive the matching self_stream state;
+    /// native does not retain or silently reacquire OS capture across replacement.
+    fn revoke_share_for_replacement(&mut self) -> bool {
+        let had_share = self.pending_share.is_some()
+            || self.active_share_audio
+            || self.state.voice.screen_share;
+        self.pending_share = None;
+        self.active_share_audio = false;
+        self.state.voice.screen_share = false;
+        if had_share {
+            self.emit(Event::Media(MediaEvent::ScreenShareStopped));
+            self.emit(Event::SharedAudioStatus(false));
+        }
+        had_share
+    }
+
     async fn connect_voice(&mut self, update: VoiceServerUpdate) -> Result<()> {
         // The existing HostAdapter selects mesh for this payload. Native only
         // implements SFU rooms; do not send mesh credentials into LiveKit or
@@ -2575,6 +2593,7 @@ impl Worker {
         let bitrate = voice_channel_bitrate(&self.state, channel);
         let muted = self.state.voice.muted || self.server_muted;
         let deafened = self.state.voice.deafened || self.server_deafened;
+        let revoked_share = self.revoke_share_for_replacement();
         self.media_events = None;
         self.state.voice.disconnect();
         // Replace transport handles while preserving explicit watch intent and
@@ -2630,6 +2649,9 @@ impl Worker {
                 self.voice_credentials = Some(update);
                 self.voice_join_deadline = None;
                 self.state.voice.join(channel);
+                if revoked_share && let Err(message) = self.update_voice().await {
+                    self.emit(Event::Error(message));
+                }
                 self.sync_stream_availability().await?;
                 self.emit(Event::WatchedStreams(
                     self.watched_streams.iter().cloned().collect(),
