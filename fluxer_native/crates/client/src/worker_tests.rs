@@ -2152,3 +2152,51 @@ async fn demo_custom_reactions_toggle_by_id_and_forward_does_not_copy_author_ide
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn open_dm_failure_keeps_navigation_and_account_state() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        assert!(request.starts_with("POST /api/v1/users/@me/channels "));
+        assert_eq!(
+            serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+            json!({"recipient_id":"42"})
+        );
+        let body = json!({"code":"CANNOT_SEND_MESSAGES_TO_USER"}).to_string();
+        socket.write_all(format!("HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.selected_channel = Some(11.into());
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    let before = worker.state.channels.clone();
+    assert!(worker.open_dm(42.into()).await.is_err());
+    assert_eq!(worker.state.selected_channel, Some(11.into()));
+    assert_eq!(worker.state.channels, before);
+    server.await.unwrap();
+    worker.reset().await;
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.open_dm(42.into()).await.is_err());
+}
+
+#[tokio::test]
+async fn open_existing_dm_reuses_it_without_server_request() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.demo = true;
+    worker.state.channels.insert(
+        90.into(),
+        serde_json::from_value(json!({"id":"90","type":1,"recipients":[{"id":"42"}]})).unwrap(),
+    );
+    worker.open_dm(42.into()).await.unwrap();
+    assert_eq!(worker.state.selected_channel, Some(90.into()));
+}

@@ -149,19 +149,45 @@ impl ProfilePopup {
             cx.notify();
         }
     }
+    fn message(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = &self.open else { return };
+        if !open.can_message {
+            return;
+        }
+        if open.blocked && !self.confirm_blocked_dm {
+            self.confirm_blocked_dm = true;
+            self.selected = 0;
+            self.armed = false;
+            cx.notify();
+        } else {
+            cx.emit(ProfileAction::Message {
+                user_id: open.user.id,
+            });
+        }
+    }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
-            "escape" => self.dismiss(window, cx),
-            "tab" => {
-                self.selected = if self.failed() {
-                    1 - self.selected.min(1)
+            "escape" => {
+                if self.confirm_blocked_dm {
+                    self.confirm_blocked_dm = false;
+                    self.armed = false;
+                    cx.notify();
                 } else {
-                    0
+                    self.dismiss(window, cx);
+                }
+            }
+            "tab" => {
+                let count = if self.confirm_blocked_dm {
+                    2
+                } else {
+                    1 + usize::from(self.failed())
+                        + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
                 };
+                self.selected = (self.selected + 1) % count;
                 self.armed = false;
                 cx.notify();
             }
-            "enter" | "space" => {
+            "enter" | "space" if !event.keystroke.modifiers.modified() => {
                 if !event.is_held {
                     self.armed = true;
                 }
@@ -181,9 +207,24 @@ impl ProfilePopup {
         cx.stop_propagation();
     }
     fn key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if matches!(event.keystroke.key.as_str(), "enter" | "space") && self.armed {
-            self.armed = false;
-            self.activate(self.selected == 1 && self.failed(), cx);
+        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+            let armed = std::mem::take(&mut self.armed);
+            if armed && !event.keystroke.modifiers.modified() {
+                if self.confirm_blocked_dm {
+                    if self.selected == 0 {
+                        self.confirm_blocked_dm = false;
+                        cx.notify();
+                    } else {
+                        self.message(cx);
+                    }
+                } else if self.selected == 0 {
+                    self.activate(false, cx);
+                } else if self.failed() && self.selected == 1 {
+                    self.activate(true, cx);
+                } else {
+                    self.message(cx);
+                }
+            }
         }
         cx.stop_propagation();
     }
@@ -252,6 +293,83 @@ impl Render for ProfilePopup {
         let Some(open) = &self.open else {
             return div().into_any_element();
         };
+        if self.confirm_blocked_dm {
+            let name = open.user.display_name().to_owned();
+            return div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000099))
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .id("blocked-dm-confirm")
+                        .track_focus(&self.focus)
+                        .w(px(420.))
+                        .p_5()
+                        .rounded_lg()
+                        .bg(rgb(0x232428))
+                        .text_color(rgb(0xf2f3f5))
+                        .shadow_lg()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .capture_key_down(cx.listener(Self::key_down))
+                        .capture_key_up(cx.listener(Self::key_up))
+                        .child(
+                            div()
+                                .text_size(px(20.))
+                                .font_weight(FontWeight::BOLD)
+                                .child("Open DM"),
+                        )
+                        .child(format!(
+                            "{name} is blocked. Are you sure you want to open a direct message?"
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .id("blocked-dm-cancel")
+                                        .cursor_pointer()
+                                        .px_3()
+                                        .py_2()
+                                        .rounded_md()
+                                        .bg(rgb(if self.selected == 0 {
+                                            0x535064
+                                        } else {
+                                            0x383a40
+                                        }))
+                                        .child("Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_blocked_dm = false;
+                                            this.armed = false;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .id("blocked-dm-accept")
+                                        .cursor_pointer()
+                                        .px_3()
+                                        .py_2()
+                                        .rounded_md()
+                                        .bg(rgb(if self.selected == 1 {
+                                            0x7289ef
+                                        } else {
+                                            0x5865f2
+                                        }))
+                                        .child("Open DM")
+                                        .on_click(cx.listener(|this, _, _, cx| this.message(cx))),
+                                ),
+                        ),
+                )
+                .into_any_element();
+        }
         let profile = self
             .snapshot
             .as_ref()
@@ -506,25 +624,10 @@ impl Render for ProfilePopup {
                     .rounded_md()
                     .bg(rgb(0x5865f2))
                     .text_size(px(12.))
-                    .child(if self.confirm_blocked_dm {
-                        "This user is blocked. Open DM anyway?"
-                    } else if open.blocked {
-                        "Open DM"
-                    } else {
-                        "Message"
-                    })
+                    .child(if open.blocked { "Open DM" } else { "Message" })
                     .on_click(cx.listener(|this, _, _, cx| {
                         cx.stop_propagation();
-                        if let Some(open) = &this.open {
-                            if open.blocked && !this.confirm_blocked_dm {
-                                this.confirm_blocked_dm = true;
-                                cx.notify();
-                            } else {
-                                cx.emit(ProfileAction::Message {
-                                    user_id: open.user.id,
-                                });
-                            }
-                        }
+                        this.message(cx);
                     })),
             );
         }
