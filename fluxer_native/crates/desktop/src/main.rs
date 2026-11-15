@@ -17,6 +17,7 @@ mod diagnostics;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
+mod external_control;
 mod friends_view;
 mod gif_demo;
 mod image_demo;
@@ -41,6 +42,7 @@ mod message_demo;
 mod message_grouping;
 mod message_links;
 mod message_markup;
+mod native_preferences;
 mod navigation_actions;
 mod outbox_view;
 mod pin_system_message;
@@ -54,7 +56,6 @@ mod rich_message;
 mod scrollbar;
 mod search_browser;
 mod settings_view;
-mod native_preferences;
 mod status_view;
 mod stream_grid;
 mod stream_layout;
@@ -303,6 +304,7 @@ enum EmojiTarget {
 
 struct Fluxer {
     focus: FocusHandle,
+    _external_control: Option<external_control::ExternalControl>,
     controller: Option<Controller>,
     state: ClientState,
     demo: bool,
@@ -414,6 +416,13 @@ impl Fluxer {
         let error = controller.as_ref().err().cloned();
         let controller = controller.ok();
         let session_restoring = !demo && controller.is_some();
+        let external_control = if !demo && cfg!(target_os = "linux") {
+            controller.as_ref().map(|controller| {
+                external_control::ExternalControl::start(controller.call_control())
+            })
+        } else {
+            None
+        };
         let instance = cx.new(|cx| TextInput::new("Instance URL", cx));
         instance.update(cx, |v, cx| v.set("https://web.fluxer.app/api".into(), cx));
         let password = cx.new(|cx| {
@@ -423,6 +432,7 @@ impl Fluxer {
         });
         let mut view = Self {
             focus: cx.focus_handle(),
+            _external_control: external_control,
             controller,
             state: ClientState::default(),
             demo,
@@ -831,11 +841,17 @@ impl Fluxer {
             match event {
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::DisplaySettingsMutation(status) => {
-                    self.interface.server_pending = matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
-                    self.interface.server_error = match status {fluxer_client::RelationshipMutationStatus::Failed(message)=>Some(message),_=>None};
-                    if !self.interface.server_pending {self.interface.font_draft=None;}
+                    self.interface.server_pending =
+                        matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
+                    self.interface.server_error = match status {
+                        fluxer_client::RelationshipMutationStatus::Failed(message) => Some(message),
+                        _ => None,
+                    };
+                    if !self.interface.server_pending {
+                        self.interface.font_draft = None;
+                    }
                     cx.notify();
-                },
+                }
                 Event::DirectMessageOpen { user_id, status } => {
                     self.friends_ui.dm_status.insert(user_id, status.clone());
                     self.profile_ui

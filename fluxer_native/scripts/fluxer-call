@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Explicit local call actions for StreamDeck/desktop launchers; no key injection.
+set -euo pipefail
+usage() {
+    echo 'Usage: fluxer-call [status|watch|toggle-mute|mute|unmute|toggle-deafen|deafen|undeafen|disconnect|stop-sharing]'
+}
+if [[ $# -gt 1 ]]; then usage >&2; exit 2; fi
+case "${1:-status}" in
+    -h|--help|help) usage; exit 0 ;;
+    status) method='org.freedesktop.DBus.Properties.GetAll'; arguments=('app.fluxer.Native.Call1') ;;
+    watch) exec gdbus monitor --session --dest app.fluxer.Native --object-path /app/fluxer/Native/Call ;;
+    toggle-mute) method='app.fluxer.Native.Call1.ToggleMute'; arguments=() ;;
+    mute) method='app.fluxer.Native.Call1.SetMuted'; arguments=(true) ;;
+    unmute) method='app.fluxer.Native.Call1.SetMuted'; arguments=(false) ;;
+    toggle-deafen) method='app.fluxer.Native.Call1.ToggleDeafen'; arguments=() ;;
+    deafen) method='app.fluxer.Native.Call1.SetDeafened'; arguments=(true) ;;
+    undeafen) method='app.fluxer.Native.Call1.SetDeafened'; arguments=(false) ;;
+    disconnect) method='app.fluxer.Native.Call1.Disconnect'; arguments=() ;;
+    stop-sharing) method='app.fluxer.Native.Call1.StopSharing'; arguments=() ;;
+    *) usage >&2; exit 2 ;;
+esac
+exec gdbus call --session --timeout 5 --dest app.fluxer.Native \
+    --object-path /app/fluxer/Native/Call --method "$method" "${arguments[@]}"
