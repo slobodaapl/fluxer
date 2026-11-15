@@ -2,6 +2,7 @@
 mod attachment_composer;
 mod composer_candidates;
 mod desktop_notifications;
+mod quick_switcher;
 mod composer_slowmode;
 mod audio_view;
 mod avatar_demo;
@@ -104,6 +105,7 @@ actions!(
         Quit,
         OpenSettings,
         OpenSearch,
+        OpenQuickSwitcher,
         StopWatching,
         PickerLeft,
         PickerRight,
@@ -308,6 +310,7 @@ struct Fluxer {
     composer: Entity<TextInput>,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
+    quick_switcher: quick_switcher::QuickSwitcher,
     composer_member_query: Option<(Snowflake,String)>,
     composer_query_generation: u64,
     context: context_actions::ContextUi,
@@ -420,6 +423,7 @@ impl Fluxer {
             selected_guild: None,
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
+            quick_switcher: quick_switcher::QuickSwitcher::new(cx),
             composer_member_query: None,
             composer_query_generation: 0,
             composer: cx.new(|cx| {
@@ -633,6 +637,7 @@ impl Fluxer {
             this.stage_clipboard_image(image, cx);
         })
         .detach();
+        cx.observe(&view.quick_switcher.input,|_,_,cx|cx.notify()).detach();
         cx.observe(&view.composer, |this, _, cx| {
             this.refresh_composer_completion(cx);
             this.schedule_composer_member_query(cx);
@@ -706,6 +711,7 @@ impl Fluxer {
         view.schedule_read_menu_demo(window, cx);
         view.schedule_profile_demo(window, cx);
         view.schedule_composer_demo(window, cx);
+        view.schedule_quick_switcher_demo(window,cx);
         view
     }
 
@@ -1438,6 +1444,7 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.quick_switcher.open { return; }
         if self.composer.focus_handle(cx).is_focused(window) {
             if self.composer.read(cx).is_composing() || self.composer.read(cx).completion_enter_guard { return; }
             if self.composer.update(cx, |input,cx| input.completion_key("enter",false,window,cx)) { return; }
@@ -1540,6 +1547,7 @@ impl Fluxer {
     }
 
     fn select(&mut self, id: Snowflake, cx: &mut Context<Self>) {
+        self.quick_switcher.visit(id);
         self.reset_context_menu(cx);
         self.reset_ack_context(id);
         self.search_ui.return_to_latest_on_select(id);
@@ -2428,6 +2436,7 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerConfirm, window, cx| this.picker_key("enter", window, cx)))
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(|this,_:&OpenQuickSwitcher,window,cx|this.open_quick_switcher(window,cx)))
             .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.context_menu_open(cx) && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
             .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
@@ -2489,7 +2498,8 @@ impl Render for Fluxer {
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
         let rendered = rendered
             .child(self.image_viewer_overlay(window, cx))
-            .child(self.playback.overlay(window, cx));
+            .child(self.playback.overlay(window, cx))
+            .child(self.quick_switcher_overlay(window,cx));
         self.playback.finish_frame(cx);
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());
@@ -2531,6 +2541,10 @@ fn main() {
                 KeyBinding::new("escape", PickerDismiss, Some("ChatPicker")),
                 KeyBinding::new("ctrl-q", Quit, None),
                 KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("ctrl-k",OpenQuickSwitcher,None),
+                KeyBinding::new("ctrl-t",OpenQuickSwitcher,None),
+                KeyBinding::new("cmd-k",OpenQuickSwitcher,None),
+                KeyBinding::new("cmd-t",OpenQuickSwitcher,None),
                 KeyBinding::new("ctrl-f", OpenSearch, None),
                 KeyBinding::new("cmd-f", OpenSearch, None),
                 KeyBinding::new("ctrl-,", OpenSettings, None),
