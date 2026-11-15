@@ -5,6 +5,20 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Latest pause after resumed validation
+
+Code through `603953744` passed the full integrated gate: **568 tests passed,
+13 ignored**, formatting, strict Clippy and inventory audit. Work is stopped again
+at the user's request. The installed application is unchanged.
+
+Owned captures confirm named composer mentions/Fluxer emoji, populated scrolling
+member rows and narrow profile hit targets, and image fit/zoom/pan/reset/close.
+Inbox and switcher presentation were inspected. Status/editor keyboard,
+settings and Friends captures exist but await main-agent inspection. Real IME,
+physical hardware and actual-account acceptance remain pending. Inbox filter
+presentation still needs the source-style checkbox menu. Full current state is in
+[PUSH_2026_11_15.md](PUSH_2026_11_15.md); older evidence below is historical.
+
 ## Push paused — 2026-11-15
 
 The user requested a stop. Code is merged through `f59aa410d`; agents are stopped,

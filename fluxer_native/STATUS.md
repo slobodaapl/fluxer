@@ -7,6 +7,19 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Latest checkpoint — paused again
+
+At the user's request, work is stopped at `603953744` on `yolo/gpui`. The resumed
+integration passed `scripts/verify.sh`: **568 passed, 13 ignored**, formatting,
+strict Clippy and the parity audit. Custom-status keyboard/profile relationship
+reconciliation and completion edge-case/special-mention fixes are merged.
+
+Composer/member/image GUI corrections have been checked. Latest status/settings/
+Friends captures still need inspection. The source-style Inbox filter menu was
+interrupted before delivery. One root rustfmt-only import ordering diff is retained.
+No installed executable was changed or relaunched. See the latest section of
+[PUSH_2026_11_15.md](PUSH_2026_11_15.md) for resume details; older checkpoints follow.
+
 ## Paused communication push — 2026-11-15
 
 Work stopped at the user's request with code at `f59aa410d` on `yolo/gpui`.
