@@ -7,47 +7,33 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
-## Latest checkpoint — paused again
+## Communication push integrated — 2026-11-15
 
-At the user's request, work is stopped at `603953744` on `yolo/gpui`. The resumed
-integration passed `scripts/verify.sh`: **568 passed, 13 ignored**, formatting,
-strict Clippy and the parity audit. Custom-status keyboard/profile relationship
-reconciliation and completion edge-case/special-mention fixes are merged.
+All delivered work is on `yolo/gpui`, including the final status-input/modal and
+Inbox menu corrections through `eebd62de5`. `scripts/verify.sh` passes the audit,
+formatting, strict Clippy and **570 tests (13 ignored)**. A version-tagged native
+executable is prepared from the final integration; its window title identifies
+its build. Full feature parity and physical/live acceptance remain incomplete.
 
-Composer/member/image GUI corrections have been checked. Latest status/settings/
-Friends captures still need inspection. The source-style Inbox filter menu was
-interrupted before delivery. One root rustfmt-only import ordering diff is retained.
-No installed executable was changed or relaunched. See the latest section of
-[PUSH_2026_11_15.md](PUSH_2026_11_15.md) for resume details; older checkpoints follow.
-
-## Paused communication push — 2026-11-15
-
-Work stopped at the user's request with code at `f59aa410d` on `yolo/gpui`.
-The complete handoff, integrated commits, retained worktrees, test evidence,
-known defects and ordered resume steps are in
-[PUSH_2026_11_15.md](PUSH_2026_11_15.md#paused-checkpoint--2026-11-15).
-All delivered Terra/Sol slices are merged. No final push build was installed or
-relaunched; the installed executable predates this push and `push-qa` is only an
-intermediate executable.
-
-The latest completed workspace run passed **560 tests, 13 ignored**, but started
-before the final composer projection and member-list layout changes. A fresh
-final-HEAD formatting/strict-Clippy/test/audit gate and GUI acceptance are still
-required. Earlier strict Clippy/audit passed on intermediate integration states.
-The historical counts and pending statements below describe earlier checkpoints;
-use the push handoff for current scope.
-
-New work includes device recovery/preferences; indexed virtual member lists;
-own permanent/custom text status; composer completion/slowmode; DMs/Friends and
-relationship actions; native notification policy/delivery; quick switcher and
+The push adds preferred/effective audio-device recovery and account-scoped
+settings; virtual community members/presence and own status; source completion
+and slowmode; DMs/Friends/relationship actions; notifications, quick switching and
 remote mentions inbox; image zoom/pan; progressive range playback with buffering
-and immediate controls; and account-scoped file-player volume/mute. These are
-partial feature areas, not a declaration of full parity.
+and immediate controls; and remembered audio/video volume/mute choices.
 
-Two visual defects were corrected in code but await recapture: raw mention IDs/
-outline suggestion emoji and the blank member-list viewport. The custom-status
-editor keyboard flow and open-profile relationship-action refresh need follow-up.
-Real-account, physical-device and subjective checks remain pending in REVIEW.md.
+Owned GUI checks cover the corrected composer, 600-member list and tight profile
+hit targets, Friends, status editor typing/save/focus/cancellation and shortcut
+isolation, settings navigation, Inbox filter menu/dismissal, quick-switcher
+presentation, image transforms and generated native video controls. Unit and
+private transport/codec fixtures cover the stated server, lifecycle and HTTP
+contracts. They do not replace real Fluxer account, OS-device, IME, accessibility
+or subjective acceptance. See [REVIEW.md](REVIEW.md) and the complete delivery
+record in [PUSH_2026_11_15.md](PUSH_2026_11_15.md).
+
+Remaining major scope includes full call recovery and capture republish, timed/
+emoji/idle presence, full profile modal and broader profile interactions, complete
+regional mature gating, additional codecs/platforms and rate/PiP/subtitle/HDR
+media controls. Multi-stream review remains deferred by the user.
 
 ## Earlier baseline and historical evidence
 
