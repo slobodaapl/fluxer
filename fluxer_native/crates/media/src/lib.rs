@@ -393,7 +393,7 @@ impl MediaEngine {
                     _ => None,
                 };
             }
-            if next_output.effective != target_output {
+            if next_output.effective != target_output && !cancel.load(Ordering::Acquire) {
                 next_output.effective = match target_output {
                     Some(id)
                         if !cancel.load(Ordering::Acquire)
@@ -416,11 +416,10 @@ impl MediaEngine {
         })
     }
     pub fn finish_device_recovery(&mut self, result: DeviceRecovery) -> Option<DeviceInventory> {
-        if result.cancel.load(Ordering::Acquire)
-            || !self
-                .recovery_cancel
-                .as_ref()
-                .is_some_and(|cancel| Arc::ptr_eq(cancel, &result.cancel))
+        if !self
+            .recovery_cancel
+            .as_ref()
+            .is_some_and(|cancel| Arc::ptr_eq(cancel, &result.cancel))
         {
             return None;
         }

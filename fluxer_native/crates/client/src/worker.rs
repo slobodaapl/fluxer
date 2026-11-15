@@ -396,6 +396,7 @@ impl Worker {
         self.snapshot();
         let mut device_poll = tokio::time::interval(Duration::from_secs(5));
         let mut last_devices = None;
+        let mut recovery_requested = false;
         let mut recovery: Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>> =
             None;
         loop {
@@ -448,12 +449,21 @@ impl Worker {
                 Incoming::Dm(None) => Ok(()),
                 Incoming::DevicePoll => {
                     if let Some(media) = &mut self.media {
+                        recovery_requested = false;
                         recovery = Some(media.begin_device_recovery());
                     }
                     Ok(())
                 }
                 Incoming::DeviceRecovery(result) => {
                     recovery = None;
+                    if recovery_requested
+                        && let Err(message) = result
+                            .as_ref()
+                            .map_err(|e| e.to_string())
+                            .and_then(|r| r.as_ref().map(|_| ()).map_err(|e| e.to_string()))
+                    {
+                        self.emit(Event::Error(message));
+                    }
                     if let (Some(media), Ok(Ok(result))) = (&mut self.media, result) {
                         if let Some(devices) = media.finish_device_recovery(result) {
                             if last_devices.as_ref() != Some(&devices) {
@@ -480,6 +490,20 @@ impl Worker {
                 }
                 Incoming::Attachment(None) => Ok(()),
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
+                Incoming::Command(Some(Command::RefreshDevices)) => {
+                    recovery_requested = true;
+                    if recovery.is_none() {
+                        match self.media() {
+                            Ok(media) => {
+                                recovery = Some(media.begin_device_recovery());
+                                Ok(())
+                            }
+                            Err(error) => Err(error),
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
                 Incoming::Command(Some(command)) => self.command(command).await,
                 Incoming::Restore(result) => {
                     self.restore_task = None;

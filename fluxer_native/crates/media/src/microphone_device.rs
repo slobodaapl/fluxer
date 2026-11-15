@@ -128,28 +128,19 @@ impl CaptureDevice {
                         }
                         Ok(Command::Device(id, cancel, result)) => {
                             let answer = validate(&id).and_then(|()| {
-                                if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
-                                    return Err(MediaError::Audio(
-                                        "Device change cancelled".into(),
-                                    ));
-                                }
-                                if enabled_intent {
-                                    // Release the previous capture before opening a
-                                    // replacement, including replacement failure.
-                                    source.take();
-                                    let next = PlatformInput::start(
-                                        Some(&id),
-                                        channels,
-                                        pcm.clone(),
-                                        events.clone(),
-                                    )?;
-                                    if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
-                                        return Err(MediaError::Audio(
-                                            "Device change cancelled".into(),
-                                        ));
-                                    }
-                                    source = Some(next);
-                                }
+                                switch_source(
+                                    &mut source,
+                                    enabled_intent,
+                                    cancel.as_deref(),
+                                    || {
+                                        PlatformInput::start(
+                                            Some(&id),
+                                            channels,
+                                            pcm.clone(),
+                                            events.clone(),
+                                        )
+                                    },
+                                )?;
                                 selected = Some(id);
                                 Ok(())
                             });
@@ -195,6 +186,27 @@ impl Drop for CaptureDevice {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+fn switch_source<S>(
+    source: &mut Option<S>,
+    enabled: bool,
+    cancel: Option<&AtomicBool>,
+    start: impl FnOnce() -> Result<S>,
+) -> Result<()> {
+    let cancelled = || cancel.is_some_and(|c| c.load(Ordering::Acquire));
+    if cancelled() {
+        return Err(MediaError::Audio("Device change cancelled".into()));
+    }
+    if enabled {
+        // The old native source must be gone before opening another one.
+        source.take();
+        let next = start()?;
+        if cancelled() {
+            return Err(MediaError::Audio("Device change cancelled".into()));
+        }
+        *source = Some(next);
+    }
+    Ok(())
 }
 fn release_input<T>(source: &mut Option<T>, active: &AtomicBool) {
     source.take();
@@ -276,6 +288,34 @@ mod tests {
             self.0.store(false, Ordering::Release);
         }
     }
+    #[test]
+    fn cancelled_capture_replacement_releases_both_sources_and_idle_never_opens() {
+        let live = Arc::new(AtomicBool::new(true));
+        let mut source = Some(RecordingSource(live.clone()));
+        let cancel = AtomicBool::new(false);
+        let result = switch_source(&mut source, true, Some(&cancel), || {
+            assert!(
+                !live.load(Ordering::Acquire),
+                "old source must be released first"
+            );
+            live.store(true, Ordering::Release);
+            cancel.store(true, Ordering::Release);
+            Ok(RecordingSource(live.clone()))
+        });
+        assert!(result.is_err());
+        assert!(source.is_none());
+        assert!(!live.load(Ordering::Acquire));
+        let idle_cancel = AtomicBool::new(false);
+        switch_source(
+            &mut source,
+            false,
+            Some(&idle_cancel),
+            || -> Result<RecordingSource> { panic!("idle selection opened capture") },
+        )
+        .unwrap();
+        assert!(source.is_none());
+    }
+
     #[test]
     fn stop_acknowledges_only_after_device_owner_releases_capture() {
         let (commands, rx) = mpsc::channel();
