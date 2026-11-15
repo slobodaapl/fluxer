@@ -27,6 +27,7 @@ pub(super) struct StatusUi {
     save_focus: FocusHandle,
     expiry_focus: FocusHandle,
     emoji_focus: FocusHandle,
+    emoji_clear_focus: FocusHandle,
     emoji_id: Option<String>,
     emoji_name: Option<String>,
     expiry: usize,
@@ -48,6 +49,7 @@ impl StatusUi {
             save_focus: cx.focus_handle(),
             expiry_focus: cx.focus_handle(),
             emoji_focus: cx.focus_handle(),
+            emoji_clear_focus: cx.focus_handle(),
             emoji_id: None,
             emoji_name: None,
             expiry: 7,
@@ -276,20 +278,23 @@ impl Fluxer {
                         0
                     } else if self.status_ui.emoji_focus.is_focused(window) {
                         1
-                    } else if self.status_ui.expiry_focus.is_focused(window) {
+                    } else if self.status_ui.emoji_clear_focus.is_focused(window) {
                         2
-                    } else if self.status_ui.cancel_focus.is_focused(window) {
+                    } else if self.status_ui.expiry_focus.is_focused(window) {
                         3
-                    } else {
+                    } else if self.status_ui.cancel_focus.is_focused(window) {
                         4
+                    } else {
+                        5
                     };
                     let next = editor_tab_target(current, event.keystroke.modifiers.shift);
                     self.status_ui.armed = false;
                     match next {
                         0 => window.focus(&input),
                         1 => window.focus(&self.status_ui.emoji_focus),
-                        2 => window.focus(&self.status_ui.expiry_focus),
-                        3 => window.focus(&self.status_ui.cancel_focus),
+                        2 => window.focus(&self.status_ui.emoji_clear_focus),
+                        3 => window.focus(&self.status_ui.expiry_focus),
+                        4 => window.focus(&self.status_ui.cancel_focus),
                         _ => window.focus(&self.status_ui.save_focus),
                     }
                 }
@@ -308,7 +313,7 @@ impl Fluxer {
                 self.state
                     .user_settings
                     .get("custom_status")
-                    .is_some_and(|v| !v.is_null()),
+                    .is_some_and(custom_status_active),
             );
             match key {
                 "escape" => self.close_status(window, cx),
@@ -353,6 +358,10 @@ impl Fluxer {
                     if !self.status_ui.input.read(cx).is_composing() {
                         if self.status_ui.cancel_focus.is_focused(window) {
                             self.cancel_status_editor(window, cx);
+                        } else if self.status_ui.emoji_clear_focus.is_focused(window) {
+                            self.status_ui.emoji_id = None;
+                            self.status_ui.emoji_name = None;
+                            cx.notify();
                         } else if self.status_ui.expiry_focus.is_focused(window) {
                             self.status_ui.expiry =
                                 (self.status_ui.expiry + 1) % EXPIRY_MINUTES.len();
@@ -434,13 +443,15 @@ impl Fluxer {
                                 }),
                             ),
                         )
-                        .child(quiet_button("status-emoji-clear", "Clear emoji").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.status_ui.emoji_id = None;
-                                this.status_ui.emoji_name = None;
-                                cx.notify();
-                            }),
-                        )),
+                        .child(
+                            quiet_button("status-emoji-clear", "Clear emoji")
+                                .track_focus(&self.status_ui.emoji_clear_focus)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.status_ui.emoji_id = None;
+                                    this.status_ui.emoji_name = None;
+                                    cx.notify();
+                                })),
+                        ),
                 )
                 .child(
                     quiet_button(
@@ -513,7 +524,9 @@ impl Fluxer {
         let custom = self
             .state
             .user_settings
-            .pointer("/custom_status/text")
+            .get("custom_status")
+            .filter(|value| custom_status_active(value))
+            .and_then(|value| value.get("text"))
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_owned();
@@ -521,7 +534,7 @@ impl Fluxer {
             .state
             .user_settings
             .get("custom_status")
-            .is_some_and(|value| !value.is_null());
+            .is_some_and(custom_status_active);
         let custom_label = if custom.is_empty() {
             "Set a custom status".to_owned()
         } else {
@@ -642,6 +655,14 @@ impl Fluxer {
     }
 }
 
+fn custom_status_active(value: &serde_json::Value) -> bool {
+    !value.is_null()
+        && !value
+            .get("expires_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
+            .is_some_and(|date| date <= chrono::Utc::now())
+}
 const EXPIRY_MINUTES: [Option<i64>; 9] = [
     None,
     Some(15),
@@ -678,9 +699,9 @@ fn expiry_index(seconds: i64) -> usize {
 }
 fn editor_tab_target(current: usize, reverse: bool) -> usize {
     if reverse {
-        (current + 4) % 5
+        (current + 5) % 6
     } else {
-        (current + 1) % 5
+        (current + 1) % 6
     }
 }
 
@@ -696,16 +717,16 @@ mod tests {
     #[test]
     fn editor_focus_cycles_in_both_directions() {
         assert_eq!(
-            (0..5)
+            (0..6)
                 .map(|i| super::editor_tab_target(i, false))
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3, 4, 0]
+            vec![1, 2, 3, 4, 5, 0]
         );
         assert_eq!(
-            (0..5)
+            (0..6)
                 .map(|i| super::editor_tab_target(i, true))
                 .collect::<Vec<_>>(),
-            vec![4, 0, 1, 2, 3]
+            vec![5, 0, 1, 2, 3, 4]
         );
     }
 }

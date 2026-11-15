@@ -2823,7 +2823,7 @@ async fn presence_settings_match_source_patch_gateway_and_rollback() {
         Event::PresenceMutation(crate::RelationshipMutationStatus::Failed(_))
     )));
     worker
-        .set_custom_status("  Busy  ".into(), None, None, None)
+        .set_custom_status("  Busy  ".into(), None, Some("🌟".into()), None)
         .await
         .unwrap();
     let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
