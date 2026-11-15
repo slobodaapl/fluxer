@@ -2179,7 +2179,12 @@ async fn open_dm_failure_keeps_navigation_and_account_state() {
         .with_token(SessionToken::new("fixture-secret").unwrap()),
     );
     let before = worker.state.channels.clone();
-    assert!(worker.open_dm(42.into()).await.is_err());
+    worker.open_dm(42.into()).await.unwrap();
+    let event = timeout(Duration::from_secs(5), worker.dm_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(worker.finish_open_dm(event).await.is_err());
     assert_eq!(worker.state.selected_channel, Some(11.into()));
     assert_eq!(worker.state.channels, before);
     server.await.unwrap();
@@ -2256,4 +2261,62 @@ async fn member_query_sends_source_shape_and_rejects_stale_chunks() {
         })
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _request = read_request(&mut socket).await;
+        let _ = accepted_tx.send(());
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let body =
+            json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]}).to_string();
+        let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await;
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.selected_channel = Some(11.into());
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker.open_dm(42.into()).await.unwrap();
+    timeout(Duration::from_secs(2), accepted_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let old = worker.dm_generation;
+    worker
+        .command(Command::SelectChannel {
+            channel_id: 12.into(),
+        })
+        .await
+        .unwrap();
+    worker
+        .finish_open_dm(DmEvent {
+            generation: old,
+            result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
+        })
+        .await
+        .unwrap();
+    assert_eq!(worker.state.selected_channel, Some(12.into()));
+    assert!(!worker.state.channels.contains_key(&999.into()));
+    worker.reset().await;
+    worker
+        .finish_open_dm(DmEvent {
+            generation: old,
+            result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
+        })
+        .await
+        .unwrap();
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.state.channels.is_empty());
+    server.abort();
 }

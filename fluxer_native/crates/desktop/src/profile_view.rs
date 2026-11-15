@@ -183,7 +183,11 @@ impl ProfilePopup {
                     1 + usize::from(self.failed())
                         + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
                 };
-                self.selected = (self.selected + 1) % count;
+                self.selected = if event.keystroke.modifiers.shift {
+                    (self.selected + count - 1) % count
+                } else {
+                    (self.selected + 1) % count
+                };
                 self.armed = false;
                 cx.notify();
             }

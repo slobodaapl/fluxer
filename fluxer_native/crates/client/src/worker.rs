@@ -130,7 +130,25 @@ impl VoiceTarget {
     }
 }
 
+struct DmEvent {
+    generation: u64,
+    result: Result<Value>,
+}
+struct DmJob {
+    generation: u64,
+    task: JoinHandle<()>,
+}
+impl Drop for DmJob {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 pub(crate) struct Worker {
+    dm_tx: async_mpsc::UnboundedSender<DmEvent>,
+    dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
+    dm_generation: u64,
+    dm_job: Option<DmJob>,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     attachments: attachment_flow::AttachmentState,
@@ -184,7 +202,12 @@ impl Worker {
         events: mpsc::Sender<Event>,
         frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     ) -> Self {
+        let (dm_tx, dm_rx) = async_mpsc::unbounded_channel();
         Self {
+            dm_tx,
+            dm_rx,
+            dm_generation: 0,
+            dm_job: None,
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             attachments: attachment_flow::AttachmentState::new(),
@@ -373,6 +396,7 @@ impl Worker {
         self.snapshot();
         loop {
             enum Incoming {
+                Dm(Option<DmEvent>),
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
@@ -392,6 +416,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.dm_rx.recv()=>Incoming::Dm(event),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
@@ -406,6 +431,8 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
+                Incoming::Dm(None) => Ok(()),
                 Incoming::Profile(Some(event)) => {
                     self.profile_event(event);
                     Ok(())
@@ -496,6 +523,7 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        self.cancel_open_dm();
         self.clear_navigation();
         self.clear_profiles();
         self.clear_attachments();
@@ -777,6 +805,7 @@ impl Worker {
                 force,
             } => self.load_user_profile(user_id, guild_id, force),
             Command::SelectGuild { guild_id } => {
+                self.cancel_open_dm();
                 self.selected_guild = Some(guild_id);
                 if !self.demo {
                     self.sync_selected_guild().await?;
@@ -784,7 +813,10 @@ impl Worker {
                 }
                 self.snapshot();
             }
-            Command::SelectChannel { channel_id } => self.select_channel(channel_id).await?,
+            Command::SelectChannel { channel_id } => {
+                self.cancel_open_dm();
+                self.select_channel(channel_id).await?;
+            }
             Command::SearchMessages {
                 channel_id,
                 query,
@@ -1590,7 +1622,12 @@ impl Worker {
         Ok(())
     }
 
+    fn cancel_open_dm(&mut self) {
+        self.dm_generation = self.dm_generation.wrapping_add(1);
+        self.dm_job = None;
+    }
     async fn open_dm(&mut self, user_id: Snowflake) -> Result<()> {
+        self.cancel_open_dm();
         if self
             .state
             .current_user
@@ -1599,7 +1636,7 @@ impl Worker {
         {
             return Err("Cannot open a direct message with this user".into());
         }
-        let existing = self
+        if let Some(channel) = self
             .state
             .channels
             .values()
@@ -1607,27 +1644,48 @@ impl Worker {
                 channel.kind == fluxer_core::ChannelType::Dm
                     && channel.recipients.iter().any(|user| user.id == user_id)
             })
-            .map(|channel| channel.id);
-        let channel = if let Some(channel) = existing {
-            channel
-        } else {
-            if self.demo {
-                return Err("This demo has no direct message with that user".into());
-            }
-            let client = self.client.as_ref().ok_or("Not signed in")?;
-            let response = client
-                .create_dm(&user_id.to_string())
-                .await
-                .map_err(error)?;
-            let channel: fluxer_core::Channel = self.state.decode_api(response).map_err(error)?;
-            if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
-                return Err("Server returned an invalid direct message channel".into());
-            }
-            let id = channel.id;
-            self.state.channels.insert(id, channel);
-            id
-        };
-        self.select_channel(channel).await
+            .map(|channel| channel.id)
+        {
+            return self.select_channel(channel).await;
+        }
+        if self.demo {
+            return Err("This demo has no direct message with that user".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        let generation = self.dm_generation;
+        let tx = self.dm_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(15),
+                client.create_dm(&user_id.to_string()),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(error),
+                Err(_) => Err("Opening the direct message timed out".into()),
+            };
+            let _ = tx.send(DmEvent { generation, result });
+        });
+        self.dm_job = Some(DmJob { generation, task });
+        self.emit(Event::Status("Opening direct message…".into()));
+        Ok(())
+    }
+    async fn finish_open_dm(&mut self, event: DmEvent) -> Result<()> {
+        if self
+            .dm_job
+            .as_ref()
+            .is_none_or(|job| job.generation != event.generation)
+        {
+            return Ok(());
+        }
+        self.dm_job = None;
+        let channel: fluxer_core::Channel = self.state.decode_api(event.result?).map_err(error)?;
+        if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
+            return Err("Server returned an invalid direct message channel".into());
+        }
+        let id = channel.id;
+        self.state.channels.insert(id, channel);
+        self.select_channel(id).await
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {
