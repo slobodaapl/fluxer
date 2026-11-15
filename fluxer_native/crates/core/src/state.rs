@@ -24,8 +24,10 @@ pub enum ApplyOutcome {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MemberList {
     pub list_id: String,
+    pub identity: String,
     pub member_count: u64,
     pub online_count: u64,
+    pub groups: Vec<Value>,
     pub rows: BTreeMap<u32, Value>,
 }
 
@@ -425,6 +427,7 @@ impl ClientState {
         }
     }
     fn remove_channel(&mut self, id: Snowflake) {
+        self.member_lists.retain(|(_, channel), _| *channel != id);
         self.channels.remove(&id);
         self.messages.remove(&id);
         self.drafts.remove(&id);
@@ -788,6 +791,8 @@ impl ClientState {
                     self.thread_guilds.remove(&target.id);
                     self.guilds.remove(&target.id);
                     self.members.retain(|(guild, _), _| *guild != target.id);
+                    self.member_lists
+                        .retain(|(guild, _), _| *guild != target.id);
                     let channels: Vec<_> = self
                         .channels
                         .values()
@@ -948,6 +953,11 @@ impl ClientState {
                         .get("member_count")
                         .and_then(Value::as_u64)
                         .unwrap_or(0);
+                    list.groups = data
+                        .get("groups")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
                     list.online_count = data
                         .get("online_count")
                         .and_then(Value::as_u64)

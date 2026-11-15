@@ -315,6 +315,9 @@ struct Fluxer {
     profile_ui: profile_view::ProfileUi,
     members_open: bool,
     members_start: u32,
+    members_identity: Option<String>,
+    members_request_generation: u64,
+    members_scroll: UniformListScrollHandle,
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
@@ -430,6 +433,9 @@ impl Fluxer {
             profile_ui: profile_view::ProfileUi::new(cx),
             members_open: false,
             members_start: 0,
+            members_identity: None,
+            members_request_generation: 0,
+            members_scroll: UniformListScrollHandle::new(),
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
@@ -830,8 +836,17 @@ impl Fluxer {
                     }
                     if old != self.state.selected_channel {
                         self.profile_ui.reset(cx);
+                        self.members_identity = None;
+                        self.members_request_generation =
+                            self.members_request_generation.wrapping_add(1);
+                        self.members_start = 0;
+                        self.members_scroll = UniformListScrollHandle::new();
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.members_open = false;
+                        self.members_identity = None;
+                        self.members_request_generation =
+                            self.members_request_generation.wrapping_add(1);
                         self.reset_context_menu(cx);
                         self.media_ui.reset();
                         self.profile_ui.reset(cx);
@@ -1536,6 +1551,7 @@ impl Fluxer {
         self.cancel_edit(cx);
         if self.members_open {
             self.members_open = false;
+            self.members_request_generation = self.members_request_generation.wrapping_add(1);
             self.command(
                 Command::SetMemberList {
                     channel_id: None,
@@ -2355,11 +2371,26 @@ impl Render for Fluxer {
                         .min_w_0()
                         .h_full()
                         .min_h_0()
+                        .relative()
                         .flex()
                         .child(chat)
                         .when(
                             self.members_open && window.viewport_size().width > px(760.),
                             |view| view.child(self.member_panel(cx)),
+                        )
+                        .when(
+                            self.members_open && window.viewport_size().width <= px(760.),
+                            |view| {
+                                view.child(
+                                    div()
+                                        .absolute()
+                                        .right_0()
+                                        .top_0()
+                                        .bottom_0()
+                                        .occlude()
+                                        .child(self.member_panel(cx)),
+                                )
+                            },
                         )
                         .when(self.search_ui.open.is_some(), |view| {
                             view.child(self.browser_pane(window, cx))

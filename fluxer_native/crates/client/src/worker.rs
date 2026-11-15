@@ -187,6 +187,8 @@ pub(crate) struct Worker {
     selected_guild: Option<Snowflake>,
     synced_guilds: BTreeMap<Snowflake, String>,
     member_list_subscription: Option<(Snowflake, Snowflake, u32)>,
+    member_list_identity: Option<String>,
+    member_wire_list_id: Option<String>,
     member_query_nonce: u64,
     member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
@@ -249,6 +251,8 @@ impl Worker {
             selected_guild: None,
             synced_guilds: BTreeMap::new(),
             member_list_subscription: None,
+            member_list_identity: None,
+            member_wire_list_id: None,
             member_query_nonce: 0,
             member_query: None,
             available_streams: BTreeSet::new(),
@@ -678,6 +682,8 @@ impl Worker {
         self.synced_guilds.clear();
         self.member_query = None;
         self.member_list_subscription = None;
+        self.member_list_identity = None;
+        self.member_wire_list_id = None;
         self.pending_mfa = None;
         self.pending_ip = None;
         if let Some(task) = self.ip_poll_task.take() {
@@ -1792,7 +1798,7 @@ impl Worker {
     }
 
     async fn set_member_list(&mut self, channel_id: Option<Snowflake>, start: u32) -> Result<()> {
-        if start > 100_000 || start % 100 != 0 {
+        if start > 100_000 {
             return Err("Invalid member list range".into());
         }
         let next = if let Some(channel) = channel_id {
@@ -1801,6 +1807,16 @@ impl Worker {
                 .guild_id
                 .ok_or("This channel has no community members")?;
             let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
+            if self
+                .state
+                .guilds
+                .get(&guild)
+                .and_then(|g| g.extra.get("disabled_operations"))
+                .and_then(Value::as_u64)
+                .is_some_and(|flags| flags & (1 << 6) != 0)
+            {
+                return Err("Member list updates are disabled in this community".into());
+            }
             let permissions = self.state.permissions_for(channel, user.id);
             if self.state.selected_channel != Some(channel)
                 || !permissions
@@ -1812,6 +1828,22 @@ impl Worker {
         } else {
             None
         };
+        let identity = next.and_then(|(guild, channel, _)| {
+            self.state
+                .channels
+                .get(&channel)
+                .zip(self.state.guilds.get(&guild))
+                .map(|(channel, guild)| fluxer_core::member_list_identity(guild, channel))
+        });
+        if next.map(|(g, c, _)| (g, c)) != self.member_list_subscription.map(|(g, c, _)| (g, c))
+            || identity != self.member_list_identity
+        {
+            self.member_wire_list_id = None;
+            if let Some((guild, channel, _)) = next {
+                self.state.member_lists.remove(&(guild, channel));
+            }
+        }
+        self.member_list_identity = identity;
         if self.demo {
             self.member_list_subscription = next;
             if let Some((guild, channel, start)) = next {
@@ -1826,7 +1858,10 @@ impl Worker {
                 let mut rows = vec![json!({"group":{"id":"online","count":count}})];
                 rows.extend(members);
                 let items: Vec<_> = rows.into_iter().skip(start as usize).take(100).collect();
-                self.state.apply_gateway("GUILD_MEMBER_LIST_UPDATE", json!({"guild_id":guild.to_string(),"channel_id":channel.to_string(),"id":"demo","member_count":count,"online_count":count,"ops":[{"op":"SYNC","range":[start,(start+99).min(100_000)],"items":items}]})).map_err(error)?;
+                self.state.apply_gateway("GUILD_MEMBER_LIST_UPDATE", json!({"guild_id":guild.to_string(),"channel_id":channel.to_string(),"id":"demo","member_count":count,"online_count":count,"groups":[{"id":"online","count":count}],"ops":[{"op":"SYNC","range":[start,(start+99).min(100_000)],"items":items}]})).map_err(error)?;
+                if let Some(list) = self.state.member_lists.get_mut(&(guild, channel)) {
+                    list.identity = self.member_list_identity.clone().unwrap_or_default();
+                }
                 self.snapshot();
             }
             return Ok(());
@@ -1852,6 +1887,12 @@ impl Worker {
             tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"active":true,"member_list_channels":{channel.to_string():[[start,(start+99).min(100_000)]]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
         }
         self.member_list_subscription = next;
+        if let Some((guild, channel, start)) = next {
+            if let Some(list) = self.state.member_lists.get_mut(&(guild, channel)) {
+                list.rows
+                    .retain(|index, _| *index >= start && *index <= start.saturating_add(99));
+            }
+        }
         Ok(())
     }
 
@@ -2148,28 +2189,52 @@ impl Worker {
                     {
                         return Ok(());
                     }
+                    let identity = self
+                        .state
+                        .channels
+                        .get(&channel)
+                        .zip(self.state.guilds.get(&guild))
+                        .map(|(channel, guild)| fluxer_core::member_list_identity(guild, channel));
+                    if identity != self.member_list_identity {
+                        return Ok(());
+                    }
+                    let Some(wire_id) = data.get("id").and_then(Value::as_str).map(str::to_owned)
+                    else {
+                        return Ok(());
+                    };
+                    let tagged = data.get("channel_id").and_then(Value::as_str).is_some();
                     if let Some(id) = data.get("channel_id").and_then(Value::as_str) {
                         if id != channel.to_string() {
                             return Ok(());
                         }
                     } else {
-                        let is_open = self
-                            .state
-                            .channels
-                            .get(&channel)
-                            .zip(self.state.guilds.get(&guild))
-                            .is_some_and(|(channel, guild)| {
-                                guild.roles.iter().any(|role| {
-                                    role.id == guild.id
-                                        && role.permissions.contains(Permissions::VIEW_CHANNEL)
-                                }) && channel.permission_overwrites.iter().all(|overwrite| {
-                                    !overwrite.deny.contains(Permissions::VIEW_CHANNEL)
-                                })
-                            });
-                        if !is_open || data.get("id").and_then(Value::as_str) != Some("everyone") {
+                        if self.member_wire_list_id.as_deref() != Some(wire_id.as_str()) {
                             return Ok(());
                         }
                         data["channel_id"] = json!(channel.to_string());
+                    }
+                    let (_, _, start) = self.member_list_subscription.unwrap();
+                    if let Some(ops) = data.get_mut("ops").and_then(Value::as_array_mut) {
+                        let had_ops = !ops.is_empty();
+                        ops.retain(|op| {
+                            op.get("range")
+                                .and_then(Value::as_array)
+                                .and_then(|r| {
+                                    r.first()
+                                        .and_then(Value::as_u64)
+                                        .zip(r.get(1).and_then(Value::as_u64))
+                                })
+                                .is_some_and(|(a, b)| {
+                                    a >= u64::from(start)
+                                        && b <= u64::from(start.saturating_add(99))
+                                })
+                        });
+                        if had_ops && ops.is_empty() {
+                            return Ok(());
+                        }
+                    }
+                    if tagged {
+                        self.member_wire_list_id = Some(wire_id);
                     }
                 }
                 if name == "GUILD_MEMBERS_CHUNK" {
@@ -2216,6 +2281,14 @@ impl Worker {
                     self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
+                    if name == "GUILD_MEMBER_LIST_UPDATE" {
+                        if let Some((guild, channel, _)) = self.member_list_subscription {
+                            if let Some(list) = self.state.member_lists.get_mut(&(guild, channel)) {
+                                list.identity =
+                                    self.member_list_identity.clone().unwrap_or_default();
+                            }
+                        }
+                    }
                     self.navigation_gateway(&name, &data);
                     if name == "MESSAGE_CREATE"
                         && let (Some(channel), Some(id)) = (

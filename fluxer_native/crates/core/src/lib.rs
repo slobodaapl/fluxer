@@ -5,6 +5,7 @@
 mod attachment_policy;
 mod demo;
 mod id;
+mod member_list;
 mod models;
 mod notifications;
 mod notification_policy;
@@ -15,6 +16,7 @@ mod voice;
 
 pub use attachment_policy::*;
 pub use id::Snowflake;
+pub use member_list::*;
 pub use models::*;
 pub use notifications::*;
 pub use notification_policy::*;

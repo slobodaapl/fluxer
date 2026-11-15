@@ -108,7 +108,12 @@ impl Fluxer {
                             .when(has_guild_members, |view| view.child(
                                 quiet_button("members-toggle", "Members").on_click(cx.listener(|this, _, _, cx| {
                                     this.members_open = !this.members_open;
+                                    this.members_request_generation = this.members_request_generation.wrapping_add(1);
                                     this.members_start = 0;
+                                    this.members_identity = if this.members_open {
+                                        this.state.selected_channel.and_then(|id| this.state.channels.get(&id)).and_then(|channel| channel.guild_id.and_then(|guild| this.state.guilds.get(&guild).map(|guild| fluxer_core::member_list_identity(guild,channel))))
+                                    } else { None };
+                                    this.members_scroll = UniformListScrollHandle::new();
                                     this.command(Command::SetMemberList { channel_id: if this.members_open { this.state.selected_channel } else { None }, start: 0 }, cx);
                                     cx.notify();
                                 }))

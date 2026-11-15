@@ -2379,6 +2379,10 @@ async fn member_list_dispatch_is_fenced_by_channel_and_permission() {
     worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 100.into();
     worker.state.selected_channel = Some(11.into());
     worker.member_list_subscription = Some((1.into(), 11.into(), 0));
+    worker.member_list_identity = Some(fluxer_core::member_list_identity(
+        &worker.state.guilds[&1.into()],
+        &worker.state.channels[&11.into()],
+    ));
     let payload = |channel: &str| json!({"guild_id":"1","channel_id":channel,"id":"everyone","member_count":1,"online_count":1,"ops":[{"op":"SYNC","range":[0,0],"items":[{"member":{"user":{"id":"42","username":"Alice"},"roles":[]}}]}]});
     worker
         .gateway(GatewayEvent::Dispatch {
@@ -2416,5 +2420,74 @@ async fn member_list_dispatch_is_fenced_by_channel_and_permission() {
     assert_eq!(
         worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn member_list_channel_less_updates_require_registered_wire_id_and_current_range() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 100.into();
+    worker.state.selected_channel = Some(11.into());
+    worker.member_list_subscription = Some((1.into(), 11.into(), 0));
+    worker.member_list_identity = Some(fluxer_core::member_list_identity(
+        &worker.state.guilds[&1.into()],
+        &worker.state.channels[&11.into()],
+    ));
+    let payload = |wire: &str, channel: Option<&str>, index: u32| {
+        let mut data = json!({"guild_id":"1","id":wire,"member_count":200,"online_count":1,"groups":[{"id":"online","count":200}],"ops":[{"op":"SYNC","range":[index,index],"items":[{"group":{"id":"online","count":200}}]}]});
+        if let Some(channel) = channel {
+            data["channel_id"] = json!(channel);
+        }
+        data
+    };
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("wire-a", None, 0),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert!(worker.state.member_lists.is_empty());
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("wire-a", Some("11"), 0),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("wire-b", None, 1),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("wire-a", None, 101),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
+        1
+    );
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("wire-a", None, 1),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
+        2
     );
 }
