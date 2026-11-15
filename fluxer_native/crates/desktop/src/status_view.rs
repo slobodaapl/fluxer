@@ -184,8 +184,6 @@ impl Fluxer {
                         0
                     } else if self.status_ui.cancel_focus.is_focused(window) {
                         1
-                    } else if self.status_ui.save_focus.is_focused(window) {
-                        2
                     } else {
                         2
                     };
