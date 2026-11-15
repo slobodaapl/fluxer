@@ -183,6 +183,8 @@ pub(crate) struct Worker {
     media: Option<MediaEngine>,
     media_events: Option<MediaEvents>,
     voice_target: Option<VoiceTarget>,
+    call_generation: u64,
+    call_snapshot: Arc<Mutex<Option<crate::CallControlSnapshot>>>,
     pending_voice_server: Option<VoiceServerUpdate>,
     voice_credentials: Option<VoiceServerUpdate>,
     voice_join_deadline: Option<tokio::time::Instant>,
@@ -249,6 +251,8 @@ impl Worker {
             media: None,
             media_events: None,
             voice_target: None,
+            call_generation: 0,
+            call_snapshot: Arc::new(Mutex::new(None)),
             pending_voice_server: None,
             voice_credentials: None,
             voice_join_deadline: None,
@@ -443,9 +447,51 @@ impl Worker {
         self.snapshot();
     }
     fn emit(&self, event: Event) {
+        if let Event::VoiceStatus(status) = &event
+            && let Ok(mut snapshot) = self.call_snapshot.lock()
+            && let Some(snapshot) = snapshot.as_mut()
+        {
+            snapshot.status = status.clone();
+        }
         let _ = self.events.send(event);
     }
+    pub(crate) fn with_call_snapshot(
+        mut self,
+        snapshot: Arc<Mutex<Option<crate::CallControlSnapshot>>>,
+    ) -> Self {
+        self.call_snapshot = snapshot;
+        self
+    }
+    fn call_control_snapshot(&self) -> Option<crate::CallControlSnapshot> {
+        Some(crate::CallControlSnapshot {
+            account_id: self.state.current_user.as_ref()?.id,
+            generation: self.call_generation,
+            channel_id: self.voice_target.as_ref()?.channel_id,
+            status: self
+                .call_snapshot
+                .lock()
+                .ok()
+                .and_then(|snapshot| {
+                    snapshot
+                        .as_ref()
+                        .filter(|s| s.generation == self.call_generation)
+                        .map(|s| s.status.clone())
+                })
+                .unwrap_or(VoiceStatus::Connecting {
+                    channel_id: self.voice_target.as_ref()?.channel_id,
+                }),
+            muted: self.state.voice.muted,
+            deafened: self.state.voice.deafened,
+            server_muted: self.server_muted,
+            server_deafened: self.server_deafened,
+            screen_sharing: self.state.voice.screen_share,
+        })
+    }
     fn snapshot(&self) {
+        let next = self.call_control_snapshot();
+        if let Ok(mut snapshot) = self.call_snapshot.lock() {
+            *snapshot = next;
+        }
         self.emit(Event::State(Box::new(self.state.clone())));
     }
     fn client(&self) -> Result<Client> {
@@ -730,6 +776,37 @@ impl Worker {
 
     async fn command(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::ControlCall {
+                account_id,
+                generation,
+                action,
+                deadline,
+                reply,
+            } => {
+                let result = if reply.is_closed() || std::time::Instant::now() >= deadline {
+                    Err("Call control request expired".into())
+                } else if !self
+                    .call_control_snapshot()
+                    .is_some_and(|s| s.account_id == account_id && s.generation == generation)
+                {
+                    Err("Call changed or is no longer active".into())
+                } else {
+                    let command = match action {
+                        crate::CallAction::ToggleMute => Command::SetMute(!self.state.voice.muted),
+                        crate::CallAction::ToggleDeaf => {
+                            Command::SetDeaf(!self.state.voice.deafened)
+                        }
+                        crate::CallAction::SetMute(value) => Command::SetMute(value),
+                        crate::CallAction::SetDeaf(value) => Command::SetDeaf(value),
+                        crate::CallAction::Disconnect => Command::LeaveVoice,
+                        crate::CallAction::StopSharing => Command::StopShare,
+                    };
+                    Box::pin(self.command(command))
+                        .await
+                        .map(|()| self.call_control_snapshot())
+                };
+                let _ = reply.send(result);
+            }
             Command::RestoreSession => self.begin_restore(),
             Command::Login {
                 instance,
@@ -1429,6 +1506,7 @@ impl Worker {
                     return Err("Choose a voice channel in the current community".into());
                 }
                 self.leave_voice(true).await?;
+                self.call_generation = self.call_generation.wrapping_add(1);
                 self.voice_target = Some(VoiceTarget {
                     guild_id,
                     channel_id,
@@ -1440,6 +1518,7 @@ impl Worker {
                     let _ = self.leave_voice(false).await;
                     return Err(message);
                 }
+                self.snapshot();
                 self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
             }
             Command::LeaveVoice => self.leave_voice(true).await?,

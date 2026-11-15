@@ -2931,3 +2931,127 @@ async fn demo_empty_custom_status_saves_as_clear_and_completes() {
         Event::PresenceMutation(crate::RelationshipMutationStatus::Complete)
     )));
 }
+
+#[tokio::test]
+async fn remote_call_controls_are_serialized_fenced_and_cancelled() {
+    let (mut worker, _) = worker();
+    worker.state.current_user = Some(User {
+        id: 1.into(),
+        ..Default::default()
+    });
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: None,
+        channel_id: 9.into(),
+        connection_id: None,
+    });
+    worker.call_generation = 5;
+    let (gateway, _gateway_rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.snapshot();
+    async fn request(
+        worker: &mut Worker,
+        account: u64,
+        generation: u64,
+        action: crate::CallAction,
+        deadline: std::time::Instant,
+    ) -> Result<Option<crate::CallControlSnapshot>> {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        worker
+            .command(Command::ControlCall {
+                account_id: account.into(),
+                generation,
+                action,
+                deadline,
+                reply,
+            })
+            .await
+            .unwrap();
+        receive.await.unwrap()
+    }
+    let deadline = || std::time::Instant::now() + Duration::from_secs(5);
+    assert!(
+        request(&mut worker, 2, 5, crate::CallAction::ToggleMute, deadline())
+            .await
+            .is_err()
+    );
+    assert!(
+        request(&mut worker, 1, 4, crate::CallAction::ToggleMute, deadline())
+            .await
+            .is_err()
+    );
+    assert!(
+        request(
+            &mut worker,
+            1,
+            5,
+            crate::CallAction::ToggleMute,
+            std::time::Instant::now()
+        )
+        .await
+        .is_err()
+    );
+    let (reply, receive) = tokio::sync::oneshot::channel();
+    drop(receive);
+    worker
+        .command(Command::ControlCall {
+            account_id: 1.into(),
+            generation: 5,
+            action: crate::CallAction::ToggleMute,
+            deadline: deadline(),
+            reply,
+        })
+        .await
+        .unwrap();
+    assert!(!worker.state.voice.muted);
+    assert!(
+        request(&mut worker, 1, 5, crate::CallAction::ToggleMute, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .muted
+    );
+    assert!(
+        !request(&mut worker, 1, 5, crate::CallAction::ToggleMute, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .muted
+    );
+    assert!(
+        request(
+            &mut worker,
+            1,
+            5,
+            crate::CallAction::SetDeaf(true),
+            deadline()
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .deafened
+    );
+    assert!(
+        request(
+            &mut worker,
+            1,
+            5,
+            crate::CallAction::SetDeaf(true),
+            deadline()
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .deafened
+    );
+    assert!(
+        request(&mut worker, 1, 5, crate::CallAction::Disconnect, deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        request(&mut worker, 1, 5, crate::CallAction::ToggleMute, deadline())
+            .await
+            .is_err()
+    );
+}

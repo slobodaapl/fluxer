@@ -83,7 +83,70 @@ pub enum RelationshipMutationStatus {
     Failed(String),
 }
 
+/// A call identity must be carried from the observed snapshot into each remote action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallControlSnapshot {
+    pub account_id: Snowflake,
+    pub generation: u64,
+    pub channel_id: Snowflake,
+    pub status: VoiceStatus,
+    pub muted: bool,
+    pub deafened: bool,
+    pub server_muted: bool,
+    pub server_deafened: bool,
+    pub screen_sharing: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallAction {
+    ToggleMute,
+    ToggleDeaf,
+    SetMute(bool),
+    SetDeaf(bool),
+    Disconnect,
+    StopSharing,
+}
+
+#[derive(Clone)]
+pub struct CallControlHandle {
+    commands: tokio::sync::mpsc::UnboundedSender<Command>,
+    snapshot: Arc<Mutex<Option<CallControlSnapshot>>>,
+}
+impl CallControlHandle {
+    pub fn snapshot(&self) -> Option<CallControlSnapshot> {
+        self.snapshot.lock().ok().and_then(|value| value.clone())
+    }
+    pub async fn control(
+        &self,
+        account_id: Snowflake,
+        generation: u64,
+        action: CallAction,
+        deadline: std::time::Instant,
+    ) -> Result<Option<CallControlSnapshot>, String> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        self.commands
+            .send(Command::ControlCall {
+                account_id,
+                generation,
+                action,
+                deadline,
+                reply,
+            })
+            .map_err(|_| "Client worker stopped".to_owned())?;
+        receiver
+            .await
+            .map_err(|_| "Client worker stopped".to_owned())?
+    }
+}
+
 pub enum Command {
+    ControlCall {
+        account_id: Snowflake,
+        generation: u64,
+        action: CallAction,
+        deadline: std::time::Instant,
+        reply: tokio::sync::oneshot::Sender<Result<Option<CallControlSnapshot>, String>>,
+    },
     SetPresenceStatus {
         status: String,
     },
@@ -478,6 +541,7 @@ pub struct Controller {
     events: mpsc::Receiver<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    call_snapshot: Arc<Mutex<Option<CallControlSnapshot>>>,
 }
 
 impl Controller {
@@ -491,6 +555,8 @@ impl Controller {
         let (tx, events) = mpsc::channel();
         let frames = Arc::new(Mutex::new(BTreeMap::new()));
         let worker_frames = frames.clone();
+        let call_snapshot = Arc::new(Mutex::new(None));
+        let worker_call_snapshot = call_snapshot.clone();
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         thread::Builder::new()
             .name("fluxer-client".into())
@@ -501,7 +567,7 @@ impl Controller {
                 {
                     Ok(runtime) => runtime.block_on(async move {
                         tokio::select! {
-                            _ = worker::Worker::new(tx,worker_frames).with_session_store(store).run(rx) => {},
+                            _ = worker::Worker::new(tx,worker_frames).with_call_snapshot(worker_call_snapshot).with_session_store(store).run(rx) => {},
                             _ = shutdown_rx => {},
                         }
                     }),
@@ -516,7 +582,15 @@ impl Controller {
             events,
             frames,
             shutdown: Some(shutdown),
+            call_snapshot,
         })
+    }
+
+    pub fn call_control(&self) -> CallControlHandle {
+        CallControlHandle {
+            commands: self.commands.clone(),
+            snapshot: self.call_snapshot.clone(),
+        }
     }
 
     pub fn send(&self, command: Command) -> Result<(), String> {
@@ -603,6 +677,7 @@ mod controller_tests {
             events,
             frames: frames.clone(),
             shutdown: None,
+            call_snapshot: Arc::new(Mutex::new(None)),
         };
         events_tx.send(Event::WatchedStreams(Vec::new())).unwrap();
         assert!(
@@ -624,6 +699,7 @@ mod controller_tests {
             events,
             frames: frames.clone(),
             shutdown: None,
+            call_snapshot: Arc::new(Mutex::new(None)),
         };
         let producing = Arc::new(AtomicBool::new(true));
         let produced = Arc::new(AtomicUsize::new(0));
