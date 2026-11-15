@@ -27,6 +27,7 @@ impl Fluxer {
         };
         self.media_demo_started = true;
         let atlas_stress = std::env::var("FLUXER_MEDIA_DEMO_ATLAS_STRESS").as_deref() == Ok("1");
+        let cache_scroll = std::env::var("FLUXER_MEDIA_DEMO_CACHE_SCROLL").as_deref() == Ok("1");
         let origin = match fixture_server(atlas_stress) {
             Ok(origin) => origin,
             Err(error) => {
@@ -128,7 +129,18 @@ impl Fluxer {
         );
         unavailable.extra.insert("expired".into(), json!(true));
         expired.attachments.push(unavailable);
-        let mut messages = if atlas_stress {
+        let mut messages = if cache_scroll {
+            let mut messages = vec![gifv];
+            for index in 1..64 {
+                messages.push(Message::text(
+                    Snowflake(70_002 + index),
+                    channel,
+                    messages[0].author.clone(),
+                    format!("Offscreen media cache fixture · filler row {index}"),
+                ));
+            }
+            messages
+        } else if atlas_stress {
             (0..16)
                 .map(|index| {
                     let mut message = gifv.clone();
@@ -143,7 +155,7 @@ impl Fluxer {
             vec![video, audio, gifv, spoiler, expired]
         };
         for (index, message) in messages.iter_mut().enumerate() {
-            message.timestamp = format!("2026-11-13T12:{index:02}:00Z");
+            message.timestamp = format!("2026-11-13T12:{:02}:{:02}Z", index / 60, index % 60);
         }
         self.state.messages.insert(
             channel,
@@ -162,6 +174,22 @@ impl Fluxer {
             });
         })
         .detach();
+        if cache_scroll {
+            cx.spawn(async move |entity, cx| {
+                Timer::after(Duration::from_secs(2)).await;
+                for step in 0..12 {
+                    let _ = entity.update(cx, |this, cx| {
+                        this.timeline
+                            .scroll_to_top_of_item(if step % 2 == 0 { 63 } else { 0 });
+                        eprintln!("MEDIA_CACHE_SCROLL step={step}");
+                        cx.notify();
+                    });
+                    Timer::after(Duration::from_millis(800)).await;
+                }
+                eprintln!("MEDIA_CACHE_SCROLL complete");
+            })
+            .detach();
+        }
         if atlas_stress {
             cx.spawn(async move |entity, cx| {
                 for step in 0..48 {

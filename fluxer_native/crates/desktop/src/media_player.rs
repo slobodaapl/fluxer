@@ -348,8 +348,9 @@ impl MediaPlayer {
             && (self.source.kind == PlayableKind::Gifv || !self.revealed)
             && self.player.is_some()
         {
-            // Keep the cached file and tiny concealed preview, not a collection
-            // of paused decoders/full-resolution GPU textures after scrolling.
+            // Encoded media lives in the bounded resource cache independently
+            // of this decoder. Release decoded frames/GPU textures offscreen;
+            // returning can read the cached body without another HTTP request.
             if self.fixture_trace {
                 eprintln!("GIF_FIXTURE decoder-retired");
             }
@@ -520,6 +521,7 @@ impl MediaPlayer {
                 cx.emit(PlayerEvent::Close);
             }
             PlayerAction::Retry => {
+                crate::media_range::RangeReader::invalidate_cache(&self.source.source);
                 self.download_error = None;
                 self.player.take();
                 self.file.take();

@@ -5,12 +5,26 @@ use reqwest::{blocking::Client, header};
 use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     sync::{
-        Arc,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     time::Duration,
 };
+#[path = "media_resource_cache.rs"]
+mod resource_cache;
+
+fn http_client() -> Result<Client, String> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            media_download::client_builder(Duration::from_secs(2))
+                .connect_timeout(Duration::from_secs(2))
+                .build()
+                .map_err(|_| "Could not start the media downloader".to_owned())
+        })
+        .clone()
+}
 const CHUNK: u64 = 256 * 1024;
 fn bad(message: &'static str) -> io::Error {
     io::Error::other(message)
@@ -57,11 +71,14 @@ pub(super) struct RangeReader {
     chunk_at: u64,
     chunk: Vec<u8>,
     validator: Option<(header::HeaderName, header::HeaderValue)>,
-    fallback: Option<tempfile::NamedTempFile>,
+    fallback: Option<resource_cache::Body>,
     prefetch: Option<(u64, mpsc::Receiver<io::Result<Vec<u8>>>)>,
     allow_prefetch: bool,
 }
 impl RangeReader {
+    pub fn invalidate_cache(url: &str) {
+        resource_cache::invalidate(url);
+    }
     pub fn new(
         url: String,
         expected_size: Option<u64>,
@@ -74,10 +91,7 @@ impl RangeReader {
         if expected_size.is_some_and(|size| size > MAX_BYTES) {
             return Err("This media file is too large for native playback".into());
         }
-        let client = media_download::client_builder(Duration::from_secs(2))
-            .connect_timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|_| "Could not start the media downloader")?;
+        let client = http_client()?;
         Ok(Self {
             url,
             progress: Arc::new(RangeProgress::default()),
@@ -105,6 +119,23 @@ impl RangeReader {
         }
     }
     fn request(&mut self, start: u64) -> io::Result<()> {
+        self.cancelled()?;
+        // Align seeks so a previously fetched range also serves interior reads.
+        let start = start / CHUNK * CHUNK;
+        if let Some(range) = resource_cache::get_range(&self.url, start)
+            && self.size.is_none_or(|size| size == range.total)
+            && self
+                .validator
+                .as_ref()
+                .is_none_or(|validator| validator == &range.validator)
+        {
+            self.size = Some(range.total);
+            self.validator = Some(range.validator.clone());
+            self.chunk_at = start;
+            self.chunk = range.bytes.to_vec();
+            self.schedule_prefetch();
+            return Ok(());
+        }
         let _waiting = self
             .allow_prefetch
             .then(|| WaitingGuard::new(self.progress.waiting.clone()));
@@ -159,6 +190,7 @@ impl RangeReader {
         if response.content_length() != Some(len) {
             return Err(bad("Invalid media range length"));
         }
+        let expires = resource_cache::expiration(response.headers());
         if self.size.is_none() {
             self.validator = response
                 .headers()
@@ -215,6 +247,26 @@ impl RangeReader {
         }
         self.chunk_at = start;
         self.chunk = chunk;
+        if start == 0 && self.chunk.len() as u64 == total && expires.is_some() {
+            resource_cache::insert(
+                &self.url,
+                resource_cache::Body::Memory(self.chunk.clone().into()),
+                expires,
+            );
+        } else if let Some(validator) = &self.validator
+            && expires.is_some()
+        {
+            resource_cache::insert_range(
+                &self.url,
+                start,
+                resource_cache::CachedRange {
+                    bytes: self.chunk.clone().into(),
+                    total,
+                    validator: validator.clone(),
+                },
+                expires,
+            );
+        }
         self.schedule_prefetch();
         Ok(())
     }
@@ -263,6 +315,7 @@ impl RangeReader {
         }
     }
     fn full_download(&mut self, mut response: reqwest::blocking::Response) -> io::Result<()> {
+        let expires = resource_cache::expiration(response.headers());
         if response
             .headers()
             .get(header::CONTENT_ENCODING)
@@ -274,19 +327,17 @@ impl RangeReader {
         if expected.is_some_and(|length| length > MAX_BYTES) {
             return Err(bad("Media exceeds size limit"));
         }
-        let mut file = tempfile::Builder::new()
-            .prefix("playback-")
-            .tempfile_in(
-                media_download::cache_directory().map_err(|_| bad("Media cache unavailable"))?,
-            )
-            .map_err(|_| bad("Media cache unavailable"))?;
+        let mut file = tempfile::tempfile_in(
+            media_download::cache_directory().map_err(|_| bad("Media cache unavailable"))?,
+        )
+        .map_err(|_| bad("Media cache unavailable"))?;
         self.progress
             .total
             .store(expected.unwrap_or(0), Ordering::Relaxed);
         self.progress.active.store(true, Ordering::Relaxed);
         media_download::copy_bounded(
             &mut response,
-            file.as_file_mut(),
+            &mut file,
             MAX_BYTES,
             &self.cancel,
             &self.progress.bytes,
@@ -296,15 +347,22 @@ impl RangeReader {
         if expected.is_some_and(|expected| expected != length) {
             return Err(bad("Incomplete media download"));
         }
-        file.as_file_mut().flush()?;
+        file.flush()?;
         self.size = Some(length);
-        self.fallback = Some(file);
+        let body = resource_cache::Body::Disk(Arc::new(Mutex::new(file)), length);
+        resource_cache::insert(&self.url, body.clone(), expires);
+        self.fallback = Some(body);
         self.progress.active.store(false, Ordering::Relaxed);
         Ok(())
     }
     fn ensure(&mut self) -> io::Result<()> {
         if self.size.is_none() {
-            self.request(0)?;
+            if let Some(body) = resource_cache::get(&self.url) {
+                self.size = Some(body.len());
+                self.fallback = Some(body);
+            } else {
+                self.request(0)?;
+            }
         }
         Ok(())
     }
@@ -328,9 +386,8 @@ impl Read for RangeReader {
         if self.pos >= self.size.unwrap_or(0) {
             return Ok(0);
         }
-        if let Some(file) = &mut self.fallback {
-            file.as_file_mut().seek(SeekFrom::Start(self.pos))?;
-            let n = file.as_file_mut().read(out)?;
+        if let Some(body) = &self.fallback {
+            let n = body.read_at(self.pos, out)?;
             self.pos += n as u64;
             return Ok(n);
         }
@@ -393,7 +450,9 @@ mod tests {
         let task = thread::spawn(move || {
             for (index, stream) in listener
                 .incoming()
-                .take(if mode == "changed" || mode == "novalidator" {
+                .take(if mode == "cachemultirange" {
+                    3
+                } else if mode == "changed" || mode == "novalidator" {
                     2
                 } else {
                     1
@@ -414,10 +473,20 @@ mod tests {
                 }
                 let request = String::from_utf8(request).unwrap();
                 observed.lock().unwrap().push(request.clone());
-                if mode == "ignored" || (mode == "novalidator" && index == 1) {
+                let cache_header = match mode {
+                    "cachefull" | "cacherange" | "cachemultirange" => {
+                        "Cache-Control: public, max-age=3600\r\n"
+                    }
+                    "nostorefull" => "Cache-Control: no-store, max-age=3600\r\n",
+                    _ => "",
+                };
+                if mode == "ignored"
+                    || mode.ends_with("full")
+                    || (mode == "novalidator" && index == 1)
+                {
                     write!(
                         stream,
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{cache_header}Connection: close\r\n\r\n",
                         data.len()
                     )
                     .unwrap();
@@ -465,12 +534,84 @@ mod tests {
                 } else {
                     ""
                 };
-                write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n{}{}Connection: close\r\n\r\n", reported_start, end, total, length, etag_header, encoding).unwrap();
+                write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\n{}{}{cache_header}Connection: close\r\n\r\n", reported_start, end, total, length, etag_header, encoding).unwrap();
                 let _ = stream.write_all(&data[start..=end]);
             }
         });
         (format!("http://{addr}/signed?token=a%2Fb"), requests, task)
     }
+    #[test]
+    fn completed_media_reopens_after_decoder_retirement_without_a_server() {
+        for mode in ["cachefull", "cacherange", "cachemultirange"] {
+            let length = if mode == "cachemultirange" {
+                CHUNK as usize * 2 + 17
+            } else {
+                65536
+            };
+            let data: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+            let (url, requests, task) = server(data.clone(), mode);
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut reader = RangeReader::new(
+                url.clone(),
+                None,
+                cancel.clone(),
+                Arc::new(AtomicU64::new(0)),
+            )
+            .unwrap();
+            let mut first = Vec::new();
+            reader.read_to_end(&mut first).unwrap();
+            assert_eq!(first, data);
+            cancel.store(true, Ordering::Release);
+            drop(reader);
+            task.join().unwrap(); // Network is now unavailable, not merely fast.
+            for _ in 0..3 {
+                let mut reader = RangeReader::new(
+                    url.clone(),
+                    None,
+                    Arc::new(AtomicBool::new(false)),
+                    Arc::new(AtomicU64::new(0)),
+                )
+                .unwrap();
+                reader.seek(SeekFrom::End(-16)).unwrap();
+                let mut tail = Vec::new();
+                reader.read_to_end(&mut tail).unwrap();
+                assert_eq!(tail, data[data.len() - 16..]);
+                reader.seek(SeekFrom::Start(0)).unwrap();
+                let mut all = Vec::new();
+                reader.read_to_end(&mut all).unwrap();
+                assert_eq!(all, data);
+            }
+            assert_eq!(
+                requests.lock().unwrap().len(),
+                if mode == "cachemultirange" { 3 } else { 1 },
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_store_media_is_not_retained_after_reader_drop() {
+        let (url, _, task) = server(vec![5; 64], "nostorefull");
+        let mut reader = RangeReader::new(
+            url.clone(),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .unwrap();
+        reader.read_to_end(&mut Vec::new()).unwrap();
+        drop(reader);
+        task.join().unwrap();
+        let mut again = RangeReader::new(
+            url,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .unwrap();
+        assert!(again.read(&mut [0; 1]).is_err());
+    }
+
     #[test]
     fn range_seek_sends_validator_and_rejects_changed_object() {
         let data = vec![42u8; CHUNK as usize + 100];
