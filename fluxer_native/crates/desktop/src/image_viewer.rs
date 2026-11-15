@@ -2,10 +2,12 @@
 //! Local image viewing: no new authenticated requests or browser navigation on
 //! image activation. MediaViewerModal supplies the keyboard/gallery conventions.
 use super::*;
+use crate::image_transform::{Metrics, Point as PanPoint, Transform};
 use crate::{
     controls::{Icon, icon_button, quiet_button},
     image_gallery::{ImageGallery, ImageItem},
 };
+use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Copy, PartialEq)]
 enum ImageControl {
@@ -13,10 +15,20 @@ enum ImageControl {
     Next,
     Original,
     Close,
+    ZoomIn,
+    ZoomOut,
+    Fit,
 }
 
 pub(super) struct ImageViewer {
     gallery: Option<ImageGallery>,
+    transform: Transform,
+    zoom_in: FocusHandle,
+    zoom_out: FocusHandle,
+    fit: FocusHandle,
+    metrics: Rc<Cell<Metrics>>,
+    drag: Option<(Point<Pixels>, PanPoint)>,
+    dragged: bool,
     focus: FocusHandle,
     previous: FocusHandle,
     next: FocusHandle,
@@ -29,6 +41,16 @@ impl ImageViewer {
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
         Self {
             gallery: None,
+            transform: Transform::default(),
+            zoom_in: cx.focus_handle().tab_stop(true),
+            zoom_out: cx.focus_handle().tab_stop(true),
+            fit: cx.focus_handle().tab_stop(true),
+            metrics: Rc::new(Cell::new(Metrics {
+                viewport: PanPoint::default(),
+                content: PanPoint::default(),
+            })),
+            drag: None,
+            dragged: false,
             focus: cx.focus_handle(),
             previous: cx.focus_handle().tab_stop(true),
             next: cx.focus_handle().tab_stop(true),
@@ -43,6 +65,9 @@ impl ImageViewer {
     }
     pub fn reset(&mut self) {
         self.gallery = None;
+        self.transform = Transform::default();
+        self.drag = None;
+        self.dragged = false;
         self.previous_focus = None;
         self.armed = None;
     }
@@ -59,7 +84,12 @@ impl ImageViewer {
         if original_allowed {
             controls.push((ImageControl::Original, self.original.clone()));
         }
-        controls.push((ImageControl::Close, self.close.clone()));
+        controls.extend([
+            (ImageControl::ZoomOut, self.zoom_out.clone()),
+            (ImageControl::Fit, self.fit.clone()),
+            (ImageControl::ZoomIn, self.zoom_in.clone()),
+            (ImageControl::Close, self.close.clone()),
+        ]);
         controls
     }
     fn focused_control(&self, window: &Window, original_allowed: bool) -> Option<ImageControl> {
@@ -97,6 +127,9 @@ impl Fluxer {
             self.image_viewer.previous_focus = window.focused(cx);
         }
         self.image_viewer.gallery = Some(gallery);
+        self.image_viewer.transform = Transform::default();
+        self.image_viewer.drag = None;
+        self.image_viewer.dragged = false;
         self.image_viewer.armed = None;
         self.image_viewer.close.focus(window);
         cx.notify();
@@ -119,6 +152,17 @@ impl Fluxer {
     ) {
         self.image_viewer.armed = None;
         match control {
+            ImageControl::ZoomIn | ImageControl::ZoomOut | ImageControl::Fit => {
+                let current = self.image_viewer.transform;
+                let scale = match control {
+                    ImageControl::ZoomIn => current.scale * 1.25,
+                    ImageControl::ZoomOut => current.scale / 1.25,
+                    _ => 1.,
+                };
+                self.image_viewer.transform =
+                    current.zoom_to(scale, PanPoint::default(), self.image_viewer.metrics.get());
+                cx.notify();
+            }
             ImageControl::Close => self.dismiss_image_viewer(window, cx),
             ImageControl::Original => {
                 if !self.image_original_available() {
@@ -146,6 +190,9 @@ impl Fluxer {
                         gallery.previous();
                     }
                 }
+                self.image_viewer.transform = Transform::default();
+                self.image_viewer.drag = None;
+                self.image_viewer.dragged = false;
                 cx.notify();
             }
         }
@@ -180,6 +227,141 @@ impl Fluxer {
             }
             _ => (available_width, available_height),
         };
+        let metrics = Metrics {
+            viewport: PanPoint {
+                x: available_width,
+                y: available_height,
+            },
+            content: PanPoint {
+                x: width,
+                y: height,
+            },
+        };
+        self.image_viewer.metrics.set(metrics);
+        let transform = self.image_viewer.transform.constrained(metrics);
+        let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+        let painted = bounds.clone();
+        let clicked = bounds.clone();
+        let media = div()
+            .id("image-pan-viewport")
+            .relative()
+            .w(px(available_width))
+            .h(px(available_height))
+            .max_w_full()
+            .max_h_full()
+            .flex_shrink_0()
+            .overflow_hidden()
+            .child(
+                canvas(move |b, _, _| painted.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0()
+                    .size_full(),
+            )
+            .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
+                let delta = event.delta.pixel_delta(px(24.));
+                let current = this.image_viewer.transform;
+                if event.modifiers.control {
+                    let b = bounds.get();
+                    let origin = PanPoint {
+                        x: f32::from(event.position.x - b.center().x),
+                        y: f32::from(event.position.y - b.center().y),
+                    };
+                    let next = current.scale * if delta.y > px(0.) { 1.25 } else { 1. / 1.25 };
+                    this.image_viewer.transform = current.zoom_to(next, origin, metrics);
+                } else if current.scale > 1.015 {
+                    this.image_viewer.transform = current.panned(
+                        PanPoint {
+                            x: f32::from(delta.x),
+                            y: f32::from(delta.y),
+                        },
+                        metrics,
+                    );
+                } else {
+                    return;
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("image-viewer-media")
+                    .absolute()
+                    .left(px(
+                        (available_width - width * transform.scale) / 2. + transform.pan.x
+                    ))
+                    .top(px(
+                        (available_height - height * transform.scale) / 2. + transform.pan.y
+                    ))
+                    .w(px(width * transform.scale))
+                    .h(px(height * transform.scale))
+                    .flex_shrink_0()
+                    .cursor(if transform.scale > 1.015 {
+                        CursorStyle::OpenHand
+                    } else {
+                        CursorStyle::PointingHand
+                    })
+                    .when_some(item.context.clone(), |view, reference| {
+                        crate::context_actions::trigger(
+                            view,
+                            crate::context_actions::Target::Media(reference),
+                            cx,
+                        )
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            this.image_viewer.drag =
+                                Some((event.position, this.image_viewer.transform.pan));
+                            this.image_viewer.dragged = false;
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        if !this.image_viewer.dragged {
+                            let b = clicked.get();
+                            let position = event.position();
+                            let origin = PanPoint {
+                                x: f32::from(position.x - b.center().x),
+                                y: f32::from(position.y - b.center().y),
+                            };
+                            let current = this.image_viewer.transform;
+                            let scale = if current.scale > 1.015 { 1. } else { 2.5 };
+                            this.image_viewer.transform = current.zoom_to(scale, origin, metrics);
+                        }
+                        this.image_viewer.drag = None;
+                        this.image_viewer.dragged = false;
+                        cx.notify();
+                    }))
+                    .child(
+                        img(item.source.clone())
+                            .size_full()
+                            .object_fit(ObjectFit::Contain)
+                            .with_loading(|| {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_color(rgb(MUTED))
+                                    .child("Loading image…")
+                                    .into_any_element()
+                            })
+                            .with_fallback(|| {
+                                div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child("Image unavailable")
+                                    .into_any_element()
+                            })
+                            .id(media_animation::image_id(
+                                "image-viewer-frame",
+                                &item.source,
+                            )),
+                    ),
+            );
         let overlay = div()
             .id("image-viewer-overlay")
             .absolute()
@@ -192,7 +374,37 @@ impl Fluxer {
             .flex()
             .flex_col()
             .gap_2()
-            .on_click(cx.listener(|this, _, window, cx| this.dismiss_image_viewer(window, cx)))
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.image_viewer.dragged {
+                    this.image_viewer.dragged = false;
+                    this.image_viewer.drag = None;
+                    cx.stop_propagation();
+                } else {
+                    this.dismiss_image_viewer(window, cx);
+                }
+            }))
+            .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                let Some((start, origin)) = this.image_viewer.drag else {
+                    return;
+                };
+                if !event.dragging() {
+                    this.image_viewer.drag = None;
+                    return;
+                }
+                let delta = PanPoint {
+                    x: f32::from(event.position.x - start.x),
+                    y: f32::from(event.position.y - start.y),
+                };
+                this.image_viewer.dragged |= delta.x.hypot(delta.y) >= 20.;
+                let current = this.image_viewer.transform;
+                this.image_viewer.transform = Transform {
+                    pan: origin,
+                    ..current
+                }
+                .panned(delta, metrics);
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 match event.keystroke.key.as_str() {
                     "escape" => this.dismiss_image_viewer(window, cx),
@@ -202,6 +414,17 @@ impl Fluxer {
                                 ImageControl::Previous
                             } else {
                                 ImageControl::Next
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    "+" | "=" | "-" | "0" => {
+                        this.activate_image_control(
+                            match event.keystroke.key.as_str() {
+                                "-" => ImageControl::ZoomOut,
+                                "0" => ImageControl::Fit,
+                                _ => ImageControl::ZoomIn,
                             },
                             window,
                             cx,
@@ -305,58 +528,7 @@ impl Fluxer {
                                 })),
                         )
                     })
-                    .child(
-                        div()
-                            .id("image-viewer-media")
-                            .when_some(item.context.clone(), |view, reference| {
-                                crate::context_actions::trigger(
-                                    view,
-                                    crate::context_actions::Target::Media(reference),
-                                    cx,
-                                )
-                            })
-                            .w(px(width))
-                            .h(px(height))
-                            .min_w_0()
-                            .flex_shrink_0()
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .child(
-                                img(item.source.clone())
-                                    .size_full()
-                                    .object_fit(ObjectFit::Contain)
-                                    .with_loading(|| {
-                                        div()
-                                            .size_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .text_color(rgb(MUTED))
-                                            .child("Loading image…")
-                                            .into_any_element()
-                                    })
-                                    .with_fallback(|| {
-                                        div()
-                                            .size_full()
-                                            .flex()
-                                            .flex_col()
-                                            .items_center()
-                                            .justify_center()
-                                            .gap_2()
-                                            .child("Image unavailable")
-                                            .child(
-                                                div()
-                                                    .text_size(px(12.))
-                                                    .text_color(rgb(MUTED))
-                                                    .child("You can still try Open original."),
-                                            )
-                                            .into_any_element()
-                                    })
-                                    .id(media_animation::image_id(
-                                        "image-viewer-frame",
-                                        &item.source,
-                                    )),
-                            ),
-                    )
+                    .child(media)
                     .when(multiple, |body| {
                         body.child(
                             quiet_button("next-image", "›")
@@ -396,12 +568,60 @@ impl Fluxer {
                     })
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                quiet_button("zoom-image-out", "−")
+                                    .size(px(28.))
+                                    .p_0()
+                                    .track_focus(&self.image_viewer.zoom_out)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.activate_image_control(
+                                            ImageControl::ZoomOut,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                quiet_button(
+                                    "fit-image",
+                                    format!("{}%", (transform.scale * 100.).round() as u32),
+                                )
+                                .text_size(px(12.))
+                                .track_focus(&self.image_viewer.fit)
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.activate_image_control(ImageControl::Fit, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                quiet_button("zoom-image-in", "+")
+                                    .size(px(28.))
+                                    .p_0()
+                                    .track_focus(&self.image_viewer.zoom_in)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.activate_image_control(
+                                            ImageControl::ZoomIn,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
                             .text_size(px(11.))
                             .text_color(rgb(MUTED))
                             .child(if multiple {
-                                "← → Browse images · Esc to close"
+                                "← → Browse · Click to zoom · Drag to pan · Esc close"
                             } else {
-                                "Esc to close"
+                                "Click to zoom · Drag to pan · 0 Fit · Esc close"
                             }),
                     ),
             );

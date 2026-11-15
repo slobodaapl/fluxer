@@ -18,6 +18,7 @@ mod emoji_sprites;
 mod gif_demo;
 mod image_demo;
 mod image_gallery;
+mod image_transform;
 mod image_viewer;
 mod input;
 mod media_actions;
