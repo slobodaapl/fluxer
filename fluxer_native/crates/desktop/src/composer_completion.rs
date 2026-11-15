@@ -41,12 +41,9 @@ pub fn trigger(text: &str, selection: Range<usize>, composing: bool) -> Option<T
         b':' => (Kind::Emoji, &token[1..]),
         _ => return None,
     };
-    // Never offer replacements inside inline/fenced code or unrevealed spoilers.
-    let before = &prefix[..start];
-    if before.matches("```").count() % 2 != 0
-        || before.matches('`').count() % 2 != 0
-        || before.matches("||").count() % 2 != 0
-    {
+    // Spoilers allow completion in classic Fluxer. Code remains literal; track
+    // delimiter runs rather than counting individual backticks across lines.
+    if inside_code(&prefix[..start]) {
         return None;
     }
     if kind == Kind::Emoji
@@ -63,6 +60,60 @@ pub fn trigger(text: &str, selection: Range<usize>, composing: bool) -> Option<T
         query: query.to_lowercase(),
     })
 }
+fn inside_code(text: &str) -> bool {
+    let mut fence = None;
+    let mut inline = None;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && fence.is_none() && inline.is_none() {
+            chars.next();
+        } else if ch == '\n' {
+            inline = None;
+        } else if ch == '`' {
+            let mut length = 1;
+            while chars.peek() == Some(&'`') {
+                chars.next();
+                length += 1;
+            }
+            if let Some(open) = fence {
+                if length == open {
+                    fence = None;
+                }
+            } else if let Some(open) = inline {
+                if length == open {
+                    inline = None;
+                }
+            } else if length >= 3 {
+                fence = Some(length);
+            } else {
+                inline = Some(length);
+            }
+        }
+    }
+    fence.is_some() || inline.is_some()
+}
+
+pub fn special_mentions(allowed: bool, query: &str) -> impl Iterator<Item = Choice> + '_ {
+    ["everyone", "here"]
+        .into_iter()
+        .filter(move |name| allowed && name.contains(query))
+        .map(|name| Choice {
+            label: name.into(),
+            detail: if name == "everyone" {
+                "Notify everyone"
+            } else {
+                "Notify online members"
+            }
+            .into(),
+            glyph: "@".into(),
+            insert: format!("@{name}"),
+            user: None,
+            media: None,
+            image: None,
+            status: None,
+        })
+}
+
 pub fn rank(label: &str, query: &str) -> Option<u8> {
     let label = label.to_lowercase();
     if label == query {
@@ -87,7 +138,7 @@ mod tests {
     }
     #[test]
     fn suppress_selection_ime_and_markup() {
-        for text in ["\\@ab", "a@ab", "```\n@ab", "` @ab", "|| @ab", ":a", ":ab:"] {
+        for text in ["\\@ab", "a@ab", "```\n@ab", "` @ab", ":a", ":ab:"] {
             assert!(
                 trigger(text, text.len()..text.len(), false).is_none(),
                 "{text}"
@@ -95,6 +146,47 @@ mod tests {
         }
         assert!(trigger("@a", 2..2, true).is_none());
         assert!(trigger("@a", 0..2, false).is_none());
+    }
+    #[test]
+    fn escaped_delimiters_spoilers_and_code_runs() {
+        for text in [
+            r"\` @ab",
+            r"\`\`\` @ab",
+            "|| @ab",
+            "`old\n@ab",
+            "`` one ` two `` @ab",
+            "```\ncode\n``` @ab",
+        ] {
+            assert!(
+                trigger(text, text.len()..text.len(), false).is_some(),
+                "{text}"
+            );
+        }
+        for text in [
+            "`` one ` @ab",
+            "```\ncode `\n@ab",
+            r"\\` @ab",
+            "```` code ``` @ab",
+        ] {
+            assert!(
+                trigger(text, text.len()..text.len(), false).is_none(),
+                "{text}"
+            );
+        }
+    }
+    #[test]
+    fn special_mentions_require_permission_and_match_query() {
+        assert_eq!(special_mentions(false, "").count(), 0);
+        assert_eq!(special_mentions(true, "").count(), 2);
+        assert_eq!(
+            special_mentions(true, "ever").next().unwrap().insert,
+            "@everyone"
+        );
+        assert_eq!(
+            special_mentions(true, "her").next().unwrap().insert,
+            "@here"
+        );
+        assert_eq!(special_mentions(true, "missing").count(), 0);
     }
     #[test]
     fn boundaries_and_ranking() {

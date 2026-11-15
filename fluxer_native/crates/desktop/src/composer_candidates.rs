@@ -191,6 +191,19 @@ impl Fluxer {
         ) {
             match trigger.kind {
                 Kind::Mention => {
+                    let special_allowed = if channel.guild_id.is_some() {
+                        self.state.current_user.as_ref().is_some_and(|user| {
+                            self.state
+                                .permissions_for(channel.id, user.id)
+                                .contains(Permissions::MENTION_EVERYONE)
+                        })
+                    } else {
+                        channel.kind == fluxer_core::ChannelType::GroupDm
+                    };
+                    choices.extend(input::composer_completion::special_mentions(
+                        special_allowed,
+                        &trigger.query,
+                    ));
                     if let Some(guild) = channel.guild_id {
                         for ((guild_id, _), member) in &self.state.members {
                             if *guild_id != guild
