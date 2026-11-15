@@ -156,6 +156,32 @@ impl ClientState {
             }),
         }
     }
+    /// ReadStateEntry.shouldMentionFor + ReadStateMentionMachine. Explicit
+    /// mentions still count in muted channels; an ordinary DM counts only when
+    /// unmuted. Desktop notification suppression and unread mentions differ.
+    pub fn read_state_mentions(&self, message: &Message, now_ms: i64) -> bool {
+        if self
+            .current_user
+            .as_ref()
+            .is_none_or(|me| me.id == message.author.id)
+            || self
+                .relationships
+                .get(&message.author.id)
+                .is_some_and(|r| r.is_blocked())
+        {
+            return false;
+        }
+        let Some(channel) = self.channels.get(&message.channel_id) else {
+            return false;
+        };
+        let non_member_thread =
+            channel.kind.is_thread() && channel.extra.get("member").is_none_or(Value::is_null);
+        self.message_mentions_current_user(message, non_member_thread)
+            || (channel.kind.is_private()
+                && !self
+                    .channel_notification_settings(channel.guild_id, channel.id, now_ms)
+                    .effective_muted)
+    }
     pub fn message_mentions_current_user(&self, message: &Message, ignore_everyone: bool) -> bool {
         let Some(me) = self.current_user.as_ref() else {
             return false;

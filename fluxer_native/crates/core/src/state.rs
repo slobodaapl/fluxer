@@ -300,10 +300,7 @@ impl ClientState {
             channel.last_message_id = channel.last_message_id.max(Some(id));
         }
         if !already_seen
-            && self.current_user.as_ref().is_some_and(|me| {
-                me.id != message.author.id
-                    && (message.mention_everyone || message.mentions.iter().any(|u| u.id == me.id))
-            })
+            && self.read_state_mentions(&message, chrono::Utc::now().timestamp_millis())
         {
             let read = self.read_states.entry(channel_id).or_insert(ReadState {
                 id: channel_id,
