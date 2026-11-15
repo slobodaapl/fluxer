@@ -225,6 +225,8 @@ fn stop_room_capture(stop: &AtomicBool, handles: &Mutex<ShareCaptureHandles>) {
     }
 }
 
+const ROOM_EVENT_CAPACITY: usize = 1024;
+
 // Room events must never wait behind a stalled control consumer: a full queue
 // ends the room and signals recovery after stopping capture.
 struct RoomEventSink {
@@ -672,7 +674,10 @@ impl MediaEngine {
             self.output.stop();
             return Err(error);
         }
-        let (tx, rx) = mpsc::channel(32);
+        // A full initial roster can arrive before the actor installs its
+        // receiver. Keep a bounded burst budget for substantial rosters;
+        // a persistently stalled consumer still fails closed on overflow.
+        let (tx, rx) = mpsc::channel(ROOM_EVENT_CAPACITY);
         if let Ok(mut mixer) = self.mixer.lock() {
             mixer.events = Some(tx.clone());
         }
@@ -2108,6 +2113,30 @@ mod room_cancellation_tests {
         })
         .await
         .expect("pending room remained in server roster");
+    }
+
+    #[tokio::test]
+    async fn room_event_queue_accepts_a_full_roster_burst() {
+        let (tx, _rx) = mpsc::channel(ROOM_EVENT_CAPACITY);
+        let mut sink = RoomEventSink {
+            tx,
+            overflow: false,
+        };
+        for i in 0..100 {
+            sink.send(MediaEvent::ParticipantJoined {
+                identity: i.to_string(),
+                name: String::new(),
+            })
+            .await
+            .unwrap();
+            sink.send(MediaEvent::ScreenStreamAvailable {
+                identity: i.to_string(),
+                available: true,
+            })
+            .await
+            .unwrap();
+        }
+        assert!(!sink.overflow);
     }
 
     #[tokio::test]
