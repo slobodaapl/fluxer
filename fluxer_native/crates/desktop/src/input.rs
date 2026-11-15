@@ -5,6 +5,8 @@ use std::ops::Range;
 use std::{collections::BTreeSet, sync::Arc};
 #[path = "composer_completion.rs"]
 pub mod composer_completion;
+#[path = "composer_tokens.rs"]
+mod composer_tokens;
 #[path = "inline_emoji.rs"]
 mod inline_emoji;
 #[path = "message_text.rs"]
@@ -285,6 +287,7 @@ pub struct TextInput {
     context_menu: Option<Entity<ContextMenu>>,
     context_menu_generation: u64,
     history: EditHistory,
+    composer_labels: std::collections::BTreeMap<String, String>,
     pub completion_choices: Vec<composer_completion::Choice>,
     completion_index: usize,
     pub completion_enter_guard: bool,
@@ -328,6 +331,7 @@ impl TextInput {
             context_menu: None,
             context_menu_generation: 0,
             history: EditHistory::default(),
+            composer_labels: Default::default(),
             completion_choices: Vec::new(),
             completion_index: 0,
             completion_enter_guard: false,
@@ -433,6 +437,20 @@ impl TextInput {
         }
     }
 
+    pub fn set_composer_labels(
+        &mut self,
+        labels: std::collections::BTreeMap<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composer_labels != labels {
+            self.composer_labels = labels;
+            self.last_layout = None;
+            cx.notify();
+        }
+    }
+    fn composer_tokens(&self) -> Vec<composer_tokens::Token> {
+        composer_tokens::tokens(&self.content, &self.composer_labels)
+    }
     pub fn completion_trigger(&self) -> Option<composer_completion::Trigger> {
         let trigger = composer_completion::trigger(
             &self.content,
@@ -907,7 +925,7 @@ impl TextInput {
         if event.modifiers.shift {
             self.select_to(index, cx);
         } else if event.click_count >= 2 {
-            let range = selection_unit(&self.content, index, event.click_count);
+            let range = self.selection_unit(index, event.click_count);
             self.move_to(range.start, cx);
             self.select_to(range.end, cx);
             self.selection_origin = Some(range);
@@ -955,7 +973,7 @@ impl TextInput {
         if self.is_selecting && event.pressed_button == Some(MouseButton::Left) {
             let index = self.index_for_mouse_position(event.position);
             if let Some(origin) = self.selection_origin.clone() {
-                let unit = selection_unit(&self.content, index, self.selection_clicks);
+                let unit = self.selection_unit(index, self.selection_clicks);
                 if index < origin.start {
                     self.move_to(origin.end, cx);
                     self.select_to(unit.start, cx);
@@ -1023,6 +1041,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
         self.selected_range = offset..offset;
         self.selection_reversed = false;
@@ -1078,6 +1097,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
         if self.selection_reversed {
             self.selected_range.start = offset
@@ -1120,7 +1140,25 @@ impl TextInput {
         self.offset_from_utf16(range_utf16.start)..self.offset_from_utf16(range_utf16.end)
     }
 
+    fn selection_unit(&self, index: usize, clicks: usize) -> Range<usize> {
+        let tokens = self.composer_tokens();
+        if clicks == 2
+            && let Some(token) = tokens
+                .iter()
+                .find(|token| index >= token.source.start && index <= token.source.end)
+        {
+            return token.source.clone();
+        }
+        composer_tokens::edit_range(&tokens, selection_unit(&self.content, index, clicks))
+    }
     fn previous_boundary(&self, offset: usize) -> usize {
+        if let Some(token) = self
+            .composer_tokens()
+            .iter()
+            .find(|token| offset > token.source.start && offset <= token.source.end)
+        {
+            return token.source.start;
+        }
         self.content
             .grapheme_indices(true)
             .rev()
@@ -1129,6 +1167,13 @@ impl TextInput {
     }
 
     fn next_boundary(&self, offset: usize) -> usize {
+        if let Some(token) = self
+            .composer_tokens()
+            .iter()
+            .find(|token| offset >= token.source.start && offset < token.source.end)
+        {
+            return token.source.end;
+        }
         self.content
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
@@ -1192,9 +1237,18 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        let tokens = self.composer_tokens();
+        let range = composer_tokens::edit_range(&tokens, range);
         let before = self.snapshot();
         let composing = self.marked_range.is_some();
-        let kind = edit_kind(&before, &range, new_text);
+        let kind = if tokens
+            .iter()
+            .any(|token| token.source.start < range.end && token.source.end > range.start)
+        {
+            EditKind::Atomic
+        } else {
+            edit_kind(&before, &range, new_text)
+        };
         self.content =
             (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
                 .into();
@@ -1229,6 +1283,7 @@ impl EntityInputHandler for TextInput {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        let range = composer_tokens::edit_range(&self.composer_tokens(), range);
         let before = self.snapshot();
         let composing = self.marked_range.is_some();
         self.content =
@@ -1497,6 +1552,7 @@ impl Element for TextElement {
             strikethrough: None,
         };
         let mut lines = Vec::new();
+        let composer_tokens = input.composer_tokens();
         if let Some(document) = input.message_document.as_ref() {
             let runs = message_text::runs(document, &base, &input.revealed_spoilers);
             lines = message_text::layout(
@@ -1512,17 +1568,23 @@ impl Element for TextElement {
             for paragraph in logical_lines(&display) {
                 let paragraph_runs =
                     decoration_runs(&base, &paragraph, input.marked_range.as_ref());
-                let breaks = inline_emoji::wrap_breaks(
+                let breaks = inline_emoji::wrap_breaks_with_tokens(
                     &display[paragraph.clone()],
                     font_size,
                     &paragraph_runs,
                     Some(bounds.size.width.max(px(1.))),
+                    &composer_tokens::clip(&composer_tokens, &paragraph),
                     window,
                 );
                 for range in visual_ranges(paragraph, &breaks) {
                     let runs = decoration_runs(&base, &range, input.marked_range.as_ref());
-                    let layout =
-                        inline_emoji::shape_line(&display[range.clone()], font_size, &runs, window);
+                    let layout = inline_emoji::shape_line_with_tokens(
+                        &display[range.clone()],
+                        font_size,
+                        &runs,
+                        &composer_tokens::clip(&composer_tokens, &range),
+                        window,
+                    );
                     lines.push(VisualLine {
                         range,
                         layout,
@@ -1537,7 +1599,13 @@ impl Element for TextElement {
             } else {
                 decoration_runs(&base, &range, input.marked_range.as_ref())
             };
-            let layout = inline_emoji::shape_line(&display, font_size, &runs, window);
+            let layout = inline_emoji::shape_line_with_tokens(
+                &display,
+                font_size,
+                &runs,
+                &composer_tokens,
+                window,
+            );
             lines.push(VisualLine {
                 range,
                 layout,
@@ -1856,10 +1924,12 @@ impl Render for TextInput {
                                                             .object_fit(gpui::ObjectFit::Contain)
                                                             .into_any_element()
                                                         } else {
-                                                            div()
-                                                                .text_size(px(18.))
-                                                                .child(choice.glyph.clone())
-                                                                .into_any_element()
+                                                            crate::emoji_sprites::unicode_art(
+                                                                &choice.glyph,
+                                                                24.,
+                                                                window.scale_factor() > 1.,
+                                                                cx,
+                                                            )
                                                         })
                                                         .when_some(choice.status, |view, color| {
                                                             view.child(
@@ -2508,5 +2578,20 @@ mod tests {
         assert_eq!(utf16_offset(text, 3), 5);
         assert_eq!(utf16_offset(text, 4), 7);
         assert_eq!(utf16_offset(text, 99), 7);
+    }
+    #[test]
+    fn deleting_a_named_token_is_one_undo_step_with_original_wire_and_caret() {
+        let text = "雪 <@103> suffix";
+        let labels = std::collections::BTreeMap::from([("<@103>".into(), "@River".into())]);
+        let tokens = super::composer_tokens::tokens(text, &labels);
+        let end = tokens[0].source.end;
+        let range = super::composer_tokens::edit_range(&tokens, end - 1..end);
+        let before = edit_snapshot(text, end..end, false);
+        let after_text = format!("{}{}", &text[..range.start], &text[range.end..]);
+        let after = edit_snapshot(&after_text, range.start..range.start, false);
+        let mut history = EditHistory::default();
+        history.record(before.clone(), after.clone(), EditKind::Atomic);
+        assert_eq!(history.undo(after), Some(before));
+        assert_eq!(after_text, "雪  suffix");
     }
 }

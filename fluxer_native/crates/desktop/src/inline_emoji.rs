@@ -7,6 +7,7 @@ use super::*;
 struct Replacement {
     source: Range<usize>,
     display: Range<usize>,
+    named: bool,
 }
 #[derive(Clone, Debug)]
 struct Projection {
@@ -15,31 +16,50 @@ struct Projection {
     replacements: Vec<Replacement>,
 }
 impl Projection {
+    #[cfg(test)]
     fn new(text: &str, runs: &[TextRun]) -> Self {
+        Self::with_tokens(text, runs, &[])
+    }
+    fn with_tokens(text: &str, runs: &[TextRun], tokens: &[composer_tokens::Token]) -> Self {
         let mut display = String::new();
         let mut display_runs = Vec::new();
         let mut replacements = Vec::new();
         let mut copied = 0;
-        for (start, grapheme) in text.grapheme_indices(true) {
-            if !crate::chat_helpers::unicode_catalog_contains(grapheme) {
-                continue;
-            }
-            display.push_str(&text[copied..start]);
-            display_runs.extend(message_text::clip(runs, &(copied..start)));
-            let source = start..start + grapheme.len();
+        let mut spans: Vec<_> = tokens
+            .iter()
+            .map(|token| (token.source.clone(), token.label.clone(), true))
+            .collect();
+        spans.extend(
+            text.grapheme_indices(true)
+                .filter(|(start, grapheme)| {
+                    crate::chat_helpers::unicode_catalog_contains(grapheme)
+                        && !tokens.iter().any(|token| token.source.contains(start))
+                })
+                .map(|(start, grapheme)| (start..start + grapheme.len(), "\u{2003}".into(), false)),
+        );
+        spans.sort_by_key(|(range, _, _)| range.start);
+        for (source, label, named) in spans {
+            display.push_str(&text[copied..source.start]);
+            display_runs.extend(message_text::clip(runs, &(copied..source.start)));
             let clipped = message_text::clip(runs, &source);
             copied = source.end;
             let from = display.len();
-            display.push('\u{2003}');
+            display.push_str(&label);
             replacements.push(Replacement {
                 source,
                 display: from..display.len(),
+                named,
             });
             if let Some(mut run) = clipped.into_iter().next() {
-                run.len = '\u{2003}'.len_utf8();
-                run.color = rgba(0x00000000).into();
+                run.len = label.len();
                 run.underline = None;
                 run.strikethrough = None;
+                if named {
+                    run.color = rgb(0xc8b7ff).into();
+                    run.background_color = Some(rgba(0x7560a844).into());
+                } else {
+                    run.color = rgba(0x00000000).into();
+                }
                 display_runs.push(run);
             }
         }
@@ -59,12 +79,31 @@ impl Projection {
                 break;
             }
             if index < replacement.display.end {
-                return replacement.source.start;
+                return if replacement.named
+                    && index - replacement.display.start >= replacement.display.len() / 2
+                {
+                    replacement.source.end
+                } else {
+                    replacement.source.start
+                };
             }
             source_end = replacement.source.end;
             display_end = replacement.display.end;
         }
         source_end + index.saturating_sub(display_end)
+    }
+    fn source_break(&self, index: usize) -> usize {
+        self.replacements
+            .iter()
+            .find(|replacement| {
+                replacement.named
+                    && index > replacement.display.start
+                    && index < replacement.display.end
+            })
+            .map_or_else(
+                || self.source_index(index),
+                |replacement| replacement.source.start,
+            )
     }
     fn display_index(&self, index: usize) -> usize {
         let mut source_end = 0;
@@ -116,7 +155,16 @@ pub(super) fn shape_line(
     runs: &[TextRun],
     window: &mut Window,
 ) -> EmojiLine {
-    let projection = Projection::new(text, runs);
+    shape_line_with_tokens(text, font_size, runs, &[], window)
+}
+pub(super) fn shape_line_with_tokens(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    tokens: &[composer_tokens::Token],
+    window: &mut Window,
+) -> EmojiLine {
+    let projection = Projection::with_tokens(text, runs, tokens);
     let shaped =
         window
             .text_system()
@@ -131,7 +179,17 @@ pub(super) fn wrap_breaks(
     width: Option<Pixels>,
     window: &mut Window,
 ) -> Vec<usize> {
-    let projection = Projection::new(text, runs);
+    wrap_breaks_with_tokens(text, font_size, runs, width, &[], window)
+}
+pub(super) fn wrap_breaks_with_tokens(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    width: Option<Pixels>,
+    tokens: &[composer_tokens::Token],
+    window: &mut Window,
+) -> Vec<usize> {
+    let projection = Projection::with_tokens(text, runs, tokens);
     window
         .text_system()
         .shape_text(
@@ -148,7 +206,7 @@ pub(super) fn wrap_breaks(
                 .iter()
                 .map(|boundary| {
                     projection
-                        .source_index(line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
+                        .source_break(line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix].index)
                 })
                 .collect()
         })
@@ -262,5 +320,25 @@ mod tests {
         let projection = Projection::new(text, &[]);
         assert_eq!(projection.text.as_ref(), text);
         assert!(projection.replacements.is_empty());
+    }
+    #[test]
+    fn named_projection_keeps_wire_offsets_atomic_beside_unicode_art() {
+        let text = "é <@103> 🙂 <#11>";
+        let labels = std::collections::BTreeMap::from([
+            ("<@103>".into(), "@River".into()),
+            ("<#11>".into(), "#general".into()),
+        ]);
+        let tokens = composer_tokens::tokens(text, &labels);
+        let projection = Projection::with_tokens(text, &[], &tokens);
+        assert_eq!(projection.text.as_ref(), "é @River \u{2003} #general");
+        for token in &tokens {
+            let start = projection.display_index(token.source.start);
+            let end = projection.display_index(token.source.end);
+            assert_eq!(projection.source_index(start), token.source.start);
+            assert_eq!(projection.source_index(end), token.source.end);
+            assert_eq!(projection.source_break(start + 1), token.source.start);
+        }
+        assert_eq!(projection.source_index(projection.text.len()), text.len());
+        assert_eq!(text, "é <@103> 🙂 <#11>");
     }
 }

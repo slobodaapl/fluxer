@@ -120,6 +120,67 @@ impl Fluxer {
     }
 
     pub(super) fn refresh_composer_completion(&mut self, cx: &mut Context<Self>) {
+        let content = self.composer.read(cx).content.to_string();
+        let mut labels = BTreeMap::new();
+        if content.contains('<') {
+            for user in self.state.users.values() {
+                for wire in [format!("<@{}>", user.id), format!("<@!{}>", user.id)] {
+                    if content.contains(&wire) {
+                        labels.insert(wire, format!("@{}", user.display_name()));
+                    }
+                }
+            }
+            let guild = self
+                .state
+                .selected_channel
+                .and_then(|id| self.state.channels.get(&id))
+                .and_then(|channel| channel.guild_id);
+            if let Some(guild) = guild {
+                for ((member_guild, _), member) in &self.state.members {
+                    if *member_guild == guild {
+                        for wire in [
+                            format!("<@{}>", member.user.id),
+                            format!("<@!{}>", member.user.id),
+                        ] {
+                            if content.contains(&wire) {
+                                labels.insert(
+                                    wire,
+                                    format!(
+                                        "@{}",
+                                        member
+                                            .nick
+                                            .as_deref()
+                                            .unwrap_or(member.user.display_name())
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+                if let Some(guild) = self.state.guilds.get(&guild) {
+                    for role in &guild.roles {
+                        let wire = format!("<@&{}>", role.id);
+                        if content.contains(&wire) {
+                            labels.insert(wire, format!("@{}", role.name));
+                        }
+                    }
+                }
+            }
+            for channel in self.state.channels.values() {
+                let wire = format!("<#{}>", channel.id);
+                if content.contains(&wire)
+                    && self.state.current_user.as_ref().is_some_and(|user| {
+                        self.state
+                            .permissions_for(channel.id, user.id)
+                            .contains(Permissions::VIEW_CHANNEL)
+                    })
+                {
+                    labels.insert(wire, format!("#{}", channel.display_name()));
+                }
+            }
+        }
+        self.composer
+            .update(cx, |input, cx| input.set_composer_labels(labels, cx));
         let trigger = self.composer.read(cx).completion_trigger();
         let mut choices = Vec::new();
         if let (Some(trigger), Some(channel)) = (
@@ -238,7 +299,11 @@ impl Fluxer {
                     {
                         choices.push(Choice {
                             label: format!(":{}:", emoji.name),
-                            detail: emoji.label.clone(),
+                            detail: if emoji.id.is_some() {
+                                "Community emoji".into()
+                            } else {
+                                emoji.category.clone()
+                            },
                             glyph: if emoji.id.is_none() {
                                 emoji.insert.clone()
                             } else {
