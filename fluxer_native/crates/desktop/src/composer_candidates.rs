@@ -3,6 +3,60 @@ use super::*;
 use fluxer_core::Permissions;
 use input::composer_completion::{Choice, Kind, rank};
 impl Fluxer {
+    pub(super) fn schedule_composer_member_query(&mut self, cx: &mut Context<Self>) {
+        let query = self
+            .composer
+            .read(cx)
+            .completion_trigger()
+            .filter(|trigger| trigger.kind == Kind::Mention && !trigger.query.is_empty())
+            .and_then(|trigger| {
+                self.state
+                    .selected_channel
+                    .and_then(|id| self.state.channels.get(&id))
+                    .and_then(|channel| channel.guild_id)
+                    .map(|guild| (guild, trigger.query))
+            });
+        if self.composer_member_query == query {
+            return;
+        }
+        self.composer_member_query = query.clone();
+        self.composer_query_generation = self.composer_query_generation.wrapping_add(1);
+        let generation = self.composer_query_generation;
+        if self.demo {
+            return;
+        }
+        let Some((guild_id, query)) = query else {
+            return;
+        };
+        cx.spawn(async move |entity, cx| {
+            Timer::after(Duration::from_millis(180)).await;
+            let _ = entity.update(cx, |view, cx| {
+                if view.composer_query_generation != generation
+                    || view.composer_member_query.as_ref() != Some(&(guild_id, query.clone()))
+                {
+                    return;
+                }
+                if !view
+                    .state
+                    .selected_channel
+                    .and_then(|id| view.state.channels.get(&id))
+                    .is_some_and(|channel| channel.guild_id == Some(guild_id))
+                {
+                    return;
+                }
+                view.command(
+                    Command::QueryGuildMembers {
+                        guild_id,
+                        query,
+                        limit: 30,
+                    },
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn schedule_composer_demo(&self, window: &Window, cx: &mut Context<Self>) {
         if !self.demo || !std::env::args().any(|arg| arg == "--demo") {
             return;

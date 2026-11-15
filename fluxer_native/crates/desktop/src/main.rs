@@ -304,6 +304,8 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
     slowmode: composer_slowmode::Slowmode,
+    composer_member_query: Option<(Snowflake,String)>,
+    composer_query_generation: u64,
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
@@ -407,6 +409,8 @@ impl Fluxer {
             pane: Pane::Chat,
             selected_guild: None,
             slowmode: composer_slowmode::Slowmode::default(),
+            composer_member_query: None,
+            composer_query_generation: 0,
             composer: cx.new(|cx| {
                 let mut input = TextInput::new("Message this channel…", cx);
                 input.multiline = true;
@@ -614,6 +618,7 @@ impl Fluxer {
         .detach();
         cx.observe(&view.composer, |this, _, cx| {
             this.refresh_composer_completion(cx);
+            this.schedule_composer_member_query(cx);
             let content = this.composer.read(cx).content.to_string();
             if this.state.selected_channel.is_some() && this.editing.is_none() {
                 this.command(Command::SetDraft(content), cx);
