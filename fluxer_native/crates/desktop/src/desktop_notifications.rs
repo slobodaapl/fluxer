@@ -13,6 +13,12 @@ struct Target {
 #[derive(Clone, Debug)]
 enum Delivery {
     Alert(Alert),
+    Sound {
+        kind: MessageSound,
+        volume: f32,
+        output: Option<String>,
+    },
+    Save(Preferences),
     Clear {
         account: Snowflake,
         channel: Option<Snowflake>,
@@ -24,7 +30,7 @@ struct Alert {
     title: String,
     body: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     desktop: bool,
@@ -46,60 +52,58 @@ struct Playing {
     _file: tempfile::NamedTempFile,
     player: fluxer_media::FilePlayer,
 }
+enum Feedback {
+    Click(Target),
+    Loaded(Preferences),
+    Failure(String),
+}
 pub(super) struct DesktopNotifications {
     preferences: Preferences,
-    path: Option<std::path::PathBuf>,
     tx: mpsc::SyncSender<Delivery>,
-    clicks: mpsc::Receiver<Target>,
+    feedback: mpsc::Receiver<Feedback>,
+    status: Option<String>,
     seen: VecDeque<(Snowflake, Snowflake)>,
-    playing: Vec<Playing>,
-    last_sound: Option<std::time::Instant>,
     focused: bool,
     last_scope: Option<(Snowflake, Option<Snowflake>)>,
 }
-fn path() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
+fn config_path(
+    config: Option<std::path::PathBuf>,
+    home: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    config
+        .filter(|p| p.is_absolute())
         .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".config"))
+            home.filter(|p| p.is_absolute())
+                .map(|home| home.join(".config"))
         })
         .map(|root| root.join("fluxer-native/notifications.json"))
 }
+fn path() -> Option<std::path::PathBuf> {
+    config_path(
+        std::env::var_os("XDG_CONFIG_HOME").map(Into::into),
+        std::env::var_os("HOME").map(Into::into),
+    )
+}
+
 impl DesktopNotifications {
     pub fn new(demo: bool) -> Self {
         let path = (!demo).then(path).flatten();
-        let preferences = path
-            .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let preferences = Preferences::default();
         let (tx, alerts) = mpsc::sync_channel::<Delivery>(32);
-        let (clicked, clicks) = mpsc::channel();
-        std::thread::spawn(move || delivery(alerts, clicked));
+        let (feedback_tx, feedback) = mpsc::channel();
+        std::thread::spawn(move || delivery(alerts, feedback_tx, path));
         Self {
             preferences,
-            path,
             tx,
-            clicks,
+            feedback,
+            status: None,
             seen: VecDeque::new(),
-            playing: vec![],
-            last_sound: None,
             focused: true,
             last_scope: None,
         }
     }
     fn save(&self) {
-        if let Some(path) = &self.path {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            if let Ok(bytes) = serde_json::to_vec(&self.preferences) {
-                let temporary = path.with_extension("json.tmp");
-                if std::fs::write(&temporary, bytes).is_ok() {
-                    let _ = std::fs::rename(temporary, path);
-                }
-            }
-        }
+        let _ = self.tx.try_send(Delivery::Save(self.preferences.clone()));
     }
 }
 fn escaped(text: &str) -> String {
@@ -148,14 +152,162 @@ impl NotificationSink for Freedesktop {
             .map_err(|e| e.to_string())
     }
 }
-fn delivery(alerts: mpsc::Receiver<Delivery>, clicked: mpsc::Sender<Target>) {
+fn show_alert(
+    sink: &dyn NotificationSink,
+    alert: &Alert,
+    feedback: &mpsc::Sender<Feedback>,
+) -> Option<u32> {
+    match sink.show(alert) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            let _ = feedback.send(Feedback::Failure(format!(
+                "Desktop notification delivery failed: {error}"
+            )));
+            None
+        }
+    }
+}
+fn load_preferences(path: &std::path::Path) -> Result<Preferences, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Preferences::default());
+        }
+        Err(error) => return Err(format!("Cannot read notification preferences: {error}")),
+    };
+    let mut bytes = Vec::new();
+    file.take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Cannot read notification preferences: {error}"))?;
+    if bytes.len() > 65536 {
+        return Err("Notification preferences exceed 64 KiB".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Notification preferences are invalid".into())
+}
+fn save_preferences(path: &std::path::Path, preferences: &Preferences) -> Result<(), String> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .ok_or("Invalid notification preferences path")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Cannot save notification preferences: {error}"))?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(preferences).map_err(|error| error.to_string())?;
+    file.write_all(&bytes)
+        .and_then(|_| file.as_file().sync_all())
+        .map_err(|error| error.to_string())?;
+    file.persist(path)
+        .map_err(|error| format!("Cannot save notification preferences: {error}"))?;
+    Ok(())
+}
+fn play_sound(kind: MessageSound, volume: f32, output: Option<String>) -> Result<Playing, String> {
+    use std::io::Write;
+    let (bytes, suffix): (&[u8], &str) = if kind == MessageSound::SameChannel {
+        (
+            include_bytes!("../../../../fluxer_app/src/media/sounds/in-channel-notification.ogg"),
+            ".ogg",
+        )
+    } else {
+        (
+            include_bytes!("../../../../fluxer_app/src/media/sounds/message.mp3"),
+            ".mp3",
+        )
+    };
+    let mut file = tempfile::Builder::new()
+        .suffix(suffix)
+        .tempfile()
+        .map_err(|error| error.to_string())?;
+    file.write_all(bytes).map_err(|error| error.to_string())?;
+    let player = fluxer_media::FilePlayer::open(
+        file.path().into(),
+        fluxer_media::FilePlaybackOptions {
+            autoplay: true,
+            volume,
+            output_device: output,
+            ..Default::default()
+        },
+    )?;
+    Ok(Playing {
+        _file: file,
+        player,
+    })
+}
+fn delivery(
+    alerts: mpsc::Receiver<Delivery>,
+    feedback: mpsc::Sender<Feedback>,
+    path: Option<std::path::PathBuf>,
+) {
+    let mut preferences = Preferences::default();
+    if let Some(path) = &path {
+        match load_preferences(path) {
+            Ok(loaded) => {
+                preferences = loaded;
+                let _ = feedback.send(Feedback::Loaded(preferences.clone()));
+            }
+            Err(error) => {
+                let _ = feedback.send(Feedback::Failure(error));
+            }
+        }
+    }
+    let mut playing: Vec<Playing> = vec![];
+    let mut last_sound: Option<std::time::Instant> = None;
     let mut service = None;
     let targets = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
         u32,
         Target,
     >::new()));
     for request in alerts {
+        playing.retain(|playing| {
+            !matches!(
+                playing.player.snapshot().status,
+                fluxer_media::FilePlaybackStatus::Ended | fluxer_media::FilePlaybackStatus::Failed
+            )
+        });
+        match &request {
+            Delivery::Save(saved) => {
+                preferences = saved.clone();
+                if let Some(path) = &path
+                    && let Err(error) = save_preferences(path, saved)
+                {
+                    let _ = feedback.send(Feedback::Failure(error));
+                }
+                if !saved.sound || saved.streamer {
+                    playing.clear();
+                }
+                continue;
+            }
+            Delivery::Sound {
+                kind,
+                volume,
+                output,
+            } => {
+                if !preferences.sound || preferences.streamer || playing.len() >= 4 {
+                    continue;
+                }
+                let now = std::time::Instant::now();
+                if last_sound
+                    .is_some_and(|last| now.duration_since(last) < Duration::from_millis(750))
+                {
+                    continue;
+                }
+                last_sound = Some(now);
+                match play_sound(*kind, *volume, output.clone()) {
+                    Ok(sound) => playing.push(sound),
+                    Err(error) => {
+                        let _ = feedback.send(Feedback::Failure(format!(
+                            "Notification sound unavailable: {error}"
+                        )));
+                    }
+                }
+                continue;
+            }
+            _ => {}
+        }
         if let Delivery::Clear { account, channel } = request {
+            if channel.is_none() {
+                playing.clear();
+            }
             if let Some(Freedesktop(connection)) = &service
                 && let Ok(mut targets) = targets.lock()
             {
@@ -183,13 +335,22 @@ fn delivery(alerts: mpsc::Receiver<Delivery>, clicked: mpsc::Sender<Target>) {
         let Delivery::Alert(alert) = request else {
             continue;
         };
+        if !preferences.desktop || preferences.streamer {
+            continue;
+        }
         if service.is_none() {
-            let Ok(connection) = zbus::blocking::Connection::session() else {
-                continue;
+            let connection = match zbus::blocking::Connection::session() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    let _ = feedback.send(Feedback::Failure(format!(
+                        "Desktop notifications unavailable: {error}"
+                    )));
+                    continue;
+                }
             };
             let listener = connection.clone();
             let targets = targets.clone();
-            let clicked = clicked.clone();
+            let clicked = feedback.clone();
             std::thread::spawn(move || {
                 let Ok(proxy) = zbus::blocking::Proxy::new(
                     &listener,
@@ -208,21 +369,22 @@ fn delivery(alerts: mpsc::Receiver<Delivery>, clicked: mpsc::Sender<Target>) {
                             && let Ok(mut targets) = targets.lock()
                             && let Some(target) = targets.remove(&id)
                         {
-                            let _ = clicked.send(target);
+                            let _ = clicked.send(Feedback::Click(target));
                         }
                     }
                 }
             });
             service = Some(Freedesktop(connection));
         }
-        if let Some(service) = &service
-            && let Ok(id) = service.show(&alert)
-            && let Ok(mut targets) = targets.lock()
-        {
-            if targets.len() >= 256 {
-                targets.clear();
+        if let Some(service) = &service {
+            if let Some(id) = show_alert(service, &alert, &feedback)
+                && let Ok(mut targets) = targets.lock()
+            {
+                if targets.len() >= 256 {
+                    targets.clear();
+                }
+                targets.insert(id, alert.target);
             }
-            targets.insert(id, alert.target);
         }
     }
 }
@@ -250,7 +412,8 @@ impl Fluxer {
         let context = NotificationContext {
             focused: self.native_notifications.focused
                 && (self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open)),
-            modal: self.profile_ui.is_open(cx)
+            modal: self.quick_switcher.open
+                || self.profile_ui.is_open(cx)
                 || self.message_actions.is_blocking()
                 || self.image_viewer.is_open()
                 || self.playback.modal.is_open(),
@@ -302,62 +465,17 @@ impl Fluxer {
             && self.native_notifications.preferences.sound
             && let Some(volume) = notification_sound_volume(&self.state.user_settings, kind)
         {
-            let now = std::time::Instant::now();
-            if self
-                .native_notifications
-                .last_sound
-                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(750))
-            {
-                return;
-            }
-            self.native_notifications.last_sound = Some(now);
-            self.native_notifications.playing.retain(|playing| {
-                !matches!(
-                    playing.player.snapshot().status,
-                    fluxer_media::FilePlaybackStatus::Ended
-                        | fluxer_media::FilePlaybackStatus::Failed
-                )
+            let output = self
+                .output_picker
+                .read(cx)
+                .selected()
+                .filter(|id| *id != "output:default")
+                .map(str::to_owned);
+            let _ = self.native_notifications.tx.try_send(Delivery::Sound {
+                kind,
+                volume,
+                output,
             });
-            if self.native_notifications.playing.len() >= 4 {
-                return;
-            }
-            let (bytes, suffix): (&[u8], &str) = if kind == MessageSound::SameChannel {
-                (
-                    include_bytes!(
-                        "../../../../fluxer_app/src/media/sounds/in-channel-notification.ogg"
-                    ),
-                    ".ogg",
-                )
-            } else {
-                (
-                    include_bytes!("../../../../fluxer_app/src/media/sounds/message.mp3"),
-                    ".mp3",
-                )
-            };
-            if let Ok(mut file) = tempfile::Builder::new().suffix(suffix).tempfile() {
-                use std::io::Write;
-                if file.write_all(bytes).is_ok()
-                    && let Ok(player) = fluxer_media::FilePlayer::open(
-                        file.path().into(),
-                        fluxer_media::FilePlaybackOptions {
-                            autoplay: true,
-                            volume,
-                            output_device: self
-                                .output_picker
-                                .read(cx)
-                                .selected()
-                                .filter(|id| *id != "output:default")
-                                .map(str::to_owned),
-                            ..Default::default()
-                        },
-                    )
-                {
-                    self.native_notifications.playing.push(Playing {
-                        _file: file,
-                        player,
-                    });
-                }
-            }
         }
     }
     pub(super) fn poll_notifications(&mut self, cx: &mut Context<Self>) {
@@ -378,7 +496,6 @@ impl Fluxer {
                     account: old,
                     channel: None,
                 });
-                self.native_notifications.playing.clear();
             }
             if let Some((account, Some(channel))) = scope {
                 let _ = self.native_notifications.tx.try_send(Delivery::Clear {
@@ -388,13 +505,21 @@ impl Fluxer {
             }
             self.native_notifications.last_scope = scope;
         }
-        self.native_notifications.playing.retain(|playing| {
-            !matches!(
-                playing.player.snapshot().status,
-                fluxer_media::FilePlaybackStatus::Ended | fluxer_media::FilePlaybackStatus::Failed
-            )
-        });
-        let targets: Vec<_> = self.native_notifications.clicks.try_iter().collect();
+        let events: Vec<_> = self.native_notifications.feedback.try_iter().collect();
+        let mut targets = Vec::new();
+        for event in events {
+            match event {
+                Feedback::Click(target) => targets.push(target),
+                Feedback::Loaded(preferences) => {
+                    self.native_notifications.preferences = preferences;
+                    cx.notify();
+                }
+                Feedback::Failure(error) => {
+                    self.native_notifications.status = Some(error);
+                    cx.notify();
+                }
+            }
+        }
         for target in targets {
             if self.state.current_user.as_ref().map(|user| user.id) != Some(target.account) {
                 continue;
@@ -418,12 +543,16 @@ impl Fluxer {
         use crate::controls::toggle;
         div().flex().flex_col().gap_3().child(heading("Notifications"))
             .children([("desktop","Desktop notifications",self.native_notifications.preferences.desktop),("sound","Message sounds",self.native_notifications.preferences.sound),("privacy","Hide notification message previews",self.native_notifications.preferences.hide_preview),("streamer","Streamer mode · suppress notifications and sounds",self.native_notifications.preferences.streamer)].into_iter().map(|(id,label,enabled)|div().flex().items_center().gap_3().child(div().flex_1().child(label)).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match id{"desktop"=>this.native_notifications.preferences.desktop=!enabled,"sound"=>this.native_notifications.preferences.sound=!enabled,"privacy"=>this.native_notifications.preferences.hide_preview=!enabled,_=>this.native_notifications.preferences.streamer=!enabled};this.native_notifications.save();cx.notify();})))))
+            .when_some(self.native_notifications.status.clone(),|view,error|view.child(div().text_size(px(12.)).text_color(rgb(0xf0a1b5)).child(error)))
             .child(muted("Only new messages notify. Do Not Disturb, muted channels and message notification settings apply.")).into_any_element()
     }
 }
 #[cfg(test)]
 mod tests {
-    use super::{Alert, NotificationSink, Target, escaped};
+    use super::{
+        Alert, Feedback, NotificationSink, Preferences, Target, config_path, escaped,
+        load_preferences, save_preferences, show_alert,
+    };
     use fluxer_core::Snowflake;
     #[test]
     fn private_sink_receives_safe_plaintext_and_exact_click_identity() {
@@ -449,5 +578,62 @@ mod tests {
         assert_eq!(sink.0.borrow()[0].target, target);
         assert_eq!(sink.0.borrow()[0].body, "&amp;body");
         assert!(sink.0.borrow()[0].title.contains("&lt;b&gt;"));
+    }
+    #[test]
+    fn service_failure_is_reported_without_a_real_notification() {
+        struct Failed;
+        impl NotificationSink for Failed {
+            fn show(&self, _: &Alert) -> Result<u32, String> {
+                Err("private fake service unavailable".into())
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let target = Target {
+            account: Snowflake(1),
+            channel: Snowflake(2),
+            message: Snowflake(3),
+        };
+        assert!(
+            show_alert(
+                &Failed,
+                &Alert {
+                    target,
+                    title: "test".into(),
+                    body: "test".into()
+                },
+                &tx
+            )
+            .is_none()
+        );
+        assert!(
+            matches!(rx.recv().unwrap(),Feedback::Failure(error) if error.contains("private fake service unavailable"))
+        );
+    }
+    #[test]
+    fn preferences_are_bounded_atomic_private_and_reject_relative_config_roots() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            config_path(Some("relative".into()), Some("/home/fixture".into())).unwrap(),
+            std::path::PathBuf::from("/home/fixture/.config/fluxer-native/notifications.json")
+        );
+        assert!(config_path(Some("relative".into()), Some("also-relative".into())).is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notifications.json");
+        save_preferences(
+            &path,
+            &Preferences {
+                desktop: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(load_preferences(&path).unwrap().desktop);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::write(&path, vec![b' '; 65537]).unwrap();
+        assert!(load_preferences(&path).is_err());
+        assert!(save_preferences(&path.join("impossible"), &Preferences::default()).is_err());
     }
 }

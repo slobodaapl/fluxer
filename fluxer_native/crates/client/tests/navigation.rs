@@ -190,6 +190,7 @@ impl Fixture {
                                     if body["read_states"][0]["channel_id"] == "100" { (200,json!({"read_states":[{"id":"100","last_message_id":body["read_states"][0]["message_id"],"mention_count":4,"version":"10"}]})) }
                                     else {(200,json!({"read_states":[{"id":"103","last_message_id":"1200","mention_count":7,"version":"9"}]}))}
                                 },
+                                ("GET","/api/v1/channels/100/slowmode"|"/api/v1/channels/103/slowmode")=>(200,json!({"rate_limit_per_user":0,"retry_after_ms":0,"can_bypass":false})),
                                 ("PATCH","/api/v1/users/@me/guilds/10/settings")=>(200,json!({})),
                                 _=>panic!("unexpected navigation request {first}"),
                             };respond(&mut socket,status,response).await;

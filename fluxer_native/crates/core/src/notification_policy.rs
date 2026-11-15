@@ -85,6 +85,9 @@ impl ClientState {
                 sound: Some(MessageSound::SameChannel),
             };
         }
+        if !self.notification_content_allowed(channel) {
+            return none;
+        }
         if message.flags & (1 << 12) != 0 {
             return none;
         }
@@ -164,11 +167,124 @@ impl ClientState {
             }),
         }
     }
+    fn notification_content_allowed(&self, channel: &crate::Channel) -> bool {
+        let channel = if channel.kind.is_thread() {
+            channel
+                .parent_id
+                .and_then(|id| self.channels.get(&id))
+                .unwrap_or(channel)
+        } else {
+            channel
+        };
+        let parent = channel
+            .parent_id
+            .and_then(|id| self.channels.get(&id))
+            .filter(|p| p.kind == crate::ChannelType::Category);
+        let guild = channel.guild_id.and_then(|id| self.guilds.get(&id));
+        let mature = channel
+            .extra
+            .get("nsfw_override")
+            .and_then(Value::as_bool)
+            .map(|v| (v, 2))
+            .or_else(|| {
+                parent
+                    .and_then(|p| p.extra.get("nsfw_override"))
+                    .and_then(Value::as_bool)
+                    .map(|v| (v, 1))
+            })
+            .unwrap_or((
+                guild
+                    .and_then(|g| g.extra.get("nsfw"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(channel.nsfw),
+                0,
+            ));
+        let warning = channel
+            .extra
+            .get("content_warning_level")
+            .and_then(Value::as_u64)
+            .filter(|v| *v != 0)
+            .map(|v| (v, 2))
+            .or_else(|| {
+                parent
+                    .and_then(|p| p.extra.get("content_warning_level"))
+                    .and_then(Value::as_u64)
+                    .filter(|v| *v != 0)
+                    .map(|v| (v, 1))
+            })
+            .or_else(|| {
+                guild
+                    .and_then(|g| g.extra.get("content_warning_level"))
+                    .and_then(Value::as_u64)
+                    .filter(|v| *v != 0)
+                    .map(|v| (v, 0))
+            })
+            .unwrap_or((0, 0));
+        if !mature.0 && warning.0 != 1 {
+            return true;
+        }
+        if mature.0
+            && self
+                .current_user
+                .as_ref()
+                .and_then(|u| u.extra.get("nsfw_allowed"))
+                .and_then(Value::as_bool)
+                != Some(true)
+        {
+            return false;
+        }
+        let Some(agreements) =
+            decode_preferences(&self.user_settings).and_then(|prefs| prefs.agreements)
+        else {
+            return false;
+        };
+        let scope = if mature.0 && warning.0 == 1 {
+            mature.1.max(warning.1)
+        } else if mature.0 {
+            mature.1
+        } else {
+            warning.1
+        };
+        match scope {
+            2 => agreements.channels.contains(&channel.id.to_string()),
+            1 => parent.is_some_and(|p| agreements.categories.contains(&p.id.to_string())),
+            _ => guild.is_some_and(|g| agreements.guilds.contains(&g.id.to_string())),
+        }
+    }
 }
 #[derive(ProstMessage)]
 struct Preferences {
+    #[prost(message, optional, tag = "62")]
+    agreements: Option<Agreements>,
     #[prost(message, optional, tag = "100")]
     sound: Option<Sound>,
+}
+#[derive(ProstMessage)]
+struct Agreements {
+    #[prost(string, repeated, tag = "1")]
+    channels: Vec<String>,
+    #[prost(string, repeated, tag = "2")]
+    guilds: Vec<String>,
+    #[prost(string, repeated, tag = "3")]
+    categories: Vec<String>,
+}
+fn decode_preferences(settings: &Value) -> Option<Preferences> {
+    let encoded = settings
+        .get("synced_preferences")
+        .or_else(|| settings.get("syncedPreferences"))?
+        .as_str()?;
+    if encoded.len() > 700_000 {
+        return None;
+    }
+    [
+        &general_purpose::STANDARD,
+        &general_purpose::STANDARD_NO_PAD,
+        &general_purpose::URL_SAFE,
+        &general_purpose::URL_SAFE_NO_PAD,
+    ]
+    .into_iter()
+    .find_map(|engine| engine.decode(encoded).ok())
+    .and_then(|bytes| Preferences::decode(bytes.as_slice()).ok())
 }
 #[derive(ProstMessage)]
 struct Sound {
@@ -183,23 +299,7 @@ struct Sound {
 }
 /// Sound.ts defaults and synced override, with source headroom and bounded gain.
 pub fn notification_sound_volume(settings: &Value, kind: MessageSound) -> Option<f32> {
-    let sound = settings
-        .get("synced_preferences")
-        .or_else(|| settings.get("syncedPreferences"))
-        .and_then(Value::as_str)
-        .filter(|s| s.len() < 700_000)
-        .and_then(|encoded| {
-            [
-                &general_purpose::STANDARD,
-                &general_purpose::STANDARD_NO_PAD,
-                &general_purpose::URL_SAFE,
-                &general_purpose::URL_SAFE_NO_PAD,
-            ]
-            .into_iter()
-            .find_map(|engine| engine.decode(encoded).ok())
-            .and_then(|bytes| Preferences::decode(bytes.as_slice()).ok())
-            .and_then(|prefs| prefs.sound)
-        });
+    let sound = decode_preferences(settings).and_then(|prefs| prefs.sound);
     let default_disabled = kind == MessageSound::SameChannel;
     if sound.as_ref().is_some_and(|s| s.all_disabled)
         || sound
@@ -210,20 +310,15 @@ pub fn notification_sound_volume(settings: &Value, kind: MessageSound) -> Option
     {
         return None;
     }
-    let master = sound
-        .as_ref()
-        .and_then(|s| s.master)
-        .filter(|v| v.is_finite())
-        .unwrap_or(100.)
-        .clamp(0., 200.);
-    let gain = sound
+    let percent = sound
         .as_ref()
         .and_then(|s| s.volumes.get(kind.key()))
         .copied()
+        .or_else(|| sound.as_ref().and_then(|s| s.master))
         .filter(|v| v.is_finite())
         .unwrap_or(100.)
         .clamp(0., 200.);
-    Some(((master / 100. * gain / 100. * 0.4 * 0.8).min(0.8)) as f32)
+    Some(((percent / 100. * 0.4).min(0.8) * 0.8) as f32)
 }
 #[cfg(test)]
 mod tests {
@@ -277,6 +372,7 @@ mod tests {
         assert!(notification_sound_volume(&Value::Null, MessageSound::Message).is_some());
         assert!(notification_sound_volume(&Value::Null, MessageSound::SameChannel).is_none());
         let prefs = Preferences {
+            agreements: None,
             sound: Some(Sound {
                 all_disabled: true,
                 ..Default::default()
@@ -289,6 +385,56 @@ mod tests {
                 MessageSound::DirectMessage
             )
             .is_none()
+        );
+    }
+    #[test]
+    fn mature_content_requires_scoped_consent_and_allowed_account() {
+        let mut state = ClientState::demo();
+        let id = Snowflake(11);
+        state
+            .channels
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("nsfw_override".into(), serde_json::json!(true));
+        assert!(!state.notification_content_allowed(&state.channels[&id]));
+        state
+            .current_user
+            .as_mut()
+            .unwrap()
+            .extra
+            .insert("nsfw_allowed".into(), serde_json::json!(true));
+        let prefs = Preferences {
+            agreements: Some(Agreements {
+                channels: vec![id.to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        state.user_settings = serde_json::json!({"synced_preferences":general_purpose::STANDARD.encode(prefs.encode_to_vec())});
+        assert!(state.notification_content_allowed(&state.channels[&id]));
+        state
+            .channels
+            .get_mut(&id)
+            .unwrap()
+            .extra
+            .insert("content_warning_level".into(), serde_json::json!(1));
+        assert!(state.notification_content_allowed(&state.channels[&id]));
+    }
+    #[test]
+    fn sound_override_replaces_master_with_source_headroom() {
+        let prefs = Preferences {
+            sound: Some(Sound {
+                master: Some(200.),
+                volumes: HashMap::from([("message".into(), 50.)]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let settings = serde_json::json!({"synced_preferences":general_purpose::STANDARD.encode(prefs.encode_to_vec())});
+        assert!(
+            (notification_sound_volume(&settings, MessageSound::Message).unwrap() - 0.16).abs()
+                < 0.0001
         );
     }
 }

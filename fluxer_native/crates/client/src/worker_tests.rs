@@ -2330,11 +2330,12 @@ async fn notification_events_only_follow_new_live_message_dispatches() {
     worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:body.clone(),sequence:Some(1)}).await.unwrap();
     worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:body.clone(),sequence:Some(1)}).await.unwrap();
     worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_UPDATE".into(),data:body.clone(),sequence:Some(2)}).await.unwrap();
+    worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:body.clone(),sequence:Some(3)}).await.unwrap();
     worker.snapshot();
     let live:Vec<_>=events.try_iter().filter_map(|event|if let Event::LiveMessageCreated{account_id,message}=event{Some((account_id,message.id))}else{None}).collect();
     assert_eq!(live,vec![(Snowflake(100),Snowflake(999))]);
     worker.demo=true;
-    worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:json!({"id":"1000","channel_id":"11","author":{"id":"101","username":"alex"},"content":"offline fixture"}),sequence:Some(3)}).await.unwrap();
+    worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:json!({"id":"1000","channel_id":"11","author":{"id":"101","username":"alex"},"content":"offline fixture"}),sequence:Some(4)}).await.unwrap();
     assert!(!events.try_iter().any(|event|matches!(event,Event::LiveMessageCreated{..})));
 }
 
