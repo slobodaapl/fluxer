@@ -4,7 +4,7 @@ use fluxer_media::{AudioMixSettings, AudioSettings};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -50,14 +50,21 @@ fn path() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".config")));
     base.map(|p| p.join("fluxer-native/audio-preferences.json"))
 }
+const MAX_PREFERENCES_BYTES: u64 = 4 * 1024 * 1024;
 fn read(path: &Path) -> Result<BTreeMap<String, AudioPreferences>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            serde_json::from_slice(&bytes).map_err(|_| "Audio preferences could not be read".into())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(_) => Err("Audio preferences could not be read".into()),
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(_) => return Err("Audio preferences could not be read".into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_PREFERENCES_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Audio preferences could not be read")?;
+    if bytes.len() as u64 > MAX_PREFERENCES_BYTES {
+        return Err("Audio preferences file is too large".into());
     }
+    serde_json::from_slice(&bytes).map_err(|_| "Audio preferences could not be read".into())
 }
 pub(crate) fn load(key: &str) -> Result<AudioPreferences, String> {
     let Some(path) = path() else {
@@ -93,6 +100,9 @@ fn save_at(path: &Path, key: &str, prefs: &AudioPreferences) -> Result<(), Strin
     serde_json::to_writer(&mut file, &all).map_err(|_| "Audio preferences could not be saved")?;
     file.flush()
         .map_err(|_| "Audio preferences could not be saved")?;
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "Audio preferences could not be saved")?;
     file.persist(path)
         .map_err(|_| "Audio preferences could not be saved")?;
     Ok(())
@@ -100,6 +110,21 @@ fn save_at(path: &Path, key: &str, prefs: &AudioPreferences) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oversized_preferences_are_bounded_and_preserved() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("large.json");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_PREFERENCES_BYTES + 1)
+            .unwrap();
+        assert!(read(&path).is_err());
+        assert!(save_at(&path, "fixture::1", &AudioPreferences::default()).is_err());
+        assert_eq!(
+            std::fs::metadata(path).unwrap().len(),
+            MAX_PREFERENCES_BYTES + 1
+        );
+    }
     #[test]
     fn accounts_are_isolated_and_invalid_file_is_not_overwritten() {
         let dir = tempfile::tempdir().unwrap();

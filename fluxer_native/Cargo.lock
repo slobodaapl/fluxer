@@ -2097,6 +2097,7 @@ dependencies = [
  "image",
  "mime_guess",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
