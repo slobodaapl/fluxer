@@ -625,6 +625,7 @@ impl Fluxer {
             .state
             .user_settings
             .get("custom_status")
+            .filter(|value| custom_status_active(value))
             .and_then(|custom| {
                 custom_status_emoji(
                     custom.get("emoji_id").and_then(|value| value.as_str()),
