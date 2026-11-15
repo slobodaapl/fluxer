@@ -110,6 +110,8 @@ impl Fluxer {
             .child(
                 div()
                     .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
                     .child(
@@ -150,6 +152,7 @@ impl Fluxer {
                             }),
                         )
                         .track_scroll(handle)
+                        .h_full()
                         .flex_1()
                         .min_h_0()
                         .w_full(),
