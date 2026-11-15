@@ -431,7 +431,10 @@ pub enum Event {
     },
     UserProfile(ProfileSnapshot),
     /// Source Notification.handleMessageAck/Delete; bound to the active account.
-    ClearChannelNotifications {account_id: Snowflake, channel_id: Snowflake},
+    ClearChannelNotifications {
+        account_id: Snowflake,
+        channel_id: Snowflake,
+    },
     MessageAckResult {
         channel_id: Snowflake,
         message_id: Snowflake,

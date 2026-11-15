@@ -131,9 +131,12 @@ mod tests {
     #[test]
     fn reduced_motion_prevents_automatic_playback_without_changing_account_preference() {
         let settings = json!({"gif_auto_play":true});
-        assert!(!effective_gif_autoplay(&settings,true));
-        assert!(effective_gif_autoplay(&settings,false));
-        assert!(!effective_gif_autoplay(&json!({"gif_auto_play":false}),false));
+        assert!(!effective_gif_autoplay(&settings, true));
+        assert!(effective_gif_autoplay(&settings, false));
+        assert!(!effective_gif_autoplay(
+            &json!({"gif_auto_play":false}),
+            false
+        ));
     }
     #[test]
     fn authoritative_autoplay_false_is_preserved_and_missing_setting_uses_source_default() {

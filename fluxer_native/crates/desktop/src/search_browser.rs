@@ -982,7 +982,10 @@ impl Fluxer {
                         rich_message::MediaMotion {
                             enabled: !(self.image_viewer.is_open()
                                 || self.playback.modal.is_open()),
-                            autoplay: media_animation::effective_gif_autoplay(&self.state.user_settings, self.interface.reduced_motion()),
+                            autoplay: media_animation::effective_gif_autoplay(
+                                &self.state.user_settings,
+                                self.interface.reduced_motion(),
+                            ),
                             surface: "browser",
                             hide_downloads: crate::media_context_policy::hide_media_downloads(
                                 message.channel_id,
