@@ -45,6 +45,13 @@ struct VoiceTarget {
     connection_id: Option<String>,
 }
 
+struct VoiceConnectJob {
+    generation: u64,
+    update: VoiceServerUpdate,
+    revoked_share: bool,
+    task: JoinHandle<(MediaEngine, Result<MediaEvents>)>,
+}
+
 struct PendingShare {
     audio: Option<SharedAudioSelection>,
 }
@@ -186,6 +193,10 @@ pub(crate) struct Worker {
     media: Option<MediaEngine>,
     media_events: Option<MediaEvents>,
     voice_target: Option<VoiceTarget>,
+    voice_connect: Option<VoiceConnectJob>,
+    voice_recovery_started: Option<tokio::time::Instant>,
+    voice_recovery_at: Option<tokio::time::Instant>,
+    voice_recovery_attempts: u8,
     call_generation: u64,
     call_snapshot: Arc<Mutex<Option<crate::CallControlSnapshot>>>,
     pending_voice_server: Option<VoiceServerUpdate>,
@@ -207,6 +218,8 @@ pub(crate) struct Worker {
     member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
+    participant_audio_intents: BTreeMap<String, fluxer_media::ParticipantAudioSettings>,
+    stream_audio_intents: BTreeMap<String, fluxer_media::ParticipantAudioSettings>,
     /// Media watch epochs fence frames and lifecycle notifications queued before
     /// stopping/restarting a watch on the same publication SID.
     video_generations: BTreeMap<String, u64>,
@@ -257,6 +270,10 @@ impl Worker {
             media: None,
             media_events: None,
             voice_target: None,
+            voice_connect: None,
+            voice_recovery_started: None,
+            voice_recovery_at: None,
+            voice_recovery_attempts: 0,
             call_generation: 0,
             call_snapshot: Arc::new(Mutex::new(None)),
             pending_voice_server: None,
@@ -278,6 +295,8 @@ impl Worker {
             member_query: None,
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
+            participant_audio_intents: BTreeMap::new(),
+            stream_audio_intents: BTreeMap::new(),
             video_generations: BTreeMap::new(),
             pending_share: None,
             active_share_audio: false,
@@ -511,6 +530,9 @@ impl Worker {
             .ok_or_else(|| "Choose a channel first".into())
     }
     fn media(&mut self) -> Result<&mut MediaEngine> {
+        if self.voice_connect.is_some() {
+            return Err("Audio settings are unavailable while voice is connecting".into());
+        }
         if self.media.is_none() {
             let mut media = MediaEngine::new().map_err(error)?;
             media.restore_device_preferences(
@@ -538,6 +560,7 @@ impl Worker {
         let mut attempted_status_expiry = None;
         let mut expiry_account = None;
         let mut last_devices = None;
+        let mut last_device_poll = (SystemTime::now(), std::time::Instant::now());
         let mut recovery_requested = false;
         let mut recovery: Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>> =
             None;
@@ -562,6 +585,10 @@ impl Worker {
                 Gateway(Option<GatewayEvent>),
                 Media(Option<MediaEvent>),
                 VoiceTimeout,
+                VoiceRetry,
+                VoiceConnect(
+                    std::result::Result<(MediaEngine, Result<MediaEvents>), tokio::task::JoinError>,
+                ),
                 BeginIpPoll,
                 IpPoll(
                     std::result::Result<
@@ -579,7 +606,7 @@ impl Worker {
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
-                _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
+                _ = device_poll.tick() => Incoming::DevicePoll,
                 result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
@@ -588,6 +615,8 @@ impl Worker {
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
                 event = receive_media(&mut self.media_events) => Incoming::Media(event),
                 _ = voice_timeout(self.voice_join_deadline) => Incoming::VoiceTimeout,
+                _ = voice_timeout(self.voice_recovery_at) => Incoming::VoiceRetry,
+                result = voice_connect_result(&mut self.voice_connect) => Incoming::VoiceConnect(result),
                 _ = voice_timeout(self.pending_ip.as_ref().and_then(|pending|pending.next_poll)) => Incoming::BeginIpPoll,
                 result=ip_poll_result(&mut self.ip_poll_task)=>Incoming::IpPoll(result),
                 _ = voice_timeout(self.pending_browser.as_ref().and_then(|pending|pending.next_poll))=>Incoming::BeginBrowserPoll,
@@ -633,11 +662,21 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::DevicePoll => {
-                    if let Some(media) = &mut self.media {
-                        recovery_requested = false;
-                        recovery = Some(media.begin_device_recovery());
+                    let now = (SystemTime::now(), std::time::Instant::now());
+                    let slept = suspend_gap(last_device_poll, now);
+                    last_device_poll = now;
+                    if slept && self.voice_target.is_some() && self.voice_recovery_started.is_none()
+                    {
+                        self.media_event(MediaEvent::TransportLost).await
+                    } else {
+                        if recovery.is_none()
+                            && let Some(media) = &mut self.media
+                        {
+                            recovery_requested = false;
+                            recovery = Some(media.begin_device_recovery());
+                        }
+                        Ok(())
                     }
-                    Ok(())
                 }
                 Incoming::DeviceRecovery(result) => {
                     recovery = None;
@@ -719,9 +758,19 @@ impl Worker {
                     self.media_events = None;
                     Ok(())
                 }
+                Incoming::VoiceConnect(result) => self.finish_voice_connect(result).await,
+                Incoming::VoiceRetry => self.retry_voice().await,
                 Incoming::VoiceTimeout => {
-                    let _ = self.leave_voice(true).await;
-                    Err("Voice server did not complete the connection; try joining again".into())
+                    self.voice_join_deadline = None;
+                    if self.voice_recovery_started.is_some() {
+                        self.schedule_voice_retry().await
+                    } else {
+                        let _ = self.leave_voice(true).await;
+                        Err(
+                            "Voice server did not complete the connection; try joining again"
+                                .into(),
+                        )
+                    }
                 }
                 Incoming::BeginIpPoll => {
                     self.begin_ip_poll();
@@ -1672,14 +1721,28 @@ impl Worker {
                 .media()?
                 .set_push_to_talk_pressed(pressed)
                 .map_err(error)?,
-            Command::SetParticipantAudio { identity, settings } => self
-                .media()?
-                .set_participant_audio(&identity, settings)
-                .map_err(error)?,
-            Command::SetStreamAudio { identity, settings } => self
-                .media()?
-                .set_stream_audio(&identity, settings)
-                .map_err(error)?,
+            Command::SetParticipantAudio { identity, settings } => {
+                if identity.is_empty() || !settings.validate() {
+                    return Err("Invalid participant audio setting".into());
+                }
+                if self.voice_connect.is_none() {
+                    self.media()?
+                        .set_participant_audio(&identity, settings)
+                        .map_err(error)?;
+                }
+                self.participant_audio_intents.insert(identity, settings);
+            }
+            Command::SetStreamAudio { identity, settings } => {
+                if identity.is_empty() || !settings.validate() {
+                    return Err("Invalid stream audio setting".into());
+                }
+                if self.voice_connect.is_none() {
+                    self.media()?
+                        .set_stream_audio(&identity, settings)
+                        .map_err(error)?;
+                }
+                self.stream_audio_intents.insert(identity, settings);
+            }
             Command::WatchStream { identity, watch } => {
                 let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
                 self.set_watch(identity, watch, connected).await?;
@@ -2323,10 +2386,17 @@ impl Worker {
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
         self.pending_share = None;
         self.active_share_audio = false;
+        if let Some(job) = self.voice_connect.take() {
+            job.task.abort();
+            let _ = job.task.await;
+        }
         let target = self.voice_target.take();
         self.pending_voice_server = None;
         self.voice_credentials = None;
         self.voice_join_deadline = None;
+        self.voice_recovery_started = None;
+        self.voice_recovery_at = None;
+        self.voice_recovery_attempts = 0;
         self.server_muted = false;
         self.server_deafened = false;
         for identity in std::mem::take(&mut self.available_streams) {
@@ -2336,6 +2406,8 @@ impl Worker {
             }));
         }
         self.watched_streams.clear();
+        self.participant_audio_intents.clear();
+        self.stream_audio_intents.clear();
         self.video_generations.clear();
         self.emit(Event::WatchedStreams(Vec::new()));
         self.media_events = None;
@@ -2355,7 +2427,9 @@ impl Worker {
         self.emit(Event::SharedAudioStatus(false));
         if notify_gateway && let (Some(target), Some(tx)) = (target, &self.gateway_commands) {
             let payload = target.payload(&self.state, true, &self.watched_streams);
-            if !self.gateway_ready {
+            if !self.gateway_ready
+                && (target.connection_id.is_some() || self.pending_voice_leave.is_none())
+            {
                 self.pending_voice_leave = Some(payload.clone());
             }
             let _ = tx.send(GatewayCommand::VoiceState(payload)).await;
@@ -2382,7 +2456,9 @@ impl Worker {
                         .await
                         .map_err(|_| "Gateway is disconnected".to_owned())?;
                 }
-                if std::mem::take(&mut self.voice_sync_pending) {
+                if std::mem::take(&mut self.voice_sync_pending)
+                    && self.voice_recovery_started.is_none()
+                {
                     self.update_voice().await?;
                 }
                 self.emit(Event::Status("Connected".into()));
@@ -2769,13 +2845,15 @@ impl Worker {
     /// VoiceEngineV2AppScreenShareStateSync drive the matching self_stream state;
     /// native does not retain or silently reacquire OS capture across replacement.
     fn revoke_share_for_replacement(&mut self) -> bool {
-        let had_share = self.pending_share.is_some()
-            || self.active_share_audio
-            || self.state.voice.screen_share;
+        let was_sharing = self.active_share_audio || self.state.voice.screen_share;
+        let had_share = self.pending_share.is_some() || was_sharing;
         self.pending_share = None;
         self.active_share_audio = false;
         self.state.voice.screen_share = false;
         if had_share {
+            if was_sharing {
+                self.emit(Event::ShareReshareRequired);
+            }
             self.emit(Event::Media(MediaEvent::ScreenShareStopped));
             self.emit(Event::SharedAudioStatus(false));
         }
@@ -2796,6 +2874,14 @@ impl Worker {
                     .into(),
             );
         }
+        if self
+            .voice_connect
+            .as_ref()
+            .is_some_and(|job| same_voice_credentials(&job.update, &update))
+        {
+            return Ok(());
+        }
+        let replacing = self.state.voice.channel_id.is_some() || self.voice_connect.is_some();
         let target = self
             .voice_target
             .as_mut()
@@ -2811,65 +2897,156 @@ impl Worker {
         target.connection_id = Some(update.connection_id.clone());
         let channel = target.channel_id;
         let bitrate = voice_channel_bitrate(&self.state, channel);
-        let muted = self.state.voice.muted || self.server_muted;
-        let deafened = self.state.voice.deafened || self.server_deafened;
+        if let Some(job) = self.voice_connect.take() {
+            job.task.abort();
+            let _ = job.task.await;
+        }
+        if replacing {
+            self.call_generation = self.call_generation.wrapping_add(1);
+        }
         let revoked_share = self.revoke_share_for_replacement();
         self.media_events = None;
         self.state.voice.disconnect();
-        // Replace transport handles while preserving explicit watch intent and
-        // the focused viewer. Republish gateway availability after reconnect.
         self.available_streams.clear();
         if let Ok(mut frames) = self.frames.lock() {
             frames.clear();
         }
+        self.snapshot();
         self.emit(Event::Media(MediaEvent::Reconnecting));
         self.emit(Event::VoiceStatus(VoiceStatus::Connecting {
             channel_id: channel,
         }));
-        let result = async {
-            let media = self.media()?;
-            media.stop_microphone_test().map_err(error)?;
-            // Publishing parameters are immutable for an active room. Teardown
-            // also releases the old microphone before any replacement attempt.
-            media.disconnect().await.map_err(error)?;
-            let job = media.begin_device_recovery();
-            let recovery = job
+        self.voice_join_deadline = None;
+        self.media()?;
+        let mut media = self.media.take().ok_or("Media engine unavailable")?;
+        let task_update = update.clone();
+        // Start blocked so a mute/deafen arriving during connection cannot
+        // briefly expose audio before the actor applies the latest intent.
+        let task = tokio::spawn(async move {
+            let result = async {
+                media.stop_microphone_test().map_err(error)?;
+                media.disconnect().await.map_err(error)?;
+                let recovery = media
+                    .begin_device_recovery()
+                    .await
+                    .map_err(|_| "Audio device recovery stopped".to_owned())?
+                    .map_err(error)?;
+                let devices = media
+                    .finish_device_recovery(recovery)
+                    .ok_or("Audio device recovery was cancelled")?;
+                if devices.input_selection.effective.is_none()
+                    || devices.output_selection.effective.is_none()
+                {
+                    return Err("No usable audio device is available".into());
+                }
+                media
+                    .configure_microphone_publish(Some(bitrate as f64), false)
+                    .map_err(error)?;
+                media.set_muted(true).map_err(error)?;
+                media.set_deafened(true).map_err(error)?;
+                tokio::time::timeout(
+                    Duration::from_secs(20),
+                    media.connect_encrypted(
+                        &task_update.endpoint,
+                        task_update.token.expose_secret(),
+                        task_update.e2ee_key.as_deref(),
+                    ),
+                )
                 .await
-                .map_err(|_| "Audio device recovery stopped".to_owned())?
-                .map_err(error)?;
-            let devices = media
-                .finish_device_recovery(recovery)
-                .ok_or("Audio device recovery was cancelled")?;
-            if devices.input_selection.effective.is_none()
-                || devices.output_selection.effective.is_none()
-            {
-                return Err("No usable audio device is available".into());
+                .map_err(|_| "Voice media connection timed out".to_owned())?
+                .map_err(error)
             }
-            media
-                .configure_microphone_publish(Some(bitrate as f64), false)
-                .map_err(error)?;
-            media.set_muted(muted).map_err(error)?;
-            media.set_deafened(deafened).map_err(error)?;
-            tokio::time::timeout(
-                Duration::from_secs(20),
-                media.connect_encrypted(
-                    &update.endpoint,
-                    update.token.expose_secret(),
-                    update.e2ee_key.as_deref(),
-                ),
-            )
-            .await
-            .map_err(|_| "Voice media connection timed out".to_owned())?
-            .map_err(error)
+            .await;
+            (media, result)
+        });
+        self.voice_connect = Some(VoiceConnectJob {
+            generation: self.call_generation,
+            update,
+            revoked_share,
+            task,
+        });
+        if revoked_share && let Err(message) = self.update_voice().await {
+            self.emit(Event::Error(message));
         }
-        .await;
+        Ok(())
+    }
+
+    async fn finish_voice_connect(
+        &mut self,
+        result: std::result::Result<(MediaEngine, Result<MediaEvents>), tokio::task::JoinError>,
+    ) -> Result<()> {
+        let Some(job) = self.voice_connect.take() else {
+            return Ok(());
+        };
+        let (mut media, result) = match result {
+            Ok(result) => result,
+            Err(failure) => {
+                if self.voice_recovery_started.is_some() {
+                    self.emit(Event::Error(error(failure)));
+                    return self.schedule_voice_retry().await;
+                }
+                self.leave_voice(true).await?;
+                return Err(error(failure));
+            }
+        };
+        if job.generation != self.call_generation || self.voice_target.is_none() {
+            let _ = media.disconnect().await;
+            return Ok(());
+        }
         match result {
             Ok(events) => {
+                let channel = self
+                    .voice_target
+                    .as_ref()
+                    .ok_or("Voice join was cancelled")?
+                    .channel_id;
+                let configure = self
+                    .participant_audio_intents
+                    .iter()
+                    .try_for_each(|(identity, settings)| {
+                        media.set_participant_audio(identity, *settings)
+                    })
+                    .and_then(|()| {
+                        self.stream_audio_intents
+                            .iter()
+                            .try_for_each(|(identity, settings)| {
+                                media.set_stream_audio(identity, *settings)
+                            })
+                    })
+                    .and_then(|()| {
+                        media.set_deafened(self.state.voice.deafened || self.server_deafened)
+                    })
+                    .and_then(|()| media.set_muted(self.state.voice.muted || self.server_muted))
+                    .and_then(|()| {
+                        media.set_watched_participants(
+                            self.watched_streams.iter().cloned().collect(),
+                        )
+                    });
+                if let Err(failure) = configure {
+                    self.media = Some(media);
+                    if self.voice_recovery_started.is_some() {
+                        self.emit(Event::Error(error(failure)));
+                        return self.schedule_voice_retry().await;
+                    }
+                    self.leave_voice(true).await?;
+                    return Err(error(failure));
+                }
+                self.video_generations = self
+                    .watched_streams
+                    .iter()
+                    .map(|identity| (identity.clone(), media.watch_generation(identity)))
+                    .collect();
+                self.media = Some(media);
                 self.media_events = Some(events);
-                self.voice_credentials = Some(update);
+                self.voice_credentials = Some(job.update);
                 self.voice_join_deadline = None;
+                self.voice_recovery_started = None;
+                self.voice_recovery_at = None;
+                self.voice_recovery_attempts = 0;
                 self.state.voice.join(channel);
-                if revoked_share && let Err(message) = self.update_voice().await {
+                if job.revoked_share
+                    && let Err(message) = self.update_voice().await
+                {
                     self.emit(Event::Error(message));
                 }
                 self.sync_stream_availability().await?;
@@ -2883,10 +3060,47 @@ impl Worker {
                 Ok(())
             }
             Err(message) => {
-                let _ = self.leave_voice(true).await;
-                Err(message)
+                self.media = Some(media);
+                if self.voice_recovery_started.is_some() {
+                    self.emit(Event::Error(message));
+                    self.schedule_voice_retry().await
+                } else {
+                    let _ = self.leave_voice(true).await;
+                    Err(message)
+                }
             }
         }
+    }
+
+    async fn schedule_voice_retry(&mut self) -> Result<()> {
+        let Some(started) = self.voice_recovery_started else {
+            return Ok(());
+        };
+        if self.voice_recovery_attempts >= 5 || started.elapsed() >= Duration::from_secs(30) {
+            self.leave_voice(true).await?;
+            return Err("Voice recovery failed; join the channel again".into());
+        }
+        self.voice_recovery_at = Some(tokio::time::Instant::now() + Duration::from_millis(1500));
+        Ok(())
+    }
+
+    async fn retry_voice(&mut self) -> Result<()> {
+        self.voice_recovery_at = None;
+        if self.voice_target.is_none() || self.voice_recovery_started.is_none() {
+            return Ok(());
+        }
+        if self
+            .voice_recovery_started
+            .is_some_and(|started| started.elapsed() >= Duration::from_secs(30))
+        {
+            return self.schedule_voice_retry().await;
+        }
+        if !self.gateway_ready {
+            return self.schedule_voice_retry().await;
+        }
+        self.voice_recovery_attempts += 1;
+        self.voice_join_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(15));
+        self.update_voice().await
     }
 
     async fn media_event(&mut self, event: MediaEvent) -> Result<()> {
@@ -2942,6 +3156,52 @@ impl Worker {
             MediaEvent::Disconnected => {
                 self.leave_voice(true).await?;
             }
+            MediaEvent::TransportLost => {
+                if self
+                    .voice_target
+                    .as_ref()
+                    .is_some_and(|target| target.guild_id.is_some())
+                {
+                    self.revoke_share_for_replacement();
+                    if let Some(job) = self.voice_connect.take() {
+                        job.task.abort();
+                        let _ = job.task.await;
+                    }
+                    self.call_generation = self.call_generation.wrapping_add(1);
+                    self.media_events = None;
+                    self.media.take(); // Drop releases all capture without waiting for the network.
+                    self.state.voice.disconnect();
+                    self.voice_credentials = None;
+                    self.pending_voice_server = None;
+                    // Classic disconnects the abandoned connection before a
+                    // fresh join, so a retry cannot leave a ghost participant.
+                    if let Some(target) = &self.voice_target
+                        && target.connection_id.is_some()
+                    {
+                        let leave = target.payload(&self.state, true, &self.watched_streams);
+                        if !self.gateway_ready {
+                            self.pending_voice_leave = Some(leave.clone());
+                        }
+                        if let Some(tx) = &self.gateway_commands {
+                            let _ = tx.send(GatewayCommand::VoiceState(leave)).await;
+                        }
+                    }
+                    if let Some(target) = &mut self.voice_target {
+                        target.connection_id = None;
+                    }
+                    self.available_streams.clear();
+                    if let Ok(mut frames) = self.frames.lock() {
+                        frames.clear();
+                    }
+                    self.voice_recovery_started = Some(tokio::time::Instant::now());
+                    self.voice_recovery_attempts = 0;
+                    self.emit(Event::VoiceStatus(VoiceStatus::Reconnecting));
+                    self.snapshot();
+                    self.schedule_voice_retry().await?;
+                } else {
+                    self.leave_voice(true).await?;
+                }
+            }
             MediaEvent::Reconnecting => self.emit(Event::VoiceStatus(VoiceStatus::Reconnecting)),
             MediaEvent::Connected => {
                 if let Some(target) = &self.voice_target {
@@ -2978,6 +3238,10 @@ impl Worker {
     /// an SFU publication first. An explicit gateway stop/leave/move revokes the
     /// intent even if stale SDK metadata still exists.
     async fn sync_stream_availability(&mut self) -> Result<()> {
+        // Do not prune watches merely because a replacement room has not joined yet.
+        if self.voice_target.is_some() && self.state.voice.channel_id.is_none() {
+            return Ok(());
+        }
         let state = &self.state;
         let next: BTreeSet<_> = self
             .voice_target
@@ -3344,6 +3608,26 @@ fn stream_key(target: &VoiceTarget, identity: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
+
+// CLOCK_MONOTONIC pauses during Linux suspend, unlike wall time. Compare
+// elapsed clocks so ordinary executor stalls do not cause needless rejoining.
+fn suspend_gap(
+    previous: (SystemTime, std::time::Instant),
+    now: (SystemTime, std::time::Instant),
+) -> bool {
+    let wall = now.0.duration_since(previous.0).unwrap_or_default();
+    let monotonic = now.1.saturating_duration_since(previous.1);
+    wall.saturating_sub(monotonic) > Duration::from_secs(10)
+}
+
+async fn voice_connect_result(
+    job: &mut Option<VoiceConnectJob>,
+) -> std::result::Result<(MediaEngine, Result<MediaEvents>), tokio::task::JoinError> {
+    match job {
+        Some(job) => (&mut job.task).await,
+        None => pending().await,
+    }
+}
 
 async fn recovery_result(
     task: &mut Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>>,

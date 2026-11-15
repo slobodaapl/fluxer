@@ -412,6 +412,8 @@ pub enum DirectMessageStatus {
 }
 
 pub enum Event {
+    /// The previous screen capture stopped and needs an explicit new share.
+    ShareReshareRequired,
     Mentions(MentionsSnapshot),
     LiveMessageCreated {
         account_id: Snowflake,

@@ -111,6 +111,8 @@ pub struct VideoFrame {
 pub enum MediaEvent {
     Connected,
     Disconnected,
+    /// The room ended because of a transport failure rather than removal.
+    TransportLost,
     Reconnecting,
     ParticipantJoined {
         identity: String,
@@ -228,6 +230,20 @@ pub struct MediaEngine {
     input_capture: Option<microphone::MicrophoneCapture>,
     audio_tasks: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     subscriptions: Arc<Mutex<subscriptions::Registry>>,
+}
+
+fn recoverable_disconnect(reason: livekit::DisconnectReason) -> bool {
+    use livekit::DisconnectReason::*;
+    matches!(
+        reason,
+        UnknownReason
+            | ServerShutdown
+            | StateMismatch
+            | Migration
+            | SignalClose
+            | ConnectionTimeout
+            | MediaFailure
+    )
 }
 
 fn desired_device(
@@ -846,7 +862,7 @@ impl MediaEngine {
                         }
                         Some(MediaEvent::Connected)
                     }
-                    RoomEvent::Disconnected { .. } => {
+                    RoomEvent::Disconnected { reason } => {
                         stop.store(true, Ordering::Release);
                         video_frames.clear();
                         if let Some(mic) = &microphone {
@@ -886,7 +902,11 @@ impl MediaEngine {
                                 break;
                             }
                         }
-                        Some(MediaEvent::Disconnected)
+                        Some(if recoverable_disconnect(reason) {
+                            MediaEvent::TransportLost
+                        } else {
+                            MediaEvent::Disconnected
+                        })
                     }
                     // VoiceRoomEventBinder.ts reports requested screen-track
                     // failures instead of leaving a watch intent silently idle.
@@ -1845,6 +1865,18 @@ mod device_recovery_tests {
             id: id.into(),
             label: id.into(),
         }
+    }
+
+    #[test]
+    fn transport_failures_retry_but_server_removals_do_not() {
+        use livekit::DisconnectReason::*;
+        assert!(recoverable_disconnect(SignalClose));
+        assert!(recoverable_disconnect(ConnectionTimeout));
+        assert!(recoverable_disconnect(MediaFailure));
+        assert!(!recoverable_disconnect(ParticipantRemoved));
+        assert!(!recoverable_disconnect(RoomDeleted));
+        assert!(!recoverable_disconnect(DuplicateIdentity));
+        assert!(!recoverable_disconnect(ClientInitiated));
     }
 
     #[test]

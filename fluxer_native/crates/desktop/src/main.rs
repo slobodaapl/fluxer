@@ -387,6 +387,7 @@ struct Fluxer {
     share_size: (u32, u32),
     dsp: AudioSettings,
     sharing: bool,
+    reshare_required: bool,
     editing: Option<Snowflake>,
     viewer: Viewer<Arc<RenderImage>>,
     demo_stream: bool,
@@ -560,6 +561,7 @@ impl Fluxer {
             share_size: (1920, 1080),
             dsp: AudioSettings::default(),
             sharing: false,
+            reshare_required: false,
             editing: None,
             viewer: Viewer::default(),
             demo_stream,
@@ -839,6 +841,7 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::DisplaySettingsMutation(status) => {
                     self.interface.server_pending =
@@ -1319,6 +1322,7 @@ impl Fluxer {
                             self.available_streams.clear();
                             self.shared_audio = false;
                             self.sharing = false;
+                            self.reshare_required = false;
                             "Disconnected".into()
                         }
                         VoiceStatus::Connecting { channel_id } => {
@@ -1463,7 +1467,10 @@ impl Fluxer {
                 }
                 Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
-                    MediaEvent::ScreenShareStarted => self.sharing = true,
+                    MediaEvent::ScreenShareStarted => {
+                        self.sharing = true;
+                        self.reshare_required = false;
+                    }
                     MediaEvent::ScreenShareStopped => self.sharing = false,
                     MediaEvent::VideoEnded {
                         track_id,

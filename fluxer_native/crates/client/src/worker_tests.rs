@@ -3181,3 +3181,143 @@ async fn display_settings_exact_transport_rollback_and_pending_scope() {
     assert_eq!(worker.state.user_settings["gif_auto_play"], false);
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn pending_voice_connect_accepts_controls_and_leave_cancels_job() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct OnDrop(Arc<AtomicBool>);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let (mut worker, _) = worker();
+    let (gateway, _rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("a".into()),
+    });
+    worker.call_generation = 7;
+    let dropped = Arc::new(AtomicBool::new(false));
+    let guard = OnDrop(dropped.clone());
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        pending::<(MediaEngine, Result<MediaEvents>)>().await
+    });
+    tokio::task::yield_now().await;
+    worker.voice_connect = Some(VoiceConnectJob {
+        generation: 7,
+        update: voice_update(Some("100"), "a"),
+        revoked_share: false,
+        task,
+    });
+    worker.command(Command::SetMute(true)).await.unwrap();
+    worker.command(Command::SetDeaf(true)).await.unwrap();
+    assert!(worker.state.voice.muted && worker.state.voice.deafened);
+    worker.leave_voice(true).await.unwrap();
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(worker.voice_connect.is_none());
+    assert!(worker.voice_target.is_none());
+    assert!(worker.state.voice.muted && worker.state.voice.deafened);
+}
+
+#[tokio::test]
+async fn transport_loss_preserves_intent_and_leave_cancels_rejoin() {
+    let (mut worker, events) = worker();
+    let (gateway, mut rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.gateway_ready = true;
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("old".into()),
+    });
+    worker.state.voice.join(100.into());
+    worker.state.voice.screen_share = true;
+    worker.watched_streams.insert("user_2_watch".into());
+    worker.media_event(MediaEvent::TransportLost).await.unwrap();
+    assert!(worker.voice_recovery_at.is_some());
+    assert!(!worker.state.voice.screen_share);
+    assert!(worker.watched_streams.contains("user_2_watch"));
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::ShareReshareRequired))
+    );
+    worker.sync_stream_availability().await.unwrap();
+    assert!(worker.watched_streams.contains("user_2_watch"));
+    let GatewayCommand::VoiceState(old_leave) = rx.try_recv().unwrap() else {
+        panic!("expected abandoned connection leave");
+    };
+    assert_eq!(old_leave.connection_id.as_deref(), Some("old"));
+    assert!(old_leave.channel_id.is_none());
+    worker.retry_voice().await.unwrap();
+    let GatewayCommand::VoiceState(join) = rx.try_recv().unwrap() else {
+        panic!("expected voice rejoin");
+    };
+    assert_eq!(join.channel_id.as_deref(), Some("100"));
+    assert_eq!(join.connection_id, None);
+    assert!(!join.self_stream);
+    assert_eq!(join.viewer_stream_keys, vec!["10:100:watch"]);
+    worker.leave_voice(true).await.unwrap();
+    assert!(worker.voice_recovery_at.is_none());
+    assert!(worker.voice_recovery_started.is_none());
+    worker.retry_voice().await.unwrap();
+    let GatewayCommand::VoiceState(leave) = rx.try_recv().unwrap() else {
+        panic!("expected leave");
+    };
+    assert!(leave.channel_id.is_none());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn suspend_detection_compares_wall_and_monotonic_elapsed_time() {
+    let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let monotonic = std::time::Instant::now();
+    assert!(!suspend_gap(
+        (wall, monotonic),
+        (
+            wall + Duration::from_secs(90),
+            monotonic + Duration::from_secs(90)
+        )
+    ));
+    assert!(suspend_gap(
+        (wall, monotonic),
+        (
+            wall + Duration::from_secs(90),
+            monotonic + Duration::from_secs(5)
+        )
+    ));
+    assert!(!suspend_gap(
+        (wall, monotonic),
+        (
+            wall - Duration::from_secs(1),
+            monotonic + Duration::from_secs(5)
+        )
+    ));
+}
+
+#[tokio::test]
+async fn offline_transport_loss_then_leave_retains_abandoned_connection_leave() {
+    let (mut worker, _) = worker();
+    let (gateway, mut rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("old".into()),
+    });
+    worker.state.voice.join(100.into());
+    worker.media_event(MediaEvent::TransportLost).await.unwrap();
+    worker.leave_voice(true).await.unwrap();
+    while rx.try_recv().is_ok() {}
+    worker.gateway(GatewayEvent::Connected).await.unwrap();
+    let GatewayCommand::VoiceState(leave) = rx.try_recv().unwrap() else {
+        panic!("expected old connection leave");
+    };
+    assert_eq!(leave.connection_id.as_deref(), Some("old"));
+    assert!(leave.channel_id.is_none());
+    assert!(rx.try_recv().is_err());
+}
