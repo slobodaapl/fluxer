@@ -455,15 +455,16 @@ mod native {
         if !gate.wanted.load(Ordering::Acquire) || gate.seeking.load(Ordering::Acquire) {
             return;
         }
-        if let Ok(mut audio) = audio.try_lock() {
-            if gate.wanted.load(Ordering::Acquire) && !gate.seeking.load(Ordering::Acquire) {
-                audio.muted = gate.muted.load(Ordering::Acquire);
-                audio.volume = f32::from_bits(gate.volume.load(Ordering::Acquire));
-                let waiting = gate.waiting.load(Ordering::Acquire);
-                gate.underflow
-                    .store(waiting && audio.samples == 0, Ordering::Release);
-                audio.render(output, waiting);
-            }
+        if let Ok(mut audio) = audio.try_lock()
+            && gate.wanted.load(Ordering::Acquire)
+            && !gate.seeking.load(Ordering::Acquire)
+        {
+            audio.muted = gate.muted.load(Ordering::Acquire);
+            audio.volume = f32::from_bits(gate.volume.load(Ordering::Acquire));
+            let waiting = gate.waiting.load(Ordering::Acquire);
+            gate.underflow
+                .store(waiting && audio.samples == 0, Ordering::Release);
+            audio.render(output, waiting);
         }
     }
     fn start_output(
