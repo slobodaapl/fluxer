@@ -1191,3 +1191,26 @@ async fn category_read_acknowledges_immediate_visible_message_children() {
     );
     assert!(!worker.state.read_states.contains_key(&nested));
 }
+
+#[tokio::test]
+async fn slowmode_snapshot_rejects_stale_account_channel_and_invalid_windows() {
+    let (mut worker, events)=demo();
+    let channel=Snowflake(11);
+    let epoch=worker.navigation.epoch;
+    let token=worker.navigation.token();
+    worker.navigation.slowmode=Some((channel,token,Task(tokio::spawn(pending()))));
+    let body=json!({"rate_limit_per_user":15,"retry_after_ms":2500,"can_bypass":false});
+    worker.navigation_event(NavigationEvent::Slowmode {epoch:epoch+1,channel,token,result:Ok(body.clone())});
+    worker.navigation_event(NavigationEvent::Slowmode {epoch,channel,token:token+1,result:Ok(body.clone())});
+    worker.state.selected_channel=Some(Snowflake(12));
+    worker.navigation_event(NavigationEvent::Slowmode {epoch,channel,token,result:Ok(body.clone())});
+    assert!(!events.try_iter().any(|event|matches!(event,Event::ChannelSlowmode {..})));
+    worker.state.selected_channel=Some(channel);
+    worker.navigation_event(NavigationEvent::Slowmode {epoch,channel,token,result:Ok(body)});
+    assert!(events.try_iter().any(|event|matches!(event,Event::ChannelSlowmode {channel_id,rate_limit_per_user:15,retry_after,can_bypass:false} if channel_id==channel && retry_after==Duration::from_millis(2500))));
+    assert_eq!(worker.state.channels[&channel].rate_limit_per_user,15);
+    let token=worker.navigation.token();
+    worker.navigation.slowmode=Some((channel,token,Task(tokio::spawn(pending()))));
+    worker.navigation_event(NavigationEvent::Slowmode {epoch,channel,token,result:Ok(json!({"rate_limit_per_user":15,"retry_after_ms":21600001,"can_bypass":false}))});
+    assert!(!events.try_iter().any(|event|matches!(event,Event::ChannelSlowmode {..})));
+}

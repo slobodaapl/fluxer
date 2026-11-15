@@ -243,6 +243,8 @@ pub struct Role {
     pub color: u32,
     #[serde(default)]
     pub hoist: bool,
+    #[serde(default)]
+    pub mentionable: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Member {

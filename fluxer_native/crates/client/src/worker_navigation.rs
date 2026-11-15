@@ -49,6 +49,7 @@ pub(super) enum HistoryRequest {
     After(Snowflake),
 }
 pub(super) enum NavigationEvent {
+    Slowmode {epoch:u64,channel:Snowflake,token:u64,result:Result<Value>},
     Search {
         epoch: u64,
         channel: Snowflake,
@@ -102,6 +103,7 @@ pub(super) struct NavigationState {
     mutations: BTreeMap<(Snowflake, Snowflake), Mutation>,
     acks: BTreeMap<Snowflake, AckJob>,
     pin_acks: BTreeMap<Snowflake, Mutation>,
+    slowmode: Option<(Snowflake,u64,Task)>,
     demo_archive: BTreeMap<Snowflake, Vec<Message>>,
     demo_pins: BTreeMap<Snowflake, Vec<PinnedMessage>>,
     tx: async_mpsc::UnboundedSender<NavigationEvent>,
@@ -120,6 +122,7 @@ impl NavigationState {
             mutations: BTreeMap::new(),
             acks: BTreeMap::new(),
             pin_acks: BTreeMap::new(),
+            slowmode: None,
             demo_archive: BTreeMap::new(),
             demo_pins: BTreeMap::new(),
             tx,
@@ -133,6 +136,19 @@ impl NavigationState {
 }
 
 impl Worker {
+    pub(super) fn request_channel_slowmode(&mut self, channel:Snowflake) {
+        self.navigation.slowmode=None;
+        if self.demo || self.state.channels.get(&channel).is_none_or(|channel|channel.guild_id.is_none()) {return;}
+        let Some(client)=self.client.clone() else {return;};
+        let epoch=self.navigation.epoch;
+        let token=self.navigation.token();
+        let tx=self.navigation.tx.clone();
+        let task=tokio::spawn(async move {
+            let result=tokio::time::timeout(Duration::from_secs(5),client.channel_slowmode(&channel.to_string())).await.map_err(error).and_then(|result|result.map_err(error));
+            let _=tx.send(NavigationEvent::Slowmode {epoch,channel,token,result});
+        });
+        self.navigation.slowmode=Some((channel,token,Task(task)));
+    }
     pub(super) fn clear_navigation(&mut self) {
         self.navigation.epoch = self.navigation.epoch.wrapping_add(1);
         self.navigation.searches.clear();
@@ -142,6 +158,7 @@ impl Worker {
         self.navigation.mutations.clear();
         self.navigation.acks.clear();
         self.navigation.pin_acks.clear();
+        self.navigation.slowmode = None;
         self.navigation.demo_archive.clear();
         self.navigation.demo_pins.clear();
     }
@@ -1298,6 +1315,16 @@ impl Worker {
     }
     pub(super) fn navigation_event(&mut self, event: NavigationEvent) {
         match event {
+            NavigationEvent::Slowmode {epoch,channel,token,result} => {
+                if epoch!=self.navigation.epoch || self.state.selected_channel!=Some(channel) || !self.navigation.slowmode.as_ref().is_some_and(|(id,active,_)|*id==channel && *active==token) {return;}
+                self.navigation.slowmode=None;
+                let Ok(body)=result else {return;};
+                let (Some(rate),Some(retry),Some(can_bypass))=(body.get("rate_limit_per_user").and_then(Value::as_u64),body.get("retry_after_ms").and_then(Value::as_u64),body.get("can_bypass").and_then(Value::as_bool)) else {return;};
+                if rate>21600 || retry>21600000 {return;}
+                if let Some(target)=self.state.channels.get_mut(&channel) {target.rate_limit_per_user=rate as u32;}
+                self.emit(Event::ChannelSlowmode {channel_id:channel,rate_limit_per_user:rate as u32,retry_after:Duration::from_millis(retry),can_bypass});
+                self.snapshot();
+            }
             NavigationEvent::PinAck {
                 epoch,
                 channel,

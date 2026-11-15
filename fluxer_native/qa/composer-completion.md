@@ -1,0 +1,13 @@
+# Composer completion and slowmode QA
+
+Source authority: `fluxer_app/src/features/lexical/composer/useLexicalAutocomplete.ts`, `SlashCommandUtils.ts`, `features/slowmode/state/Slowmode.ts`, `features/slowmode/hooks/useSlowmode.ts` and `features/channel/commands/ChannelCommands.ts`.
+
+Run the native binary with explicit `--demo` and `FLUXER_COMPOSER_DEMO=mention|channel|emoji|multiline|slowmode`. These fixtures only change synthetic offline state. Never use the fixture environment as a reason to launch against a restored session.
+
+Capture the owned window after 1 second. The popup should sit above the visible caret, clamp inside a small window, show six compact rows with user avatars/status or channel/role/emoji artwork, and keep its selected result visible while moving through at most 30 results. Test Arrow Up/Down, wheel, Tab, Enter, Escape, mouse selection. Holding Enter after choosing a completion must not send the message. Tab inserts a valid wire token and keeps the composer focused. Escape closes until the query changes.
+
+Test `雪 @al suffix` by placing the caret after `al`, completing, then Undo. The suffix and original caret must survive; existing rich custom emoji, grapheme movement, selection and undo tests must continue passing. Test a selected range, IME composition, fenced/inline code, escaped trigger, and spoiler; no popup or accidental send should appear. Source emoji grammar starts after two ASCII shortcode characters. Channel candidates require VIEW_CHANNEL, member candidates require target visibility, role candidates require mentionable or MENTION_EVERYONE.
+
+For the slowmode fixture, verify the draft stays intact while the countdown ticks down and the send button is dimmed. Delivery success starts a cooldown, rejected attempts do not clear drafts, and typed HTTP400 SLOWMODE_RATE_LIMITED or HTTP429 retry windows extend it. Outbox Retry is gated during the countdown; failed optimistic rows retain content. Source BYPASS_SLOWMODE and DM immunity apply. On real channel selection, the background authenticated GET `/channels/{id}/slowmode` reconciles `{rate_limit_per_user,retry_after_ms,can_bypass}` with a 5-second timeout. Stale account/request/channel responses are discarded. Live account writes are not needed for this review.
+
+Automated validation: desktop suite 216 passed, 1 ignored before the authoritative GET follow-up; focused composer tests 6 passed; source GET route/authentication, typed retry hints, stale account/channel/request and invalid retry window tests passed. Root integration owns final build, screenshot captures and physical keyboard/IME validation; no GUI or account writes were performed in this lane.

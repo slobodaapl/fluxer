@@ -722,13 +722,15 @@ impl Fluxer {
                                 icon_button(
                                     "send",
                                     Icon::Send,
-                                    if self.message_pending() {
+                                    if self.slowmode_remaining() > 0 {
+                                        "Slowmode active"
+                                    } else if self.message_pending() {
                                         "Sending…"
                                     } else {
                                         "Send message"
                                     },
                                 )
-                                .when(self.message_pending(), |button| button.opacity(0.5))
+                                .when(self.message_pending() || self.slowmode_remaining() > 0, |button| button.opacity(0.5))
                                 .text_color(rgb(ACCENT))
                                 .on_click(cx.listener(
                                     |this, _, window, cx| this.submit(&Submit, window, cx),
@@ -741,7 +743,7 @@ impl Fluxer {
                                 .px_2()
                                 .text_size(px(10.))
                                 .text_color(rgb(MUTED))
-                                .child("Enter to send · Shift+Enter for a new line"),
+                                .child(if self.slowmode_remaining() > 0 { format!("Slowmode · {}:{:02} remaining",self.slowmode_remaining()/60,self.slowmode_remaining()%60) } else { "Enter to send · Shift+Enter for a new line".into() }),
                         )
                     }),
             )

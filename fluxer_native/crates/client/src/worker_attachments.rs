@@ -84,6 +84,7 @@ pub(super) enum AttachmentEvent {
         revision: u64,
         progress: f32,
     },
+    RateLimited { epoch: u64, channel: Snowflake, retry_after: Duration },
     Sent {
         epoch: u64,
         channel: Snowflake,
@@ -922,6 +923,12 @@ impl Worker {
         }
         let sending_nonce = nonce.clone();
         let task = tokio::spawn(async move {
+            let capture_error = |failure: fluxer_protocol::Error| {
+                if let Some(retry_after) = message_retry_after(&failure) {
+                    let _ = tx.send(AttachmentEvent::RateLimited { epoch, channel, retry_after });
+                }
+                error(failure)
+            };
             let result=async {
                 for prepared in &keepalive { prepared.validate_source().await?; }
                 let _keepalive=keepalive;
@@ -929,11 +936,11 @@ impl Worker {
                     let channel_wire=channel.to_string();
                     let mut body=Client::build_message_body(&fingerprint.content,Some(&sending_nonce),fingerprint.reference.as_ref(),fingerprint.mention_author);
                     let result=if files.is_empty() {
-                        tokio::select! {_=cancelling.cancelled()=>Err("Attachment send cancelled".to_owned()),result=client.send_message_body(&channel_wire,body)=>result.map_err(error)}
+                        tokio::select! {_=cancelling.cancelled()=>Err("Attachment send cancelled".to_owned()),result=client.send_message_body(&channel_wire,body)=>result.map_err(capture_error)}
                     }else if let Some(cached)=cached.filter(|_|policy.preupload) {
                         body["attachments"]=Value::Array(cached);
-                        tokio::select! {_=cancelling.cancelled()=>Err("Attachment send cancelled".to_owned()),result=client.send_message_body(&channel_wire,body)=>result.map_err(error)}
-                    } else {client.send_message_with_attachments(&channel_wire,body,&files,&cancelling,callback).await.map_err(error)}?;
+                        tokio::select! {_=cancelling.cancelled()=>Err("Attachment send cancelled".to_owned()),result=client.send_message_body(&channel_wire,body)=>result.map_err(capture_error)}
+                    } else {client.send_message_with_attachments(&channel_wire,body,&files,&cancelling,callback).await.map_err(capture_error)}?;
                     serde_json::from_value::<Message>(result).map_err(error)
                 } else {
                     let mut message=Message::text(demo_id,channel,demo_user.ok_or("No current account")?,fingerprint.content);
@@ -1270,6 +1277,9 @@ impl Worker {
                 self.attachment_snapshot(channel);
                 self.outbox_snapshot(channel);
             }
+            AttachmentEvent::RateLimited { epoch, channel, retry_after } => {
+                if epoch == self.attachments.epoch { self.emit(Event::MessageRateLimited { channel_id: channel, retry_after }); }
+            }
             AttachmentEvent::Sent {
                 epoch,
                 channel,
@@ -1340,3 +1350,24 @@ fn progress_callback(
 #[cfg(test)]
 #[path = "worker_attachment_tests.rs"]
 mod tests;
+
+fn message_retry_after(failure: &fluxer_protocol::Error) -> Option<Duration> {
+    match failure {
+        fluxer_protocol::Error::RateLimited {retry_after,..} => Some(*retry_after),
+        fluxer_protocol::Error::Api {code,body,..} if code.as_deref()==Some("SLOWMODE_RATE_LIMITED") => {
+            let seconds=body.pointer("/details/retry/after_seconds").and_then(Value::as_f64).or_else(||body.get("retry_after").and_then(Value::as_f64))?;
+            (seconds.is_finite() && (0.0..=21600.0).contains(&seconds)).then(||Duration::from_secs_f64(seconds))
+        }
+        _=>None,
+    }
+}
+#[cfg(test)] mod slowmode_tests {
+    use super::message_retry_after;
+    use std::time::Duration;
+    #[test] fn structured_slowmode_retry_hint_survives_string_error_boundary() {
+        let failure=fluxer_protocol::Error::Api {status:400,code:Some("SLOWMODE_RATE_LIMITED".into()),body:serde_json::json!({"retry_after":1.25})};
+        assert_eq!(message_retry_after(&failure),Some(Duration::from_millis(1250)));
+        let invalid=fluxer_protocol::Error::Api {status:400,code:Some("SLOWMODE_RATE_LIMITED".into()),body:serde_json::json!({"retry_after":-1})};
+        assert_eq!(message_retry_after(&invalid),None);
+    }
+}

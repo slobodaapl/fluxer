@@ -1702,6 +1702,7 @@ impl Worker {
         // Channel selection is navigation, not evidence a message was visible.
         // The UI explicitly acknowledges only rows painted in its viewport.
         self.state.selected_channel = Some(channel);
+        self.request_channel_slowmode(channel);
         self.request_history(channel, navigation_flow::HistoryRequest::Latest)?;
         if !self.demo {
             self.sync_selected_guild().await?;

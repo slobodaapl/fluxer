@@ -379,6 +379,7 @@ impl Fluxer {
                                             .flex_shrink_0()
                                             .on_click(
                                                 cx.listener(move |this, _, _, cx| {
+                                                    if this.slowmode_remaining() > 0 { return; }
                                                     if let Some(message) = this
                                                         .outbox
                                                         .channels

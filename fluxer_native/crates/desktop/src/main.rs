@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
+mod composer_candidates;
+mod composer_slowmode;
 mod audio_view;
 mod avatar_demo;
 mod avatar_images;
@@ -301,6 +303,7 @@ struct Fluxer {
     pane: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
+    slowmode: composer_slowmode::Slowmode,
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
@@ -403,6 +406,7 @@ impl Fluxer {
             session_context_loaded: false,
             pane: Pane::Chat,
             selected_guild: None,
+            slowmode: composer_slowmode::Slowmode::default(),
             composer: cx.new(|cx| {
                 let mut input = TextInput::new("Message this channel…", cx);
                 input.multiline = true;
@@ -609,6 +613,7 @@ impl Fluxer {
         })
         .detach();
         cx.observe(&view.composer, |this, _, cx| {
+            this.refresh_composer_completion(cx);
             let content = this.composer.read(cx).content.to_string();
             if this.state.selected_channel.is_some() && this.editing.is_none() {
                 this.command(Command::SetDraft(content), cx);
@@ -658,6 +663,7 @@ impl Fluxer {
                 Timer::after(cadence).await;
                 match entity.update(cx, |view, cx| {
                     view.poll(cx);
+                    view.tick_slowmode(cx);
                     !view.viewer.desired.is_empty()
                 }) {
                     Ok(true) => cadence = Duration::from_millis(16),
@@ -675,6 +681,7 @@ impl Fluxer {
         view.schedule_media_menu_demo(window, cx);
         view.schedule_read_menu_demo(window, cx);
         view.schedule_profile_demo(window, cx);
+        view.schedule_composer_demo(window, cx);
         view
     }
 
@@ -789,6 +796,8 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
+                    if previous_user != self.state.current_user.as_ref().map(|user|user.id) { self.slowmode = composer_slowmode::Slowmode::default(); }
+                    self.refresh_composer_completion(cx);
                     if self
                         .profile_ui
                         .popup
@@ -1121,7 +1130,14 @@ impl Fluxer {
                         self.cancel_edit(cx);
                     }
                 }
-                Event::MessageSent { .. } => {
+                Event::ChannelSlowmode {channel_id,rate_limit_per_user,retry_after,can_bypass} => {
+                    if let Some(channel)=self.state.channels.get_mut(&channel_id) {channel.rate_limit_per_user=rate_limit_per_user;}
+                    self.slowmode.server_bypass.insert(channel_id,can_bypass);
+                    self.slowmode.retry(channel_id,if can_bypass {Duration::ZERO} else {retry_after});
+                }
+                Event::MessageRateLimited { channel_id, retry_after } => self.slowmode.retry(channel_id,retry_after),
+                Event::MessageSent { channel_id, .. } => {
+                    self.slowmode.sent(channel_id);
                     // Delivery completion belongs to the outbox. Never clear a
                     // newer draft or reply based on matching message content.
                 }
@@ -1305,6 +1321,10 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composer.focus_handle(cx).is_focused(window) {
+            if self.composer.read(cx).is_composing() || self.composer.read(cx).completion_enter_guard { return; }
+            if self.composer.update(cx, |input,cx| input.completion_key("enter",false,window,cx)) { return; }
+        }
         if self.context_menu_open(cx)
             || self.message_actions.is_open()
             || self.message_links.is_open()
@@ -1332,6 +1352,7 @@ impl Fluxer {
         if !(self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open))
             || !self.composer.focus_handle(cx).is_focused(window)
             || self.message_pending()
+            || self.slowmode_remaining() > 0
             || self.emoji_target.is_some()
             || self.forwarding.is_some()
         {
@@ -2269,6 +2290,7 @@ impl Render for Fluxer {
                 this.input_picker.update(cx, |picker, cx| picker.focus(window, cx));
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
@@ -2305,6 +2327,7 @@ impl Render for Fluxer {
                 if event.keystroke.key=="f8" && !event.is_held && this.mixer.input_mode==InputMode::PushToTalk {this.command(Command::SetPushToTalkPressed(true),cx);}
             }))
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
+                if event.keystroke.key=="enter" {this.composer.update(cx,|input,_|input.completion_enter_guard=false); }
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))

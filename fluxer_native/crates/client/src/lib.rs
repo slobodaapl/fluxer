@@ -337,6 +337,8 @@ pub enum Event {
         selected_guild: Option<Snowflake>,
     },
     State(Box<ClientState>),
+    ChannelSlowmode { channel_id: Snowflake, rate_limit_per_user: u32, retry_after: std::time::Duration, can_bypass: bool },
+    MessageRateLimited { channel_id: Snowflake, retry_after: std::time::Duration },
     MessageSent {
         channel_id: Snowflake,
         content: String,
