@@ -3512,3 +3512,73 @@ async fn expired_status_failure_retries_with_backoff_then_succeeds() {
     assert!(worker.state.user_settings["status_resets_at"].is_null());
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn notification_cleanup_follows_accepted_cross_client_acks_and_deletes_only() {
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker
+        .state
+        .read_states
+        .get_mut(&Snowflake(11))
+        .unwrap()
+        .version = Some("10".into());
+    for (name, data, clears) in [
+        (
+            "MESSAGE_ACK",
+            json!({"channel_id":"11","message_id":"2000","mention_count":0,"version":"9"}),
+            false,
+        ),
+        (
+            "MESSAGE_ACK",
+            json!({"channel_id":"11","message_id":"2000","mention_count":0,"version":"11"}),
+            true,
+        ),
+        (
+            "MESSAGE_ACK",
+            json!({"channel_id":"11","message_id":"1000","mention_count":2,"version":"12","manual":true}),
+            true,
+        ),
+        (
+            "MESSAGE_DELETE",
+            json!({"channel_id":"11","id":"2001"}),
+            true,
+        ),
+        (
+            "MESSAGE_DELETE_BULK",
+            json!({"channel_id":"11","ids":["2002","2003"]}),
+            true,
+        ),
+    ] {
+        worker
+            .gateway(GatewayEvent::Dispatch {
+                name: name.into(),
+                data,
+                sequence: None,
+            })
+            .await
+            .unwrap();
+        let cleared = events
+            .try_iter()
+            .filter_map(|event| match event {
+                Event::ClearChannelNotifications {
+                    account_id,
+                    channel_id,
+                } => Some((account_id, channel_id)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cleared,
+            if clears {
+                vec![(Snowflake(100), Snowflake(11))]
+            } else {
+                vec![]
+            },
+            "{name}"
+        );
+    }
+    let read = &worker.state.read_states[&Snowflake(11)];
+    assert_eq!(read.last_message_id, Some(Snowflake(1000)));
+    assert!(read.manual_ack);
+}

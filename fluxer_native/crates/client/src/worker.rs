@@ -2680,9 +2680,16 @@ impl Worker {
                             });
                     let previous_voice = self.state.voice.clone();
                     let previous_presence = self.presence_payload();
-                    self.state
+                    let outcome = self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
+                    if outcome == fluxer_core::ApplyOutcome::Applied
+                        && matches!(name.as_str(), "MESSAGE_ACK" | "MESSAGE_DELETE" | "MESSAGE_DELETE_BULK" | "CHANNEL_DELETE" | "THREAD_DELETE")
+                        && let Some(account) = self.state.current_user.as_ref()
+                        && let Some(channel) = data.get(if matches!(name.as_str(),"CHANNEL_DELETE"|"THREAD_DELETE"){"id"}else{"channel_id"}).and_then(Value::as_str).and_then(|id|id.parse::<Snowflake>().ok())
+                    {
+                        self.emit(Event::ClearChannelNotifications {account_id:account.id,channel_id:channel});
+                    }
                     if name == "GUILD_MEMBER_LIST_UPDATE"
                         && let Some((guild, channel, _)) = self.member_list_subscription
                         && let Some(list) = self.state.member_lists.get_mut(&(guild, channel))

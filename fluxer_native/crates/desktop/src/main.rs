@@ -1061,6 +1061,7 @@ impl Fluxer {
                     instance,
                     selected_guild,
                 } => {
+                    self.begin_notification_session();
                     self.instance
                         .update(cx, |input, cx| input.set(instance, cx));
                     self.selected_guild = selected_guild;
@@ -1437,6 +1438,7 @@ impl Fluxer {
                     self.pending_messages.clear();
                     self.outbox.reset();
                 }
+                Event::ClearChannelNotifications {account_id,channel_id} => self.clear_channel_notifications(account_id, channel_id),
                 Event::MessageAckResult {
                     channel_id,
                     message_id,

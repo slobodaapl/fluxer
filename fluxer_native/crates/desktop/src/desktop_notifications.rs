@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Session-bus delivery and output-only sounds, never shell commands or capture.
 use super::*;
+#[path = "notification_transport.rs"]
+mod transport;
 use fluxer_core::{MessageSound, NotificationContext, notification_sound_volume};
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::mpsc};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Target {
     account: Snowflake,
+    epoch: u64,
+    channel_epoch: u64,
     channel: Snowflake,
     message: Snowflake,
 }
@@ -19,6 +23,7 @@ enum Delivery {
         output: Option<String>,
     },
     Save(Preferences),
+    ClearAll,
     Clear {
         account: Snowflake,
         channel: Option<Snowflake>,
@@ -66,6 +71,8 @@ pub(super) struct DesktopNotifications {
     seen: VecDeque<(Snowflake, Snowflake)>,
     focused: bool,
     last_scope: Option<(Snowflake, Option<Snowflake>)>,
+    epoch: u64,
+    channel_epochs: BTreeMap<Snowflake, u64>,
 }
 fn config_path(
     config: Option<std::path::PathBuf>,
@@ -91,7 +98,7 @@ impl DesktopNotifications {
         let path = (!demo).then(path).flatten();
         let preferences = Preferences::default();
         let (tx, alerts) = mpsc::sync_channel::<Delivery>(32);
-        let (feedback_tx, feedback) = mpsc::channel();
+        let (feedback_tx, feedback) = mpsc::sync_channel(256);
         std::thread::spawn(move || delivery(alerts, feedback_tx, path));
         Self {
             preferences,
@@ -102,6 +109,8 @@ impl DesktopNotifications {
             seen: VecDeque::new(),
             focused: true,
             last_scope: None,
+            epoch: 0,
+            channel_epochs: BTreeMap::new(),
         }
     }
     fn save(&mut self) {
@@ -124,52 +133,20 @@ fn escaped(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
+#[cfg(test)]
 trait NotificationSink {
     fn show(&self, alert: &Alert) -> Result<u32, String>;
 }
-struct Freedesktop(zbus::blocking::Connection);
-impl NotificationSink for Freedesktop {
-    fn show(&self, alert: &Alert) -> Result<u32, String> {
-        let proxy = zbus::blocking::Proxy::new(
-            &self.0,
-            "org.freedesktop.Notifications",
-            "/org/freedesktop/Notifications",
-            "org.freedesktop.Notifications",
-        )
-        .map_err(|e| e.to_string())?;
-        let hints = std::collections::HashMap::from([
-            ("suppress-sound", zbus::zvariant::Value::from(true)),
-            (
-                "desktop-entry",
-                zbus::zvariant::Value::from("app.fluxer.Native"),
-            ),
-        ]);
-        proxy
-            .call(
-                "Notify",
-                &(
-                    "Fluxer",
-                    0u32,
-                    "fluxer",
-                    &alert.title,
-                    &alert.body,
-                    vec!["default", "Open message"],
-                    hints,
-                    -1i32,
-                ),
-            )
-            .map_err(|e| e.to_string())
-    }
-}
+#[cfg(test)]
 fn show_alert(
     sink: &dyn NotificationSink,
     alert: &Alert,
-    feedback: &mpsc::Sender<Feedback>,
+    feedback: &mpsc::SyncSender<Feedback>,
 ) -> Option<u32> {
     match sink.show(alert) {
         Ok(id) => Some(id),
         Err(error) => {
-            let _ = feedback.send(Feedback::Failure(format!(
+            let _ = feedback.try_send(Feedback::Failure(format!(
                 "Desktop notification delivery failed: {error}"
             )));
             None
@@ -244,7 +221,7 @@ fn play_sound(kind: MessageSound, volume: f32, output: Option<String>) -> Result
 }
 fn delivery(
     alerts: mpsc::Receiver<Delivery>,
-    feedback: mpsc::Sender<Feedback>,
+    feedback: mpsc::SyncSender<Feedback>,
     path: Option<std::path::PathBuf>,
 ) {
     let mut preferences = Preferences::default();
@@ -252,48 +229,39 @@ fn delivery(
         match load_preferences(path) {
             Ok(loaded) => {
                 preferences = loaded;
-                let _ = feedback.send(Feedback::Loaded(preferences.clone()));
+                let _ = feedback.try_send(Feedback::Loaded(preferences.clone()));
             }
             Err(error) => {
-                let _ = feedback.send(Feedback::Failure(error));
+                let _ = feedback.try_send(Feedback::Failure(error));
             }
         }
     }
     let mut playing: Vec<Playing> = vec![];
     let mut last_sound: Option<std::time::Instant> = None;
-    let mut service = None;
-    let targets = Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::<
-        u32,
-        Target,
-    >::new()));
+    let mut service = transport::Transport::new(feedback.clone());
     loop {
         let request = match alerts.recv_timeout(Duration::from_millis(250)) {
             Ok(request) => request,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                playing.retain(|playing| {
-                    !matches!(
-                        playing.player.snapshot().status,
-                        fluxer_media::FilePlaybackStatus::Ended
-                            | fluxer_media::FilePlaybackStatus::Failed
-                    )
-                });
+                reap_sounds(&mut playing, &feedback);
                 continue;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        playing.retain(|playing| {
-            !matches!(
-                playing.player.snapshot().status,
-                fluxer_media::FilePlaybackStatus::Ended | fluxer_media::FilePlaybackStatus::Failed
-            )
-        });
+        reap_sounds(&mut playing, &feedback);
         match &request {
             Delivery::Save(saved) => {
+                if !saved.desktop
+                    || saved.streamer
+                    || saved.hide_preview != preferences.hide_preview
+                {
+                    service.clear_all();
+                }
                 preferences = saved.clone();
                 if let Some(path) = &path
                     && let Err(error) = save_preferences(path, saved)
                 {
-                    let _ = feedback.send(Feedback::Failure(error));
+                    let _ = feedback.try_send(Feedback::Failure(error));
                 }
                 if !saved.sound || saved.streamer {
                     playing.clear();
@@ -318,7 +286,7 @@ fn delivery(
                 match play_sound(*kind, *volume, output.clone()) {
                     Ok(sound) => playing.push(sound),
                     Err(error) => {
-                        let _ = feedback.send(Feedback::Failure(format!(
+                        let _ = feedback.try_send(Feedback::Failure(format!(
                             "Notification sound unavailable: {error}"
                         )));
                     }
@@ -327,89 +295,101 @@ fn delivery(
             }
             _ => {}
         }
-        if let Delivery::Clear { account, channel } = request {
-            if channel.is_none() {
+        match request {
+            Delivery::ClearAll => {
                 playing.clear();
+                service.clear_all();
             }
-            if let Some(Freedesktop(connection)) = &service
-                && let Ok(mut targets) = targets.lock()
-            {
-                let ids: Vec<_> = targets
-                    .iter()
-                    .filter(|(_, target)| {
-                        target.account == account && channel.is_none_or(|id| id == target.channel)
-                    })
-                    .map(|(id, _)| *id)
-                    .collect();
-                if let Ok(proxy) = zbus::blocking::Proxy::new(
-                    connection,
-                    "org.freedesktop.Notifications",
-                    "/org/freedesktop/Notifications",
-                    "org.freedesktop.Notifications",
-                ) {
-                    for id in ids {
-                        let _: Result<(), _> = proxy.call("CloseNotification", &(id,));
-                        targets.remove(&id);
-                    }
+            Delivery::Clear { account, channel } => {
+                if channel.is_none() {
+                    playing.clear();
                 }
+                service.clear(account, channel);
             }
-            continue;
-        }
-        let Delivery::Alert(alert) = request else {
-            continue;
-        };
-        if !preferences.desktop || preferences.streamer {
-            continue;
-        }
-        if service.is_none() {
-            let connection = match zbus::blocking::Connection::session() {
-                Ok(connection) => connection,
-                Err(error) => {
-                    let _ = feedback.send(Feedback::Failure(format!(
-                        "Desktop notifications unavailable: {error}"
-                    )));
-                    continue;
-                }
-            };
-            let listener = connection.clone();
-            let targets = targets.clone();
-            let clicked = feedback.clone();
-            std::thread::spawn(move || {
-                let Ok(proxy) = zbus::blocking::Proxy::new(
-                    &listener,
-                    "org.freedesktop.Notifications",
-                    "/org/freedesktop/Notifications",
-                    "org.freedesktop.Notifications",
-                ) else {
-                    return;
-                };
-                let Ok(signals) = proxy.receive_signal("ActionInvoked") else {
-                    return;
-                };
-                for signal in signals {
-                    if let Ok((id, action)) = signal.body().deserialize::<(u32, String)>()
-                        && action == "default"
-                        && let Ok(mut targets) = targets.lock()
-                        && let Some(target) = targets.remove(&id)
-                    {
-                        let _ = clicked.send(Feedback::Click(target));
-                    }
-                }
-            });
-            service = Some(Freedesktop(connection));
-        }
-        if let Some(service) = &service
-            && let Some(id) = show_alert(service, &alert, &feedback)
-            && let Ok(mut targets) = targets.lock()
-        {
-            if targets.len() >= 256 {
-                targets.clear();
+            Delivery::Alert(alert) if preferences.desktop && !preferences.streamer => {
+                service.show(alert)
             }
-            targets.insert(id, alert.target);
+            _ => {}
         }
     }
 }
+fn reap_sounds(playing: &mut Vec<Playing>, feedback: &mpsc::SyncSender<Feedback>) {
+    playing.retain(|playing| {
+        let snapshot = playing.player.snapshot();
+        if snapshot.status == fluxer_media::FilePlaybackStatus::Failed {
+            let _ = feedback.try_send(Feedback::Failure(format!(
+                "Notification sound failed: {}",
+                snapshot
+                    .error
+                    .as_deref()
+                    .unwrap_or("audio output unavailable")
+            )));
+        }
+        !matches!(
+            snapshot.status,
+            fluxer_media::FilePlaybackStatus::Ended | fluxer_media::FilePlaybackStatus::Failed
+        )
+    });
+}
+fn click_allowed(state: &ClientState, epoch: u64, channel_epoch: u64, target: Target) -> bool {
+    target.epoch == epoch
+        && target.channel_epoch == channel_epoch
+        && state.current_user.as_ref().map(|user| user.id) == Some(target.account)
+        && crate::message_links::can_follow_channel(state, target.channel, None)
+        && state
+            .channels
+            .get(&target.channel)
+            .zip(state.current_user.as_ref())
+            .is_some_and(|(channel, user)| {
+                channel.kind.is_message_channel()
+                    && !matches!(channel.kind, ChannelType::Forum | ChannelType::Media)
+                    && state
+                        .permissions_for(channel.id, user.id)
+                        .contains(fluxer_core::Permissions::READ_MESSAGE_HISTORY)
+            })
+}
 impl Fluxer {
+    /// Called for every authenticated session/instance transition, including
+    /// relogin to the same numeric account on a different instance.
+    pub(super) fn begin_notification_session(&mut self) {
+        self.native_notifications.epoch = self.native_notifications.epoch.wrapping_add(1);
+        self.native_notifications.seen.clear();
+        self.native_notifications.channel_epochs.clear();
+        self.native_notifications.last_scope = None;
+        if self
+            .native_notifications
+            .tx
+            .try_send(Delivery::ClearAll)
+            .is_err()
+        {
+            self.native_notifications.status =
+                Some("Could not queue dismissal of old desktop notifications".into());
+        }
+    }
+    pub(super) fn clear_channel_notifications(&mut self, account: Snowflake, channel: Snowflake) {
+        if self.state.current_user.as_ref().map(|user| user.id) != Some(account) {
+            return;
+        }
+        let epoch = self
+            .native_notifications
+            .channel_epochs
+            .entry(channel)
+            .or_default();
+        *epoch = epoch.wrapping_add(1);
+        if self.state.current_user.as_ref().map(|user| user.id) == Some(account)
+            && self
+                .native_notifications
+                .tx
+                .try_send(Delivery::Clear {
+                    account,
+                    channel: Some(channel),
+                })
+                .is_err()
+        {
+            self.native_notifications.status =
+                Some("Could not queue desktop notification dismissal".into());
+        }
+    }
     pub(super) fn notification_focus(&mut self, focused: bool) {
         self.native_notifications.focused = focused;
     }
@@ -474,18 +454,31 @@ impl Fluxer {
                     "New message".into()
                 }
             };
-            let _ = self
+            let queued = self
                 .native_notifications
                 .tx
                 .try_send(Delivery::Alert(Alert {
                     target: Target {
                         account,
+                        epoch: self.native_notifications.epoch,
+                        channel_epoch: self
+                            .native_notifications
+                            .channel_epochs
+                            .get(&message.channel_id)
+                            .copied()
+                            .unwrap_or_default(),
                         channel: message.channel_id,
                         message: message.id,
                     },
                     title: escaped(&title),
                     body: escaped(&body),
                 }));
+            if queued.is_err() {
+                self.native_notifications.status = Some(
+                    "Desktop notification queue is full; the notification was not delivered".into(),
+                );
+                cx.notify();
+            }
         }
         if let Some(kind) = decision.sound
             && self.native_notifications.preferences.sound
@@ -497,40 +490,23 @@ impl Fluxer {
                 .selected()
                 .filter(|id| *id != "output:default")
                 .map(str::to_owned);
-            let _ = self.native_notifications.tx.try_send(Delivery::Sound {
-                kind,
-                volume,
-                output,
-            });
+            if self
+                .native_notifications
+                .tx
+                .try_send(Delivery::Sound {
+                    kind,
+                    volume,
+                    output,
+                })
+                .is_err()
+            {
+                self.native_notifications.status =
+                    Some("Notification sound queue is full; the sound was not played".into());
+                cx.notify();
+            }
         }
     }
     pub(super) fn poll_notifications(&mut self, cx: &mut Context<Self>) {
-        let account = self.state.current_user.as_ref().map(|user| user.id);
-        let scope = account.map(|account| {
-            (
-                account,
-                self.state
-                    .selected_channel
-                    .filter(|_| self.native_notifications.focused),
-            )
-        });
-        if self.native_notifications.last_scope != scope {
-            if let Some((old, _)) = self.native_notifications.last_scope
-                && account != Some(old)
-            {
-                let _ = self.native_notifications.tx.try_send(Delivery::Clear {
-                    account: old,
-                    channel: None,
-                });
-            }
-            if let Some((account, Some(channel))) = scope {
-                let _ = self.native_notifications.tx.try_send(Delivery::Clear {
-                    account,
-                    channel: Some(channel),
-                });
-            }
-            self.native_notifications.last_scope = scope;
-        }
         let events: Vec<_> = self.native_notifications.feedback.try_iter().collect();
         let mut targets = Vec::new();
         for event in events {
@@ -549,7 +525,16 @@ impl Fluxer {
             }
         }
         for target in targets {
-            if self.state.current_user.as_ref().map(|user| user.id) != Some(target.account) {
+            if !click_allowed(
+                &self.state,
+                self.native_notifications.epoch,
+                self.native_notifications
+                    .channel_epochs
+                    .get(&target.channel)
+                    .copied()
+                    .unwrap_or_default(),
+                target,
+            ) {
                 continue;
             }
             self.select(target.channel, cx);
@@ -566,6 +551,41 @@ impl Fluxer {
                 }
             });
         }
+        // Consume a validated OS click before focus-driven dismissal. Some
+        // desktops focus the window as part of the click itself; clearing that
+        // channel first would invalidate its still-queued legitimate action.
+        let account = self.state.current_user.as_ref().map(|user| user.id);
+        let scope = account.map(|account| {
+            (
+                account,
+                self.state
+                    .selected_channel
+                    .filter(|_| self.native_notifications.focused),
+            )
+        });
+        if self.native_notifications.last_scope != scope {
+            if let Some((old, _)) = self.native_notifications.last_scope
+                && account != Some(old)
+            {
+                if self
+                    .native_notifications
+                    .tx
+                    .try_send(Delivery::Clear {
+                        account: old,
+                        channel: None,
+                    })
+                    .is_err()
+                {
+                    self.native_notifications.status =
+                        Some("Could not queue dismissal of old account notifications".into());
+                    cx.notify();
+                }
+            }
+            if let Some((account, Some(channel))) = scope {
+                self.clear_channel_notifications(account, channel);
+            }
+            self.native_notifications.last_scope = scope;
+        }
     }
     pub(super) fn notification_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::controls::toggle;
@@ -578,8 +598,8 @@ impl Fluxer {
 #[cfg(test)]
 mod tests {
     use super::{
-        Alert, Feedback, NotificationSink, Preferences, Target, config_path, escaped,
-        load_preferences, save_preferences, show_alert,
+        Alert, Feedback, NotificationSink, Preferences, Target, click_allowed, config_path,
+        escaped, load_preferences, save_preferences, show_alert,
     };
     use fluxer_core::Snowflake;
     #[test]
@@ -594,6 +614,8 @@ mod tests {
         let sink = Fake(Default::default());
         let target = Target {
             account: Snowflake(1),
+            epoch: 1,
+            channel_epoch: 0,
             channel: Snowflake(2),
             message: Snowflake(3),
         };
@@ -615,9 +637,11 @@ mod tests {
                 Err("private fake service unavailable".into())
             }
         }
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(256);
         let target = Target {
             account: Snowflake(1),
+            epoch: 1,
+            channel_epoch: 0,
             channel: Snowflake(2),
             message: Snowflake(3),
         };
@@ -636,6 +660,38 @@ mod tests {
         assert!(
             matches!(rx.recv().unwrap(),Feedback::Failure(error) if error.contains("private fake service unavailable"))
         );
+    }
+    #[test]
+    fn clicks_require_the_current_session_account_and_accessible_channel() {
+        let mut state = fluxer_core::ClientState::demo();
+        let target = Target {
+            account: Snowflake(100),
+            epoch: 7,
+            channel_epoch: 0,
+            channel: Snowflake(11),
+            message: Snowflake(999),
+        };
+        assert!(click_allowed(&state, 7, 0, target));
+        assert!(!click_allowed(&state, 7, 1, target));
+        assert!(!click_allowed(&state, 8, 0, target));
+        assert!(!click_allowed(
+            &state,
+            7,
+            0,
+            Target {
+                account: Snowflake(101),
+                ..target
+            }
+        ));
+        state.channels.remove(&target.channel);
+        assert!(!click_allowed(&state, 7, 0, target));
+        state = fluxer_core::ClientState::demo();
+        state.guilds.get_mut(&Snowflake(1)).unwrap().roles[0].permissions =
+            fluxer_core::Permissions::VIEW_CHANNEL;
+        assert!(!click_allowed(&state, 7, 0, target));
+        state.guilds.get_mut(&Snowflake(1)).unwrap().roles[0].permissions =
+            fluxer_core::Permissions::NONE;
+        assert!(!click_allowed(&state, 7, 0, target));
     }
     #[test]
     fn preferences_are_bounded_atomic_private_and_reject_relative_config_roots() {
