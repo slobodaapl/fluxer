@@ -2,11 +2,19 @@
 //! Speaker handles stay on a dedicated owner thread. Linux targets logical
 //! PipeWire sinks; other platforms retain CPAL. WebRTC direct playout is off.
 use crate::{AudioDevice, MediaError, Result, audio::PlaybackMixer};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread::JoinHandle;
 
 enum Command {
-    Device(String, mpsc::SyncSender<Result<()>>),
+    Device(
+        String,
+        Option<Arc<AtomicBool>>,
+        mpsc::SyncSender<Result<()>>,
+    ),
     Start(mpsc::SyncSender<Result<()>>),
     Stop(mpsc::SyncSender<Result<()>>),
     Shutdown(mpsc::SyncSender<Result<()>>),
@@ -28,13 +36,20 @@ fn run_worker<S>(
     let mut enabled = false;
     while let Ok(command) = rx.recv() {
         match command {
-            Command::Device(id, result) => {
+            Command::Device(id, cancel, result) => {
                 let answer = validate(Some(&id)).and_then(|()| {
+                    if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                        return Err(MediaError::Audio("Device change cancelled".into()));
+                    }
                     if enabled {
                         // Old output teardown completes before a new consumer
                         // can drain the same mixer.
                         drop(stream.take());
-                        stream = Some(start(Some(&id))?);
+                        let next = start(Some(&id))?;
+                        if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                            return Err(MediaError::Audio("Device change cancelled".into()));
+                        }
+                        stream = Some(next);
                     }
                     selected = Some(id);
                     Ok(())
@@ -95,13 +110,33 @@ impl PlaybackOutput {
         self.request(Command::Start)
     }
     pub fn set_device(&self, id: &str) -> Result<()> {
-        self.request(|tx| Command::Device(id.into(), tx))
+        self.request(|tx| Command::Device(id.into(), None, tx))
+    }
+    pub fn controller(&self) -> PlaybackControl {
+        PlaybackControl(self.commands.clone())
     }
     pub fn stop(&self) {
         // An acknowledgement means stream teardown finished, including joining
         // the PipeWire owner thread, before reconnect can start another output.
         if let Err(error) = self.request(Command::Stop) {
             report_error(&self.mixer, error.to_string());
+        }
+    }
+}
+#[derive(Clone)]
+pub(crate) struct PlaybackControl(mpsc::Sender<Command>);
+impl PlaybackControl {
+    pub fn set_device_guarded(&self, id: &str, cancel: Arc<AtomicBool>) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.0
+            .send(Command::Device(id.into(), Some(cancel.clone()), tx))
+            .map_err(|_| MediaError::Audio("Output worker stopped".into()))?;
+        match rx.recv_timeout(std::time::Duration::from_secs(12)) {
+            Ok(result) => result,
+            Err(_) => {
+                cancel.store(true, Ordering::Release);
+                Err(MediaError::Audio("Output device did not respond".into()))
+            }
         }
     }
 }
@@ -336,8 +371,11 @@ mod tests {
             );
         });
         request(&tx, Command::Start).unwrap();
-        assert!(request(&tx, |answer| Command::Device("broken".into(), answer)).is_err());
-        request(&tx, |answer| Command::Device("working".into(), answer)).unwrap();
+        assert!(request(&tx, |answer| Command::Device("broken".into(), None, answer)).is_err());
+        request(&tx, |answer| {
+            Command::Device("working".into(), None, answer)
+        })
+        .unwrap();
         request(&tx, Command::Stop).unwrap();
         assert_eq!(
             *events.lock().unwrap(),
@@ -350,7 +388,7 @@ mod tests {
             ]
         );
         // Choosing a device outside a call records the preference without opening it.
-        request(&tx, |answer| Command::Device("idle".into(), answer)).unwrap();
+        request(&tx, |answer| Command::Device("idle".into(), None, answer)).unwrap();
         assert_eq!(events.lock().unwrap().len(), 5);
         request(&tx, Command::Shutdown).unwrap();
         worker.join().unwrap();
@@ -386,12 +424,12 @@ mod tests {
                 },
             )
         });
-        request(&tx, |r| Command::Device("output:usb".into(), r)).unwrap();
+        request(&tx, |r| Command::Device("output:usb".into(), None, r)).unwrap();
         request(&tx, Command::Start).unwrap();
-        request(&tx, |r| Command::Device("output:default".into(), r)).unwrap();
-        request(&tx, |r| Command::Device("output:usb".into(), r)).unwrap();
+        request(&tx, |r| Command::Device("output:default".into(), None, r)).unwrap();
+        request(&tx, |r| Command::Device("output:usb".into(), None, r)).unwrap();
         request(&tx, Command::Stop).unwrap();
-        request(&tx, |r| Command::Device("output:default".into(), r)).unwrap();
+        request(&tx, |r| Command::Device("output:default".into(), None, r)).unwrap();
         request(&tx, Command::Shutdown).unwrap();
         worker.join().unwrap();
         assert_eq!(
@@ -405,6 +443,58 @@ mod tests {
                 "close:output:usb"
             ]
         );
+    }
+
+    #[test]
+    fn cancelled_inflight_switch_drops_new_stream_before_stop_ack() {
+        struct Output(Arc<AtomicBool>);
+        impl Drop for Output {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let live = Arc::new(AtomicBool::new(false));
+        let owner_live = live.clone();
+        let (opening, opened) = mpsc::channel();
+        let (resume, wait) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            run_worker(
+                rx,
+                |_| Ok(()),
+                |id| {
+                    if id == Some("slow") {
+                        opening.send(()).unwrap();
+                        wait.recv().unwrap();
+                    }
+                    owner_live.store(true, Ordering::Release);
+                    Ok(Output(owner_live.clone()))
+                },
+            )
+        });
+        let (reply, answer) = mpsc::sync_channel(1);
+        tx.send(Command::Start(reply)).unwrap();
+        answer.recv().unwrap().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (reply, answer) = mpsc::sync_channel(1);
+        tx.send(Command::Device(
+            "slow".into(),
+            Some(cancelled.clone()),
+            reply,
+        ))
+        .unwrap();
+        opened.recv().unwrap();
+        cancelled.store(true, Ordering::Release);
+        let (stop_reply, stopped) = mpsc::sync_channel(1);
+        tx.send(Command::Stop(stop_reply)).unwrap();
+        resume.send(()).unwrap();
+        assert!(answer.recv().unwrap().is_err());
+        stopped.recv().unwrap().unwrap();
+        assert!(!live.load(Ordering::Acquire));
+        let (reply, answer) = mpsc::sync_channel(1);
+        tx.send(Command::Shutdown(reply)).unwrap();
+        answer.recv().unwrap().unwrap();
+        worker.join().unwrap();
     }
 
     #[test]

@@ -199,6 +199,7 @@ impl Default for SharedAudioSettings {
 /// rendering thread. Drop aborts capture and tasks even on application shutdown.
 pub struct MediaEngine {
     input_device: Mutex<Option<String>>,
+    recovery_cancel: Option<Arc<AtomicBool>>,
     input_selection: DeviceSelection,
     output_selection: DeviceSelection,
     room: Option<Room>,
@@ -243,6 +244,11 @@ fn desired_device(
     }
 }
 
+pub struct DeviceRecovery {
+    inventory: DeviceInventory,
+    cancel: Arc<AtomicBool>,
+}
+
 impl MediaEngine {
     pub fn new() -> Result<Self> {
         pipewire_runtime::ensure()?;
@@ -252,6 +258,7 @@ impl MediaEngine {
         let video_frames = Arc::new(video_events::VideoMailbox::new(subscriptions.clone()));
         Ok(Self {
             input_device: Mutex::new(None),
+            recovery_cancel: None,
             input_selection: DeviceSelection {
                 preferred: "input:default".into(),
                 effective: Some("input:default".into()),
@@ -304,6 +311,7 @@ impl MediaEngine {
     }
 
     pub fn set_input_device(&mut self, id: &str) -> Result<()> {
+        self.cancel_device_recovery();
         if !microphone_device::devices()?.iter().any(|d| d.id == id) {
             return Err(MediaError::UnknownDevice("input"));
         }
@@ -325,6 +333,7 @@ impl MediaEngine {
         Ok(())
     }
     pub fn set_output_device(&mut self, id: &str) -> Result<()> {
+        self.cancel_device_recovery();
         if !playback::devices()?.iter().any(|d| d.id == id) {
             return Err(MediaError::UnknownDevice("output"));
         }
@@ -340,29 +349,88 @@ impl MediaEngine {
         Ok(())
     }
     pub fn input_device_failed(&mut self) {
+        self.cancel_device_recovery();
         self.input_selection.effective = None;
     }
 
-    /// Reconcile hotplug without creating capture outside a call or explicit test.
-    pub fn reconcile_devices(&mut self) -> Result<DeviceInventory> {
-        let inventory = self.try_devices()?;
-        let input = desired_device(&self.input_selection, &inventory.inputs, "input:default");
-        let output = desired_device(&self.output_selection, &inventory.outputs, "output:default");
-        if self.input_selection.effective != input {
-            if let Some(input) = input {
-                let _ = self.apply_input(&input);
-            } else {
-                self.input_selection.effective = None;
-            }
+    fn cancel_device_recovery(&mut self) {
+        if let Some(cancel) = self.recovery_cancel.take() {
+            cancel.store(true, Ordering::Release);
         }
-        if self.output_selection.effective != output {
-            if let Some(output) = output {
-                let _ = self.apply_output(&output);
-            } else {
-                self.output_selection.effective = None;
+    }
+
+    /// Enumerate and switch on a blocking worker, never on the client event loop.
+    pub fn begin_device_recovery(&mut self) -> JoinHandle<Result<DeviceRecovery>> {
+        self.cancel_device_recovery();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.recovery_cancel = Some(cancel.clone());
+        let input_selection = self.input_selection.clone();
+        let output_selection = self.output_selection.clone();
+        let input = self
+            .input_capture
+            .as_ref()
+            .map(|capture| capture.controller());
+        let output = self.output.controller();
+        tokio::task::spawn_blocking(move || {
+            let inputs = microphone_device::devices()?;
+            let outputs = playback::devices()?;
+            let target_input = desired_device(&input_selection, &inputs, "input:default");
+            let target_output = desired_device(&output_selection, &outputs, "output:default");
+            let mut next_input = input_selection.clone();
+            let mut next_output = output_selection.clone();
+            if next_input.effective != target_input {
+                next_input.effective = match target_input {
+                    Some(id) if !cancel.load(Ordering::Acquire) => {
+                        if input
+                            .as_ref()
+                            .is_none_or(|c| c.set_device_guarded(&id, cancel.clone()).is_ok())
+                        {
+                            Some(id)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
             }
+            if next_output.effective != target_output {
+                next_output.effective = match target_output {
+                    Some(id)
+                        if !cancel.load(Ordering::Acquire)
+                            && output.set_device_guarded(&id, cancel.clone()).is_ok() =>
+                    {
+                        Some(id)
+                    }
+                    _ => None,
+                };
+            }
+            Ok(DeviceRecovery {
+                inventory: DeviceInventory {
+                    inputs,
+                    outputs,
+                    input_selection: next_input,
+                    output_selection: next_output,
+                },
+                cancel,
+            })
+        })
+    }
+    pub fn finish_device_recovery(&mut self, result: DeviceRecovery) -> Option<DeviceInventory> {
+        if result.cancel.load(Ordering::Acquire)
+            || !self
+                .recovery_cancel
+                .as_ref()
+                .is_some_and(|cancel| Arc::ptr_eq(cancel, &result.cancel))
+        {
+            return None;
         }
-        self.try_devices()
+        self.recovery_cancel = None;
+        self.input_selection = result.inventory.input_selection.clone();
+        self.output_selection = result.inventory.output_selection.clone();
+        if let Ok(mut input) = self.input_device.lock() {
+            *input = self.input_selection.effective.clone();
+        }
+        Some(result.inventory)
     }
 
     pub fn configure(&self, settings: AudioSettings) -> Result<()> {
@@ -1159,6 +1227,7 @@ impl MediaEngine {
         Ok(rx)
     }
     pub fn stop_microphone_test(&mut self) -> Result<()> {
+        self.cancel_device_recovery();
         let testing = {
             let mut controls = self
                 .input_controls
@@ -1382,6 +1451,7 @@ impl MediaEngine {
         audio_result.and(video_result)
     }
     pub async fn disconnect(&mut self) -> Result<()> {
+        self.cancel_device_recovery();
         // Release capture before network operations, including failed teardown.
         if let Ok(mut registry) = self.subscriptions.lock() {
             registry.clear_publications();
@@ -1523,6 +1593,7 @@ fn end_video_renderer(
 
 impl Drop for MediaEngine {
     fn drop(&mut self) {
+        self.cancel_device_recovery();
         self.stop.store(true, Ordering::Release);
         self.video_frames.clear();
         self.input_capture.take();

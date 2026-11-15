@@ -11,7 +11,11 @@ use tokio::sync::mpsc as async_mpsc;
 
 enum Command {
     Enabled(bool, mpsc::SyncSender<Result<()>>),
-    Device(String, mpsc::SyncSender<Result<()>>),
+    Device(
+        String,
+        Option<Arc<AtomicBool>>,
+        mpsc::SyncSender<Result<()>>,
+    ),
     Stop(mpsc::SyncSender<Result<()>>),
     Shutdown,
 }
@@ -33,7 +37,22 @@ impl CaptureControl {
         self.request(|tx| Command::Enabled(enabled, tx))
     }
     pub fn set_device(&self, id: &str) -> Result<()> {
-        self.request(|tx| Command::Device(id.into(), tx))
+        self.request(|tx| Command::Device(id.into(), None, tx))
+    }
+    pub fn set_device_guarded(&self, id: &str, cancel: Arc<AtomicBool>) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::Device(id.into(), Some(cancel.clone()), tx))
+            .map_err(|_| MediaError::Audio("Microphone worker stopped".into()))?;
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => result,
+            Err(_) => {
+                cancel.store(true, Ordering::Release);
+                Err(MediaError::Audio(
+                    "Microphone device did not respond".into(),
+                ))
+            }
+        }
     }
     pub fn stop(&self) -> Result<()> {
         if self.stopped.load(Ordering::Acquire) {
@@ -107,18 +126,29 @@ impl CaptureDevice {
                             active.store(source.is_some(), Ordering::Release);
                             let _ = result.send(answer);
                         }
-                        Ok(Command::Device(id, result)) => {
+                        Ok(Command::Device(id, cancel, result)) => {
                             let answer = validate(&id).and_then(|()| {
+                                if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                                    return Err(MediaError::Audio(
+                                        "Device change cancelled".into(),
+                                    ));
+                                }
                                 if enabled_intent {
                                     // Release the previous capture before opening a
                                     // replacement, including replacement failure.
                                     source.take();
-                                    source = Some(PlatformInput::start(
+                                    let next = PlatformInput::start(
                                         Some(&id),
                                         channels,
                                         pcm.clone(),
                                         events.clone(),
-                                    )?);
+                                    )?;
+                                    if cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
+                                        return Err(MediaError::Audio(
+                                            "Device change cancelled".into(),
+                                        ));
+                                    }
+                                    source = Some(next);
                                 }
                                 selected = Some(id);
                                 Ok(())

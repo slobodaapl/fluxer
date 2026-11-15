@@ -396,10 +396,18 @@ impl Worker {
         self.snapshot();
         let mut device_poll = tokio::time::interval(Duration::from_secs(5));
         let mut last_devices = None;
+        let mut recovery: Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>> =
+            None;
         loop {
             enum Incoming {
                 Dm(Option<DmEvent>),
                 DevicePoll,
+                DeviceRecovery(
+                    std::result::Result<
+                        fluxer_media::Result<fluxer_media::DeviceRecovery>,
+                        tokio::task::JoinError,
+                    >,
+                ),
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
@@ -420,7 +428,8 @@ impl Worker {
             }
             let incoming = tokio::select! {
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
-                _ = device_poll.tick(), if self.media.is_some() => Incoming::DevicePoll,
+                _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
+                result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
@@ -439,7 +448,14 @@ impl Worker {
                 Incoming::Dm(None) => Ok(()),
                 Incoming::DevicePoll => {
                     if let Some(media) = &mut self.media {
-                        if let Ok(devices) = media.reconcile_devices() {
+                        recovery = Some(media.begin_device_recovery());
+                    }
+                    Ok(())
+                }
+                Incoming::DeviceRecovery(result) => {
+                    recovery = None;
+                    if let (Some(media), Ok(Ok(result))) = (&mut self.media, result) {
+                        if let Some(devices) = media.finish_device_recovery(result) {
                             if last_devices.as_ref() != Some(&devices) {
                                 last_devices = Some(devices.clone());
                                 self.emit(Event::Devices(devices));
@@ -2622,3 +2638,13 @@ fn stream_key(target: &VoiceTarget, identity: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "worker_tests.rs"]
 mod tests;
+
+async fn recovery_result(
+    task: &mut Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>>,
+) -> std::result::Result<fluxer_media::Result<fluxer_media::DeviceRecovery>, tokio::task::JoinError>
+{
+    match task {
+        Some(task) => task.await,
+        None => std::future::pending().await,
+    }
+}
