@@ -55,7 +55,12 @@ pub(super) fn target_at(
         .iter()
         .find(|span| span.range.contains(&index) && !concealed(span, revealed) && !span.style.code)
         .and_then(|span| span.target.as_ref())
-        .filter(|target| matches!(target, MessageTarget::Link(_) | MessageTarget::Channel(_)))
+        .filter(|target| {
+            matches!(
+                target,
+                MessageTarget::Link(_) | MessageTarget::Channel(_) | MessageTarget::Author { .. }
+            )
+        })
         .cloned()
 }
 pub(super) fn runs(
@@ -94,12 +99,15 @@ pub(super) fn runs(
                 run.color = rgb(0xb1acbd).into();
             }
             if let Some(target) = &span.target {
-                run.color = rgb(match target {
-                    MessageTarget::Link(_) => 0x83bdf5,
-                    _ => 0xb5a7ef,
-                })
-                .into();
-                if !matches!(target, MessageTarget::Link(_)) {
+                run.color = match target {
+                    MessageTarget::Author { .. } => base.color,
+                    MessageTarget::Link(_) => rgb(0x83bdf5).into(),
+                    _ => rgb(0xb5a7ef).into(),
+                };
+                if !matches!(
+                    target,
+                    MessageTarget::Link(_) | MessageTarget::Author { .. }
+                ) {
                     run.background_color = Some(rgba(0x8873ee20).into());
                 }
             }
@@ -345,6 +353,52 @@ mod tests {
             underline: None,
             strikethrough: None,
         }
+    }
+
+    #[test]
+    fn compact_author_preserves_source_spoilers_ranges_and_exact_hit_target() {
+        let message = Message::text(
+            100.into(),
+            10.into(),
+            User {
+                username: "Aléx 🙂".into(),
+                ..Default::default()
+            },
+            "**hello** https://example.test ||hidden||\n> quote",
+        );
+        let original = document(&message.content);
+        let doc = original.with_author(&message);
+        assert!(valid(&doc));
+        assert_eq!(doc.source, original.source);
+        let name = message.author.display_name();
+        assert_eq!(
+            target_at(&doc, &BTreeSet::new(), 0),
+            Some(MessageTarget::Author {
+                channel: message.channel_id,
+                message: message.id
+            })
+        );
+        assert!(target_at(&doc, &BTreeSet::new(), name.len()).is_none());
+        assert_eq!(
+            doc.blocks[0].range.start,
+            original.blocks[0].range.start + name.len() + 1
+        );
+        assert!(matches!(
+            target_at(&doc, &BTreeSet::new(), doc.text.find("https:").unwrap()),
+            Some(MessageTarget::Link(_))
+        ));
+        assert!(
+            !doc.copy_range(0..doc.text.len(), &BTreeSet::new())
+                .contains("hidden")
+        );
+        let styled = runs(&doc, &base(), &BTreeSet::new());
+        assert_eq!(styled[0].color, base().color);
+        assert!(styled[0].background_color.is_none());
+        assert_eq!(styled[0].font.weight, FontWeight::BOLD);
+        assert_eq!(
+            styled.iter().map(|run| run.len).sum::<usize>(),
+            doc.text.len()
+        );
     }
 
     #[test]

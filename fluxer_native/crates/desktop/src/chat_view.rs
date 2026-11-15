@@ -55,6 +55,13 @@ impl Fluxer {
             .filter(|message| !pin_system_message::is_pin_system_message(message))
         {
             let document = self.message_document(message, message_markup::MessageContext::Standard);
+            let document = if fluxer_core::compact_messages(&self.state.user_settings)
+                && !document.text.is_empty()
+            {
+                Arc::new(document.with_author(message))
+            } else {
+                document
+            };
             if let Some(input) = self.message_text.get(&message.id) {
                 input.update(cx, |input, cx| input.update_message_document(document, cx));
             } else {
@@ -454,13 +461,10 @@ impl Fluxer {
                                                     view.child(
                                                         div()
                                                             .flex()
-                                                            .items_end()
+                                                            .items_start()
                                                             .gap_1()
                                                             .w_full()
                                                             .min_w_0()
-                                                            .when(fluxer_core::compact_messages(&self.state.user_settings), |row| row.child(
-                                                                div().id(("compact-author",id.0)).font_weight(FontWeight::SEMIBOLD).flex_shrink_0().child(message.author.display_name().to_owned()).map(|view|self.profile_trigger(view,message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx))
-                                                            ))
                                                             .child(
                                                                 div()
                                                                     .flex_1()

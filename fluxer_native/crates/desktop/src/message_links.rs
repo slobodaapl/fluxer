@@ -210,6 +210,30 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) {
         match target {
+            MessageTarget::Author { channel, message } => {
+                if let Some(message) = self
+                    .state
+                    .messages
+                    .get(channel)
+                    .and_then(|messages| messages.get(message))
+                    .cloned()
+                {
+                    let guild = self
+                        .state
+                        .channels
+                        .get(channel)
+                        .and_then(|channel| channel.guild_id);
+                    let webhook = crate::profile_triggers::message_is_webhook(&message);
+                    self.open_user_profile(
+                        message.author,
+                        guild,
+                        webhook,
+                        window.mouse_position(),
+                        window,
+                        cx,
+                    );
+                }
+            }
             MessageTarget::User(id) => {
                 let user = self.profile_user(*id, &id.to_string());
                 let guild = self

@@ -63,6 +63,10 @@ pub struct MessageStyle {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MessageTarget {
     Link(String),
+    Author {
+        channel: Snowflake,
+        message: Snowflake,
+    },
     User(Snowflake),
     Channel(Snowflake),
     Role(Snowflake),
@@ -105,6 +109,47 @@ pub struct MessageDocument {
     pub unsupported: Vec<&'static str>,
 }
 impl MessageDocument {
+    /// A compact author's name shares the first text line and wrapping. Keep
+    /// source intact for Copy Message and shift all projected byte ranges.
+    pub fn with_author(&self, message: &Message) -> Self {
+        let name = message.author.display_name();
+        let prefix = format!("{name} ");
+        let offset = prefix.len();
+        let mut doc = self.clone();
+        doc.text.insert_str(0, &prefix);
+        for span in &mut doc.spans {
+            span.range = span.range.start + offset..span.range.end + offset;
+        }
+        for block in &mut doc.blocks {
+            block.range = block.range.start + offset..block.range.end + offset;
+        }
+        doc.spans.splice(
+            0..0,
+            [
+                MessageSpan {
+                    range: 0..name.len(),
+                    style: MessageStyle {
+                        bold: true,
+                        ..Default::default()
+                    },
+                    target: Some(MessageTarget::Author {
+                        channel: message.channel_id,
+                        message: message.id,
+                    }),
+                    spoilers: vec![],
+                    custom_emoji: None,
+                },
+                MessageSpan {
+                    range: name.len()..offset,
+                    style: MessageStyle::default(),
+                    target: None,
+                    spoilers: vec![],
+                    custom_emoji: None,
+                },
+            ],
+        );
+        doc
+    }
     pub fn plain(source: &str) -> Self {
         let mut doc = Self {
             source: source.into(),
