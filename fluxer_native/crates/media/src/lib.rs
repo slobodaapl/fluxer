@@ -342,11 +342,11 @@ impl MediaEngine {
         self.apply_input(id)
     }
     fn apply_input(&mut self, id: &str) -> Result<()> {
-        if let Some(capture) = &self.input_capture {
-            if let Err(error) = capture.set_device(id) {
-                self.input_selection.effective = None;
-                return Err(error);
-            }
+        if let Some(capture) = &self.input_capture
+            && let Err(error) = capture.set_device(id)
+        {
+            self.input_selection.effective = None;
+            return Err(error);
         }
         *self
             .input_device
