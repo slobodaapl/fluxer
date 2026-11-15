@@ -1847,13 +1847,19 @@ impl Worker {
         if self.demo {
             self.member_list_subscription = next;
             if let Some((guild, channel, start)) = next {
-                let members: Vec<_> = self
-                    .state
-                    .members
-                    .iter()
-                    .filter(|((id, _), _)| *id == guild)
-                    .map(|(_, member)| json!({"member":member}))
-                    .collect();
+                // Large fixture is opt-in and exists only in the isolated demo account.
+                let members: Vec<Value> = if std::env::var("FLUXER_MEMBER_DEMO").as_deref()
+                    == Ok("large")
+                {
+                    (0..600).map(|n|json!({"member":{"user":{"id":(900000u64+n).to_string(),"username":format!("member-{n:03}")},"roles":[],"presence":{"status":"online"}}})).collect()
+                } else {
+                    self.state
+                        .members
+                        .iter()
+                        .filter(|((id, _), _)| *id == guild)
+                        .map(|(_, member)| json!({"member":member}))
+                        .collect()
+                };
                 let count = members.len();
                 let mut rows = vec![json!({"group":{"id":"online","count":count}})];
                 rows.extend(members);

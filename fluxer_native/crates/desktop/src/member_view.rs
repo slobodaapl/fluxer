@@ -116,7 +116,7 @@ impl Fluxer {
                         uniform_list(
                             "member-list",
                             total,
-                            cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
+                            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
                                 // GPUI also asks for a single measurement row; only viewport ranges drive subscriptions.
                                 if let Some(start) =
                                     requested_window(this.members_start, range.clone())
@@ -145,7 +145,7 @@ impl Fluxer {
                                     .detach();
                                 }
                                 range
-                                    .map(|index| this.member_row(guild, channel, index, cx))
+                                    .map(|index| this.member_row(guild, channel, index, window, cx))
                                     .collect::<Vec<_>>()
                             }),
                         )
@@ -165,6 +165,7 @@ impl Fluxer {
         guild: Snowflake,
         channel: Snowflake,
         index: usize,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let identity = self
@@ -276,44 +277,69 @@ impl Fluxer {
             false,
             32.,
         );
-        self.profile_trigger(
+        let avatar_target = self.profile_trigger(
             div()
-                .id(SharedString::from(format!("member-{index}-{id}")))
-                .h(px(44.))
-                .px_2()
-                .rounded_md()
-                .hover(|s| s.bg(rgb(0x393b42)))
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div().relative().size(px(32.)).child(avatar).child(
-                        div()
-                            .absolute()
-                            .right_0()
-                            .bottom_0()
-                            .size(px(10.))
-                            .rounded_full()
-                            .bg(rgb(color)),
-                    ),
-                )
-                .child(div().min_w_0().flex().flex_col().child(name).when(
-                    !custom.is_empty(),
-                    |v| {
-                        v.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(0x949ba4))
-                                .child(custom),
-                        )
-                    },
-                )),
+                .id(SharedString::from(format!("member-avatar-{index}-{id}")))
+                .size(px(32.))
+                .child(avatar),
+            user.clone(),
+            Some(guild),
+            false,
+            cx,
+        );
+        let name_art =
+            crate::emoji_sprites::unicode_text(&name, 14., window.scale_factor() > 1., cx);
+        let name_target = self.profile_trigger(
+            div()
+                .id(SharedString::from(format!("member-name-{index}-{id}")))
+                .self_start()
+                .child(name_art),
             user,
             Some(guild),
             false,
             cx,
-        )
-        .into_any_element()
+        );
+        let status_art =
+            crate::emoji_sprites::unicode_text(&custom, 11., window.scale_factor() > 1., cx);
+        div()
+            .id(SharedString::from(format!("member-row-{index}-{id}")))
+            .h(px(44.))
+            .px_2()
+            .rounded_md()
+            .hover(|s| s.bg(rgb(0x393b42)))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div().relative().size(px(32.)).child(avatar_target).child(
+                    div()
+                        .id(SharedString::from(format!("member-status-{index}-{id}")))
+                        .absolute()
+                        .right_0()
+                        .bottom_0()
+                        .size(px(10.))
+                        .rounded_full()
+                        .bg(rgb(color))
+                        .on_click(|_, _, cx| cx.stop_propagation()),
+                ),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(name_target)
+                    .when(!custom.is_empty(), |v| {
+                        v.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(rgb(0x949ba4))
+                                .child(status_art),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 }
 
