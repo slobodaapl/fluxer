@@ -3459,3 +3459,56 @@ async fn same_channel_rejoin_rejects_retired_state_and_credentials_before_new_st
     assert!(result.unwrap_err().contains("mesh voice"));
     assert!(worker.media.is_none());
 }
+
+#[tokio::test]
+async fn expired_status_failure_retries_with_backoff_then_succeeds() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for status in ["503 Service Unavailable", "200 OK"] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert_eq!(
+                serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+                json!({"status":"online","status_resets_at":null,"status_resets_to":null})
+            );
+            let body = "{}";
+            socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.user_settings = json!({"status":"dnd","status_resets_at":"2000-01-01T00:00:00Z","status_resets_to":"online"});
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    let mut attempted = None;
+    worker.presence_expiry_tick(&mut attempted).await;
+    let event = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.presence_event(event).await;
+    assert_eq!(worker.state.user_settings["status"], "dnd");
+    worker.presence_expiry_tick(&mut attempted).await;
+    assert!(
+        timeout(Duration::from_millis(100), worker.presence.rx.recv())
+            .await
+            .is_err(),
+        "backoff should suppress an immediate retry"
+    );
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    worker.presence_expiry_tick(&mut attempted).await;
+    let event = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.presence_event(event).await;
+    assert_eq!(worker.state.user_settings["status"], "online");
+    assert!(worker.state.user_settings["status_resets_at"].is_null());
+    server.await.unwrap();
+}

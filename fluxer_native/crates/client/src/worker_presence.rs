@@ -34,6 +34,22 @@ impl PresenceState {
         }
     }
 }
+pub(super) struct ExpiryAttempt {
+    account: Snowflake,
+    reset: String,
+    retry_at: tokio::time::Instant,
+    attempts: u32,
+}
+fn retry_allowed(
+    attempt: Option<&ExpiryAttempt>,
+    account: Snowflake,
+    reset: &str,
+    now: tokio::time::Instant,
+) -> bool {
+    !attempt.is_some_and(|attempt| {
+        attempt.account == account && attempt.reset == reset && now < attempt.retry_at
+    })
+}
 impl Worker {
     pub(super) fn clear_presence(&mut self) {
         self.presence.next = self.presence.next.wrapping_add(1);
@@ -90,35 +106,60 @@ impl Worker {
         self.update_presence_settings(json!({"custom_status":custom}))
             .await
     }
-    pub(super) async fn presence_expiry_tick(&mut self, attempted: &mut Option<String>) {
-        if self.presence.job.is_some() || self.state.current_user.is_none() {
+    pub(super) async fn presence_expiry_tick(&mut self, attempted: &mut Option<ExpiryAttempt>) {
+        if self.presence.job.is_some() {
             return;
         }
+        let Some(account) = self.state.current_user.as_ref().map(|user| user.id) else {
+            *attempted = None;
+            return;
+        };
         let reset = self
             .state
             .user_settings
             .get("status_resets_at")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        if reset.is_none() {
+        let Some(reset) = reset else {
             *attempted = None;
+            return;
+        };
+        if !expired(Some(&json!(reset))) {
+            *attempted = None;
+            return;
         }
-        if expired(self.state.user_settings.get("status_resets_at")) && reset != *attempted {
-            *attempted = reset;
-            let fallback = self
-                .state
-                .user_settings
-                .get("status_resets_to")
-                .and_then(Value::as_str)
-                .filter(|s| matches!(*s, "online" | "idle" | "dnd" | "invisible"))
-                .unwrap_or("online")
-                .to_owned();
-            let _ = self
-                .update_presence_settings(
-                    json!({"status":fallback,"status_resets_at":null,"status_resets_to":null}),
-                )
-                .await;
+        let previous = attempted
+            .as_ref()
+            .filter(|a| a.account == account && a.reset == reset);
+        if !retry_allowed(
+            attempted.as_ref(),
+            account,
+            &reset,
+            tokio::time::Instant::now(),
+        ) {
+            return;
         }
+        let attempts = previous.map_or(1, |a| a.attempts.saturating_add(1));
+        let delay = Duration::from_secs((1u64 << attempts.min(6)).min(60));
+        *attempted = Some(ExpiryAttempt {
+            account,
+            reset,
+            retry_at: tokio::time::Instant::now() + delay,
+            attempts,
+        });
+        let fallback = self
+            .state
+            .user_settings
+            .get("status_resets_to")
+            .and_then(Value::as_str)
+            .filter(|s| matches!(*s, "online" | "idle" | "dnd" | "invisible"))
+            .unwrap_or("online")
+            .to_owned();
+        let _ = self
+            .update_presence_settings(
+                json!({"status":fallback,"status_resets_at":null,"status_resets_to":null}),
+            )
+            .await;
     }
     async fn update_presence_settings(&mut self, patch: Value) -> Result<()> {
         if self.state.current_user.is_none() {
@@ -262,6 +303,25 @@ fn custom_status_payload(
 #[cfg(test)]
 mod expiry_tests {
     use super::*;
+    #[test]
+    fn expiry_backoff_is_scoped_to_account_and_reset() {
+        let now = tokio::time::Instant::now();
+        let attempt = ExpiryAttempt {
+            account: 1.into(),
+            reset: "old".into(),
+            retry_at: now + Duration::from_secs(2),
+            attempts: 1,
+        };
+        assert!(!retry_allowed(Some(&attempt), 1.into(), "old", now));
+        assert!(retry_allowed(Some(&attempt), 2.into(), "old", now));
+        assert!(retry_allowed(Some(&attempt), 1.into(), "new", now));
+        assert!(retry_allowed(
+            Some(&attempt),
+            1.into(),
+            "old",
+            now + Duration::from_secs(2)
+        ));
+    }
     #[test]
     fn custom_status_api_omits_the_other_emoji_field_and_counts_utf16() {
         let id =
