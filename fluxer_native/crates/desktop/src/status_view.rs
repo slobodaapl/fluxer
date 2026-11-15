@@ -163,6 +163,13 @@ impl Fluxer {
             self.command(Command::SetCustomStatus { text }, cx);
         }
     }
+    // Enter resolves to the app Submit action before raw key dispatch. Arm here
+    // and save on release, so the input's action path follows the same modal flow.
+    pub(super) fn arm_status_submit(&mut self, cx: &Context<Self>) {
+        if self.status_ui.editor && !self.status_ui.input.read(cx).is_composing() {
+            self.status_ui.armed = true;
+        }
+    }
     // Handle these at the root so focus escaping the surface cannot expose the
     // application underneath it to navigation keys.
     pub(super) fn status_key_down(

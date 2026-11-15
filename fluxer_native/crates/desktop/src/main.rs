@@ -1534,7 +1534,11 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.open || self.status_ui.is_open() {
+        if self.status_ui.is_open() {
+            self.arm_status_submit(cx);
+            return;
+        }
+        if self.quick_switcher.open {
             return;
         }
         if self.composer.focus_handle(cx).is_focused(window) {
