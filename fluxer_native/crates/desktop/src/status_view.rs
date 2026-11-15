@@ -575,19 +575,18 @@ impl Fluxer {
                                 })),
                         ),
                 );
-            return deferred(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .bg(rgba(0x00000099))
-                    .occlude()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(editor),
-            )
-            .with_priority(10)
-            .into_any_element();
+            // The root places status above normal content. Keep this surface
+            // in normal drawing so its dropdown can schedule its own popup.
+            return div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000099))
+                .occlude()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(editor)
+                .into_any_element();
         }
         let selected = self.status_ui.selected;
         let current = self
@@ -618,110 +617,109 @@ impl Fluxer {
         };
         let custom_art =
             emoji_sprites::unicode_text(&custom_label, 12., window.scale_factor() > 1., cx);
-        deferred(
-            anchored()
-                .position_mode(AnchoredPositionMode::Window)
-                .position(point(px(78.), window.viewport_size().height - px(65.)))
-                .anchor(Corner::BottomLeft)
-                .snap_to_window_with_margin(px(8.))
-                .child(
-                    div()
-                        .id("self-status-menu")
-                        .track_focus(&self.status_ui.focus)
-                        .occlude()
-                        .w(px(220.))
-                        .p_2()
-                        .rounded_lg()
-                        .bg(rgb(0x232428))
-                        .shadow_lg()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
-                            if !this.status_ui.duration_picker.read(cx).is_open() {
-                                this.close_status(window, cx);
-                            }
-                        }))
-                        .children(
-                            [
-                                ("online", "Online", 0x43b581),
-                                ("idle", "Idle", 0xfaa61a),
-                                ("dnd", "Do Not Disturb", 0xf04747),
-                                ("invisible", "Invisible", 0x747f8d),
-                            ]
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, (value, label, color))| {
-                                let active = current == value;
-                                div()
-                                    .id(("self-status", index))
-                                    .px_2()
-                                    .py_2()
-                                    .rounded_md()
-                                    .bg(rgb(if selected == index {
-                                        0x41424a
-                                    } else {
-                                        0x232428
-                                    }))
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(div().size(px(9.)).rounded_full().bg(rgb(color)))
-                                    .child(label)
-                                    .when(active, |v| v.child("✓"))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select_status(index, window, cx)
-                                    }))
-                            }),
-                        )
-                        .child(
+        anchored()
+            .position_mode(AnchoredPositionMode::Window)
+            .position(point(px(78.), window.viewport_size().height - px(65.)))
+            .anchor(Corner::BottomLeft)
+            .snap_to_window_with_margin(px(8.))
+            .child(
+                div()
+                    .id("self-status-menu")
+                    .track_focus(&self.status_ui.focus)
+                    .occlude()
+                    .w(px(220.))
+                    .p_2()
+                    .rounded_lg()
+                    .bg(rgb(0x232428))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                        if !this.status_ui.duration_picker.read(cx).is_open() {
+                            this.close_status(window, cx);
+                        }
+                    }))
+                    .children(
+                        [
+                            ("online", "Online", 0x43b581),
+                            ("idle", "Idle", 0xfaa61a),
+                            ("dnd", "Do Not Disturb", 0xf04747),
+                            ("invisible", "Invisible", 0x747f8d),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (value, label, color))| {
+                            let active = current == value;
                             div()
-                                .rounded_md()
-                                .bg(rgb(if selected == 4 { 0x41424a } else { 0x232428 }))
-                                .child(self.status_ui.duration_picker.clone()),
-                        )
-                        .child(
-                            div()
-                                .id("self-custom-status")
+                                .id(("self-status", index))
                                 .px_2()
                                 .py_2()
                                 .rounded_md()
-                                .bg(rgb(if selected == 5 { 0x41424a } else { 0x232428 }))
-                                .child(custom_art)
-                                .on_click(cx.listener(|this, _, window, cx| {
+                                .bg(rgb(if selected == index {
+                                    0x41424a
+                                } else {
+                                    0x232428
+                                }))
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().size(px(9.)).rounded_full().bg(rgb(color)))
+                                .child(label)
+                                .when(active, |v| v.child("✓"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.select_status(index, window, cx)
+                                }))
+                        }),
+                    )
+                    .child(
+                        div()
+                            .rounded_md()
+                            .bg(rgb(if selected == 4 { 0x41424a } else { 0x232428 }))
+                            .child(self.status_ui.duration_picker.clone()),
+                    )
+                    .child(
+                        div()
+                            .id("self-custom-status")
+                            .px_2()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(if selected == 5 { 0x41424a } else { 0x232428 }))
+                            .child(custom_art)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
                                     this.select_status(5, window, cx)
+                                }),
+                            ),
+                    )
+                    .when(has_custom, |view| {
+                        view.child(
+                            div()
+                                .id("self-clear-status")
+                                .px_2()
+                                .py_2()
+                                .rounded_md()
+                                .bg(rgb(if selected == 6 { 0x41424a } else { 0x232428 }))
+                                .child("Clear custom status")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.select_status(6, window, cx)
                                 })),
                         )
-                        .when(has_custom, |view| {
-                            view.child(
-                                div()
-                                    .id("self-clear-status")
-                                    .px_2()
-                                    .py_2()
-                                    .rounded_md()
-                                    .bg(rgb(if selected == 6 { 0x41424a } else { 0x232428 }))
-                                    .child("Clear custom status")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.select_status(6, window, cx)
-                                    })),
-                            )
-                        })
-                        .when(pending, |v| {
-                            v.child(div().px_2().text_size(px(11.)).child("Saving…"))
-                        })
-                        .when_some(error, |v, error| {
-                            v.child(
-                                div()
-                                    .px_2()
-                                    .text_size(px(11.))
-                                    .text_color(rgb(0xf2b8b5))
-                                    .child(error),
-                            )
-                        }),
-                ),
-        )
-        .with_priority(10)
-        .into_any_element()
+                    })
+                    .when(pending, |v| {
+                        v.child(div().px_2().text_size(px(11.)).child("Saving…"))
+                    })
+                    .when_some(error, |v, error| {
+                        v.child(
+                            div()
+                                .px_2()
+                                .text_size(px(11.))
+                                .text_color(rgb(0xf2b8b5))
+                                .child(error),
+                        )
+                    }),
+            )
+            .into_any_element()
     }
 }
 
