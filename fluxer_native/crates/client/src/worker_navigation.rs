@@ -49,8 +49,18 @@ pub(super) enum HistoryRequest {
     After(Snowflake),
 }
 pub(super) enum NavigationEvent {
-    Mentions {epoch:u64,token:u64,before:Option<Snowflake>,result:Result<Value>},
-    Slowmode {epoch:u64,channel:Snowflake,token:u64,result:Result<Value>},
+    Mentions {
+        epoch: u64,
+        token: u64,
+        before: Option<Snowflake>,
+        result: Result<Value>,
+    },
+    Slowmode {
+        epoch: u64,
+        channel: Snowflake,
+        token: u64,
+        result: Result<Value>,
+    },
     Search {
         epoch: u64,
         channel: Snowflake,
@@ -94,9 +104,13 @@ pub(super) enum NavigationEvent {
         result: Result<()>,
     },
 }
-struct MentionsJob {token:u64,snapshot:crate::MentionsSnapshot,task:Option<Task>}
+struct MentionsJob {
+    token: u64,
+    snapshot: crate::MentionsSnapshot,
+    task: Option<Task>,
+}
 pub(super) struct NavigationState {
-    mentions:Option<MentionsJob>,
+    mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
     searches: BTreeMap<Snowflake, SearchJob>,
@@ -116,7 +130,7 @@ impl NavigationState {
     pub fn new() -> Self {
         let (tx, rx) = async_mpsc::unbounded_channel();
         Self {
-            mentions:None,
+            mentions: None,
             epoch: 1,
             next: 0,
             searches: BTreeMap::new(),
@@ -140,45 +154,175 @@ impl NavigationState {
 }
 
 impl Worker {
-    pub(super) fn navigation_mention_message(&mut self,message:&Message) {
-        let Some(job)=self.navigation.mentions.as_ref()else{return;};let filters=job.snapshot.filters;
-        let Some(channel)=self.state.channels.get(&message.channel_id)else{return;};
-        if !job.snapshot.fetched || !self.state.message_mentions_current_user(message,false) || self.state.relationships.get(&message.author.id).is_some_and(|r|r.is_blocked()) || !self.state.notification_content_allowed(channel) || (!filters.guilds && channel.guild_id.is_some()) || (!filters.everyone && message.mention_everyone) || (!filters.roles && !message.mention_roles.is_empty()){return;}
-        let job=self.navigation.mentions.as_mut().unwrap();job.snapshot.messages.retain(|existing|existing.id!=message.id);job.snapshot.messages.insert(0,message.clone());self.emit(Event::Mentions(self.navigation.mentions.as_ref().unwrap().snapshot.clone()));
+    pub(super) fn navigation_mention_message(&mut self, message: &Message) {
+        let Some(job) = self.navigation.mentions.as_ref() else {
+            return;
+        };
+        let filters = job.snapshot.filters;
+        let Some(channel) = self.state.channels.get(&message.channel_id) else {
+            return;
+        };
+        if !job.snapshot.fetched
+            || !self.state.message_mentions_current_user(message, false)
+            || self
+                .state
+                .relationships
+                .get(&message.author.id)
+                .is_some_and(|r| r.is_blocked())
+            || !self.state.notification_content_allowed(channel)
+            || (!filters.guilds && channel.guild_id.is_some())
+            || (!filters.everyone && message.mention_everyone)
+            || (!filters.roles && !message.mention_roles.is_empty())
+        {
+            return;
+        }
+        let job = self.navigation.mentions.as_mut().unwrap();
+        job.snapshot
+            .messages
+            .retain(|existing| existing.id != message.id);
+        job.snapshot.messages.insert(0, message.clone());
+        self.emit(Event::Mentions(
+            self.navigation.mentions.as_ref().unwrap().snapshot.clone(),
+        ));
     }
-    pub(super) fn navigation_close_mentions(&mut self){if let Some(job)=self.navigation.mentions.as_mut(){job.task=None;job.token=job.token.wrapping_add(1);job.snapshot.loading=false;}}
-    pub(super) fn fetch_mentions(&mut self,before:Option<Snowflake>,filters:crate::MentionFilters) {
-        if before.is_some() && !self.navigation.mentions.as_ref().is_some_and(|job|job.snapshot.filters==filters && !job.snapshot.loading && job.snapshot.has_more && job.snapshot.messages.last().map(|message|message.id)==before){return;}
-        let token=self.navigation.token();let epoch=self.navigation.epoch;
-        let mut snapshot=self.navigation.mentions.as_ref().map(|job|job.snapshot.clone()).unwrap_or_else(||crate::MentionsSnapshot{account_id:self.state.current_user.as_ref().map(|user|user.id),has_more:true,..Default::default()});snapshot.filters=filters;
-        snapshot.loading=true;snapshot.error=None;
+    pub(super) fn navigation_close_mentions(&mut self) {
+        if let Some(job) = self.navigation.mentions.as_mut() {
+            job.task = None;
+            job.token = job.token.wrapping_add(1);
+            job.snapshot.loading = false;
+        }
+    }
+    pub(super) fn fetch_mentions(
+        &mut self,
+        before: Option<Snowflake>,
+        filters: crate::MentionFilters,
+    ) {
+        if before.is_some()
+            && !self.navigation.mentions.as_ref().is_some_and(|job| {
+                job.snapshot.filters == filters
+                    && !job.snapshot.loading
+                    && job.snapshot.has_more
+                    && job.snapshot.messages.last().map(|message| message.id) == before
+            })
+        {
+            return;
+        }
+        let token = self.navigation.token();
+        let epoch = self.navigation.epoch;
+        let mut snapshot = self
+            .navigation
+            .mentions
+            .as_ref()
+            .map(|job| job.snapshot.clone())
+            .unwrap_or_else(|| crate::MentionsSnapshot {
+                account_id: self.state.current_user.as_ref().map(|user| user.id),
+                has_more: true,
+                ..Default::default()
+            });
+        snapshot.filters = filters;
+        snapshot.loading = true;
+        snapshot.error = None;
         self.emit(Event::Mentions(snapshot.clone()));
         if self.demo {
-            snapshot.loading=false;snapshot.fetched=true;snapshot.has_more=false;
-            snapshot.messages=self.state.messages.values().flat_map(|messages|messages.values()).filter(|message|self.state.current_user.as_ref().is_some_and(|me|message.mentions.iter().any(|user|user.id==me.id))).cloned().collect();
-            snapshot.messages.sort_by_key(|message|std::cmp::Reverse(message.id));self.navigation.mentions=Some(MentionsJob{token,snapshot:snapshot.clone(),task:None});self.emit(Event::Mentions(snapshot));return;
+            snapshot.loading = false;
+            snapshot.fetched = true;
+            snapshot.has_more = false;
+            snapshot.messages = self
+                .state
+                .messages
+                .values()
+                .flat_map(|messages| messages.values())
+                .filter(|message| {
+                    self.state
+                        .current_user
+                        .as_ref()
+                        .is_some_and(|me| message.mentions.iter().any(|user| user.id == me.id))
+                })
+                .cloned()
+                .collect();
+            snapshot
+                .messages
+                .sort_by_key(|message| std::cmp::Reverse(message.id));
+            self.navigation.mentions = Some(MentionsJob {
+                token,
+                snapshot: snapshot.clone(),
+                task: None,
+            });
+            self.emit(Event::Mentions(snapshot));
+            return;
         }
-        let Some(client)=self.client.clone()else{snapshot.loading=false;snapshot.error=Some("Connect an account to load recent mentions".into());self.emit(Event::Mentions(snapshot));return;};
-        let tx=self.navigation.tx.clone();let task=tokio::spawn(async move{let before_wire=before.map(|id|id.to_string());let result=tokio::time::timeout(Duration::from_secs(15),client.recent_mentions(before_wire.as_deref(),filters.everyone,filters.roles,filters.guilds)).await.map_err(error).and_then(|result|result.map_err(error));let _=tx.send(NavigationEvent::Mentions{epoch,token,before,result});});
-        self.navigation.mentions=Some(MentionsJob{token,snapshot,task:Some(Task(task))});
+        let Some(client) = self.client.clone() else {
+            snapshot.loading = false;
+            snapshot.error = Some("Connect an account to load recent mentions".into());
+            self.emit(Event::Mentions(snapshot));
+            return;
+        };
+        let tx = self.navigation.tx.clone();
+        let task = tokio::spawn(async move {
+            let before_wire = before.map(|id| id.to_string());
+            let result = tokio::time::timeout(
+                Duration::from_secs(15),
+                client.recent_mentions(
+                    before_wire.as_deref(),
+                    filters.everyone,
+                    filters.roles,
+                    filters.guilds,
+                ),
+            )
+            .await
+            .map_err(error)
+            .and_then(|result| result.map_err(error));
+            let _ = tx.send(NavigationEvent::Mentions {
+                epoch,
+                token,
+                before,
+                result,
+            });
+        });
+        self.navigation.mentions = Some(MentionsJob {
+            token,
+            snapshot,
+            task: Some(Task(task)),
+        });
     }
-    pub(super) fn request_channel_slowmode(&mut self, channel:Snowflake) {
-        self.navigation.slowmode=None;
-        if self.demo || self.state.channels.get(&channel).is_none_or(|channel|channel.guild_id.is_none()) {return;}
-        let Some(client)=self.client.clone() else {return;};
-        let epoch=self.navigation.epoch;
-        let token=self.navigation.token();
-        let tx=self.navigation.tx.clone();
-        let task=tokio::spawn(async move {
-            let result=tokio::time::timeout(Duration::from_secs(5),client.channel_slowmode(&channel.to_string())).await.map_err(error).and_then(|result|result.map_err(error));
-            let _=tx.send(NavigationEvent::Slowmode {epoch,channel,token,result});
+    pub(super) fn request_channel_slowmode(&mut self, channel: Snowflake) {
+        self.navigation.slowmode = None;
+        if self.demo
+            || self
+                .state
+                .channels
+                .get(&channel)
+                .is_none_or(|channel| channel.guild_id.is_none())
+        {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let epoch = self.navigation.epoch;
+        let token = self.navigation.token();
+        let tx = self.navigation.tx.clone();
+        let task = tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.channel_slowmode(&channel.to_string()),
+            )
+            .await
+            .map_err(error)
+            .and_then(|result| result.map_err(error));
+            let _ = tx.send(NavigationEvent::Slowmode {
+                epoch,
+                channel,
+                token,
+                result,
+            });
         });
         self.navigation.slowmode = Some((channel, token, Task(task)));
     }
     pub(super) fn clear_navigation(&mut self) {
         self.navigation.epoch = self.navigation.epoch.wrapping_add(1);
         self.navigation.searches.clear();
-        self.navigation.mentions=None;
+        self.navigation.mentions = None;
         self.navigation.result_channels.clear();
         self.navigation.pins.clear();
         self.navigation.history.clear();
@@ -1243,10 +1387,33 @@ impl Worker {
             } else {
                 id.into_iter().collect()
             };
-            if let Some(job)=self.navigation.mentions.as_mut(){
-                let mut changed=false;
-                job.snapshot.messages.retain_mut(|message|{if message.channel_id!=channel||!ids.contains(&message.id){return true;}match self.state.reduce_detached_message(message,name,data.clone()){Ok(Some(updated))=>{*message=updated;changed=true;true},Ok(None)=>{changed=true;false},Err(_)=>true}});
-                if changed{self.emit(Event::Mentions(self.navigation.mentions.as_ref().unwrap().snapshot.clone()));}
+            if let Some(job) = self.navigation.mentions.as_mut() {
+                let mut changed = false;
+                job.snapshot.messages.retain_mut(|message| {
+                    if message.channel_id != channel || !ids.contains(&message.id) {
+                        return true;
+                    }
+                    match self
+                        .state
+                        .reduce_detached_message(message, name, data.clone())
+                    {
+                        Ok(Some(updated)) => {
+                            *message = updated;
+                            changed = true;
+                            true
+                        }
+                        Ok(None) => {
+                            changed = true;
+                            false
+                        }
+                        Err(_) => true,
+                    }
+                });
+                if changed {
+                    self.emit(Event::Mentions(
+                        self.navigation.mentions.as_ref().unwrap().snapshot.clone(),
+                    ));
+                }
             }
             let mut snapshots = Vec::new();
             for job in self.navigation.searches.values_mut() {
@@ -1347,21 +1514,99 @@ impl Worker {
     }
     pub(super) fn navigation_event(&mut self, event: NavigationEvent) {
         match event {
-            NavigationEvent::Mentions {epoch,token,before,result}=>{
-                if epoch!=self.navigation.epoch || !self.navigation.mentions.as_ref().is_some_and(|job|job.token==token){return;}
-                let result=result.and_then(|body|{let rows=body.as_array().ok_or("Recent mentions returned an invalid response")?;rows.iter().cloned().map(|row|self.state.decode_api::<Message>(row).map_err(error)).collect::<Result<Vec<_>>>()});
-                let job=self.navigation.mentions.as_mut().unwrap();job.task=None;job.snapshot.loading=false;
-                match result {Ok(messages)=>{job.snapshot.fetched=true;job.snapshot.has_more=messages.len()==50;if before.is_none(){job.snapshot.messages.clear();}for message in messages{if !job.snapshot.messages.iter().any(|existing|existing.id==message.id){job.snapshot.messages.push(message);}}job.snapshot.messages.sort_by_key(|message|std::cmp::Reverse(message.id));},Err(error)=>job.snapshot.error=Some(error)}
-                self.emit(Event::Mentions(self.navigation.mentions.as_ref().unwrap().snapshot.clone()));
+            NavigationEvent::Mentions {
+                epoch,
+                token,
+                before,
+                result,
+            } => {
+                if epoch != self.navigation.epoch
+                    || !self
+                        .navigation
+                        .mentions
+                        .as_ref()
+                        .is_some_and(|job| job.token == token)
+                {
+                    return;
+                }
+                let result = result.and_then(|body| {
+                    let rows = body
+                        .as_array()
+                        .ok_or("Recent mentions returned an invalid response")?;
+                    rows.iter()
+                        .cloned()
+                        .map(|row| self.state.decode_api::<Message>(row).map_err(error))
+                        .collect::<Result<Vec<_>>>()
+                });
+                let job = self.navigation.mentions.as_mut().unwrap();
+                job.task = None;
+                job.snapshot.loading = false;
+                match result {
+                    Ok(messages) => {
+                        job.snapshot.fetched = true;
+                        job.snapshot.has_more = messages.len() == 50;
+                        if before.is_none() {
+                            job.snapshot.messages.clear();
+                        }
+                        for message in messages {
+                            if !job
+                                .snapshot
+                                .messages
+                                .iter()
+                                .any(|existing| existing.id == message.id)
+                            {
+                                job.snapshot.messages.push(message);
+                            }
+                        }
+                        job.snapshot
+                            .messages
+                            .sort_by_key(|message| std::cmp::Reverse(message.id));
+                    }
+                    Err(error) => job.snapshot.error = Some(error),
+                }
+                self.emit(Event::Mentions(
+                    self.navigation.mentions.as_ref().unwrap().snapshot.clone(),
+                ));
             }
-            NavigationEvent::Slowmode {epoch,channel,token,result} => {
-                if epoch!=self.navigation.epoch || self.state.selected_channel!=Some(channel) || !self.navigation.slowmode.as_ref().is_some_and(|(id,active,_)|*id==channel && *active==token) {return;}
-                self.navigation.slowmode=None;
-                let Ok(body)=result else {return;};
-                let (Some(rate),Some(retry),Some(can_bypass))=(body.get("rate_limit_per_user").and_then(Value::as_u64),body.get("retry_after_ms").and_then(Value::as_u64),body.get("can_bypass").and_then(Value::as_bool)) else {return;};
-                if rate>21600 || retry>21600000 {return;}
-                if let Some(target)=self.state.channels.get_mut(&channel) {target.rate_limit_per_user=rate as u32;}
-                self.emit(Event::ChannelSlowmode {channel_id:channel,rate_limit_per_user:rate as u32,retry_after:Duration::from_millis(retry),can_bypass});
+            NavigationEvent::Slowmode {
+                epoch,
+                channel,
+                token,
+                result,
+            } => {
+                if epoch != self.navigation.epoch
+                    || self.state.selected_channel != Some(channel)
+                    || !self
+                        .navigation
+                        .slowmode
+                        .as_ref()
+                        .is_some_and(|(id, active, _)| *id == channel && *active == token)
+                {
+                    return;
+                }
+                self.navigation.slowmode = None;
+                let Ok(body) = result else {
+                    return;
+                };
+                let (Some(rate), Some(retry), Some(can_bypass)) = (
+                    body.get("rate_limit_per_user").and_then(Value::as_u64),
+                    body.get("retry_after_ms").and_then(Value::as_u64),
+                    body.get("can_bypass").and_then(Value::as_bool),
+                ) else {
+                    return;
+                };
+                if rate > 21600 || retry > 21600000 {
+                    return;
+                }
+                if let Some(target) = self.state.channels.get_mut(&channel) {
+                    target.rate_limit_per_user = rate as u32;
+                }
+                self.emit(Event::ChannelSlowmode {
+                    channel_id: channel,
+                    rate_limit_per_user: rate as u32,
+                    retry_after: Duration::from_millis(retry),
+                    can_bypass,
+                });
                 self.snapshot();
             }
             NavigationEvent::PinAck {

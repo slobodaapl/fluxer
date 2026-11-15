@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
-mod inbox_view;
 mod audio_view;
 mod avatar_demo;
 mod avatar_images;
@@ -23,6 +22,7 @@ mod image_demo;
 mod image_gallery;
 mod image_transform;
 mod image_viewer;
+mod inbox_view;
 mod input;
 mod media_actions;
 mod media_animation;
@@ -318,8 +318,8 @@ struct Fluxer {
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
     quick_switcher: quick_switcher::QuickSwitcher,
-    inbox_ui:inbox_view::InboxUi,
-    composer_member_query: Option<(Snowflake,String)>,
+    inbox_ui: inbox_view::InboxUi,
+    composer_member_query: Option<(Snowflake, String)>,
     composer_query_generation: u64,
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
@@ -435,7 +435,7 @@ impl Fluxer {
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
-            inbox_ui:inbox_view::InboxUi::new(cx),
+            inbox_ui: inbox_view::InboxUi::new(cx),
             composer_member_query: None,
             composer_query_generation: 0,
             composer: cx.new(|cx| {
@@ -731,8 +731,8 @@ impl Fluxer {
         view.schedule_read_menu_demo(window, cx);
         view.schedule_profile_demo(window, cx);
         view.schedule_composer_demo(window, cx);
-        view.schedule_quick_switcher_demo(window,cx);
-        view.schedule_inbox_demo(window,cx);
+        view.schedule_quick_switcher_demo(window, cx);
+        view.schedule_inbox_demo(window, cx);
         view
     }
 
@@ -825,8 +825,11 @@ impl Fluxer {
                     .profile_ui
                     .popup
                     .update(cx, |popup, cx| popup.apply_snapshot(snapshot, cx)),
-                Event::Mentions(snapshot)=>self.apply_mentions_snapshot(snapshot,cx),
-                Event::LiveMessageCreated {account_id,message} => self.live_message_notification(account_id,&message,cx),
+                Event::Mentions(snapshot) => self.apply_mentions_snapshot(snapshot, cx),
+                Event::LiveMessageCreated {
+                    account_id,
+                    message,
+                } => self.live_message_notification(account_id, &message, cx),
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
                     avatar_images::configure_instance(document.as_ref());
@@ -861,7 +864,10 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
-                    if previous_user != self.state.current_user.as_ref().map(|user|user.id) { self.slowmode = composer_slowmode::Slowmode::default(); self.inbox_ui.reset(); }
+                    if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.slowmode = composer_slowmode::Slowmode::default();
+                        self.inbox_ui.reset();
+                    }
                     self.refresh_composer_completion(cx);
                     if self
                         .profile_ui
@@ -2584,8 +2590,8 @@ impl Render for Fluxer {
         let rendered = rendered
             .child(self.image_viewer_overlay(window, cx))
             .child(self.playback.overlay(window, cx))
-            .child(self.inbox_overlay(window,cx))
-            .child(self.quick_switcher_overlay(window,cx));
+            .child(self.inbox_overlay(window, cx))
+            .child(self.quick_switcher_overlay(window, cx));
         self.playback.finish_frame(cx);
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());

@@ -8,8 +8,8 @@ mod worker;
 
 pub use attachments::{AttachmentId, AttachmentPreview, AttachmentStatus, StagedAttachment};
 pub use navigation::{
-    MentionFilters, MentionsSnapshot, HistorySnapshot, PinnedMessage, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort,
-    SearchStatus,
+    HistorySnapshot, MentionFilters, MentionsSnapshot, PinnedMessage, PinsSnapshot, SearchScope,
+    SearchSnapshot, SearchSort, SearchStatus,
 };
 
 pub use fluxer_core::{ClientState, Snowflake};
@@ -137,7 +137,10 @@ pub enum Command {
     SelectChannel {
         channel_id: Snowflake,
     },
-    FetchMentions {before:Option<Snowflake>,filters:MentionFilters},
+    FetchMentions {
+        before: Option<Snowflake>,
+        filters: MentionFilters,
+    },
     CloseMentions,
     SearchMessages {
         channel_id: Snowflake,

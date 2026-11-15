@@ -82,11 +82,28 @@ pub struct HistorySnapshot {
     pub error: Option<String>,
 }
 
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct MentionFilters {pub everyone:bool,pub roles:bool,pub guilds:bool}
-impl Default for MentionFilters {fn default()->Self{Self{everyone:true,roles:true,guilds:true}}}
-#[derive(Clone,Debug,Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MentionFilters {
+    pub everyone: bool,
+    pub roles: bool,
+    pub guilds: bool,
+}
+impl Default for MentionFilters {
+    fn default() -> Self {
+        Self {
+            everyone: true,
+            roles: true,
+            guilds: true,
+        }
+    }
+}
+#[derive(Clone, Debug, Default)]
 pub struct MentionsSnapshot {
-    pub account_id:Option<Snowflake>,
-    pub messages:Vec<Message>,pub loading:bool,pub fetched:bool,pub has_more:bool,pub error:Option<String>,pub filters:MentionFilters,
+    pub account_id: Option<Snowflake>,
+    pub messages: Vec<Message>,
+    pub loading: bool,
+    pub fetched: bool,
+    pub has_more: bool,
+    pub error: Option<String>,
+    pub filters: MentionFilters,
 }

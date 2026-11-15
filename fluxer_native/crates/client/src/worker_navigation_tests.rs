@@ -1250,21 +1250,189 @@ async fn slowmode_snapshot_rejects_stale_account_channel_and_invalid_windows() {
 
 #[tokio::test]
 async fn mentions_pages_fence_generations_preserve_reads_and_keep_data_on_error() {
-    let (mut worker,events)=demo();let epoch=worker.navigation.epoch;let token=worker.navigation.token();let read=worker.state.read_states[&Snowflake(11)].last_message_id;
-    worker.navigation.mentions=Some(MentionsJob{token,snapshot:crate::MentionsSnapshot{account_id:Some(Snowflake(100)),loading:true,has_more:true,..Default::default()},task:None});
-    let body=serde_json::to_value(messages(100,149)).unwrap();
-    worker.navigation_event(NavigationEvent::Mentions{epoch:epoch+1,token,before:None,result:Ok(body.clone())});assert!(events.try_iter().all(|event|!matches!(event,Event::Mentions(_))));
-    worker.navigation_event(NavigationEvent::Mentions{epoch,token,before:None,result:Ok(body)});
-    let first=worker.navigation.mentions.as_ref().unwrap();assert_eq!(first.snapshot.messages.len(),50);assert!(first.snapshot.has_more);assert_eq!(first.snapshot.messages[0].id,Snowflake(149));
-    worker.navigation.mentions.as_mut().unwrap().token=token+1;
-    worker.navigation_event(NavigationEvent::Mentions{epoch,token:token+1,before:Some(Snowflake(100)),result:Ok(serde_json::to_value(messages(90,100)).unwrap())});
-    assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages.len(),60);assert!(!worker.navigation.mentions.as_ref().unwrap().snapshot.has_more);
-    worker.navigation_event(NavigationEvent::Mentions{epoch,token,before:None,result:Ok(json!([]))});assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages.len(),60);
-    worker.navigation_event(NavigationEvent::Mentions{epoch,token:token+1,before:Some(Snowflake(90)),result:Err("offline fixture failure".into())});assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages.len(),60);assert!(worker.navigation.mentions.as_ref().unwrap().snapshot.error.is_some());
-    assert_eq!(worker.state.read_states[&Snowflake(11)].last_message_id,read);
-    let mut live=Message::text(Snowflake(160),Snowflake(11),worker.state.users[&Snowflake(101)].clone(),"new mention");live.mentions.push(worker.state.current_user.clone().unwrap());
-    worker.navigation_mention_message(&live);assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages[0].id,Snowflake(160));
-    worker.navigation_gateway("MESSAGE_UPDATE",&json!({"id":"160","channel_id":"11","content":"edited mention"}));assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages[0].content,"edited mention");
-    worker.navigation_gateway("MESSAGE_DELETE",&json!({"id":"160","channel_id":"11"}));assert!(!worker.navigation.mentions.as_ref().unwrap().snapshot.messages.iter().any(|message|message.id==Snowflake(160)));
-    worker.navigation_close_mentions();worker.navigation_event(NavigationEvent::Mentions{epoch,token:token+1,before:None,result:Ok(json!([]))});assert_eq!(worker.navigation.mentions.as_ref().unwrap().snapshot.messages.len(),60);assert!(!worker.navigation.mentions.as_ref().unwrap().snapshot.loading);
+    let (mut worker, events) = demo();
+    let epoch = worker.navigation.epoch;
+    let token = worker.navigation.token();
+    let read = worker.state.read_states[&Snowflake(11)].last_message_id;
+    worker.navigation.mentions = Some(MentionsJob {
+        token,
+        snapshot: crate::MentionsSnapshot {
+            account_id: Some(Snowflake(100)),
+            loading: true,
+            has_more: true,
+            ..Default::default()
+        },
+        task: None,
+    });
+    let body = serde_json::to_value(messages(100, 149)).unwrap();
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch: epoch + 1,
+        token,
+        before: None,
+        result: Ok(body.clone()),
+    });
+    assert!(
+        events
+            .try_iter()
+            .all(|event| !matches!(event, Event::Mentions(_)))
+    );
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch,
+        token,
+        before: None,
+        result: Ok(body),
+    });
+    let first = worker.navigation.mentions.as_ref().unwrap();
+    assert_eq!(first.snapshot.messages.len(), 50);
+    assert!(first.snapshot.has_more);
+    assert_eq!(first.snapshot.messages[0].id, Snowflake(149));
+    worker.navigation.mentions.as_mut().unwrap().token = token + 1;
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch,
+        token: token + 1,
+        before: Some(Snowflake(100)),
+        result: Ok(serde_json::to_value(messages(90, 100)).unwrap()),
+    });
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages
+            .len(),
+        60
+    );
+    assert!(
+        !worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .has_more
+    );
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch,
+        token,
+        before: None,
+        result: Ok(json!([])),
+    });
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages
+            .len(),
+        60
+    );
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch,
+        token: token + 1,
+        before: Some(Snowflake(90)),
+        result: Err("offline fixture failure".into()),
+    });
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages
+            .len(),
+        60
+    );
+    assert!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .error
+            .is_some()
+    );
+    assert_eq!(
+        worker.state.read_states[&Snowflake(11)].last_message_id,
+        read
+    );
+    let mut live = Message::text(
+        Snowflake(160),
+        Snowflake(11),
+        worker.state.users[&Snowflake(101)].clone(),
+        "new mention",
+    );
+    live.mentions
+        .push(worker.state.current_user.clone().unwrap());
+    worker.navigation_mention_message(&live);
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages[0]
+            .id,
+        Snowflake(160)
+    );
+    worker.navigation_gateway(
+        "MESSAGE_UPDATE",
+        &json!({"id":"160","channel_id":"11","content":"edited mention"}),
+    );
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages[0]
+            .content,
+        "edited mention"
+    );
+    worker.navigation_gateway("MESSAGE_DELETE", &json!({"id":"160","channel_id":"11"}));
+    assert!(
+        !worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages
+            .iter()
+            .any(|message| message.id == Snowflake(160))
+    );
+    worker.navigation_close_mentions();
+    worker.navigation_event(NavigationEvent::Mentions {
+        epoch,
+        token: token + 1,
+        before: None,
+        result: Ok(json!([])),
+    });
+    assert_eq!(
+        worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .messages
+            .len(),
+        60
+    );
+    assert!(
+        !worker
+            .navigation
+            .mentions
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .loading
+    );
 }
