@@ -853,25 +853,26 @@ impl Render for ProfilePopup {
             let mut biography = div().mt_2().text_size(px(13.)).flex().flex_wrap();
             for (index, span) in document.spans.iter().enumerate() {
                 let text = &document.text[span.range.clone()];
-                if span.spoilers.is_empty() && !span.style.code {
-                    if let Some(crate::message_markup::MessageTarget::Link(url)) = &span.target {
-                        let url = url.clone();
-                        let selected = self.selected == self.action_count() + self.bio_links.len();
-                        self.bio_links.push(url.clone());
-                        biography = biography.child(
-                            div()
-                                .id(("profile-bio-link", index))
-                                .cursor_pointer()
-                                .when(selected, |view| view.bg(rgb(0x535064)))
-                                .text_color(rgb(0x83bdf5))
-                                .child(label(text, 13., cx))
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.stop_propagation();
-                                    cx.emit(ProfileAction::Link(url.clone()));
-                                })),
-                        );
-                        continue;
-                    }
+                if span.spoilers.is_empty()
+                    && !span.style.code
+                    && let Some(crate::message_markup::MessageTarget::Link(url)) = &span.target
+                {
+                    let url = url.clone();
+                    let selected = self.selected == self.action_count() + self.bio_links.len();
+                    self.bio_links.push(url.clone());
+                    biography = biography.child(
+                        div()
+                            .id(("profile-bio-link", index))
+                            .cursor_pointer()
+                            .when(selected, |view| view.bg(rgb(0x535064)))
+                            .text_color(rgb(0x83bdf5))
+                            .child(label(text, 13., cx))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.emit(ProfileAction::Link(url.clone()));
+                            })),
+                    );
+                    continue;
                 }
                 let shown = if span.spoilers.is_empty() {
                     text

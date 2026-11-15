@@ -162,7 +162,18 @@ impl NativePreferences {
     }
     fn action(&self, key: &Keystroke) -> Option<Shortcut> {
         let key = keystroke(key);
-        Shortcut::ALL.into_iter().find(|a| self.binding(*a) == key)
+        if let Some(action) = Shortcut::ALL.into_iter().find(|a| self.binding(*a) == key) {
+            return Some(action);
+        }
+        // Preserve established aliases while the primary binding remains at its
+        // default. An explicitly assigned shortcut always wins over an alias.
+        let action = match key.as_str() {
+            "ctrl-t" | "cmd-t" | "cmd-k" => Shortcut::Switcher,
+            "cmd-f" => Shortcut::Search,
+            "cmd-," => Shortcut::Settings,
+            _ => return None,
+        };
+        (self.binding(action) == Preferences::default().shortcuts[action.index()]).then_some(action)
     }
     pub fn binding(&self, action: Shortcut) -> &str {
         &self.preferences.shortcuts[action.index()]
@@ -242,6 +253,24 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.status_ui.is_open()
+            || self.context_menu_open(cx)
+            || self.profile_ui.is_open(cx)
+            || self.image_viewer.is_open()
+            || self.playback.modal.is_open()
+            || self.message_links.is_open()
+            || self.message_actions.is_blocking()
+            || self.search_ui.confirm.is_some()
+            || self.friends_ui.confirm.is_some()
+            || self.emoji_target.is_some()
+            || self.forwarding.is_some()
+            || self.quick_switcher.open
+        {
+            if self.interface.recording.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
         if self.pane != Pane::Settings || self.settings_section != settings_view::Section::Keybinds
         {
             self.interface.recording = None;
@@ -258,21 +287,6 @@ impl Fluxer {
             }
             cx.stop_propagation();
             cx.notify();
-            return;
-        }
-        if self.status_ui.is_open()
-            || self.context_menu_open(cx)
-            || self.profile_ui.is_open(cx)
-            || self.image_viewer.is_open()
-            || self.playback.modal.is_open()
-            || self.message_links.is_open()
-            || self.message_actions.is_blocking()
-            || self.search_ui.confirm.is_some()
-            || self.friends_ui.confirm.is_some()
-            || self.emoji_target.is_some()
-            || self.forwarding.is_some()
-            || self.quick_switcher.open
-        {
             return;
         }
         let action = self.interface.action(&event.keystroke);
@@ -323,6 +337,25 @@ mod tests {
         for key in ["ctrl-shift-a", "alt-x", "f9"] {
             assert!(valid(key), "{key}");
         }
+    }
+    #[test]
+    fn legacy_aliases_survive_defaults_but_yield_to_explicit_rebinding() {
+        let mut p = NativePreferences::new(true);
+        assert_eq!(
+            p.action(&Keystroke::parse("ctrl-t").unwrap()),
+            Some(Shortcut::Switcher)
+        );
+        assert_eq!(
+            p.action(&Keystroke::parse("cmd-k").unwrap()),
+            Some(Shortcut::Switcher)
+        );
+        p.assign(Shortcut::Search, "ctrl-t".into());
+        assert_eq!(
+            p.action(&Keystroke::parse("ctrl-t").unwrap()),
+            Some(Shortcut::Search)
+        );
+        p.assign(Shortcut::Switcher, "ctrl-alt-k".into());
+        assert_eq!(p.action(&Keystroke::parse("cmd-k").unwrap()), None);
     }
     #[test]
     fn failed_assignment_preserves_working_binding() {

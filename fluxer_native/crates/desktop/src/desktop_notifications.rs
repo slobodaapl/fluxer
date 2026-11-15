@@ -566,8 +566,7 @@ impl Fluxer {
         if self.native_notifications.last_scope != scope {
             if let Some((old, _)) = self.native_notifications.last_scope
                 && account != Some(old)
-            {
-                if self
+                && self
                     .native_notifications
                     .tx
                     .try_send(Delivery::Clear {
@@ -575,11 +574,10 @@ impl Fluxer {
                         channel: None,
                     })
                     .is_err()
-                {
-                    self.native_notifications.status =
-                        Some("Could not queue dismissal of old account notifications".into());
-                    cx.notify();
-                }
+            {
+                self.native_notifications.status =
+                    Some("Could not queue dismissal of old account notifications".into());
+                cx.notify();
             }
             if let Some((account, Some(channel))) = scope {
                 self.clear_channel_notifications(account, channel);
