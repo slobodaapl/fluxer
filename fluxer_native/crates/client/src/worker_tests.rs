@@ -3281,29 +3281,27 @@ async fn transport_loss_preserves_intent_and_leave_cancels_rejoin() {
 }
 
 #[test]
-fn suspend_detection_compares_wall_and_monotonic_elapsed_time() {
-    let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+fn suspend_detection_uses_boot_clock_not_wall_clock() {
     let monotonic = std::time::Instant::now();
+    let boot = Duration::from_secs(100);
     assert!(!suspend_gap(
-        (wall, monotonic),
+        (Some(boot), monotonic),
         (
-            wall + Duration::from_secs(90),
+            Some(boot + Duration::from_secs(90)),
             monotonic + Duration::from_secs(90)
         )
     ));
     assert!(suspend_gap(
-        (wall, monotonic),
+        (Some(boot), monotonic),
         (
-            wall + Duration::from_secs(90),
+            Some(boot + Duration::from_secs(90)),
             monotonic + Duration::from_secs(5)
         )
     ));
+    // No wall-clock value is consulted, including after a forward clock correction.
     assert!(!suspend_gap(
-        (wall, monotonic),
-        (
-            wall - Duration::from_secs(1),
-            monotonic + Duration::from_secs(5)
-        )
+        (None, monotonic),
+        (None, monotonic + Duration::from_secs(5))
     ));
 }
 

@@ -561,7 +561,7 @@ impl Worker {
         let mut attempted_status_expiry = None;
         let mut expiry_account = None;
         let mut last_devices = None;
-        let mut last_device_poll = (SystemTime::now(), std::time::Instant::now());
+        let mut last_device_poll = (boot_time(), std::time::Instant::now());
         let mut recovery_requested = false;
         let mut recovery: Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>> =
             None;
@@ -680,7 +680,7 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::DevicePoll => {
-                    let now = (SystemTime::now(), std::time::Instant::now());
+                    let now = (boot_time(), std::time::Instant::now());
                     let slept = suspend_gap(last_device_poll, now);
                     last_device_poll = now;
                     if slept && self.voice_target.is_some() && self.voice_recovery_started.is_none()
@@ -3694,15 +3694,41 @@ fn stream_key(target: &VoiceTarget, identity: &str) -> Option<String> {
 #[path = "worker_tests.rs"]
 mod tests;
 
-// CLOCK_MONOTONIC pauses during Linux suspend, unlike wall time. Compare
-// elapsed clocks so ordinary executor stalls do not cause needless rejoining.
+// Linux CLOCK_BOOTTIME includes suspend but CLOCK_MONOTONIC does not.
+// Other platforms do not infer suspend from wall-clock changes.
+#[cfg(target_os = "linux")]
+fn boot_time() -> Option<Duration> {
+    let mut value = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `value` is a valid writable timespec and CLOCK_BOOTTIME is a valid clock ID.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut value) } != 0
+        || value.tv_sec < 0
+        || value.tv_nsec < 0
+    {
+        return None;
+    }
+    Some(Duration::new(value.tv_sec as u64, value.tv_nsec as u32))
+}
+#[cfg(not(target_os = "linux"))]
+fn boot_time() -> Option<Duration> {
+    None
+}
+
 fn suspend_gap(
-    previous: (SystemTime, std::time::Instant),
-    now: (SystemTime, std::time::Instant),
+    previous: (Option<Duration>, std::time::Instant),
+    now: (Option<Duration>, std::time::Instant),
 ) -> bool {
-    let wall = now.0.duration_since(previous.0).unwrap_or_default();
+    let Some(boot_elapsed) = now
+        .0
+        .zip(previous.0)
+        .and_then(|(now, previous)| now.checked_sub(previous))
+    else {
+        return false;
+    };
     let monotonic = now.1.saturating_duration_since(previous.1);
-    wall.saturating_sub(monotonic) > Duration::from_secs(10)
+    boot_elapsed.saturating_sub(monotonic) > Duration::from_secs(10)
 }
 
 async fn voice_connect_result(
