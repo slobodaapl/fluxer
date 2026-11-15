@@ -861,7 +861,7 @@ fn voice_credentials_require_the_requested_channel_and_current_connection() {
         channel_id: 100.into(),
         connection_id: None,
     };
-    assert!(target.accepts(&voice_update(Some("100"), "new")));
+    assert!(!target.accepts(&voice_update(Some("100"), "new")));
     assert!(!target.accepts(&voice_update(Some("200"), "new")));
     assert!(!target.accepts(&voice_update(None, "unknown")));
     target.connection_id = Some("new".into());
@@ -947,10 +947,10 @@ async fn uncorrelated_early_voice_credentials_are_buffered_and_cleared_on_leave(
         connection_id: None,
     });
     worker.gateway(GatewayEvent::Dispatch{name:"VOICE_SERVER_UPDATE".into(),data:json!({"token":"voice-secret","endpoint":"wss://voice.example","connection_id":"early","guild_id":"10"}),sequence:Some(1)}).await.unwrap();
-    assert!(worker.pending_voice_server.is_some());
+    assert!(!worker.pending_voice_server.is_empty());
     assert!(worker.media.is_none());
     worker.leave_voice(false).await.unwrap();
-    assert!(worker.pending_voice_server.is_none());
+    assert!(worker.pending_voice_server.is_empty());
     assert!(worker.voice_target.is_none());
     assert!(worker.media.is_none());
 }
@@ -3391,4 +3391,71 @@ async fn retry_limit_ends_call_and_clears_the_timer() {
     assert!(worker.schedule_voice_retry().await.is_err());
     assert!(worker.voice_recovery_at.is_none());
     assert!(worker.voice_target.is_none());
+}
+
+#[tokio::test]
+async fn same_channel_rejoin_rejects_retired_state_and_credentials_before_new_state() {
+    let (mut worker, _) = worker();
+    let (gateway, _rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.state.current_user = Some(User {
+        id: 1.into(),
+        ..Default::default()
+    });
+    worker.state.session_id = Some("session".into());
+    worker
+        .state
+        .apply_gateway(
+            "GUILD_CREATE",
+            json!({"id":"10","name":"G","channels":[{"id":"100","name":"v","type":2}]}),
+        )
+        .unwrap();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("old".into()),
+    });
+    worker.leave_voice(false).await.unwrap();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: None,
+    });
+    let dispatch = |name: &str, data: Value| GatewayEvent::Dispatch {
+        name: name.into(),
+        data,
+        sequence: None,
+    };
+    let old_credentials = json!({"token":"stale","endpoint":"wss://example.invalid","connection_id":"old","guild_id":"10","channel_id":"100","ice_servers":[{}]});
+    worker
+        .gateway(dispatch("VOICE_SERVER_UPDATE", old_credentials.clone()))
+        .await
+        .unwrap();
+    worker.gateway(dispatch("VOICE_STATE_UPDATE", json!({"user_id":"1","guild_id":"10","channel_id":"100","connection_id":"old","session_id":"session"}))).await.unwrap();
+    assert!(
+        worker
+            .voice_target
+            .as_ref()
+            .unwrap()
+            .connection_id
+            .is_none()
+    );
+    assert!(worker.pending_voice_server.is_empty());
+    assert!(worker.media.is_none());
+    let new_credentials = json!({"token":"new","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","channel_id":"100","ice_servers":[{}]});
+    worker
+        .gateway(dispatch("VOICE_SERVER_UPDATE", new_credentials))
+        .await
+        .unwrap();
+    worker
+        .gateway(dispatch("VOICE_SERVER_UPDATE", old_credentials))
+        .await
+        .unwrap();
+    assert!(worker.pending_voice_server.contains_key("new"));
+    assert!(worker.media.is_none());
+    // Mesh is deliberately rejected before media initialization. Its error
+    // proves that only the fresh matching credentials reached connect_voice.
+    let result = worker.gateway(dispatch("VOICE_STATE_UPDATE", json!({"user_id":"1","guild_id":"10","channel_id":"100","connection_id":"new","session_id":"session"}))).await;
+    assert!(result.unwrap_err().contains("mesh voice"));
+    assert!(worker.media.is_none());
 }

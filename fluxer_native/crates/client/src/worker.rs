@@ -84,11 +84,7 @@ type BrowserPollResult = std::result::Result<
 
 impl VoiceTarget {
     fn accepts(&self, update: &VoiceServerUpdate) -> bool {
-        if self
-            .connection_id
-            .as_ref()
-            .is_some_and(|id| id != &update.connection_id)
-        {
+        if self.connection_id.as_deref() != Some(update.connection_id.as_str()) {
             return false;
         }
         if update
@@ -105,10 +101,7 @@ impl VoiceTarget {
         {
             return false;
         }
-        // A channel-bearing response is correlatable during initial join. Older
-        // responses without channel data require the matching own voice state.
-        update.channel_id.is_some()
-            || self.connection_id.as_deref() == Some(update.connection_id.as_str())
+        true
     }
     fn payload(
         &self,
@@ -199,7 +192,8 @@ pub(crate) struct Worker {
     voice_recovery_attempts: u8,
     call_generation: u64,
     call_snapshot: Arc<Mutex<Option<crate::CallControlSnapshot>>>,
-    pending_voice_server: Option<VoiceServerUpdate>,
+    pending_voice_server: BTreeMap<String, VoiceServerUpdate>,
+    retired_voice_connections: BTreeSet<String>,
     voice_credentials: Option<VoiceServerUpdate>,
     voice_join_deadline: Option<tokio::time::Instant>,
     pending_voice_leave: Option<VoiceStateUpdate>,
@@ -276,7 +270,8 @@ impl Worker {
             voice_recovery_attempts: 0,
             call_generation: 0,
             call_snapshot: Arc::new(Mutex::new(None)),
-            pending_voice_server: None,
+            pending_voice_server: BTreeMap::new(),
+            retired_voice_connections: BTreeSet::new(),
             voice_credentials: None,
             voice_join_deadline: None,
             pending_voice_leave: None,
@@ -840,6 +835,7 @@ impl Worker {
         self.gateway_ready = false;
         self.pending_voice_leave = None;
         self.voice_sync_pending = false;
+        self.retired_voice_connections.clear();
         self.last_sequence = None;
         self.expected_user_id = None;
         self.selected_guild = None;
@@ -2391,7 +2387,14 @@ impl Worker {
             let _ = job.task.await;
         }
         let target = self.voice_target.take();
-        self.pending_voice_server = None;
+        if let Some(id) = target
+            .as_ref()
+            .and_then(|target| target.connection_id.clone())
+        {
+            self.retired_voice_connections.insert(id);
+        }
+        self.retired_voice_connections
+            .extend(std::mem::take(&mut self.pending_voice_server).into_keys());
         self.voice_credentials = None;
         self.voice_join_deadline = None;
         self.voice_recovery_started = None;
@@ -2603,20 +2606,36 @@ impl Worker {
                 if name == "VOICE_SERVER_UPDATE" {
                     let update: VoiceServerUpdate = serde_json::from_value(data).map_err(error)?;
                     if self
+                        .retired_voice_connections
+                        .contains(&update.connection_id)
+                    {
+                        // A cancelled connection may still deliver credentials.
+                    } else if self
                         .voice_target
                         .as_ref()
                         .is_some_and(|target| target.accepts(&update))
                     {
                         self.connect_voice(update).await?;
-                    } else if update.channel_id.is_none()
-                        && self
-                            .voice_target
-                            .as_ref()
-                            .is_some_and(|target| target.connection_id.is_none())
-                    {
-                        // The server can issue credentials before our own state.
-                        // Keep one bounded candidate and await a matching connection ID.
-                        self.pending_voice_server = Some(update);
+                    } else if self.voice_target.as_ref().is_some_and(|target| {
+                        target.connection_id.is_none()
+                            && update
+                                .channel_id
+                                .as_deref()
+                                .is_none_or(|id| id == target.channel_id.to_string())
+                            && update.guild_id.as_deref().is_none_or(|id| {
+                                Some(id.to_owned()) == target.guild_id.map(|id| id.to_string())
+                            })
+                    }) {
+                        // Credentials can arrive before the matching own voice
+                        // state. Keep bounded candidates keyed by connection ID.
+                        if self.pending_voice_server.len() < 16
+                            || self
+                                .pending_voice_server
+                                .contains_key(&update.connection_id)
+                        {
+                            self.pending_voice_server
+                                .insert(update.connection_id.clone(), update);
+                        }
                     }
                 } else {
                     let new_live_message = name == "MESSAGE_CREATE"
@@ -2751,7 +2770,23 @@ impl Worker {
                         if let Some(target) = &mut self.voice_target {
                             let channel = data.get("channel_id").and_then(Value::as_str);
                             let connection = data.get("connection_id").and_then(Value::as_str);
-                            if channel == Some(target.channel_id.to_string().as_str())
+                            let own_session = data
+                                .get("session_id")
+                                .and_then(Value::as_str)
+                                .zip(self.state.session_id.as_deref())
+                                .is_none_or(|(event, current)| event == current);
+                            let current_connection = connection
+                                .is_some_and(|id| !self.retired_voice_connections.contains(id));
+                            let same_guild = data
+                                .get("guild_id")
+                                .and_then(Value::as_str)
+                                .is_none_or(|id| {
+                                    Some(id.to_owned()) == target.guild_id.map(|id| id.to_string())
+                                });
+                            if own_session
+                                && same_guild
+                                && current_connection
+                                && channel == Some(target.channel_id.to_string().as_str())
                                 && target
                                     .connection_id
                                     .as_deref()
@@ -2776,18 +2811,26 @@ impl Worker {
                                         .set_muted(self.state.voice.muted || self.server_muted)
                                         .map_err(error)?;
                                 }
-                            } else if connection.is_some()
+                            } else if own_session
+                                && same_guild
+                                && current_connection
                                 && connection == target.connection_id.as_deref()
                             {
                                 self.leave_voice(false).await?;
                             }
                         }
-                        if let Some(update) = self.pending_voice_server.take()
+                        if let Some(id) = self
+                            .voice_target
+                            .as_ref()
+                            .and_then(|target| target.connection_id.clone())
+                            && let Some(update) = self.pending_voice_server.remove(&id)
                             && self
                                 .voice_target
                                 .as_ref()
                                 .is_some_and(|target| target.accepts(&update))
                         {
+                            self.retired_voice_connections
+                                .extend(std::mem::take(&mut self.pending_voice_server).into_keys());
                             self.connect_voice(update).await?;
                         }
                     }
@@ -3175,7 +3218,15 @@ impl Worker {
                     self.media.take(); // Drop releases all capture without waiting for the network.
                     self.state.voice.disconnect();
                     self.voice_credentials = None;
-                    self.pending_voice_server = None;
+                    self.retired_voice_connections
+                        .extend(std::mem::take(&mut self.pending_voice_server).into_keys());
+                    if let Some(id) = self
+                        .voice_target
+                        .as_ref()
+                        .and_then(|target| target.connection_id.clone())
+                    {
+                        self.retired_voice_connections.insert(id);
+                    }
                     // Classic disconnects the abandoned connection before a
                     // fresh join, so a retry cannot leave a ghost participant.
                     if let Some(target) = &self.voice_target
