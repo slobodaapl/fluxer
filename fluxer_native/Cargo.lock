@@ -2096,6 +2096,7 @@ dependencies = [
  "fluxer-session",
  "futures-util",
  "image",
+ "libc",
  "mime_guess",
  "reqwest",
  "serde",
@@ -2103,6 +2104,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-tungstenite 0.28.0",
+ "wayland-client",
+ "wayland-protocols 0.32.13",
  "zstd",
 ]
 

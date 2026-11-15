@@ -22,6 +22,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 mod attachment_flow;
 #[path = "worker_settings.rs"]
 mod display_settings_flow;
+#[path = "worker_idle.rs"]
+mod idle_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
 #[path = "worker_people.rs"]
@@ -158,6 +160,7 @@ pub(crate) struct Worker {
     dm_job: Option<DmJob>,
     presence: presence_flow::PresenceState,
     display_settings: display_settings_flow::DisplaySettingsState,
+    system_idle: Option<(bool, bool)>,
     people: people_flow::PeopleState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
@@ -236,6 +239,7 @@ impl Worker {
             dm_job: None,
             presence: presence_flow::PresenceState::new(),
             display_settings: display_settings_flow::DisplaySettingsState::new(),
+            system_idle: None,
             people: people_flow::PeopleState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
@@ -549,6 +553,8 @@ impl Worker {
 
     pub(crate) async fn run(mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
         self.snapshot();
+        let (idle_tx, mut idle_rx) = async_mpsc::unbounded_channel();
+        let idle_watch = idle_flow::start(idle_tx);
         let mut device_poll = tokio::time::interval(Duration::from_secs(5));
         let mut presence_poll = tokio::time::interval(Duration::from_secs(1));
         let mut last_timed_presence = None;
@@ -567,6 +573,7 @@ impl Worker {
                 Dm(Option<DmEvent>),
                 DevicePoll,
                 PresencePoll,
+                SystemIdle(Option<Option<(bool, bool)>>),
                 DeviceRecovery(
                     std::result::Result<
                         fluxer_media::Result<fluxer_media::DeviceRecovery>,
@@ -601,6 +608,7 @@ impl Worker {
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
+                event = idle_rx.recv() => Incoming::SystemIdle(event),
                 _ = device_poll.tick() => Incoming::DevicePoll,
                 result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
@@ -636,7 +644,22 @@ impl Worker {
                 Incoming::People(None) => Ok(()),
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
+                Incoming::SystemIdle(Some(idle)) => {
+                    self.system_idle = idle;
+                    Ok(())
+                }
+                Incoming::SystemIdle(None) => Ok(()),
                 Incoming::PresencePoll => {
+                    idle_watch.timeout.store(
+                        self.state
+                            .user_settings
+                            .get("afk_timeout")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(600)
+                            .saturating_mul(1000)
+                            .min(u32::MAX as u64) as u32,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     let account = self.state.current_user.as_ref().map(|user| user.id);
                     if account != expiry_account {
                         expiry_account = account;

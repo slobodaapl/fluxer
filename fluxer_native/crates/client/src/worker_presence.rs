@@ -46,11 +46,12 @@ impl Worker {
             .and_then(Value::as_str)
             .filter(|s| matches!(*s, "online" | "idle" | "dnd" | "invisible"))
             .unwrap_or("online");
+        let (status, afk) = project_idle(status, self.system_idle);
         let custom = settings.get("custom_status").filter(|s| !expired(s.get("expires_at"))).and_then(Value::as_object).map(|s| {
             let mut result=json!({"text":s.get("text").cloned().unwrap_or(Value::Null),"expires_at":s.get("expires_at").cloned().unwrap_or(Value::Null),"emoji_id":s.get("emoji_id").cloned().unwrap_or(Value::Null),"emoji_name":s.get("emoji_name").cloned().unwrap_or(Value::Null)});
             if let Some(animated)=s.get("emoji_animated").filter(|v|v.is_boolean()){result["emoji_animated"]=animated.clone();} result
         }).unwrap_or(Value::Null);
-        Some(json!({"status":status,"afk":false,"mobile":false,"custom_status":custom}))
+        Some(json!({"status":status,"afk":afk,"mobile":false,"custom_status":custom}))
     }
     pub(super) async fn publish_presence(&self) {
         if let (Some(tx), Some(payload)) = (&self.gateway_commands, self.presence_payload()) {
@@ -283,5 +284,35 @@ mod expiry_tests {
         assert!(!expired(Some(&json!("nonsense"))));
         assert!(expired(Some(&json!("2000-01-01T00:00:00Z"))));
         assert!(!expired(Some(&json!("2999-01-01T00:00:00Z"))));
+    }
+}
+
+fn project_idle(status: &str, state: Option<(bool, bool)>) -> (&str, bool) {
+    let (idle, afk) = state.unwrap_or((false, false));
+    (
+        if status == "online" && idle {
+            "idle"
+        } else {
+            status
+        },
+        afk,
+    )
+}
+#[cfg(test)]
+mod idle_tests {
+    use super::project_idle;
+    #[test]
+    fn effective_presence_preserves_explicit_status_and_recovers_after_resume_or_loss() {
+        assert_eq!(project_idle("online", None), ("online", false));
+        assert_eq!(project_idle("online", Some((true, true))), ("idle", true));
+        assert_eq!(project_idle("dnd", Some((true, true))), ("dnd", true));
+        assert_eq!(
+            project_idle("invisible", Some((true, false))),
+            ("invisible", false)
+        );
+        assert_eq!(
+            project_idle("online", Some((false, false))),
+            ("online", false)
+        );
     }
 }
