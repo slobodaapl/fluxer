@@ -1140,7 +1140,10 @@ impl Fluxer {
                     self.slowmode.server_bypass.insert(channel_id,can_bypass);
                     self.slowmode.retry(channel_id,if can_bypass {Duration::ZERO} else {retry_after});
                 }
-                Event::MessageRateLimited { channel_id, retry_after } => self.slowmode.retry(channel_id,retry_after),
+                Event::MessageRateLimited { channel_id, retry_after } => {
+                    self.slowmode.server_bypass.insert(channel_id,false);
+                    self.slowmode.retry(channel_id,retry_after);
+                },
                 Event::MessageSent { channel_id, .. } => {
                     self.slowmode.sent(channel_id);
                     // Delivery completion belongs to the outbox. Never clear a
