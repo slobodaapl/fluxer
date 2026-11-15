@@ -46,3 +46,32 @@ recorded activation false/true, one decoder-open and one video HTTP request, wit
 no decoder retirement or reload. Returned screenshots show active frames without
 the Loading or paused-play overlay. Profile cold/warm/error fixtures recorded one
 request per image across reopen; the menu option was captured without copying.
+
+## Live follow-up: slow opening was repeatedly cancelled
+
+The live message `1571511402613448704` in channel `1565067077809614849`
+still showed Loading on build 237e46a73-local. A GDB probe of that exact resource
+recorded visible=true, active=true, and repeated Loading/Paused/Loading cycles
+roughly every 400 ms. The native worker was opening the HTTP source after its
+player had already been cancelled (pending_seek=true, wanted=false). The GPU
+validation log and kernel Xid checks remained clear during this observation.
+
+The stale-prepaint watchdog assumed every visible player produces continuous
+redraws. A loading, buffering or paused player can legitimately remain unchanged
+for more than 250 ms. It was therefore being retired and reopened before the
+media request could finish. Infer stale visibility from missing redraws only
+while actively playing. Actual clipped prepaints, context removal and shutdown
+still retire players; focus restoration still waits for fresh prepaint.
+
+The explicit offline fixture now accepts `FLUXER_MEDIA_DEMO_DELAY_MS=600` with
+`FLUXER_MEDIA_DEMO_GIF_ONLY=1 --demo --demo-media` (delay capped at five seconds,
+only applied by the loopback fixture). Before the fix, the owned GUI run opened
+18 decoders and retired 17, and its capture showed Loading. Afterward, one decoder
+and one video request played normally, with no retirement through three actual
+focus-away/back cycles. Captures/logs: ignored
+`target/qa/gif-gpu-lifetime-2026-11-15/slow-{before,after}*`.
+
+244 desktop tests passed (one existing performance case ignored), and strict
+desktop/all-targets Clippy passed after this fix. A new live debugger session is
+the next acceptance check; the source and delayed-response reproduction establish
+the cancellation loop separately from GPU resource-lifetime fixes.

@@ -302,12 +302,16 @@ impl MediaPlayer {
     }
     fn poll(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
-        // Virtualized rows may unmount without another clipped prepaint. Active
-        // visible video continually redraws; stop presenting stale visibility.
+        // Virtualized rows may unmount without another clipped prepaint. Only
+        // actively playing media promises continuous redraws: loading, buffering
+        // and paused players can legitimately have no new frame for a while.
+        // Expiring their visibility would cancel a slow fetch and restart it on
+        // the next prepaint, keeping the visible GIF in Loading forever.
         // An inactive Wayland window may receive no frames: this is not evidence
         // that its on-screen GIF scrolled away. Keep the paused decoder cached.
         if self.visible
             && self.active
+            && self.is_playing()
             && !self.awaiting_prepaint
             && !self.modal
             && self.last_prepaint.elapsed() > Duration::from_millis(250)

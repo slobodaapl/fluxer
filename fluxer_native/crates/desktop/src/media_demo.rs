@@ -195,6 +195,11 @@ fn fixture_server(atlas_stress: bool) -> Result<String, String> {
     } else {
         None
     };
+    let response_delay = std::env::var("FLUXER_MEDIA_DEMO_DELAY_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|millis| Duration::from_millis(millis.min(5_000)))
+        .unwrap_or_default();
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open the offline media fixture")?;
     let origin = format!(
@@ -240,6 +245,9 @@ fn fixture_server(atlas_stress: bool) -> Result<String, String> {
             };
             requests += 1;
             eprintln!("FILE_MEDIA_DEMO_REQUEST count={requests} kind={kind}");
+            if kind == "video" && !response_delay.is_zero() {
+                std::thread::sleep(response_delay);
+            }
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nCache-Control: public, max-age=3600\r\nConnection: close\r\n\r\n",
