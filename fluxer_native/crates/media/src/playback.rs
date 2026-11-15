@@ -357,6 +357,57 @@ mod tests {
     }
 
     #[test]
+    fn fake_owner_falls_back_and_restores_without_opening_after_stop() {
+        struct Output(String, Arc<Mutex<Vec<String>>>);
+        impl Drop for Output {
+            fn drop(&mut self) {
+                self.1.lock().unwrap().push(format!("close:{}", self.0));
+            }
+        }
+        fn request(
+            tx: &mpsc::Sender<Command>,
+            command: impl FnOnce(mpsc::SyncSender<Result<()>>) -> Command,
+        ) -> Result<()> {
+            let (reply, rx) = mpsc::sync_channel(1);
+            tx.send(command(reply)).unwrap();
+            rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap()
+        }
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            run_worker(
+                rx,
+                |_| Ok(()),
+                |id| {
+                    let id = id.unwrap_or("output:default");
+                    observed.lock().unwrap().push(format!("open:{id}"));
+                    Ok(Output(id.into(), observed.clone()))
+                },
+            )
+        });
+        request(&tx, |r| Command::Device("output:usb".into(), r)).unwrap();
+        request(&tx, Command::Start).unwrap();
+        request(&tx, |r| Command::Device("output:default".into(), r)).unwrap();
+        request(&tx, |r| Command::Device("output:usb".into(), r)).unwrap();
+        request(&tx, Command::Stop).unwrap();
+        request(&tx, |r| Command::Device("output:default".into(), r)).unwrap();
+        request(&tx, Command::Shutdown).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "open:output:usb",
+                "close:output:usb",
+                "open:output:default",
+                "close:output:default",
+                "open:output:usb",
+                "close:output:usb"
+            ]
+        );
+    }
+
+    #[test]
     fn pipewire_callback_renders_gain_adjusted_stereo_and_echo_reference() {
         let mut mixer = PlaybackMixer::new();
         mixer.master_gain = 0.5;

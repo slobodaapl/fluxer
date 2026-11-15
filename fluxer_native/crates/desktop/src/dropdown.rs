@@ -75,6 +75,31 @@ impl Dropdown {
         }
     }
 
+    pub fn set_device_options(
+        &mut self,
+        mut options: Vec<(String, String)>,
+        preferred: &str,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let label = options
+            .iter()
+            .find(|(id, _)| id == preferred)
+            .map(|(_, label)| label.clone())
+            .or_else(|| {
+                self.options
+                    .iter()
+                    .find(|(id, _)| id == preferred)
+                    .map(|(_, label)| label.trim_end_matches(" (unavailable)").to_owned())
+            })
+            .unwrap_or_else(|| "Selected device".into());
+        if !options.iter().any(|(id, _)| id == preferred) {
+            options.push((preferred.into(), format!("{label} (unavailable)")));
+        }
+        self.set_selected(preferred, cx);
+        self.set_options(options, cx);
+        label
+    }
+
     pub fn set_options(&mut self, options: Vec<(String, String)>, cx: &mut Context<Self>) {
         // Preserve the exact selection, even if unplugged: displaying an
         // unavailable choice must never silently switch a live microphone.

@@ -226,14 +226,20 @@ pub struct MediaEngine {
     subscriptions: Arc<Mutex<subscriptions::Registry>>,
 }
 
-fn desired_device(selection: &DeviceSelection, devices: &[AudioDevice], default: &str) -> String {
+fn desired_device(
+    selection: &DeviceSelection,
+    devices: &[AudioDevice],
+    default: &str,
+) -> Option<String> {
     if devices
         .iter()
         .any(|device| device.id == selection.preferred)
     {
-        selection.preferred.clone()
+        Some(selection.preferred.clone())
+    } else if devices.iter().any(|device| device.id == default) {
+        Some(default.into())
     } else {
-        default.into()
+        None
     }
 }
 
@@ -342,11 +348,19 @@ impl MediaEngine {
         let inventory = self.try_devices()?;
         let input = desired_device(&self.input_selection, &inventory.inputs, "input:default");
         let output = desired_device(&self.output_selection, &inventory.outputs, "output:default");
-        if self.input_selection.effective.as_deref() != Some(&input) {
-            let _ = self.apply_input(&input);
+        if self.input_selection.effective != input {
+            if let Some(input) = input {
+                let _ = self.apply_input(&input);
+            } else {
+                self.input_selection.effective = None;
+            }
         }
-        if self.output_selection.effective.as_deref() != Some(&output) {
-            let _ = self.apply_output(&output);
+        if self.output_selection.effective != output {
+            if let Some(output) = output {
+                let _ = self.apply_output(&output);
+            } else {
+                self.output_selection.effective = None;
+            }
         }
         self.try_devices()
     }
@@ -1702,14 +1716,15 @@ mod device_recovery_tests {
         };
         let removed = vec![device("input:default")];
         assert_eq!(
-            desired_device(&selected, &removed, "input:default"),
-            "input:default"
+            desired_device(&selected, &removed, "input:default").as_deref(),
+            Some("input:default")
         );
         let restored = vec![device("input:default"), device("input:usb")];
         assert_eq!(
-            desired_device(&selected, &restored, "input:default"),
-            "input:usb"
+            desired_device(&selected, &restored, "input:default").as_deref(),
+            Some("input:usb")
         );
         assert_eq!(selected.preferred, "input:usb");
+        assert_eq!(desired_device(&selected, &[], "input:default"), None);
     }
 }

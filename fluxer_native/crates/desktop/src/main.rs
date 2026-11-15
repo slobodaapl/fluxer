@@ -1045,36 +1045,67 @@ impl Fluxer {
                 // snapshots must never re-add a locally stopped stream.
                 Event::WatchedStreams(_) => {}
                 Event::Devices(devices) => {
-                    let degraded = |s: &fluxer_media::DeviceSelection| {
-                        s.effective.as_deref() != Some(s.preferred.as_str())
-                    };
-                    self.audio_device_status = if degraded(&devices.input_selection)
-                        || degraded(&devices.output_selection)
-                    {
-                        "A selected audio device is unavailable. Using the system default where possible; it will be restored when available.".into()
-                    } else {
-                        String::new()
-                    };
-                    self.input_picker.update(cx, |picker, cx| {
-                        picker.set_options(
+                    let input_label = self.input_picker.update(cx, |picker, cx| {
+                        picker.set_device_options(
                             devices
                                 .inputs
                                 .iter()
                                 .map(|d| (d.id.clone(), d.label.clone()))
                                 .collect(),
+                            &devices.input_selection.preferred,
                             cx,
                         )
                     });
-                    self.output_picker.update(cx, |picker, cx| {
-                        picker.set_options(
+                    let output_label = self.output_picker.update(cx, |picker, cx| {
+                        picker.set_device_options(
                             devices
                                 .outputs
                                 .iter()
                                 .map(|d| (d.id.clone(), d.label.clone()))
                                 .collect(),
+                            &devices.output_selection.preferred,
                             cx,
                         )
                     });
+                    let status =
+                        |kind: &str,
+                         label: &str,
+                         selection: &fluxer_media::DeviceSelection,
+                         inventory: &[fluxer_media::AudioDevice]| {
+                            if selection.effective.as_deref() == Some(selection.preferred.as_str())
+                            {
+                                return None;
+                            }
+                            let effective = selection
+                                .effective
+                                .as_ref()
+                                .and_then(|id| inventory.iter().find(|d| &d.id == id))
+                                .map(|d| d.label.as_str());
+                            Some(match effective {
+                                Some(effective) => {
+                                    format!("{kind}: {label} unavailable; using {effective}")
+                                }
+                                None => format!("{kind}: {label} unavailable; reconnecting"),
+                            })
+                        };
+                    self.audio_device_status = [
+                        status(
+                            "Input",
+                            &input_label,
+                            &devices.input_selection,
+                            &devices.inputs,
+                        ),
+                        status(
+                            "Output",
+                            &output_label,
+                            &devices.output_selection,
+                            &devices.outputs,
+                        ),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
                 }
                 Event::ScreenSources(sources) => {
                     self.screen_picker.update(cx, |picker, cx| {
