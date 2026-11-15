@@ -73,5 +73,10 @@ focus-away/back cycles. Captures/logs: ignored
 
 244 desktop tests passed (one existing performance case ignored), and strict
 desktop/all-targets Clippy passed after this fix. A new live debugger session is
-the next acceptance check; the source and delayed-response reproduction establish
-the cancellation loop separately from GPU resource-lifetime fixes.
+recorded under ignored `target/qa/live-gpu-debug-20261115-115531/`. On build
+3feeaa810-local the exact reported message produced 80 consecutive Playing
+snapshots across a loop boundary, with decoded dimensions 624x640, duration
+1.467 seconds and no media error. The renderer/validation and kernel GPU logs
+were clear at that check. This verifies recovery of that loading case separately
+from the GPU fault, which was not reproduced in the live session. GDB remains
+attached with automatic crash/failed-GPU-wait stack capture for continued review.
