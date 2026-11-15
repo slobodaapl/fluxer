@@ -331,13 +331,15 @@ impl Fluxer {
         deferred(anchored().position_mode(AnchoredPositionMode::Window).position(anchor).anchor(Corner::TopRight).snap_to_window_with_margin(px(8.)).child(
             div().id("inbox-popout").track_focus(&self.inbox_ui.focus).occlude().w(px(width)).rounded_lg().bg(rgb(PANEL)).border_1().border_color(rgb(0x4c435e)).shadow_lg()
                 .on_mouse_down_out(cx.listener(|this,event:&MouseDownEvent,window,cx|{if !this.context_menu_open(cx) && !this.inbox_ui.button_bounds.get().contains(&event.position){this.close_inbox(window,cx);}}))
-                .capture_key_down(cx.listener(move|this,event:&KeyDownEvent,window,cx|{if this.context_menu_open(cx) { return; } if this.inbox_ui.filter_focus.is_focused(window) && matches!(event.keystroke.key.as_str(), "enter" | "space") { if !event.is_held { this.open_context_menu(crate::context_actions::Target::InboxFilters, point(anchor.x - px(240.), anchor.y + px(40.)), window, cx); } cx.stop_propagation(); return; } match event.keystroke.key.as_str(){
+                .capture_key_down(cx.listener(move|this,event:&KeyDownEvent,window,cx|{if this.context_menu_open(cx) { return; }
+                if this.inbox_ui.filter_focus.is_focused(window) && matches!(event.keystroke.key.as_str(), "enter" | "space") { if !event.is_held { this.open_context_menu(crate::context_actions::Target::InboxFilters, point(anchor.x - px(240.), anchor.y + px(40.)), window, cx); } cx.stop_propagation(); return; } match event.keystroke.key.as_str(){
                     "escape"=>this.close_inbox(window,cx),
                     "up"|"down"=>{if !entries_for_keys.is_empty(){this.inbox_ui.selected=if event.keystroke.key=="up"{this.inbox_ui.selected.saturating_sub(1)}else{(this.inbox_ui.selected+1).min(entries_for_keys.len()-1)};this.inbox_ui.armed=None;cx.notify();}},
                     "left"=>this.inbox_tab(Tab::Unread,cx),"right"=>this.inbox_tab(Tab::Mentions,cx),
                     "enter"=>{if !event.is_held{this.inbox_ui.armed=entries_for_keys.get(this.inbox_ui.selected).map(identity);}},_=>return,
                 }cx.stop_propagation();}))
-                .capture_key_up(cx.listener(|this,event:&KeyUpEvent,window,cx|{if this.context_menu_open(cx) { return; } if event.keystroke.key=="enter"{if let Some(armed)=this.inbox_ui.armed.take() && let Some(entry)=this.inbox_entries().get(this.inbox_ui.selected).filter(|entry|identity(entry)==armed).cloned(){this.activate_inbox_entry(entry,window,cx);}cx.stop_propagation();}}))
+                .capture_key_up(cx.listener(|this,event:&KeyUpEvent,window,cx|{if this.context_menu_open(cx) { return; }
+                if event.keystroke.key=="enter"{if let Some(armed)=this.inbox_ui.armed.take() && let Some(entry)=this.inbox_entries().get(this.inbox_ui.selected).filter(|entry|identity(entry)==armed).cloned(){this.activate_inbox_entry(entry,window,cx);}cx.stop_propagation();}}))
                 .child(div().px_4().py_3().flex().items_center().gap_2()
                     .child(icon(Icon::Inbox,20.))
                     .child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Inbox"))

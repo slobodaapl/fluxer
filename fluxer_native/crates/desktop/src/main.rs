@@ -2561,7 +2561,7 @@ impl Render for Fluxer {
                 this.open_settings(settings_view::Section::Voice, window, cx);
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
-                if this.status_ui.is_open() { cx.stop_propagation(); return; }
+                if this.status_ui.is_open() { return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
@@ -2600,7 +2600,7 @@ impl Render for Fluxer {
                 if event.keystroke.key=="f8" && !event.is_held && this.mixer.input_mode==InputMode::PushToTalk {this.command(Command::SetPushToTalkPressed(true),cx);}
             }))
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
-                if this.status_ui.is_open() { cx.stop_propagation(); return; }
+                if this.status_ui.is_open() { return; }
                 if event.keystroke.key=="enter" {this.composer.update(cx,|input,_|input.completion_enter_guard=false); }
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))
