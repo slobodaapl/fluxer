@@ -11,6 +11,7 @@ impl Fluxer {
             .state
             .selected_channel
             .and_then(|id| self.state.channels.get(&id));
+        let has_guild_members = channel.is_some_and(|channel| channel.guild_id.is_some());
         let voice_channel = channel
             .filter(|channel| channel.kind.is_voice())
             .map(|channel| channel.id);
@@ -104,6 +105,14 @@ impl Fluxer {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .when(has_guild_members, |view| view.child(
+                                quiet_button("members-toggle", "Members").on_click(cx.listener(|this, _, _, cx| {
+                                    this.members_open = !this.members_open;
+                                    this.members_start = 0;
+                                    this.command(Command::SetMemberList { channel_id: if this.members_open { this.state.selected_channel } else { None }, start: 0 }, cx);
+                                    cx.notify();
+                                }))
+                            ))
                             .child(
                                 icon_button("search", Icon::Search, "Search messages · Ctrl+F")
                                     .on_click(cx.listener(|this, _, window, cx| {

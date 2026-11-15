@@ -20,6 +20,15 @@ pub enum ApplyOutcome {
     Ignored,
 }
 
+/// Indexed rows received from the gateway's channel-specific lazy member list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MemberList {
+    pub list_id: String,
+    pub member_count: u64,
+    pub online_count: u64,
+    pub rows: BTreeMap<u32, Value>,
+}
+
 /// One state belongs to one authenticated account. A caller switching accounts
 /// must replace it, avoiding accidental cross-account messages and drafts.
 #[derive(Clone, Debug, Default)]
@@ -33,6 +42,7 @@ pub struct ClientState {
     pub channels: BTreeMap<Snowflake, Channel>,
     pub messages: BTreeMap<Snowflake, BTreeMap<Snowflake, Message>>,
     pub members: BTreeMap<(Snowflake, Snowflake), Member>,
+    pub member_lists: BTreeMap<(Snowflake, Snowflake), MemberList>,
     pub read_states: BTreeMap<Snowflake, ReadState>,
     pub user_guild_settings: BTreeMap<Option<Snowflake>, UserGuildSettings>,
     pub relationships: BTreeMap<Snowflake, Relationship>,
@@ -910,6 +920,80 @@ impl ClientState {
                     }
                 }
             }
+            "GUILD_MEMBER_LIST_UPDATE" => {
+                // Only retain server-supplied indexed rows. Message authors and
+                // partial guild caches are never presented as the member list.
+                let guild = data
+                    .get("guild_id")
+                    .and_then(Value::as_str)
+                    .and_then(|v| v.parse().ok());
+                let channel = data
+                    .get("channel_id")
+                    .and_then(Value::as_str)
+                    .and_then(|v| v.parse().ok());
+                if let (Some(guild), Some(channel), Some(id), Some(ops)) = (
+                    guild,
+                    channel,
+                    data.get("id").and_then(Value::as_str),
+                    data.get("ops").and_then(Value::as_array),
+                ) {
+                    let list = self.member_lists.entry((guild, channel)).or_default();
+                    if list.list_id != id {
+                        *list = MemberList {
+                            list_id: id.to_owned(),
+                            ..Default::default()
+                        };
+                    }
+                    list.member_count = data
+                        .get("member_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    list.online_count = data
+                        .get("online_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0);
+                    for op in ops {
+                        let Some(range) = op.get("range").and_then(Value::as_array) else {
+                            continue;
+                        };
+                        let Some((start, end)) = range
+                            .first()
+                            .and_then(Value::as_u64)
+                            .zip(range.get(1).and_then(Value::as_u64))
+                        else {
+                            continue;
+                        };
+                        let Some(items) = op.get("items").and_then(Value::as_array) else {
+                            continue;
+                        };
+                        if op.get("op").and_then(Value::as_str) != Some("SYNC")
+                            || end < start
+                            || end > 100_000
+                            || end - start > 99
+                        {
+                            continue;
+                        }
+                        list.rows
+                            .retain(|index, _| (*index as u64) < start || (*index as u64) > end);
+                        for (offset, item) in
+                            items.iter().take((end - start + 1) as usize).enumerate()
+                        {
+                            list.rows.insert(start as u32 + offset as u32, item.clone());
+                        }
+                    }
+                    let row_members: Vec<Value> = list
+                        .rows
+                        .values()
+                        .filter_map(|row| row.get("member").cloned())
+                        .collect();
+                    for wire in row_members {
+                        if let Ok(member) = self.decode_api::<Member>(wire) {
+                            self.cache_user(member.user.clone());
+                            self.members.insert((guild, member.user.id), member);
+                        }
+                    }
+                }
+            }
             "PRESENCE_UPDATE" => {
                 let presence: Presence = decode(event, data)?;
                 self.presences.insert(presence.user.id, presence);
@@ -1339,5 +1423,27 @@ mod navigation_state_tests {
             .apply_gateway("GUILD_DELETE", json!({"id":"20"}))
             .unwrap();
         assert!(!state.thread_guilds.contains(&20.into()));
+    }
+}
+
+#[cfg(test)]
+mod member_list_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn sync_replaces_only_covered_rows_and_rejects_invalid_ranges() {
+        let mut state = ClientState::default();
+        let dispatch = |ops| json!({"guild_id":"1","channel_id":"2","id":"everyone","member_count":2,"online_count":1,"groups":[],"ops":ops});
+        state.apply_gateway("GUILD_MEMBER_LIST_UPDATE", dispatch(json!([{ "op":"SYNC", "range":[0,2], "items":[{"group":{"id":"online","count":1}},{"member":{"user":{"id":"42"}}},{"group":{"id":"offline","count":1}}] }]))).unwrap();
+        let list = &state.member_lists[&(1.into(), 2.into())];
+        assert_eq!(list.rows.len(), 3);
+        assert_eq!(list.rows[&1]["member"]["user"]["id"], "42");
+        state.apply_gateway("GUILD_MEMBER_LIST_UPDATE", dispatch(json!([{ "op":"SYNC", "range":[1,1], "items":[] }, {"op":"SYNC","range":[0,100],"items":[{"bad":true}]}]))).unwrap();
+        let list = &state.member_lists[&(1.into(), 2.into())];
+        assert_eq!(list.rows.len(), 2);
+        assert!(!list.rows.contains_key(&1));
+        // ID-only references without a cached user do not fabricate a member.
+        assert!(state.members.is_empty());
     }
 }

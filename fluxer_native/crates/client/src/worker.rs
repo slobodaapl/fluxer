@@ -186,6 +186,7 @@ pub(crate) struct Worker {
     expected_user_id: Option<Snowflake>,
     selected_guild: Option<Snowflake>,
     synced_guilds: BTreeMap<Snowflake, String>,
+    member_list_subscription: Option<(Snowflake, Snowflake, u32)>,
     member_query_nonce: u64,
     member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
@@ -247,6 +248,7 @@ impl Worker {
             expected_user_id: None,
             selected_guild: None,
             synced_guilds: BTreeMap::new(),
+            member_list_subscription: None,
             member_query_nonce: 0,
             member_query: None,
             available_streams: BTreeSet::new(),
@@ -675,6 +677,7 @@ impl Worker {
         self.selected_guild = None;
         self.synced_guilds.clear();
         self.member_query = None;
+        self.member_list_subscription = None;
         self.pending_mfa = None;
         self.pending_ip = None;
         if let Some(task) = self.ip_poll_task.take() {
@@ -919,6 +922,9 @@ impl Worker {
                 self.state.settings.locale = locale;
                 self.persist_selection().await;
                 self.snapshot();
+            }
+            Command::SetMemberList { channel_id, start } => {
+                self.set_member_list(channel_id, start).await?
             }
             Command::QueryGuildMembers {
                 guild_id,
@@ -1785,6 +1791,70 @@ impl Worker {
         Ok(())
     }
 
+    async fn set_member_list(&mut self, channel_id: Option<Snowflake>, start: u32) -> Result<()> {
+        if start > 100_000 || start % 100 != 0 {
+            return Err("Invalid member list range".into());
+        }
+        let next = if let Some(channel) = channel_id {
+            let target = self.state.channels.get(&channel).ok_or("Unknown channel")?;
+            let guild = target
+                .guild_id
+                .ok_or("This channel has no community members")?;
+            let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
+            let permissions = self.state.permissions_for(channel, user.id);
+            if self.state.selected_channel != Some(channel)
+                || !permissions
+                    .contains(Permissions::VIEW_CHANNEL | Permissions::VIEW_CHANNEL_MEMBERS)
+            {
+                return Err("You cannot view members in this channel".into());
+            }
+            Some((guild, channel, start))
+        } else {
+            None
+        };
+        if self.demo {
+            self.member_list_subscription = next;
+            if let Some((guild, channel, start)) = next {
+                let members: Vec<_> = self
+                    .state
+                    .members
+                    .iter()
+                    .filter(|((id, _), _)| *id == guild)
+                    .map(|(_, member)| json!({"member":member}))
+                    .collect();
+                let count = members.len();
+                let mut rows = vec![json!({"group":{"id":"online","count":count}})];
+                rows.extend(members);
+                let items: Vec<_> = rows.into_iter().skip(start as usize).take(100).collect();
+                self.state.apply_gateway("GUILD_MEMBER_LIST_UPDATE", json!({"guild_id":guild.to_string(),"channel_id":channel.to_string(),"id":"demo","member_count":count,"online_count":count,"ops":[{"op":"SYNC","range":[start,(start+99).min(100_000)],"items":items}]})).map_err(error)?;
+                self.snapshot();
+            }
+            return Ok(());
+        }
+        if !self.gateway_ready {
+            self.member_list_subscription = next;
+            return if next.is_none() {
+                Ok(())
+            } else {
+                Err("Gateway is disconnected".into())
+            };
+        }
+        let tx = self
+            .gateway_commands
+            .as_ref()
+            .ok_or("Gateway is disconnected")?;
+        if let Some((guild, channel, _)) = self.member_list_subscription {
+            if next.is_none_or(|(g, c, _)| (g, c) != (guild, channel)) {
+                tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"member_list_channels":{channel.to_string():[]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
+            }
+        }
+        if let Some((guild, channel, start)) = next {
+            tx.send(GatewayCommand::Send { op: 14, data: json!({"subscriptions":{guild.to_string():{"active":true,"member_list_channels":{channel.to_string():[[start,(start+99).min(100_000)]]}}}}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
+        }
+        self.member_list_subscription = next;
+        Ok(())
+    }
+
     async fn query_guild_members(
         &mut self,
         guild_id: Snowflake,
@@ -1883,6 +1953,12 @@ impl Worker {
         self.require_history(channel)?;
         if !self.state.channels.contains_key(&channel) {
             return Err("Unknown channel".into());
+        }
+        if self
+            .member_list_subscription
+            .is_some_and(|(_, current, _)| current != channel)
+        {
+            self.set_member_list(None, 0).await?;
         }
         self.navigation_context(channel);
         self.selected_guild = self
@@ -2006,6 +2082,9 @@ impl Worker {
                 self.gateway_ready = true;
                 self.emit(Event::Status("Connected".into()));
                 self.sync_selected_guild().await?;
+                if let Some((_, channel, start)) = self.member_list_subscription {
+                    self.set_member_list(Some(channel), start).await?;
+                }
                 if let Some(channel) = self.restore_channel.take() {
                     self.select_channel(channel).await?;
                 }
@@ -2049,6 +2128,49 @@ impl Worker {
                     && name != "READY"
                 {
                     return Ok(());
+                }
+                let mut data = data;
+                if name == "GUILD_MEMBER_LIST_UPDATE" {
+                    let Some((guild, channel, _)) = self.member_list_subscription else {
+                        return Ok(());
+                    };
+                    if self.state.current_user.as_ref().is_none_or(|user| {
+                        !self
+                            .state
+                            .permissions_for(channel, user.id)
+                            .contains(Permissions::VIEW_CHANNEL | Permissions::VIEW_CHANNEL_MEMBERS)
+                    }) {
+                        return Ok(());
+                    }
+                    if self.state.selected_channel != Some(channel)
+                        || data.get("guild_id").and_then(Value::as_str)
+                            != Some(guild.to_string().as_str())
+                    {
+                        return Ok(());
+                    }
+                    if let Some(id) = data.get("channel_id").and_then(Value::as_str) {
+                        if id != channel.to_string() {
+                            return Ok(());
+                        }
+                    } else {
+                        let is_open = self
+                            .state
+                            .channels
+                            .get(&channel)
+                            .zip(self.state.guilds.get(&guild))
+                            .is_some_and(|(channel, guild)| {
+                                guild.roles.iter().any(|role| {
+                                    role.id == guild.id
+                                        && role.permissions.contains(Permissions::VIEW_CHANNEL)
+                                }) && channel.permission_overwrites.iter().all(|overwrite| {
+                                    !overwrite.deny.contains(Permissions::VIEW_CHANNEL)
+                                })
+                            });
+                        if !is_open || data.get("id").and_then(Value::as_str) != Some("everyone") {
+                            return Ok(());
+                        }
+                        data["channel_id"] = json!(channel.to_string());
+                    }
                 }
                 if name == "GUILD_MEMBERS_CHUNK" {
                     let matches = self.member_query.as_ref().is_some_and(|(guild, nonce)| {

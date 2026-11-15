@@ -70,6 +70,10 @@ pub enum ProfileStatus {
 }
 
 pub enum Command {
+    SetMemberList {
+        channel_id: Option<Snowflake>,
+        start: u32,
+    },
     QueryGuildMembers {
         guild_id: Snowflake,
         query: String,

@@ -2337,3 +2337,84 @@ async fn notification_events_only_follow_new_live_message_dispatches() {
     worker.gateway(GatewayEvent::Dispatch{name:"MESSAGE_CREATE".into(),data:json!({"id":"1000","channel_id":"11","author":{"id":"101","username":"alex"},"content":"offline fixture"}),sequence:Some(3)}).await.unwrap();
     assert!(!events.try_iter().any(|event|matches!(event,Event::LiveMessageCreated{..})));
 }
+
+#[tokio::test]
+async fn member_list_subscribes_bounded_ranges_and_unsubscribes() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 100.into();
+    worker.state.selected_channel = Some(11.into());
+    worker.gateway_ready = true;
+    let (tx, mut rx) = async_mpsc::channel(4);
+    worker.gateway_commands = Some(tx);
+    worker.set_member_list(Some(11.into()), 100).await.unwrap();
+    let GatewayCommand::Send { op, data } = rx.recv().await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(op, 14);
+    assert_eq!(
+        data,
+        json!({"subscriptions":{"1":{"active":true,"member_list_channels":{"11":[[100,199]]}}}})
+    );
+    assert!(worker.set_member_list(Some(12.into()), 0).await.is_err());
+    worker.set_member_list(None, 0).await.unwrap();
+    let GatewayCommand::Send { op, data } = rx.recv().await.unwrap() else {
+        panic!()
+    };
+    assert_eq!(op, 14);
+    assert_eq!(
+        data,
+        json!({"subscriptions":{"1":{"member_list_channels":{"11":[]}}}})
+    );
+    worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 101.into();
+    worker.state.guilds.get_mut(&1.into()).unwrap().roles[0].permissions =
+        Permissions::VIEW_CHANNEL;
+    assert!(worker.set_member_list(Some(11.into()), 0).await.is_err());
+}
+
+#[tokio::test]
+async fn member_list_dispatch_is_fenced_by_channel_and_permission() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 100.into();
+    worker.state.selected_channel = Some(11.into());
+    worker.member_list_subscription = Some((1.into(), 11.into(), 0));
+    let payload = |channel: &str| json!({"guild_id":"1","channel_id":channel,"id":"everyone","member_count":1,"online_count":1,"ops":[{"op":"SYNC","range":[0,0],"items":[{"member":{"user":{"id":"42","username":"Alice"},"roles":[]}}]}]});
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("12"),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert!(worker.state.member_lists.is_empty());
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("11"),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
+        1
+    );
+    assert!(worker.state.members.contains_key(&(1.into(), 42.into())));
+    worker.state.guilds.get_mut(&1.into()).unwrap().owner_id = 101.into();
+    worker.state.guilds.get_mut(&1.into()).unwrap().roles[0].permissions =
+        Permissions::VIEW_CHANNEL;
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBER_LIST_UPDATE".into(),
+            data: payload("11"),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
+        1
+    );
+}

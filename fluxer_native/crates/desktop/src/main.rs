@@ -30,6 +30,7 @@ mod media_download;
 mod media_export;
 mod media_player;
 mod media_player_view;
+mod member_view;
 mod message_actions;
 mod message_content;
 mod message_demo;
@@ -312,6 +313,8 @@ struct Fluxer {
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
+    members_open: bool,
+    members_start: u32,
     message_actions: MessageActions,
     message_content: MessageContent,
     message_links: MessageLinks,
@@ -425,6 +428,8 @@ impl Fluxer {
             context: context_actions::ContextUi::new(cx),
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
+            members_open: false,
+            members_start: 0,
             message_actions: MessageActions::new(cx),
             message_content: MessageContent::default(),
             message_links: MessageLinks::new(cx),
@@ -1529,6 +1534,16 @@ impl Fluxer {
             return;
         }
         self.cancel_edit(cx);
+        if self.members_open {
+            self.members_open = false;
+            self.command(
+                Command::SetMemberList {
+                    channel_id: None,
+                    start: 0,
+                },
+                cx,
+            );
+        }
         if self.state.selected_channel.is_some() {
             self.command(
                 Command::SetDraft(self.composer.read(cx).content.to_string()),
@@ -2342,6 +2357,10 @@ impl Render for Fluxer {
                         .min_h_0()
                         .flex()
                         .child(chat)
+                        .when(
+                            self.members_open && window.viewport_size().width > px(760.),
+                            |view| view.child(self.member_panel(cx)),
+                        )
                         .when(self.search_ui.open.is_some(), |view| {
                             view.child(self.browser_pane(window, cx))
                         })
