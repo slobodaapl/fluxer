@@ -3226,6 +3226,10 @@ async fn pending_voice_connect_accepts_controls_and_leave_cancels_job() {
 #[tokio::test]
 async fn transport_loss_preserves_intent_and_leave_cancels_rejoin() {
     let (mut worker, events) = worker();
+    worker.state.current_user = Some(User {
+        id: 1.into(),
+        ..Default::default()
+    });
     let (gateway, mut rx) = async_mpsc::channel(32);
     worker.gateway_commands = Some(gateway);
     worker.gateway_ready = true;
@@ -3239,6 +3243,10 @@ async fn transport_loss_preserves_intent_and_leave_cancels_rejoin() {
     worker.watched_streams.insert("user_2_watch".into());
     worker.media_event(MediaEvent::TransportLost).await.unwrap();
     assert!(worker.voice_recovery_at.is_some());
+    assert!(matches!(
+        worker.call_control_snapshot().unwrap().status,
+        VoiceStatus::Reconnecting
+    ));
     assert!(!worker.state.voice.screen_share);
     assert!(worker.watched_streams.contains("user_2_watch"));
     assert!(
@@ -3320,4 +3328,67 @@ async fn offline_transport_loss_then_leave_retains_abandoned_connection_leave() 
     assert_eq!(leave.connection_id.as_deref(), Some("old"));
     assert!(leave.channel_id.is_none());
     assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn account_reset_cancels_pending_voice_job_and_ignores_late_completion() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct OnDrop(Arc<AtomicBool>);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    let (mut worker, _) = worker();
+    let (gateway, _) = async_mpsc::channel(8);
+    worker.gateway_commands = Some(gateway);
+    worker.state.current_user = Some(User {
+        id: 1.into(),
+        ..Default::default()
+    });
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("a".into()),
+    });
+    let dropped = Arc::new(AtomicBool::new(false));
+    let guard = OnDrop(dropped.clone());
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        pending::<(MediaEngine, Result<MediaEvents>)>().await
+    });
+    tokio::task::yield_now().await;
+    worker.voice_connect = Some(VoiceConnectJob {
+        generation: 1,
+        update: voice_update(Some("100"), "a"),
+        revoked_share: false,
+        task,
+    });
+    worker.reset().await;
+    assert!(dropped.load(Ordering::SeqCst));
+    assert!(worker.voice_connect.is_none());
+    assert!(worker.voice_target.is_none());
+    let failed = tokio::spawn(async { panic!("simulated abandoned completion") })
+        .await
+        .unwrap_err();
+    worker.finish_voice_connect(Err(failed)).await.unwrap();
+    assert!(worker.voice_target.is_none());
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
+async fn retry_limit_ends_call_and_clears_the_timer() {
+    let (mut worker, _) = worker();
+    let (gateway, _rx) = async_mpsc::channel(8);
+    worker.gateway_commands = Some(gateway);
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: None,
+    });
+    worker.voice_recovery_started = Some(tokio::time::Instant::now());
+    worker.voice_recovery_attempts = 5;
+    assert!(worker.schedule_voice_retry().await.is_err());
+    assert!(worker.voice_recovery_at.is_none());
+    assert!(worker.voice_target.is_none());
 }

@@ -2904,6 +2904,9 @@ impl Worker {
         if replacing {
             self.call_generation = self.call_generation.wrapping_add(1);
         }
+        if let Some(media) = &mut self.media {
+            media.stop_capture_for_recovery();
+        }
         let revoked_share = self.revoke_share_for_replacement();
         self.media_events = None;
         self.state.voice.disconnect();
@@ -3195,6 +3198,7 @@ impl Worker {
                     }
                     self.voice_recovery_started = Some(tokio::time::Instant::now());
                     self.voice_recovery_attempts = 0;
+                    self.snapshot();
                     self.emit(Event::VoiceStatus(VoiceStatus::Reconnecting));
                     self.snapshot();
                     self.schedule_voice_retry().await?;

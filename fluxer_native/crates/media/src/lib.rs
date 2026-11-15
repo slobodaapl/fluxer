@@ -1538,6 +1538,28 @@ impl MediaEngine {
         }
         audio_result.and(video_result)
     }
+    /// Stop locally captured media before announcing a transport replacement.
+    /// Network teardown remains asynchronous; no capture is restarted here.
+    pub fn stop_capture_for_recovery(&mut self) {
+        if let Ok(mut controls) = self.input_controls.lock() {
+            controls.blocked = true;
+        }
+        if let Some(mic) = &self.microphone {
+            mic.mute();
+            mic.disable();
+        }
+        if let Some(capture) = self.input_capture.take() {
+            let _ = capture.stop();
+        }
+        if let Some(mut screen) = self.screen.take() {
+            screen.stop();
+        }
+        self.shared_audio_running.store(false, Ordering::Release);
+        if let Some(task) = self.shared_audio_task.take() {
+            task.abort();
+        }
+    }
+
     pub async fn disconnect(&mut self) -> Result<()> {
         self.cancel_device_recovery();
         // Release capture before network operations, including failed teardown.
