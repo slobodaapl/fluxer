@@ -257,15 +257,18 @@ impl PendingRoom {
         self.0.take().expect("pending room exists")
     }
 }
+fn close_room_on_drop(room: Option<Room>) {
+    if let Some(room) = room
+        && let Ok(runtime) = tokio::runtime::Handle::try_current()
+    {
+        runtime.spawn(async move {
+            let _ = room.close().await;
+        });
+    }
+}
 impl Drop for PendingRoom {
     fn drop(&mut self) {
-        if let Some(room) = self.0.take()
-            && let Ok(runtime) = tokio::runtime::Handle::try_current()
-        {
-            runtime.spawn(async move {
-                let _ = room.close().await;
-            });
-        }
+        close_room_on_drop(self.0.take());
     }
 }
 
@@ -1850,6 +1853,8 @@ impl Drop for MediaEngine {
                 task.abort();
             }
         }
+        // A completed connect job can be dropped before the actor accepts it.
+        close_room_on_drop(self.room.take());
     }
 }
 

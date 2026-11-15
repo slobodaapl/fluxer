@@ -3580,3 +3580,51 @@ async fn notification_cleanup_follows_accepted_cross_client_acks_and_deletes_onl
     assert_eq!(read.last_message_id, Some(Snowflake(1000)));
     assert!(read.manual_ack);
 }
+
+#[tokio::test]
+async fn transport_recovery_rejects_retired_server_credentials_and_own_state() {
+    let (mut worker, _) = worker();
+    let (gateway, _rx) = async_mpsc::channel(32);
+    worker.gateway_commands = Some(gateway);
+    worker.gateway_ready = true;
+    worker.state.current_user = Some(User {
+        id: 1.into(),
+        ..Default::default()
+    });
+    worker.state.session_id = Some("session".into());
+    worker
+        .state
+        .apply_gateway(
+            "GUILD_CREATE",
+            json!({"id":"10","name":"G","channels":[{"id":"100","name":"v","type":2}]}),
+        )
+        .unwrap();
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("old".into()),
+    });
+    worker.state.voice.join(100.into());
+    worker.media_event(MediaEvent::TransportLost).await.unwrap();
+    let dispatch = |name: &str, data: Value| GatewayEvent::Dispatch {
+        name: name.into(),
+        data,
+        sequence: None,
+    };
+    worker.gateway(dispatch("VOICE_SERVER_UPDATE", json!({"token":"stale","endpoint":"wss://example.invalid","connection_id":"old","guild_id":"10","channel_id":"100","ice_servers":[{}]}))).await.unwrap();
+    worker.gateway(dispatch("VOICE_STATE_UPDATE", json!({"user_id":"1","guild_id":"10","channel_id":"100","connection_id":"old","session_id":"session"}))).await.unwrap();
+    assert!(
+        worker
+            .voice_target
+            .as_ref()
+            .unwrap()
+            .connection_id
+            .is_none()
+    );
+    assert!(worker.pending_voice_server.is_empty());
+    assert!(worker.media.is_none());
+    worker.gateway(dispatch("VOICE_SERVER_UPDATE", json!({"token":"fresh","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","channel_id":"100","ice_servers":[{}]}))).await.unwrap();
+    let result = worker.gateway(dispatch("VOICE_STATE_UPDATE", json!({"user_id":"1","guild_id":"10","channel_id":"100","connection_id":"new","session_id":"session"}))).await;
+    assert!(result.unwrap_err().contains("mesh voice"));
+    assert!(worker.media.is_none());
+}
