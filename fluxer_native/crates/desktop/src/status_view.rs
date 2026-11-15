@@ -47,9 +47,6 @@ impl StatusUi {
             status: None,
         }
     }
-    pub fn is_editor(&self) -> bool {
-        self.open && self.editor
-    }
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -166,6 +163,111 @@ impl Fluxer {
             self.command(Command::SetCustomStatus { text }, cx);
         }
     }
+    // Handle these at the root so focus escaping the surface cannot expose the
+    // application underneath it to navigation keys.
+    pub(super) fn status_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.status_ui.open {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        if self.status_ui.editor {
+            match key {
+                "escape" => self.cancel_status_editor(window, cx),
+                "tab" => {
+                    let input = self.status_ui.input.focus_handle(cx);
+                    let current = if input.is_focused(window) {
+                        0
+                    } else if self.status_ui.cancel_focus.is_focused(window) {
+                        1
+                    } else if self.status_ui.save_focus.is_focused(window) {
+                        2
+                    } else {
+                        2
+                    };
+                    let next = editor_tab_target(current, event.keystroke.modifiers.shift);
+                    self.status_ui.armed = false;
+                    match next {
+                        0 => window.focus(&input),
+                        1 => window.focus(&self.status_ui.cancel_focus),
+                        _ => window.focus(&self.status_ui.save_focus),
+                    }
+                }
+                "enter" if !event.keystroke.modifiers.modified() => {
+                    if self.status_ui.input.read(cx).is_composing() {
+                        return;
+                    }
+                    if !event.is_held {
+                        self.status_ui.armed = true;
+                    }
+                }
+                _ => return,
+            }
+        } else {
+            let count = 5 + usize::from(
+                self.state
+                    .user_settings
+                    .get("custom_status")
+                    .is_some_and(|v| !v.is_null()),
+            );
+            match key {
+                "escape" => self.close_status(window, cx),
+                "up" => {
+                    self.status_ui.selected = (self.status_ui.selected + count - 1) % count;
+                    self.status_ui.armed = false;
+                    cx.notify();
+                }
+                "down" | "tab" => {
+                    self.status_ui.selected = if key == "tab" && event.keystroke.modifiers.shift {
+                        (self.status_ui.selected + count - 1) % count
+                    } else {
+                        (self.status_ui.selected + 1) % count
+                    };
+                    self.status_ui.armed = false;
+                    cx.notify();
+                }
+                "enter" | "space" if !event.is_held && !event.keystroke.modifiers.modified() => {
+                    self.status_ui.armed = true
+                }
+                _ => return,
+            }
+        }
+        cx.stop_propagation();
+    }
+    pub(super) fn status_key_up(
+        &mut self,
+        event: &KeyUpEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.status_ui.open {
+            return;
+        }
+        let key = event.keystroke.key.as_str();
+        if (self.status_ui.editor && key == "enter")
+            || (!self.status_ui.editor && matches!(key, "enter" | "space"))
+        {
+            let armed = std::mem::take(&mut self.status_ui.armed);
+            if armed && !event.keystroke.modifiers.modified() {
+                if self.status_ui.editor {
+                    if !self.status_ui.input.read(cx).is_composing() {
+                        if self.status_ui.cancel_focus.is_focused(window) {
+                            self.cancel_status_editor(window, cx);
+                        } else {
+                            self.save_status_editor(cx);
+                        }
+                    }
+                } else {
+                    self.select_status(self.status_ui.selected, window, cx);
+                }
+            }
+            cx.stop_propagation();
+        }
+    }
     pub(super) fn handle_presence_mutation(
         &mut self,
         status: RelationshipMutationStatus,
@@ -246,65 +348,19 @@ impl Fluxer {
                                 })),
                         ),
                 );
-            return div()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000099))
-                .occlude()
-                .flex()
-                .items_center()
-                .justify_center()
-                .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    match event.keystroke.key.as_str() {
-                        "escape" => this.cancel_status_editor(window, cx),
-                        "tab" => {
-                            let input = this.status_ui.input.focus_handle(cx);
-                            let current = if input.is_focused(window) {
-                                0
-                            } else if this.status_ui.cancel_focus.is_focused(window) {
-                                1
-                            } else {
-                                2
-                            };
-                            let next = editor_tab_target(current, event.keystroke.modifiers.shift);
-                            this.status_ui.armed = false;
-                            match next {
-                                0 => window.focus(&input),
-                                1 => window.focus(&this.status_ui.cancel_focus),
-                                _ => window.focus(&this.status_ui.save_focus),
-                            }
-                        }
-                        "enter" if !event.keystroke.modifiers.modified() => {
-                            if !event.is_held && !this.status_ui.input.read(cx).is_composing() {
-                                this.status_ui.armed = true;
-                            }
-                            // Let the input method consume composition confirmation.
-                            if this.status_ui.input.read(cx).is_composing() {
-                                return;
-                            }
-                        }
-                        _ => return,
-                    }
-                    cx.stop_propagation();
-                }))
-                .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                    if event.keystroke.key == "enter" {
-                        let armed = std::mem::take(&mut this.status_ui.armed);
-                        if armed
-                            && !event.keystroke.modifiers.modified()
-                            && !this.status_ui.input.read(cx).is_composing()
-                        {
-                            if this.status_ui.cancel_focus.is_focused(window) {
-                                this.cancel_status_editor(window, cx);
-                            } else {
-                                this.save_status_editor(cx);
-                            }
-                        }
-                        cx.stop_propagation();
-                    }
-                }))
-                .child(editor)
-                .into_any_element();
+            return deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(editor),
+            )
+            .with_priority(10)
+            .into_any_element();
         }
         let selected = self.status_ui.selected;
         let current = self
@@ -326,7 +382,6 @@ impl Fluxer {
             .user_settings
             .get("custom_status")
             .is_some_and(|value| !value.is_null());
-        let menu_count = 5 + usize::from(has_custom);
         let custom_label = if custom.is_empty() {
             "Set a custom status".to_owned()
         } else {
@@ -353,47 +408,6 @@ impl Fluxer {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .capture_key_down(cx.listener(
-                            move |this, event: &KeyDownEvent, window, cx| {
-                                match event.keystroke.key.as_str() {
-                                    "escape" => this.close_status(window, cx),
-                                    "up" => {
-                                        this.status_ui.selected =
-                                            (this.status_ui.selected + menu_count - 1) % menu_count;
-                                        this.status_ui.armed = false;
-                                        cx.notify();
-                                    }
-                                    "down" | "tab" => {
-                                        this.status_ui.selected = if event.keystroke.key == "tab"
-                                            && event.keystroke.modifiers.shift
-                                        {
-                                            (this.status_ui.selected + menu_count - 1) % menu_count
-                                        } else {
-                                            (this.status_ui.selected + 1) % menu_count
-                                        };
-                                        this.status_ui.armed = false;
-                                        cx.notify();
-                                    }
-                                    "enter" | "space"
-                                        if !event.is_held
-                                            && !event.keystroke.modifiers.modified() =>
-                                    {
-                                        this.status_ui.armed = true
-                                    }
-                                    _ => return,
-                                };
-                                cx.stop_propagation();
-                            },
-                        ))
-                        .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                let armed = std::mem::take(&mut this.status_ui.armed);
-                                if armed && !event.keystroke.modifiers.modified() {
-                                    this.select_status(this.status_ui.selected, window, cx);
-                                }
-                                cx.stop_propagation();
-                            }
-                        }))
                         .on_mouse_down_out(
                             cx.listener(|this, _, window, cx| this.close_status(window, cx)),
                         )

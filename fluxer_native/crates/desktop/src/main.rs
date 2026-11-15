@@ -1534,7 +1534,7 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.open || self.status_ui.is_editor() {
+        if self.quick_switcher.open || self.status_ui.is_open() {
             return;
         }
         if self.composer.focus_handle(cx).is_focused(window) {
@@ -2288,7 +2288,7 @@ impl Fluxer {
     }
 
     fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.context_menu_open(cx) {
+        if self.status_ui.is_open() || self.context_menu_open(cx) {
             cx.stop_propagation();
             return;
         }
@@ -2544,6 +2544,8 @@ impl Render for Fluxer {
         };
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.status_key_down(event, window, cx)))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| this.status_key_up(event, window, cx)))
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
             .on_action(cx.listener(|this, _: &PickerUp, window, cx| this.picker_key("up", window, cx)))
@@ -2552,13 +2554,14 @@ impl Render for Fluxer {
             .on_action(cx.listener(|this, _: &PickerDismiss, window, cx| this.picker_key("escape", window, cx)))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(|this,_:&OpenQuickSwitcher,window,cx|this.open_quick_switcher(window,cx)))
-            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if this.search_ui.confirm.is_none() && !this.context_menu_open(cx) && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
-            .on_action(cx.listener(|this, _: &StopWatching, _, cx| this.stop_focused_stream(cx)))
+            .on_action(cx.listener(|this,_:&OpenSearch,window,cx|{if !this.status_ui.is_open() && this.search_ui.confirm.is_none() && !this.context_menu_open(cx) && !this.image_viewer.is_open() && !this.playback.modal.is_open(){this.open_search(window,cx);}}))
+            .on_action(cx.listener(|this, _: &StopWatching, _, cx| { if !this.status_ui.is_open() { this.stop_focused_stream(cx); } }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                if this.context_menu_open(cx) || this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
+                if this.status_ui.is_open() || this.context_menu_open(cx) || this.image_viewer.is_open() || this.playback.modal.is_open() { return; }
                 this.open_settings(settings_view::Section::Voice, window, cx);
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
+                if this.status_ui.is_open() { cx.stop_propagation(); return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
@@ -2597,6 +2600,7 @@ impl Render for Fluxer {
                 if event.keystroke.key=="f8" && !event.is_held && this.mixer.input_mode==InputMode::PushToTalk {this.command(Command::SetPushToTalkPressed(true),cx);}
             }))
             .on_key_up(cx.listener(|this,event:&KeyUpEvent,_,cx|{
+                if this.status_ui.is_open() { cx.stop_propagation(); return; }
                 if event.keystroke.key=="enter" {this.composer.update(cx,|input,_|input.completion_enter_guard=false); }
                 if event.keystroke.key=="f8" {this.command(Command::SetPushToTalkPressed(false),cx);}
             }))

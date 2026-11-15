@@ -126,7 +126,8 @@ impl Fluxer {
             self.close_quick_switcher(window, cx);
             return;
         }
-        if self.context_menu_open(cx)
+        if self.status_ui.is_open()
+            || self.context_menu_open(cx)
             || self.image_viewer.is_open()
             || self.playback.modal.is_open()
             || self.message_actions.is_blocking()
