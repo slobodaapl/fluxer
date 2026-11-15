@@ -26,7 +26,8 @@ impl Fluxer {
             return;
         };
         self.media_demo_started = true;
-        let origin = match fixture_server() {
+        let atlas_stress = std::env::var("FLUXER_MEDIA_DEMO_ATLAS_STRESS").as_deref() == Ok("1");
+        let origin = match fixture_server(atlas_stress) {
             Ok(origin) => origin,
             Err(error) => {
                 self.error = Some(error);
@@ -87,10 +88,15 @@ impl Fluxer {
             author.clone(),
             "MP4-backed GIFV · muted, looping and paused outside the viewport.",
         );
+        let (gifv_route, width, height, duration) = if atlas_stress {
+            ("gifv.webm", 640, 640, 0.16)
+        } else {
+            ("gifv.mp4", 480, 270, 3.0)
+        };
         gifv.extra.insert("embeds".into(), json!([{
-            "type":"gifv", "title":"Generated GIFV", "url":format!("{origin}/gifv.mp4"),
-            "video":{"url":format!("{origin}/gifv.mp4"),"proxy_url":format!("{origin}/gifv.mp4?signature=fixture"),"width":480,"height":270,"duration":3.0},
-            "thumbnail":{"proxy_url":format!("{origin}/poster.png"),"width":480,"height":270}
+            "type":"gifv", "title":"Generated GIFV", "url":format!("{origin}/{gifv_route}"),
+            "video":{"url":format!("{origin}/{gifv_route}"),"proxy_url":format!("{origin}/{gifv_route}?signature=fixture"),"width":width,"height":height,"duration":duration},
+            "thumbnail":{"proxy_url":format!("{origin}/poster.png"),"width":width,"height":height}
         }]));
         let mut spoiler = Message::text(
             Snowflake(70_003),
@@ -122,7 +128,16 @@ impl Fluxer {
         );
         unavailable.extra.insert("expired".into(), json!(true));
         expired.attachments.push(unavailable);
-        let mut messages = if std::env::var("FLUXER_MEDIA_DEMO_GIF_ONLY").as_deref() == Ok("1") {
+        let mut messages = if atlas_stress {
+            (0..16)
+                .map(|index| {
+                    let mut message = gifv.clone();
+                    message.id = Snowflake(70_000 + index);
+                    message.content = format!("Short WebM atlas eviction fixture · {index}");
+                    message
+                })
+                .collect()
+        } else if std::env::var("FLUXER_MEDIA_DEMO_GIF_ONLY").as_deref() == Ok("1") {
             vec![gifv]
         } else {
             vec![video, audio, gifv, spoiler, expired]
@@ -147,11 +162,39 @@ impl Fluxer {
             });
         })
         .detach();
+        if atlas_stress {
+            cx.spawn(async move |entity, cx| {
+                for step in 0..48 {
+                    Timer::after(Duration::from_millis(450)).await;
+                    if entity
+                        .update(cx, |this, cx| {
+                            this.timeline
+                                .scroll_to_top_of_item(if step % 2 == 0 { 15 } else { 0 });
+                            eprintln!("ATLAS_STRESS scroll={step}");
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                eprintln!("ATLAS_STRESS complete");
+            })
+            .detach();
+        }
         cx.notify();
     }
 }
 
-fn fixture_server() -> Result<String, String> {
+fn fixture_server(atlas_stress: bool) -> Result<String, String> {
+    // Only reached through explicit offline --demo-media; never a live account.
+    let stress_video = if atlas_stress {
+        let path = std::env::var("FLUXER_MEDIA_DEMO_VIDEO")
+            .map_err(|_| "Set FLUXER_MEDIA_DEMO_VIDEO to a generated 640x640 short VP8 WebM")?;
+        Some(std::fs::read(path).map_err(|_| "Could not read the generated stress fixture")?)
+    } else {
+        None
+    };
     let listener =
         TcpListener::bind("127.0.0.1:0").map_err(|_| "Could not open the offline media fixture")?;
     let origin = format!(
@@ -172,6 +215,8 @@ fn fixture_server() -> Result<String, String> {
             let route = path.split('?').next().unwrap_or_default();
             let (mime, bytes, kind) = if path.contains("format=webp") || route == "/poster.png" {
                 ("image/png", POSTER, "poster")
+            } else if route == "/gifv.webm" && stress_video.is_some() {
+                ("video/webm", stress_video.as_deref().unwrap(), "video")
             } else if matches!(route, "/video.mp4" | "/gifv.mp4" | "/concealed.mp4") {
                 (
                     "video/mp4",

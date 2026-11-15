@@ -25,7 +25,7 @@ impl BladeContext {
             unsafe {
                 gpu::Context::init(gpu::ContextDesc {
                     presentation: true,
-                    validation: false,
+                    validation: std::env::var("FLUXER_GPU_VALIDATION").as_deref() == Ok("1"),
                     device_id: device_id_forced.unwrap_or(0),
                     ..Default::default()
                 })

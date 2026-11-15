@@ -13,6 +13,7 @@ mod context_actions;
 mod context_menu;
 mod controls;
 mod desktop_notifications;
+mod diagnostics;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
@@ -2633,6 +2634,7 @@ impl Render for Fluxer {
 }
 
 fn main() {
+    diagnostics::init();
     let demo_stream =
         std::env::args().any(|v| v == "--demo-stream" || v == "--demo-stream-animated");
     let demo = demo_stream

@@ -1,14 +1,18 @@
 use crate::{
     AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, DevicePixels, PlatformAtlas,
-    Point, Size, platform::AtlasTextureList,
+    Point, Scene, Size, platform::AtlasTextureList,
 };
 use anyhow::Result;
 use blade_graphics as gpu;
 use blade_util::{BufferBelt, BufferBeltDescriptor};
-use collections::FxHashMap;
+use collections::{FxHashMap, FxHashSet};
 use etagere::BucketedAtlasAllocator;
 use parking_lot::Mutex;
 use std::{borrow::Cow, ops, sync::Arc};
+
+#[path = "atlas_lifetime.rs"]
+mod atlas_lifetime;
+use atlas_lifetime::AtlasLifetime;
 
 pub(crate) struct BladeAtlas(Mutex<BladeAtlasState>);
 
@@ -25,6 +29,7 @@ struct BladeAtlasState {
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
     initializations: Vec<AtlasTextureId>,
     uploads: Vec<PendingUpload>,
+    frame_textures: FxHashSet<AtlasTextureId>,
 }
 
 #[cfg(gles)]
@@ -54,6 +59,7 @@ impl BladeAtlas {
             tiles_by_key: Default::default(),
             initializations: Vec::new(),
             uploads: Vec::new(),
+            frame_textures: Default::default(),
         }))
     }
 
@@ -61,14 +67,41 @@ impl BladeAtlas {
         self.0.lock().destroy();
     }
 
-    pub fn before_frame(&self, gpu_encoder: &mut gpu::CommandEncoder) {
+    pub fn before_frame(&self, gpu_encoder: &mut gpu::CommandEncoder, scene: &Scene) {
         let mut lock = self.0.lock();
+        // A retained scene can still refer to an image whose CPU key was evicted.
+        // Preserve its slot until it leaves the scene AND its last GPU use ends.
+        lock.frame_textures = scene
+            .monochrome_sprites
+            .iter()
+            .map(|sprite| sprite.tile.texture_id)
+            .chain(
+                scene
+                    .polychrome_sprites
+                    .iter()
+                    .map(|sprite| sprite.tile.texture_id),
+            )
+            .collect();
+        lock.collect_retired();
+        let uploads: Vec<_> = lock.uploads.iter().map(|upload| upload.id).collect();
+        let initializations = lock.initializations.clone();
+        lock.frame_textures.extend(uploads);
+        lock.frame_textures.extend(initializations);
         lock.flush(gpu_encoder);
     }
 
     pub fn after_frame(&self, sync_point: &gpu::SyncPoint) {
         let mut lock = self.0.lock();
         lock.upload_belt.flush(sync_point);
+        let ids = std::mem::take(&mut lock.frame_textures);
+        for id in &ids {
+            lock.storage[id.kind].textures[id.index as usize]
+                .as_mut()
+                .unwrap()
+                .lifetime
+                .submitted(sync_point);
+        }
+        lock.frame_textures = ids;
     }
 
     pub fn get_texture_info(&self, id: AtlasTextureId) -> BladeTextureInfo {
@@ -112,21 +145,33 @@ impl PlatformAtlas for BladeAtlas {
             return;
         };
 
-        if let Some(mut texture) = texture_slot.take() {
-            texture.decrement_ref_count();
-            if texture.is_unreferenced() {
-                lock.storage[id.kind]
-                    .free_list
-                    .push(texture.id.index as usize);
-                texture.destroy(&lock.gpu);
-            } else {
-                *texture_slot = Some(texture);
-            }
+        if let Some(texture) = texture_slot.as_mut() {
+            texture.lifetime.remove_key();
         }
     }
 }
 
 impl BladeAtlasState {
+    fn collect_retired(&mut self) {
+        for kind in [AtlasTextureKind::Monochrome, AtlasTextureKind::Polychrome] {
+            let textures = &mut self.storage[kind];
+            for (index, slot) in textures.textures.iter_mut().enumerate() {
+                let reclaim = slot.as_ref().is_some_and(|texture| {
+                    texture
+                        .lifetime
+                        .can_destroy(self.frame_textures.contains(&texture.id), |sync| {
+                            self.gpu.wait_for(sync, 0)
+                        })
+                });
+                if reclaim {
+                    let mut texture = slot.take().unwrap();
+                    texture.destroy(&self.gpu);
+                    textures.free_list.push(index);
+                }
+            }
+        }
+    }
+
     fn allocate(&mut self, size: Size<DevicePixels>, texture_kind: AtlasTextureKind) -> AtlasTile {
         {
             let textures = &mut self.storage[texture_kind];
@@ -134,6 +179,9 @@ impl BladeAtlasState {
             if let Some(tile) = textures
                 .iter_mut()
                 .rev()
+                // Zero-key textures may still belong to a retained scene/GPU
+                // submission. Do not refill them and indefinitely postpone GC.
+                .filter(|texture| texture.lifetime.has_keys())
                 .find_map(|texture| texture.allocate(size))
             {
                 return tile;
@@ -205,7 +253,7 @@ impl BladeAtlasState {
             format,
             raw,
             raw_view,
-            live_atlas_keys: 0,
+            lifetime: AtlasLifetime::new(),
         };
 
         self.initializations.push(atlas_texture.id);
@@ -313,7 +361,7 @@ struct BladeAtlasTexture {
     raw: gpu::Texture,
     raw_view: gpu::TextureView,
     format: gpu::TextureFormat,
-    live_atlas_keys: u32,
+    lifetime: AtlasLifetime<gpu::SyncPoint>,
 }
 
 impl BladeAtlasTexture {
@@ -328,25 +376,17 @@ impl BladeAtlasTexture {
                 size,
             },
         };
-        self.live_atlas_keys += 1;
+        self.lifetime.add_key();
         Some(tile)
     }
 
     fn destroy(&mut self, gpu: &gpu::Context) {
-        gpu.destroy_texture(self.raw);
         gpu.destroy_texture_view(self.raw_view);
+        gpu.destroy_texture(self.raw);
     }
 
     fn bytes_per_pixel(&self) -> u8 {
         self.format.block_info().size
-    }
-
-    fn decrement_ref_count(&mut self) {
-        self.live_atlas_keys -= 1;
-    }
-
-    fn is_unreferenced(&mut self) -> bool {
-        self.live_atlas_keys == 0
     }
 }
 

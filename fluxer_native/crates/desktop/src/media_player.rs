@@ -1005,3 +1005,6 @@ impl PlaybackUi {
         self.modal.close(window, cx);
     }
 }
+#[cfg(test)]
+#[path = "../../../compat/gpui/src/platform/blade/atlas_lifetime.rs"]
+mod atlas_lifetime_regressions;

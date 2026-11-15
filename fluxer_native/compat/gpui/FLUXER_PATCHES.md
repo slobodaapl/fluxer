@@ -1,4 +1,4 @@
-# GPUI 0.2.2 Wayland repaint and clipboard fixes
+# GPUI 0.2.2 native client fixes
 
 This directory contains the published crates.io GPUI 0.2.2 source with the
 changes below. Upstream copyright headers and Apache-2.0 license are retained.
@@ -57,3 +57,31 @@ selection/payload, input serial ordering/wraparound, and bounded nonblocking pip
 writes (including a stalled reader and exact delivery). An owned offline media
 menu also supplied a generated PNG to an external Wayland clipboard reader; see
 M10 in REVIEW.md. These tests supplement the eight repaint scheduling regressions.
+
+## Atlas GPU lifetime and fatal frame waits
+
+The 2026-11-15 live freeze dump records an NVIDIA Xid 13 GPU MMU fault followed
+by the main thread waiting forever in Blade's GPU completion loop. Decoder
+threads were idle. Immediate atlas destruction during image eviction is a
+source-confirmed lifetime defect and a plausible cause; the dump alone does not
+prove that this defect caused that particular GPU fault.
+
+* `blade/atlas_lifetime.rs` and `blade/blade_atlas.rs`: eviction removes the key
+  but preserves its texture/view and slot. Each texture tracks its own latest
+  submission, including uploads/initializations and retained-scene redraws.
+  At the next draw, collection requires no keys, no queued upload, no current
+  scene reference, and successful nonblocking GPU completion. Zero-key textures
+  cannot receive new allocations before collection. Destroy views before images.
+* `blade/blade_renderer.rs`: after a failed 10-second frame wait, print the device
+  information directly to stderr and exit unsuccessfully rather than retrying
+  forever on the event loop. This is fatal handling, not device recovery. Exiting
+  avoids unsafe reuse or destruction of resources with unconfirmed completion.
+* `blade/blade_context.rs`: `FLUXER_GPU_VALIDATION=1` enables Blade's validation
+  option for explicit diagnostic runs. The desktop installs a narrow renderer
+  warning/error logger so validation and GPU failures reach launch stderr.
+
+The normal desktop tests include the production lifetime policy by path. They
+cover eviction during the latest submission, retained-scene resubmission,
+eviction before initial upload, and shared textures with newly queued uploads.
+The offline short-WebM scrolling fixture and validation results are recorded in
+`../../qa/gif-gpu-lifetime.md`. No registry source files were changed.

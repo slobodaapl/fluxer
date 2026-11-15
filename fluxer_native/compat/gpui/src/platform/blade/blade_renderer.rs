@@ -448,7 +448,14 @@ impl BladeRenderer {
                 "your device information is: {:?}",
                 self.gpu.device_information()
             );
-            while !self.gpu.wait_for(&last_sp, MAX_FRAME_TIME_MS) {}
+            // Continuing would reuse resources without GPU completion. Retrying
+            // forever wedges the UI event loop, including Wayland disconnects.
+            // Use stderr even when the embedding application has no log sink.
+            eprintln!(
+                "Fatal rendering error: GPU did not complete a frame within {MAX_FRAME_TIME_MS} ms. Device: {:?}. Exiting without reusing GPU resources.",
+                self.gpu.device_information()
+            );
+            std::process::exit(1);
         }
     }
 
@@ -642,7 +649,7 @@ impl BladeRenderer {
 
     pub fn draw(&mut self, scene: &Scene) {
         self.command_encoder.start();
-        self.atlas.before_frame(&mut self.command_encoder);
+        self.atlas.before_frame(&mut self.command_encoder, scene);
 
         let frame = {
             profiling::scope!("acquire frame");

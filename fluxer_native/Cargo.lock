@@ -2133,6 +2133,7 @@ dependencies = [
  "gpui_collections",
  "image",
  "libc",
+ "log",
  "reqwest",
  "serde",
  "serde_json",
