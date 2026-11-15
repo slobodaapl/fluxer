@@ -1486,6 +1486,10 @@ async fn actual_text_workflow(login_mode: u8) {
                 ("GET", "/api/v1/channels/100/messages?limit=50") => {
                     (200, json!([initial.clone()]))
                 }
+                ("GET", "/api/v1/channels/100/slowmode") => (
+                    200,
+                    json!({"rate_limit_per_user":0,"retry_after_ms":0,"can_bypass":false}),
+                ),
                 ("POST", "/api/v1/read-states/ack") => {
                     let body: Value =
                         serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();

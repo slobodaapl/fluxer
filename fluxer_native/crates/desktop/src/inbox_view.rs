@@ -11,7 +11,7 @@ enum Tab {
 #[derive(Clone)]
 enum Entry {
     Channel(Snowflake),
-    Mention(Message),
+    Mention(Box<Message>),
 }
 pub(super) struct InboxUi {
     pub open: bool,
@@ -192,7 +192,7 @@ impl Fluxer {
                         })
                 })
                 .cloned()
-                .map(Entry::Mention)
+                .map(|message| Entry::Mention(Box::new(message)))
                 .collect()
         }
     }
@@ -303,7 +303,7 @@ impl Fluxer {
                 .capture_key_up(cx.listener(|this,event:&KeyUpEvent,window,cx|{if event.keystroke.key=="enter"{if let Some(armed)=this.inbox_ui.armed.take() && let Some(entry)=this.inbox_entries().get(this.inbox_ui.selected).filter(|entry|identity(entry)==armed).cloned(){this.activate_inbox_entry(entry,window,cx);}cx.stop_propagation();}}))
                 .child(div().px_4().py_3().flex().items_center().gap_2().child(icon(Icon::Inbox,20.)).child(div().flex_1().font_weight(FontWeight::SEMIBOLD).child("Inbox")).child(icon_button("refresh-inbox",Icon::Refresh,"Refresh recent mentions").when(self.inbox_ui.tab==Tab::Unread,|v|v.opacity(0.3)).on_click(cx.listener(|this,_,_,cx|{if this.inbox_ui.tab==Tab::Mentions{this.load_inbox_mentions(false,cx);}}))).child(icon_button("close-inbox",Icon::Close,"Close inbox").on_click(cx.listener(|this,_,window,cx|this.close_inbox(window,cx)))))
                 .child(div().px_3().flex().gap_2().border_b_1().border_color(rgb(0x40384d)).children([(Tab::Unread,"Unreads"),(Tab::Mentions,"Mentions")].into_iter().map(|(tab,label)|quiet_button(label,label).when(self.inbox_ui.tab==tab,|v|v.bg(rgb(0x514065)).text_color(rgb(TEXT))).on_click(cx.listener(move|this,_,_,cx|this.inbox_tab(tab,cx))))))
-                .when(self.inbox_ui.tab==Tab::Mentions,|view|view.child(div().px_3().py_2().flex().gap_2().children([("everyone","@everyone",self.inbox_ui.snapshot.filters.everyone),("roles","@roles",self.inbox_ui.snapshot.filters.roles),("guilds","Communities",self.inbox_ui.snapshot.filters.guilds)].into_iter().map(|(key,label,enabled)|div().flex().items_center().gap_1().text_size(px(10.)).child(toggle(key,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match key{"everyone"=>this.inbox_ui.snapshot.filters.everyone=!enabled,"roles"=>this.inbox_ui.snapshot.filters.roles=!enabled,_=>this.inbox_ui.snapshot.filters.guilds=!enabled};this.inbox_ui.snapshot.loading=false;this.load_inbox_mentions(false,cx);}))).child(label)))))
+                .when(self.inbox_ui.tab==Tab::Mentions,|view|view.child(div().px_3().py_2().flex().gap_2().children([("everyone","@everyone",self.inbox_ui.snapshot.filters.everyone),("roles","@roles",self.inbox_ui.snapshot.filters.roles),("guilds","Communities",self.inbox_ui.snapshot.filters.guilds)].into_iter().map(|(key,label,enabled)|div().flex().items_center().gap_1().text_size(px(10.)).child(toggle(key,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match key{"everyone"=>this.inbox_ui.snapshot.filters.everyone= !enabled,"roles"=>this.inbox_ui.snapshot.filters.roles= !enabled,_=>this.inbox_ui.snapshot.filters.guilds= !enabled};this.inbox_ui.snapshot.loading=false;this.load_inbox_mentions(false,cx);}))).child(label)))))
                 .child(div().id("inbox-entries").py_2().on_scroll_wheel(cx.listener(move|this,event:&ScrollWheelEvent,_,cx|{let delta=event.delta.pixel_delta(px(row_height)).y;let count=this.inbox_entries().len();if count>0&&delta!=px(0.){this.inbox_ui.selected=if delta<px(0.){(this.inbox_ui.selected+1).min(count-1)}else{this.inbox_ui.selected.saturating_sub(1)};cx.notify();}cx.stop_propagation();})).children(entries.into_iter().enumerate().skip(first).take(visible).map(|(index,entry)|{
                     let channel_id=identity(&entry).0;let channel=&self.state.channels[&channel_id];let guild=channel.guild_id.and_then(|id|self.state.guilds.get(&id)).map(|guild|guild.name.as_str()).unwrap_or("Direct messages");
                     let base=div().id(("inbox-entry",index)).mx_2().px_3().py_2().min_h(px(row_height)).rounded_md().cursor_pointer().when(index==self.inbox_ui.selected,|v|v.bg(rgb(0x40344f))).hover(|v|v.bg(rgb(0x3b3349)));
