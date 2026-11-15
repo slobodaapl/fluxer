@@ -75,6 +75,7 @@ pub(super) struct ProfilePopup {
     copied: bool,
     presenting_loading: bool,
     full: bool,
+    bio_links: Vec<String>,
     confirm_blocked_dm: bool,
     confirm_block: bool,
     dm_status: Option<DirectMessageStatus>,
@@ -94,6 +95,7 @@ impl ProfilePopup {
             copied: false,
             presenting_loading: false,
             full: false,
+            bio_links: Vec::new(),
             confirm_blocked_dm: false,
             confirm_block: false,
             dm_status: None,
@@ -112,6 +114,7 @@ impl ProfilePopup {
         }
         self.open = Some(config);
         self.full = false;
+        self.bio_links.clear();
         self.snapshot = None;
         self.presenting_loading = true;
         self.scroll = ScrollHandle::new();
@@ -294,6 +297,17 @@ impl ProfilePopup {
             cx.notify();
         }
     }
+    fn action_count(&self) -> usize {
+        1 + usize::from(!self.full && self.open.as_ref().is_some_and(|o| !o.webhook))
+            + usize::from(self.failed())
+            + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
+            + usize::from(
+                self.open
+                    .as_ref()
+                    .is_some_and(|o| o.friend_action.is_some()),
+            )
+            + usize::from(self.open.as_ref().is_some_and(|o| o.can_relationship))
+    }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.presenting_loading && event.keystroke.key != "escape" {
             self.armed = false;
@@ -321,6 +335,7 @@ impl ProfilePopup {
                                 .is_some_and(|o| o.friend_action.is_some()),
                         )
                         + usize::from(self.open.as_ref().is_some_and(|o| o.can_relationship))
+                        + self.bio_links.len()
                 };
                 self.selected = if event.keystroke.modifiers.shift {
                     (self.selected + count - 1) % count
@@ -400,7 +415,14 @@ impl ProfilePopup {
                 {
                     self.friend_action(cx);
                 } else {
-                    self.block_action(cx);
+                    let base = self.action_count();
+                    if self.selected >= base {
+                        if let Some(url) = self.bio_links.get(self.selected - base) {
+                            cx.emit(ProfileAction::Link(url.clone()));
+                        }
+                    } else {
+                        self.block_action(cx);
+                    }
                 }
             }
         }
@@ -816,6 +838,7 @@ impl Render for ProfilePopup {
                     .child("BOT"),
             );
         }
+        self.bio_links.clear();
         if !bio.is_empty() {
             let message = fluxer_core::Message {
                 content: bio.to_owned(),
@@ -833,10 +856,13 @@ impl Render for ProfilePopup {
                 if span.spoilers.is_empty() && !span.style.code {
                     if let Some(crate::message_markup::MessageTarget::Link(url)) = &span.target {
                         let url = url.clone();
+                        let selected = self.selected == self.action_count() + self.bio_links.len();
+                        self.bio_links.push(url.clone());
                         biography = biography.child(
                             div()
                                 .id(("profile-bio-link", index))
                                 .cursor_pointer()
+                                .when(selected, |view| view.bg(rgb(0x535064)))
                                 .text_color(rgb(0x83bdf5))
                                 .child(label(text, 13., cx))
                                 .on_click(cx.listener(move |_, _, _, cx| {
