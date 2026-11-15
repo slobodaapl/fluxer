@@ -2283,6 +2283,7 @@ impl Worker {
                         self.pending_voice_server = Some(update);
                     }
                 } else {
+                    let new_live_message = name=="MESSAGE_CREATE" && data.get("channel_id").and_then(Value::as_str).and_then(|id|id.parse::<Snowflake>().ok()).zip(data.get("id").and_then(Value::as_str).and_then(|id|id.parse::<Snowflake>().ok())).is_some_and(|(channel,id)|!self.state.messages.get(&channel).is_some_and(|messages|messages.contains_key(&id)));
                     let previous_voice = self.state.voice.clone();
                     self.state
                         .apply_gateway(&name, data.clone())
@@ -2313,7 +2314,7 @@ impl Worker {
                             .cloned()
                     {
                         self.reconcile_attachment_message(&message);
-                        if !self.demo && let Some(account)=self.state.current_user.as_ref() {
+                        if !self.demo && new_live_message && let Some(account)=self.state.current_user.as_ref() {
                             self.emit(Event::LiveMessageCreated {account_id:account.id,message:Box::new(message)});
                         }
                     }
