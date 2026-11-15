@@ -157,12 +157,37 @@ pub(crate) fn video_source(options: &ScreenShareOptions) -> NativeVideoSource {
     )
 }
 
+#[derive(Clone)]
+pub(crate) struct ScreenStopHandle {
+    stop: Arc<AtomicBool>,
+    thread: thread::Thread,
+}
+impl ScreenStopHandle {
+    #[cfg(test)]
+    pub fn for_test(stop: Arc<AtomicBool>) -> Self {
+        Self {
+            stop,
+            thread: thread::current(),
+        }
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.thread.unpark();
+    }
+}
+
 pub(crate) struct ScreenSession {
     stop: Arc<AtomicBool>,
     has_frame: Arc<AtomicBool>,
     thread: thread::Thread,
 }
 impl ScreenSession {
+    pub fn controller(&self) -> ScreenStopHandle {
+        ScreenStopHandle {
+            stop: self.stop.clone(),
+            thread: self.thread.clone(),
+        }
+    }
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.thread.unpark();

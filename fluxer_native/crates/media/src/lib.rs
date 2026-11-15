@@ -198,6 +198,77 @@ impl Default for SharedAudioSettings {
     }
 }
 
+#[derive(Default)]
+struct ShareCaptureHandles {
+    screen: Option<screen::ScreenStopHandle>,
+    audio: Option<tokio::task::AbortHandle>,
+    audio_running: Option<Arc<AtomicBool>>,
+}
+impl ShareCaptureHandles {
+    fn stop(&mut self) {
+        if let Some(screen) = self.screen.take() {
+            screen.stop();
+        }
+        if let Some(running) = self.audio_running.take() {
+            running.store(false, Ordering::Release);
+        }
+        if let Some(audio) = self.audio.take() {
+            audio.abort();
+        }
+    }
+}
+
+fn stop_room_capture(stop: &AtomicBool, handles: &Mutex<ShareCaptureHandles>) {
+    stop.store(true, Ordering::Release);
+    if let Ok(mut captures) = handles.lock() {
+        captures.stop();
+    }
+}
+
+// Room events must never wait behind a stalled control consumer: a full queue
+// ends the room and signals recovery after stopping capture.
+struct RoomEventSink {
+    tx: mpsc::Sender<MediaEvent>,
+    overflow: bool,
+}
+impl RoomEventSink {
+    async fn send(&mut self, event: MediaEvent) -> std::result::Result<(), ()> {
+        match self.tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.overflow = true;
+                Err(())
+            }
+        }
+    }
+    async fn closed(&self) {
+        self.tx.closed().await;
+    }
+}
+
+/// Closes a successfully joined room if preparation is cancelled before the
+/// engine takes ownership (including while publishing the microphone).
+struct PendingRoom(Option<Room>);
+impl PendingRoom {
+    fn room(&self) -> &Room {
+        self.0.as_ref().expect("pending room exists")
+    }
+    fn take(&mut self) -> Room {
+        self.0.take().expect("pending room exists")
+    }
+}
+impl Drop for PendingRoom {
+    fn drop(&mut self) {
+        if let Some(room) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = room.close().await;
+            });
+        }
+    }
+}
+
 /// Owned by the asynchronous media worker; all native handles stay off GPUI's
 /// rendering thread. Drop aborts capture and tasks even on application shutdown.
 pub struct MediaEngine {
@@ -222,6 +293,7 @@ pub struct MediaEngine {
     stop: Arc<AtomicBool>,
     shared_audio_task: Option<JoinHandle<()>>,
     shared_audio_running: Arc<AtomicBool>,
+    share_capture_handles: Arc<Mutex<ShareCaptureHandles>>,
     shared_audio_publication: Option<TrackSid>,
     shared_audio_settings: Arc<Mutex<SharedAudioSettings>>,
     mixer: Arc<Mutex<audio::PlaybackMixer>>,
@@ -308,6 +380,7 @@ impl MediaEngine {
             stop: Arc::new(AtomicBool::new(false)),
             shared_audio_task: None,
             shared_audio_running: Arc::new(AtomicBool::new(false)),
+            share_capture_handles: Arc::new(Mutex::new(ShareCaptureHandles::default())),
             shared_audio_publication: None,
             shared_audio_settings: Arc::new(Mutex::new(SharedAudioSettings::default())),
             mixer,
@@ -586,6 +659,7 @@ impl MediaEngine {
         let (room, mut room_events) = Room::connect(endpoint, token, options)
             .await
             .map_err(|_| MediaError::Call("Unable to connect to the voice server".into()))?;
+        let mut pending_room = PendingRoom(Some(room));
         // Turn off WebRTC's direct speaker path before enabling our gain mixer.
         // Physical microphone input is separate from WebRTC's synthetic ADM.
         livekit::rtc_engine::lk_runtime::LkRuntime::instance()
@@ -593,7 +667,6 @@ impl MediaEngine {
             .set_adm_playout_enabled(false);
         if let Err(error) = self.output.start() {
             self.output.stop();
-            let _ = room.close().await;
             return Err(error);
         }
         let (tx, rx) = mpsc::channel(32);
@@ -618,7 +691,6 @@ impl MediaEngine {
             Ok(capture) => capture,
             Err(error) => {
                 self.output.stop();
-                let _ = room.close().await;
                 return Err(error);
             }
         };
@@ -626,7 +698,8 @@ impl MediaEngine {
             mic.mute();
             mic.disable();
         }
-        if let Err(error) = room
+        if let Err(error) = pending_room
+            .room()
             .local_participant()
             .publish_track(
                 LocalTrack::Audio(mic.clone()),
@@ -637,15 +710,15 @@ impl MediaEngine {
             let _ = capture.stop();
             drop(capture);
             self.output.stop();
-            let _ = room.close().await;
             return Err(MediaError::Call(error.to_string()));
         }
-        self.room = Some(room);
+        self.room = Some(pending_room.take());
         self.microphone = Some(mic);
         self.input_capture = Some(capture);
         // Each call owns its cancellation flag. A previous capture thread must
         // never resume when a new call starts.
         self.stop = Arc::new(AtomicBool::new(false));
+        self.share_capture_handles = Arc::new(Mutex::new(ShareCaptureHandles::default()));
         self.events = Some(tx.clone());
         let state = self.state.clone();
         let stop = self.stop.clone();
@@ -659,9 +732,17 @@ impl MediaEngine {
         let mixer = self.mixer.clone();
         let audio_tasks = self.audio_tasks.clone();
         let subscriptions = self.subscriptions.clone();
+        let share_capture_handles = self.share_capture_handles.clone();
         let _ = tx.try_send(MediaEvent::Connected);
         self.room_task = Some(tokio::spawn(async move {
+            let mut tx = RoomEventSink {
+                tx,
+                overflow: false,
+            };
             loop {
+                if tx.overflow {
+                    break;
+                }
                 let event = tokio::select! {
                     _ = tx.closed() => break,
                     event = room_events.recv() => match event { Some(event) => event, None => break },
@@ -863,7 +944,7 @@ impl MediaEngine {
                         Some(MediaEvent::Connected)
                     }
                     RoomEvent::Disconnected { reason } => {
-                        stop.store(true, Ordering::Release);
+                        stop_room_capture(&stop, &share_capture_handles);
                         video_frames.clear();
                         if let Some(mic) = &microphone {
                             mic.mute();
@@ -1121,7 +1202,13 @@ impl MediaEngine {
             }
             // Losing the consumer or the room event stream also stops capture,
             // even if the controller cannot deliver an explicit disconnect.
-            stop.store(true, Ordering::Release);
+            stop_room_capture(&stop, &share_capture_handles);
+            if tx.overflow && !tx.tx.is_closed() {
+                let sender = tx.tx.clone();
+                tokio::spawn(async move {
+                    let _ = sender.send(MediaEvent::Disconnected).await;
+                });
+            }
             video_frames.clear();
             if let Some(mic) = &microphone {
                 mic.mute();
@@ -1461,11 +1548,25 @@ impl MediaEngine {
             }
             capture.stop();
         }));
+        if let Ok(mut handles) = self.share_capture_handles.lock() {
+            handles.audio = self
+                .shared_audio_task
+                .as_ref()
+                .map(|task| task.abort_handle());
+            handles.audio_running = Some(self.shared_audio_running.clone());
+            if self.stop.load(Ordering::Acquire) {
+                handles.stop();
+            }
+        }
         Ok(())
     }
     pub async fn stop_shared_audio(&mut self) -> Result<()> {
         let active = self.shared_audio_task.is_some() || self.shared_audio_publication.is_some();
         self.shared_audio_running.store(false, Ordering::Release);
+        if let Ok(mut handles) = self.share_capture_handles.lock() {
+            handles.audio = None;
+            handles.audio_running = None;
+        }
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
             let _ = task.await;
@@ -1506,7 +1607,14 @@ impl MediaEngine {
             .map_err(|e| MediaError::Screen(e.to_string()))?;
         self.screen_publication = Some(publication.sid());
         match screen::start(options, source, tx, self.stop.clone()) {
-            Ok(session) => {
+            Ok(mut session) => {
+                if let Ok(mut handles) = self.share_capture_handles.lock() {
+                    handles.screen = Some(session.controller());
+                    if self.stop.load(Ordering::Acquire) {
+                        handles.stop();
+                        session.stop();
+                    }
+                }
                 self.screen = Some(session);
                 Ok(())
             }
@@ -1519,6 +1627,9 @@ impl MediaEngine {
     pub async fn stop_screen_share(&mut self) -> Result<()> {
         let had_video = self.screen.is_some() || self.screen_publication.is_some();
         // Stop hardware first even when either network unpublish fails.
+        if let Ok(mut handles) = self.share_capture_handles.lock() {
+            handles.screen = None;
+        }
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
@@ -1541,6 +1652,9 @@ impl MediaEngine {
     /// Stop locally captured media before announcing a transport replacement.
     /// Network teardown remains asynchronous; no capture is restarted here.
     pub fn stop_capture_for_recovery(&mut self) {
+        if let Ok(mut handles) = self.share_capture_handles.lock() {
+            handles.stop();
+        }
         if let Ok(mut controls) = self.input_controls.lock() {
             controls.blocked = true;
         }
@@ -1919,5 +2033,108 @@ mod device_recovery_tests {
         );
         assert_eq!(selected.preferred, "input:usb");
         assert_eq!(desired_device(&selected, &[], "input:default"), None);
+    }
+}
+
+#[cfg(test)]
+mod room_cancellation_tests {
+    use super::*;
+    /// Uses the disposable synthetic LiveKit service from scripts/test_media_loopback.py.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires disposable local LiveKit and FLUXER_MEDIA_TEST_* variables"]
+    async fn cancelling_joined_pending_room_closes_server_participant() {
+        let endpoint = std::env::var("FLUXER_MEDIA_TEST_URL").unwrap();
+        let observer_token = std::env::var("FLUXER_MEDIA_TEST_TOKEN_B").unwrap();
+        let pending_token = std::env::var("FLUXER_MEDIA_TEST_TOKEN_A").unwrap();
+        let (_observer, mut events) =
+            Room::connect(&endpoint, &observer_token, RoomOptions::default())
+                .await
+                .unwrap();
+        let (room, _events) = Room::connect(&endpoint, &pending_token, RoomOptions::default())
+            .await
+            .unwrap();
+        let identity = room.local_participant().identity();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(RoomEvent::ParticipantConnected(p)) = events.recv().await {
+                    if p.identity() == identity {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("observer did not see joined participant");
+        let (ready, started) = tokio::sync::oneshot::channel();
+        let job = tokio::spawn(async move {
+            use livekit::webrtc::audio_source::{AudioSourceOptions, native::NativeAudioSource};
+            use std::future::Future;
+            let room = PendingRoom(Some(room));
+            let source = NativeAudioSource::new(AudioSourceOptions::default(), 48_000, 1, 100);
+            let track =
+                LocalAudioTrack::create_audio_track("synthetic", RtcAudioSource::Native(source));
+            let participant = room.room().local_participant();
+            let mut publish =
+                Box::pin(participant.publish_track(LocalTrack::Audio(track), Default::default()));
+            // Poll the actual publication once and freeze it while it is pending,
+            // making cancellation at this exact boundary deterministic.
+            let pending = std::future::poll_fn(|cx| {
+                std::task::Poll::Ready(publish.as_mut().poll(cx).is_pending())
+            })
+            .await;
+            let _ = ready.send(pending);
+            std::future::pending::<()>().await;
+            drop(publish);
+        });
+        assert!(
+            started.await.unwrap(),
+            "synthetic publish finished before it could be cancelled"
+        );
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Some(RoomEvent::ParticipantDisconnected(p)) = events.recv().await {
+                    if p.identity() == identity {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("pending room remained in server roster");
+    }
+
+    #[tokio::test]
+    async fn blocked_control_delivery_does_not_delay_capture_cancellation() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(MediaEvent::Connected).unwrap();
+        let mut sink = RoomEventSink {
+            tx,
+            overflow: false,
+        };
+        let screen_stopped = Arc::new(AtomicBool::new(false));
+        let audio_running = Arc::new(AtomicBool::new(true));
+        let task = tokio::spawn(std::future::pending::<()>());
+        let handles = Mutex::new(ShareCaptureHandles {
+            screen: Some(screen::ScreenStopHandle::for_test(screen_stopped.clone())),
+            audio: Some(task.abort_handle()),
+            audio_running: Some(audio_running.clone()),
+        });
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                sink.send(MediaEvent::Reconnecting)
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+        let stopped = AtomicBool::new(false);
+        stop_room_capture(&stopped, &handles);
+        assert!(stopped.load(Ordering::Acquire));
+        assert!(screen_stopped.load(Ordering::Acquire));
+        assert!(!audio_running.load(Ordering::Acquire));
+        assert!(task.await.unwrap_err().is_cancelled());
     }
 }
