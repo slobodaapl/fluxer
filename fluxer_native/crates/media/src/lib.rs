@@ -316,6 +316,22 @@ impl MediaEngine {
         })
     }
 
+    /// Restores local preferences without enumerating devices or opening capture.
+    pub fn restore_device_preferences(&mut self, input: &str, output: &str) {
+        self.cancel_device_recovery();
+        self.input_selection = DeviceSelection {
+            preferred: input.into(),
+            effective: None,
+        };
+        self.output_selection = DeviceSelection {
+            preferred: output.into(),
+            effective: None,
+        };
+        if let Ok(mut selected) = self.input_device.lock() {
+            *selected = None;
+        }
+    }
+
     pub fn set_input_device(&mut self, id: &str) -> Result<()> {
         self.cancel_device_recovery();
         self.input_retry_at = None;

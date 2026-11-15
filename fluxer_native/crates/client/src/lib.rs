@@ -1,6 +1,7 @@
 //! Serialized native client controller. Network and media handles stay on its
 //! Tokio worker; GPUI sends commands and polls coalesced presentation events.
 mod attachments;
+mod audio_preferences;
 mod navigation;
 mod worker;
 
@@ -379,6 +380,12 @@ pub enum Event {
     BrowserLoginPollingResumed,
     BrowserLoginCleared,
     Devices(DeviceInventory),
+    AudioPreferences {
+        dsp: AudioSettings,
+        mixer: AudioMixSettings,
+        input: (String, String),
+        output: (String, String),
+    },
     ScreenSources(Vec<ScreenSource>),
     AudioApplications(Vec<fluxer_media::AudioApplication>),
     SharedAudioStatus(bool),

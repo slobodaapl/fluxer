@@ -153,6 +153,8 @@ pub(crate) struct Worker {
     profiles: profile_flow::ProfileState,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
+    audio_key: Option<String>,
+    audio_preferences: crate::audio_preferences::AudioPreferences,
     saved_session: Option<SavedSession>,
     restore_task: Option<JoinHandle<Result<Option<SavedSession>>>>,
     restore_channel: Option<Snowflake>,
@@ -212,6 +214,8 @@ impl Worker {
             profiles: profile_flow::ProfileState::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
+            audio_key: None,
+            audio_preferences: crate::audio_preferences::AudioPreferences::default(),
             saved_session: None,
             restore_task: None,
             restore_channel: None,
@@ -359,6 +363,60 @@ impl Worker {
         }
     }
 
+    fn remember_device_labels(&mut self, devices: &fluxer_media::DeviceInventory) {
+        let mut changed = false;
+        if let Some(device) = devices
+            .inputs
+            .iter()
+            .find(|d| d.id == self.audio_preferences.input)
+            && self.audio_preferences.input_label != device.label
+        {
+            self.audio_preferences.input_label = device.label.clone();
+            changed = true;
+        }
+        if let Some(device) = devices
+            .outputs
+            .iter()
+            .find(|d| d.id == self.audio_preferences.output)
+            && self.audio_preferences.output_label != device.label
+        {
+            self.audio_preferences.output_label = device.label.clone();
+            changed = true;
+        }
+        if changed {
+            self.persist_audio_preferences();
+        }
+    }
+
+    async fn prepare_audio(&mut self, require_output: bool) -> Result<()> {
+        let job = self.media()?.begin_device_recovery();
+        let result = job
+            .await
+            .map_err(|_| "Audio device recovery stopped".to_owned())?
+            .map_err(error)?;
+        let devices = self
+            .media()?
+            .finish_device_recovery(result)
+            .ok_or("Audio device recovery was cancelled")?;
+        let ready = devices.input_selection.effective.is_some()
+            && (!require_output || devices.output_selection.effective.is_some());
+        self.remember_device_labels(&devices);
+        self.emit(Event::Devices(devices));
+        if ready {
+            Ok(())
+        } else {
+            Err("No usable audio device is available".into())
+        }
+    }
+
+    fn persist_audio_preferences(&self) {
+        if let Some(key) = &self.audio_key
+            && let Err(message) = crate::audio_preferences::save(key, &self.audio_preferences)
+        {
+            self.emit(Event::Error(message));
+        }
+    }
+
     async fn invalidate_saved_session(&mut self) {
         if let Some(session) = &mut self.saved_session {
             session.valid = false;
@@ -385,7 +443,18 @@ impl Worker {
     }
     fn media(&mut self) -> Result<&mut MediaEngine> {
         if self.media.is_none() {
-            self.media = Some(MediaEngine::new().map_err(error)?);
+            let mut media = MediaEngine::new().map_err(error)?;
+            media.restore_device_preferences(
+                &self.audio_preferences.input,
+                &self.audio_preferences.output,
+            );
+            media
+                .configure(self.audio_preferences.dsp.clone())
+                .map_err(error)?;
+            media
+                .configure_mixer(self.audio_preferences.mixer.clone())
+                .map_err(error)?;
+            self.media = Some(media);
         }
         self.media
             .as_mut()
@@ -466,6 +535,7 @@ impl Worker {
                     }
                     if let (Some(media), Ok(Ok(result))) = (&mut self.media, result) {
                         if let Some(devices) = media.finish_device_recovery(result) {
+                            self.remember_device_labels(&devices);
                             if last_devices.as_ref() != Some(&devices) {
                                 last_devices = Some(devices.clone());
                                 self.emit(Event::Devices(devices));
@@ -587,6 +657,8 @@ impl Worker {
         }
         self.emit(Event::SessionRestoring(false));
         self.saved_session = None;
+        self.audio_key = None;
+        self.audio_preferences = crate::audio_preferences::AudioPreferences::default();
         self.restore_channel = None;
         self.restoring_gateway = false;
         let _ = self.leave_voice(true).await;
@@ -1317,11 +1389,35 @@ impl Worker {
                 let devices = self.media()?.try_devices().map_err(error)?;
                 self.emit(Event::Devices(devices));
             }
-            Command::SetInputDevice(id) => self.media()?.set_input_device(&id).map_err(error)?,
-            Command::SetOutputDevice(id) => self.media()?.set_output_device(&id).map_err(error)?,
-            Command::SetDsp(settings) => self.media()?.configure(settings).map_err(error)?,
+            Command::SetInputDevice(id) => {
+                let result = self.media()?.set_input_device(&id);
+                if !matches!(result, Err(fluxer_media::MediaError::UnknownDevice(_))) {
+                    self.audio_preferences.input = id;
+                    self.audio_preferences.input_label = "Selected device".into();
+                    self.persist_audio_preferences();
+                }
+                result.map_err(error)?;
+            }
+            Command::SetOutputDevice(id) => {
+                let result = self.media()?.set_output_device(&id);
+                if !matches!(result, Err(fluxer_media::MediaError::UnknownDevice(_))) {
+                    self.audio_preferences.output = id;
+                    self.audio_preferences.output_label = "Selected device".into();
+                    self.persist_audio_preferences();
+                }
+                result.map_err(error)?;
+            }
+            Command::SetDsp(settings) => {
+                self.media()?.configure(settings.clone()).map_err(error)?;
+                self.audio_preferences.dsp = settings;
+                self.persist_audio_preferences();
+            }
             Command::SetMixer(settings) => {
-                self.media()?.configure_mixer(settings).map_err(error)?
+                self.media()?
+                    .configure_mixer(settings.clone())
+                    .map_err(error)?;
+                self.audio_preferences.mixer = settings;
+                self.persist_audio_preferences();
             }
             Command::SetPushToTalkPressed(pressed) => self
                 .media()?
@@ -1343,6 +1439,7 @@ impl Worker {
                 if self.voice_target.is_some() {
                     return Err("Leave voice before testing the microphone".into());
                 }
+                self.prepare_audio(false).await?;
                 self.media_events =
                     Some(self.media()?.start_microphone_test().map_err(error)?.into());
             }
@@ -1594,6 +1691,32 @@ impl Worker {
         let identity = self
             .expected_user_id
             .ok_or("Authentication omitted the account identity")?;
+        let key = format!(
+            "{}::{}",
+            client.instance().api.origin().ascii_serialization(),
+            identity
+        );
+        self.media = None;
+        self.audio_preferences = match crate::audio_preferences::load(&key) {
+            Ok(preferences) => preferences,
+            Err(message) => {
+                self.emit(Event::Error(message));
+                crate::audio_preferences::AudioPreferences::default()
+            }
+        };
+        self.audio_key = Some(key);
+        self.emit(Event::AudioPreferences {
+            dsp: self.audio_preferences.dsp.clone(),
+            mixer: self.audio_preferences.mixer.clone(),
+            input: (
+                self.audio_preferences.input.clone(),
+                self.audio_preferences.input_label.clone(),
+            ),
+            output: (
+                self.audio_preferences.output.clone(),
+                self.audio_preferences.output_label.clone(),
+            ),
+        });
         self.saved_session = Some(SavedSession {
             instance: client.instance().clone(),
             token: token.clone(),
@@ -2166,6 +2289,19 @@ impl Worker {
             // Publishing parameters are immutable for an active room. Teardown
             // also releases the old microphone before any replacement attempt.
             media.disconnect().await.map_err(error)?;
+            let job = media.begin_device_recovery();
+            let recovery = job
+                .await
+                .map_err(|_| "Audio device recovery stopped".to_owned())?
+                .map_err(error)?;
+            let devices = media
+                .finish_device_recovery(recovery)
+                .ok_or("Audio device recovery was cancelled")?;
+            if devices.input_selection.effective.is_none()
+                || devices.output_selection.effective.is_none()
+            {
+                return Err("No usable audio device is available".into());
+            }
             media
                 .configure_microphone_publish(Some(bitrate as f64), false)
                 .map_err(error)?;

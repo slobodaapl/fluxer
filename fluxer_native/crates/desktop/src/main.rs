@@ -1044,6 +1044,30 @@ impl Fluxer {
                 // Commands update desired viewing immediately. Delayed worker
                 // snapshots must never re-add a locally stopped stream.
                 Event::WatchedStreams(_) => {}
+                Event::AudioPreferences {
+                    dsp,
+                    mixer,
+                    input,
+                    output,
+                } => {
+                    self.dsp = dsp;
+                    self.mixer = mixer;
+                    let mode = match self.mixer.input_mode {
+                        InputMode::OpenMic => "open",
+                        InputMode::VoiceActivity => "activity",
+                        InputMode::PushToTalk => "ptt",
+                    };
+                    self.mode_picker
+                        .update(cx, |picker, cx| picker.set_selected(mode, cx));
+                    self.input_picker.update(cx, |picker, cx| {
+                        picker.set_options(vec![input.clone()], cx);
+                        picker.set_selected(&input.0, cx);
+                    });
+                    self.output_picker.update(cx, |picker, cx| {
+                        picker.set_options(vec![output.clone()], cx);
+                        picker.set_selected(&output.0, cx);
+                    });
+                }
                 Event::Devices(devices) => {
                     let input_label = self.input_picker.update(cx, |picker, cx| {
                         picker.set_device_options(
