@@ -2917,3 +2917,17 @@ async fn demo_presence_changes_are_local_without_a_client() {
     assert!(worker.state.user_settings["custom_status"].is_null());
     assert!(worker.client.is_none());
 }
+
+#[tokio::test]
+async fn demo_empty_custom_status_saves_as_clear_and_completes() {
+    let (mut worker, events) = worker();
+    worker.demo = true;
+    worker.state = ClientState::demo();
+    worker.state.user_settings = json!({"status":"online","custom_status":{"text":"Old"}});
+    worker.set_custom_status("  ".into()).await.unwrap();
+    assert!(worker.state.user_settings["custom_status"].is_null());
+    assert!(events.try_iter().any(|event| matches!(
+        event,
+        Event::PresenceMutation(crate::RelationshipMutationStatus::Complete)
+    )));
+}
