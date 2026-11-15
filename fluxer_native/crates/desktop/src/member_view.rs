@@ -292,7 +292,6 @@ impl Fluxer {
         let name_target = self.profile_trigger(
             div()
                 .id(SharedString::from(format!("member-name-{index}-{id}")))
-                .self_start()
                 .child(name_art),
             user,
             Some(guild),
