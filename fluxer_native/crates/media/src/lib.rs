@@ -64,10 +64,18 @@ pub struct AudioDevice {
     pub id: String,
     pub label: String,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInventory {
     pub inputs: Vec<AudioDevice>,
     pub outputs: Vec<AudioDevice>,
+    pub input_selection: DeviceSelection,
+    pub output_selection: DeviceSelection,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceSelection {
+    pub preferred: String,
+    pub effective: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +197,8 @@ impl Default for SharedAudioSettings {
 /// rendering thread. Drop aborts capture and tasks even on application shutdown.
 pub struct MediaEngine {
     input_device: Mutex<Option<String>>,
+    input_selection: DeviceSelection,
+    output_selection: DeviceSelection,
     room: Option<Room>,
     microphone: Option<LocalAudioTrack>,
     microphone_publish: publish::MicrophonePublishSettings,
@@ -214,6 +224,17 @@ pub struct MediaEngine {
     subscriptions: Arc<Mutex<subscriptions::Registry>>,
 }
 
+fn desired_device(selection: &DeviceSelection, devices: &[AudioDevice], default: &str) -> String {
+    if devices
+        .iter()
+        .any(|device| device.id == selection.preferred)
+    {
+        selection.preferred.clone()
+    } else {
+        default.into()
+    }
+}
+
 impl MediaEngine {
     pub fn new() -> Result<Self> {
         pipewire_runtime::ensure()?;
@@ -223,6 +244,14 @@ impl MediaEngine {
         let video_frames = Arc::new(video_events::VideoMailbox::new(subscriptions.clone()));
         Ok(Self {
             input_device: Mutex::new(None),
+            input_selection: DeviceSelection {
+                preferred: "input:default".into(),
+                effective: Some("input:default".into()),
+            },
+            output_selection: DeviceSelection {
+                preferred: "output:default".into(),
+                effective: Some("output:default".into()),
+            },
             room: None,
             microphone: None,
             microphone_publish: publish::MicrophonePublishSettings::default(),
@@ -261,25 +290,59 @@ impl MediaEngine {
         Ok(DeviceInventory {
             inputs: microphone_device::devices()?,
             outputs: playback::devices()?,
+            input_selection: self.input_selection.clone(),
+            output_selection: self.output_selection.clone(),
         })
     }
 
-    pub fn set_input_device(&self, id: &str) -> Result<()> {
+    pub fn set_input_device(&mut self, id: &str) -> Result<()> {
         if !microphone_device::devices()?.iter().any(|d| d.id == id) {
             return Err(MediaError::UnknownDevice("input"));
         }
+        self.input_selection.preferred = id.into();
+        self.apply_input(id)
+    }
+    fn apply_input(&mut self, id: &str) -> Result<()> {
         if let Some(capture) = &self.input_capture {
-            capture.set_device(id)?;
+            if let Err(error) = capture.set_device(id) {
+                self.input_selection.effective = None;
+                return Err(error);
+            }
         }
         *self
             .input_device
             .lock()
             .map_err(|_| MediaError::Audio("Input settings unavailable".into()))? = Some(id.into());
+        self.input_selection.effective = Some(id.into());
         Ok(())
     }
-
-    pub fn set_output_device(&self, id: &str) -> Result<()> {
-        self.output.set_device(id)
+    pub fn set_output_device(&mut self, id: &str) -> Result<()> {
+        if !playback::devices()?.iter().any(|d| d.id == id) {
+            return Err(MediaError::UnknownDevice("output"));
+        }
+        self.output_selection.preferred = id.into();
+        self.apply_output(id)
+    }
+    fn apply_output(&mut self, id: &str) -> Result<()> {
+        if let Err(error) = self.output.set_device(id) {
+            self.output_selection.effective = None;
+            return Err(error);
+        }
+        self.output_selection.effective = Some(id.into());
+        Ok(())
+    }
+    /// Reconcile hotplug without creating capture outside a call or explicit test.
+    pub fn reconcile_devices(&mut self) -> Result<DeviceInventory> {
+        let inventory = self.try_devices()?;
+        let input = desired_device(&self.input_selection, &inventory.inputs, "input:default");
+        let output = desired_device(&self.output_selection, &inventory.outputs, "output:default");
+        if self.input_selection.effective.as_deref() != Some(&input) {
+            let _ = self.apply_input(&input);
+        }
+        if self.output_selection.effective.as_deref() != Some(&output) {
+            let _ = self.apply_output(&output);
+        }
+        self.try_devices()
     }
 
     pub fn configure(&self, settings: AudioSettings) -> Result<()> {
@@ -1611,5 +1674,36 @@ mod shared_audio_lifecycle_tests {
             events.try_recv().is_err(),
             "explicit stop owns its single notification"
         );
+    }
+}
+
+#[cfg(test)]
+mod device_recovery_tests {
+    use super::*;
+
+    fn device(id: &str) -> AudioDevice {
+        AudioDevice {
+            id: id.into(),
+            label: id.into(),
+        }
+    }
+
+    #[test]
+    fn missing_preference_falls_back_and_returns_when_inventory_recovers() {
+        let selected = DeviceSelection {
+            preferred: "input:usb".into(),
+            effective: Some("input:usb".into()),
+        };
+        let removed = vec![device("input:default")];
+        assert_eq!(
+            desired_device(&selected, &removed, "input:default"),
+            "input:default"
+        );
+        let restored = vec![device("input:default"), device("input:usb")];
+        assert_eq!(
+            desired_device(&selected, &restored, "input:default"),
+            "input:usb"
+        );
+        assert_eq!(selected.preferred, "input:usb");
     }
 }

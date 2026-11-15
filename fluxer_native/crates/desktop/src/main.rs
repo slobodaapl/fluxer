@@ -346,6 +346,7 @@ struct Fluxer {
     status: String,
     voice_status: String,
     voice_connecting: bool,
+    audio_device_status: String,
     input_picker: Entity<Dropdown>,
     output_picker: Entity<Dropdown>,
     mode_picker: Entity<Dropdown>,
@@ -469,6 +470,7 @@ impl Fluxer {
             },
             voice_status: "Disconnected".into(),
             voice_connecting: false,
+            audio_device_status: String::new(),
             input_picker: picker("Input device", &[], Some("input:default"), window, cx),
             output_picker: picker("Output device", &[], Some("output:default"), window, cx),
             mode_picker: picker(
@@ -1043,6 +1045,16 @@ impl Fluxer {
                 // snapshots must never re-add a locally stopped stream.
                 Event::WatchedStreams(_) => {}
                 Event::Devices(devices) => {
+                    let degraded = |s: &fluxer_media::DeviceSelection| {
+                        s.effective.as_deref() != Some(s.preferred.as_str())
+                    };
+                    self.audio_device_status = if degraded(&devices.input_selection)
+                        || degraded(&devices.output_selection)
+                    {
+                        "A selected audio device is unavailable. Using the system default where possible; it will be restored when available.".into()
+                    } else {
+                        String::new()
+                    };
                     self.input_picker.update(cx, |picker, cx| {
                         picker.set_options(
                             devices

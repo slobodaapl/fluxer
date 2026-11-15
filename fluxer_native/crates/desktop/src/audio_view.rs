@@ -548,7 +548,8 @@ impl Fluxer {
                 .child(audio_description("Changes apply immediately. Microphone testing starts only when you choose to test it."))
                 .child(audio_section("Devices").child(div().flex().items_center().justify_between().child(audio_description("Choose where you speak and listen."))
                     .child(icon_button("refresh-devices",Icon::Refresh,"Refresh audio devices").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshDevices,cx)))))
-                    .child(self.input_picker.clone()).child(self.output_picker.clone()))
+                    .child(self.input_picker.clone()).child(self.output_picker.clone())
+                    .when(!self.audio_device_status.is_empty(), |view| view.child(audio_description(self.audio_device_status.clone()))))
                 .child(self.audio_controls(cx))
                 .child(audio_section("Microphone processing").children([
                     ("aec","Echo cancellation","Reduce echo from sound playing through your speakers.",self.dsp.echo_cancellation),

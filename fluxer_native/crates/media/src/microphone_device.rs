@@ -83,9 +83,11 @@ impl CaptureDevice {
             .name("fluxer-microphone".into())
             .spawn(move || {
                 let mut source: Option<PlatformInput> = None;
+                let mut enabled_intent = false;
                 loop {
                     match rx.recv_timeout(Duration::from_millis(3)) {
                         Ok(Command::Enabled(enabled, result)) => {
+                            enabled_intent = enabled;
                             let answer = if enabled && source.is_none() {
                                 PlatformInput::start(
                                     selected.as_deref(),
@@ -107,7 +109,7 @@ impl CaptureDevice {
                         }
                         Ok(Command::Device(id, result)) => {
                             let answer = validate(&id).and_then(|()| {
-                                if source.is_some() {
+                                if enabled_intent {
                                     // Release the previous capture before opening a
                                     // replacement, including replacement failure.
                                     source.take();

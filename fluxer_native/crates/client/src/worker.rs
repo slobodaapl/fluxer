@@ -394,9 +394,12 @@ impl Worker {
 
     pub(crate) async fn run(mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
         self.snapshot();
+        let mut device_poll = tokio::time::interval(Duration::from_secs(5));
+        let mut last_devices = None;
         loop {
             enum Incoming {
                 Dm(Option<DmEvent>),
+                DevicePoll,
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
@@ -417,6 +420,7 @@ impl Worker {
             }
             let incoming = tokio::select! {
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
+                _ = device_poll.tick(), if self.media.is_some() => Incoming::DevicePoll,
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
@@ -433,6 +437,17 @@ impl Worker {
             let result = match incoming {
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
+                Incoming::DevicePoll => {
+                    if let Some(media) = &mut self.media {
+                        if let Ok(devices) = media.reconcile_devices() {
+                            if last_devices.as_ref() != Some(&devices) {
+                                last_devices = Some(devices.clone());
+                                self.emit(Event::Devices(devices));
+                            }
+                        }
+                    }
+                    Ok(())
+                }
                 Incoming::Profile(Some(event)) => {
                     self.profile_event(event);
                     Ok(())
