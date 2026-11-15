@@ -113,7 +113,14 @@ impl MessageDocument {
     /// source intact for Copy Message and shift all projected byte ranges.
     pub fn with_author(&self, message: &Message) -> Self {
         let name = message.author.display_name();
-        let prefix = format!("{name} ");
+        // Block content starts on its own line, preserving code/quote/list
+        // indentation and backgrounds instead of absorbing it into the author.
+        let separator = if self.blocks.iter().any(|block| block.range.start == 0) {
+            '\n'
+        } else {
+            ' '
+        };
+        let prefix = format!("{name}{separator}");
         let offset = prefix.len();
         let mut doc = self.clone();
         doc.text.insert_str(0, &prefix);

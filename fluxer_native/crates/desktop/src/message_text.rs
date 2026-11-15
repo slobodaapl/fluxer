@@ -402,6 +402,30 @@ mod tests {
     }
 
     #[test]
+    fn compact_author_keeps_initial_quote_and_code_in_their_own_paragraph() {
+        let message = Message::text(
+            100.into(),
+            10.into(),
+            User {
+                username: "Alex".into(),
+                ..Default::default()
+            },
+            "",
+        );
+        for source in ["> quoted text", "```rust\nlet example = 1;\n```"] {
+            let original = document(source);
+            assert_eq!(original.blocks[0].range.start, 0);
+            let doc = original.with_author(&message);
+            assert!(valid(&doc));
+            assert!(doc.text.starts_with("Alex\n"));
+            let content_start = "Alex\n".len();
+            assert!(paragraph_indent(&doc, &(content_start..doc.text.len())) > px(0.));
+            assert_eq!(paragraph_indent(&doc, &(0.."Alex".len())), px(0.));
+            assert_eq!(doc.blocks[0].range.start, content_start);
+        }
+    }
+
+    #[test]
     fn actual_ast_nested_unicode_styles_survive_visual_row_clipping() {
         let doc = document("**bold *ital😄* end** __under__ ~~gone~~ `code`");
         assert!(valid(&doc));
