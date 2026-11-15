@@ -20,14 +20,14 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
+#[path = "worker_settings.rs"]
+mod display_settings_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
 #[path = "worker_people.rs"]
 mod people_flow;
 #[path = "worker_presence.rs"]
 mod presence_flow;
-#[path = "worker_settings.rs"]
-mod display_settings_flow;
 #[path = "worker_profile.rs"]
 mod profile_flow;
 
@@ -594,7 +594,10 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Presence(None) => Ok(()),
-                Incoming::DisplaySettings(Some(event)) => {self.display_settings_event(event).await; Ok(())}
+                Incoming::DisplaySettings(Some(event)) => {
+                    self.display_settings_event(event).await;
+                    Ok(())
+                }
                 Incoming::DisplaySettings(None) => Ok(()),
                 Incoming::People(Some(event)) => {
                     self.people_event(event);
@@ -1048,7 +1051,11 @@ impl Worker {
                 self.snapshot();
             }
             Command::UpdateDisplaySetting(setting) => {
-                if let Err(message) = self.set_display_setting(setting).await {self.emit(Event::DisplaySettingsMutation(crate::RelationshipMutationStatus::Failed(message)));}
+                if let Err(message) = self.set_display_setting(setting).await {
+                    self.emit(Event::DisplaySettingsMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
             }
             Command::SetPresenceStatus { status } => {
                 if let Err(message) = self.set_presence_status(status).await {
