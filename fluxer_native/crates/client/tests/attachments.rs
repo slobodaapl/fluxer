@@ -181,6 +181,7 @@ impl Fixture {
                                 }
                                 ("GET", "/api/v1/users/@me") => (200,json!({"id":"1","username":"fixture"})),
                                 ("GET", "/api/v1/channels/100/messages?limit=50" | "/api/v1/channels/101/messages?limit=50") => (200,json!([])),
+                                ("GET", "/api/v1/channels/100/slowmode" | "/api/v1/channels/101/slowmode") => (200,json!({"rate_limit_per_user":0,"retry_after_ms":0,"can_bypass":false})),
                                 ("POST", "/api/v1/channels/100/attachments") => {
                                     assert!(presigned);
                                     let body: Value = serde_json::from_slice(&bytes).unwrap();
