@@ -1,0 +1,11 @@
+# Profile and presence expansion
+
+The expanded profile reuses the compact profile's loaded snapshot and image resources. The modal presents only data already returned by the profile request, including biography, membership dates and guild roles. It preserves the existing direct-message and relationship confirmation flows. `Escape` closes it, backdrop clicks dismiss it, and its scroll area is bounded by the viewport. The entry is omitted for webhook identities.
+
+Source references: `fluxer_app/src/features/user/models/Profile.ts`, `fluxer_app/src/features/user/state/CustomStatus.ts`, `fluxer_app/src/features/user/hooks/useCustomStatusDraft.tsx`, `fluxer_app/src/features/app/config/TimeWindowPresets.ts`, and `fluxer_app/src/features/user/state/StatusExpiry.ts`.
+
+Pending live GUI review: narrow windows, long biographies and roles, image loading, keyboard navigation, backdrop dismissal and relationship confirmation. No live account mutations were performed.
+
+The custom status editor uses the existing emoji catalog and source duration presets. It sends either `emoji_id` or `emoji_name`, and computes `expires_at` at save time. Pending live GUI review includes emoji picker focus and custom status expiry.
+
+Presence limitations: the current native client does not yet expose timed status reset scheduling or a system-wide idle signal. In particular, window focus is not evidence of system idleness; the client does not infer AFK from it. Full profile biography remains inert text and does not yet provide classic link navigation.

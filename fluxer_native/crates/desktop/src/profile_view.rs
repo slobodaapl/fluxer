@@ -73,6 +73,7 @@ pub(super) struct ProfilePopup {
     armed: bool,
     copied: bool,
     presenting_loading: bool,
+    full: bool,
     confirm_blocked_dm: bool,
     confirm_block: bool,
     dm_status: Option<DirectMessageStatus>,
@@ -91,6 +92,7 @@ impl ProfilePopup {
             armed: false,
             copied: false,
             presenting_loading: false,
+            full: false,
             confirm_blocked_dm: false,
             confirm_block: false,
             dm_status: None,
@@ -108,6 +110,7 @@ impl ProfilePopup {
             self.previous_focus = window.focused(cx);
         }
         self.open = Some(config);
+        self.full = false;
         self.snapshot = None;
         self.presenting_loading = true;
         self.scroll = ScrollHandle::new();
@@ -308,7 +311,8 @@ impl ProfilePopup {
                 let count = if self.confirm_blocked_dm || self.confirm_block {
                     2
                 } else {
-                    1 + usize::from(self.failed())
+                    1 + usize::from(!self.full && self.open.as_ref().is_some_and(|o| !o.webhook))
+                        + usize::from(self.failed())
                         + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
                         + usize::from(
                             self.open
@@ -361,10 +365,26 @@ impl ProfilePopup {
                     }
                 } else if self.selected == 0 {
                     self.activate(false, cx);
-                } else if self.failed() && self.selected == 1 {
+                } else if !self.full
+                    && self.open.as_ref().is_some_and(|o| !o.webhook)
+                    && self.selected == 1
+                {
+                    self.full = true;
+                    self.selected = 0;
+                    self.scroll = ScrollHandle::new();
+                    cx.notify();
+                } else if self.failed()
+                    && self.selected
+                        == 1 + usize::from(
+                            !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                        )
+                {
                     self.activate(true, cx);
                 } else if self.open.as_ref().is_some_and(|o| o.can_message)
-                    && self.selected == 1 + usize::from(self.failed())
+                    && self.selected
+                        == 1 + usize::from(
+                            !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                        ) + usize::from(self.failed())
                 {
                     self.message(cx);
                 } else if self
@@ -372,7 +392,9 @@ impl ProfilePopup {
                     .as_ref()
                     .is_some_and(|o| o.friend_action.is_some())
                     && self.selected
-                        == 1 + usize::from(self.failed())
+                        == 1 + usize::from(
+                            !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                        ) + usize::from(self.failed())
                             + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
                 {
                     self.friend_action(cx);
@@ -449,6 +471,46 @@ impl ProfilePopup {
             return div().into_any_element();
         };
         let (origin, width, height) = placement(open.anchor, window.viewport_size());
+        if self.full {
+            let viewport = window.viewport_size();
+            let width = (f32::from(viewport.width) - 32.).clamp(1., 600.);
+            let height = (f32::from(viewport.height) - 32.).max(1.);
+            return deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000099))
+                    .occlude()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| this.dismiss(window, cx)),
+                    )
+                    .child(
+                        div()
+                            .id("native-full-profile")
+                            .track_focus(&self.focus)
+                            .occlude()
+                            .w(px(width))
+                            .max_h(px(height))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .rounded_lg()
+                            .bg(rgb(0x232428))
+                            .text_color(rgb(0xf2f3f5))
+                            .shadow_lg()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .capture_key_down(cx.listener(Self::key_down))
+                            .capture_key_up(cx.listener(Self::key_up))
+                            .child(content),
+                    ),
+            )
+            .with_priority(9)
+            .into_any_element();
+        }
         deferred(
             anchored()
                 .position_mode(AnchoredPositionMode::Window)
@@ -879,11 +941,14 @@ impl Render for ProfilePopup {
                                 .px_2()
                                 .py_1()
                                 .rounded_md()
-                                .bg(rgb(if self.selected == 1 {
-                                    0x535064
-                                } else {
-                                    0x383a40
-                                }))
+                                .bg(rgb(
+                                    if self.selected == 1 + usize::from(!self.full && !open.webhook)
+                                    {
+                                        0x535064
+                                    } else {
+                                        0x383a40
+                                    },
+                                ))
                                 .child("Retry")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     cx.stop_propagation();
@@ -901,6 +966,31 @@ impl Render for ProfilePopup {
                 }
             }
         }
+        if !self.full && !open.webhook {
+            content = content.child(
+                div()
+                    .id("profile-view-full")
+                    .cursor_pointer()
+                    .mt_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_size(px(12.))
+                    .bg(rgb(if self.selected == 1 {
+                        0x535064
+                    } else {
+                        0x383a40
+                    }))
+                    .child("View full profile")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.full = true;
+                        this.selected = 0;
+                        this.scroll = ScrollHandle::new();
+                        cx.notify();
+                    })),
+            );
+        }
         if open.can_message {
             content = content.child(
                 div()
@@ -910,11 +1000,17 @@ impl Render for ProfilePopup {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgb(if self.selected == 1 + usize::from(self.failed()) {
-                        0x7289ef
-                    } else {
-                        0x5865f2
-                    }))
+                    .bg(rgb(
+                        if self.selected
+                            == 1 + usize::from(
+                                !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                            ) + usize::from(self.failed())
+                        {
+                            0x7289ef
+                        } else {
+                            0x5865f2
+                        },
+                    ))
                     .text_size(px(12.))
                     .child(if open.blocked { "Open DM" } else { "Message" })
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -938,7 +1034,10 @@ impl Render for ProfilePopup {
                     .rounded_md()
                     .bg(rgb(
                         if self.selected
-                            == 1 + usize::from(self.failed()) + usize::from(open.can_message)
+                            == 1 + usize::from(
+                                !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                            ) + usize::from(self.failed())
+                                + usize::from(open.can_message)
                         {
                             0x535064
                         } else {
@@ -972,7 +1071,9 @@ impl Render for ProfilePopup {
                     .text_color(rgb(0xf2b8b5))
                     .bg(rgb(
                         if self.selected
-                            == 1 + usize::from(self.failed())
+                            == 1 + usize::from(
+                                !self.full && self.open.as_ref().is_some_and(|o| !o.webhook),
+                            ) + usize::from(self.failed())
                                 + usize::from(open.can_message)
                                 + usize::from(open.friend_action.is_some())
                         {
