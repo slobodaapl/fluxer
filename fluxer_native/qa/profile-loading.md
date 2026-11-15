@@ -10,8 +10,8 @@ Escape/outside dismissal remains available; hidden profile actions cannot fire
 while the skeleton is shown. No extra network client, credential forwarding or
 additional unbounded image cache is introduced.
 
-Explicit offline fixture: `--demo FLUXER_PROFILE_DEMO=loading` (environment
-variable, not an argument); `loading-error` returns a delayed missing banner.
+Explicit offline fixture: `FLUXER_PROFILE_DEMO=loading fluxer-desktop --demo`;
+`loading-error` returns a delayed missing banner.
 Both serve avatar/banner PNGs over private loopback with 300/1200 ms delays and
 reopen after three seconds using identical resource URLs. Logs must show exactly
 one request per image, a completed reopen and no request count=2. Inspect pending,

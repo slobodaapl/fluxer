@@ -67,6 +67,9 @@ struct MediaPlayer {
     demo_started: Option<std::time::Instant>,
     fast_poll_until: std::time::Instant,
     last_prepaint: std::time::Instant,
+    activation_observer: Option<Subscription>,
+    fixture_trace: bool,
+    awaiting_prepaint: bool,
 }
 impl EventEmitter<PlayerEvent> for MediaPlayer {}
 
@@ -162,6 +165,10 @@ impl MediaPlayer {
             demo_started: None,
             fast_poll_until: std::time::Instant::now(),
             last_prepaint: std::time::Instant::now(),
+            activation_observer: None,
+            awaiting_prepaint: false,
+            fixture_trace: std::env::args().any(|arg| arg == "--demo-media")
+                && std::env::var("FLUXER_MEDIA_DEMO_GIF_ONLY").as_deref() == Ok("1"),
         }
     }
 
@@ -174,6 +181,9 @@ impl MediaPlayer {
         let _ = self.wake.try_send(());
         if self.player.is_some() || self.download.is_some() || self.download_error.is_some() {
             return;
+        }
+        if self.fixture_trace {
+            eprintln!("GIF_FIXTURE decoder-open");
         }
         if let Some(file) = self.file.clone() {
             self.open_file(file);
@@ -255,6 +265,9 @@ impl MediaPlayer {
             return self.wanted;
         }
         if self.source.kind == PlayableKind::Gifv {
+            if self.awaiting_prepaint {
+                return false;
+            }
             playable_media::gifv_should_play(GifvPlaybackSignals {
                 near_viewport: self.visible,
                 in_viewport: self.visible,
@@ -291,8 +304,21 @@ impl MediaPlayer {
         let mut changed = false;
         // Virtualized rows may unmount without another clipped prepaint. Active
         // visible video continually redraws; stop presenting stale visibility.
-        if self.visible && !self.modal && self.last_prepaint.elapsed() > Duration::from_millis(250)
+        // An inactive Wayland window may receive no frames: this is not evidence
+        // that its on-screen GIF scrolled away. Keep the paused decoder cached.
+        if self.visible
+            && self.active
+            && !self.awaiting_prepaint
+            && !self.modal
+            && self.last_prepaint.elapsed() > Duration::from_millis(250)
         {
+            if self.fixture_trace {
+                eprintln!(
+                    "GIF_FIXTURE stale-visibility active={} age_ms={}",
+                    self.active,
+                    self.last_prepaint.elapsed().as_millis()
+                );
+            }
             self.visible = false;
             self.hovered = false;
             changed = true;
@@ -320,6 +346,9 @@ impl MediaPlayer {
         {
             // Keep the cached file and tiny concealed preview, not a collection
             // of paused decoders/full-resolution GPU textures after scrolling.
+            if self.fixture_trace {
+                eprintln!("GIF_FIXTURE decoder-retired");
+            }
             self.player.take();
             self.last_policy = false;
             if let Some(snapshot) = &mut self.snapshot {
@@ -571,6 +600,24 @@ impl MediaPlayer {
 
 impl Render for MediaPlayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.activation_observer.is_none() {
+            // Compositors may stop frame callbacks for an inactive window.
+            // Apply focus policy from the event, not from a future repaint.
+            self.activation_observer =
+                Some(cx.observe_window_activation(window, |player, window, cx| {
+                    player.active = window.is_window_active();
+                    player.awaiting_prepaint = player.active;
+                    if player.fixture_trace {
+                        eprintln!("GIF_FIXTURE activation={}", player.active);
+                    }
+                    if player.active {
+                        player.last_prepaint = std::time::Instant::now();
+                        player.hidden_hold = false;
+                    }
+                    player.apply_policy();
+                    cx.notify();
+                }));
+        }
         self.active = window.is_window_active();
         self.apply_policy();
         let weak = cx.entity().downgrade();
@@ -584,7 +631,11 @@ impl Render for MediaPlayer {
                 cx.defer(move |cx| {
                     let _ = weak.update(cx, |player, cx| {
                         player.last_prepaint = std::time::Instant::now();
-                        if player.visible != visible || player.hovered != hovered {
+                        if player.visible != visible
+                            || player.hovered != hovered
+                            || player.awaiting_prepaint
+                        {
+                            player.awaiting_prepaint = false;
                             player.visible = visible;
                             player.hovered = hovered;
                             // Concealed media preloads paused. Normal video/audio
@@ -897,6 +948,10 @@ impl PlaybackUi {
                 player.enabled = enabled;
                 player.active = active;
                 if active {
+                    player.awaiting_prepaint = true;
+                    // Allow the reactivated window its first prepaint before
+                    // judging visibility from an old background timestamp.
+                    player.last_prepaint = std::time::Instant::now();
                     player.hidden_hold = false;
                     if player.wanted {
                         player.ensure_loaded();

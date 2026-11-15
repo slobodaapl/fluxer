@@ -786,7 +786,9 @@ mod native {
                         break;
                     }
                     eof = false;
-                    initialized = false;
+                    // A loop is not a new load. Retain the last decoded frame
+                    // and readiness while prerolling the next iteration; short
+                    // loops otherwise keep the UI sampling Loading forever.
                     preroll_shown = false;
                     seek_fallback = None;
                     seek_target = 0.0;
@@ -1517,6 +1519,72 @@ mod tests {
         wait(&player, |s| s.position > 1.2);
         wait(&player, |s| s.status == FilePlaybackStatus::Ended);
         let _ = std::fs::remove_file(path);
+    }
+    #[test]
+    fn short_loop_remains_ready_across_pause_and_resume() {
+        let path =
+            std::env::temp_dir().join(format!("fluxer-short-loop-{}.mp4", std::process::id()));
+        assert!(
+            Process::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=64x48:rate=20:duration=0.05",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:v",
+                    "libx264"
+                ])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let player = FilePlayer::open_impl(
+            path.clone(),
+            FilePlaybackOptions {
+                autoplay: true,
+                looping: true,
+                muted: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        wait(&player, |s| {
+            s.status == FilePlaybackStatus::Playing && s.width == 64
+        });
+        for _ in 0..3 {
+            let end = Instant::now() + Duration::from_millis(350);
+            let mut previous = player.snapshot().position;
+            let mut wraps = 0;
+            while Instant::now() < end {
+                let snapshot = player.snapshot();
+                assert_eq!(
+                    snapshot.status,
+                    FilePlaybackStatus::Playing,
+                    "ready GIF loop regressed to loading: {snapshot:?}"
+                );
+                if snapshot.position < previous {
+                    wraps += 1;
+                }
+                previous = snapshot.position;
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(wraps >= 2, "short GIF did not continue looping");
+            player.pause();
+            let position = wait(&player, |s| s.status == FilePlaybackStatus::Paused).position;
+            thread::sleep(Duration::from_millis(75));
+            assert!((player.snapshot().position - position).abs() < 0.01);
+            player.play();
+            wait(&player, |s| s.status == FilePlaybackStatus::Playing);
+        }
+        drop(player);
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn one_frame_loop_respects_duration() {

@@ -16,6 +16,7 @@ pub(super) enum MessageAction {
     Reply,
     Forward,
     Copy,
+    CopyLink,
     Jump,
     MarkUnread,
     Pin,
@@ -29,6 +30,7 @@ impl MessageAction {
             Self::Reply => "Reply",
             Self::Forward => "Forward",
             Self::Copy => "Copy text",
+            Self::CopyLink => "Copy link to message",
             Self::Jump => "Jump to message",
             Self::MarkUnread => "Mark unread",
             Self::Pin => {
@@ -48,6 +50,7 @@ impl MessageAction {
             Self::Reply => Icon::Reply,
             Self::Forward => Icon::Forward,
             Self::Copy => Icon::Copy,
+            Self::CopyLink => Icon::Copy,
             Self::Jump => Icon::Jump,
             Self::MarkUnread => Icon::MarkUnread,
             Self::Pin => Icon::Pin,
@@ -247,6 +250,11 @@ impl Fluxer {
         }
         actions.push(MessageAction::Copy);
         if permissions.contains(Permissions::VIEW_CHANNEL)
+            && self.message_link_for(message).is_some()
+        {
+            actions.push(MessageAction::CopyLink);
+        }
+        if permissions.contains(Permissions::VIEW_CHANNEL)
             && self
                 .state
                 .messages
@@ -277,6 +285,12 @@ impl Fluxer {
             }
         }
         actions
+    }
+
+    fn message_link_for(&self, message: &Message) -> Option<String> {
+        let channel = self.state.channels.get(&message.channel_id)?;
+        self.message_links
+            .message_link(channel.guild_id, channel.id, message.id)
     }
 
     pub(super) fn dismiss_message_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,6 +365,14 @@ impl Fluxer {
                 cx.write_to_clipboard(ClipboardItem::new_string(chat_helpers::display_text(
                     &message,
                 )));
+                if let Some(focus) = self.message_actions.previous_focus.take() {
+                    focus.focus(window);
+                }
+            }
+            MessageAction::CopyLink => {
+                if let Some(link) = self.message_link_for(&message) {
+                    cx.write_to_clipboard(ClipboardItem::new_string(link));
+                }
                 if let Some(focus) = self.message_actions.previous_focus.take() {
                     focus.focus(window);
                 }

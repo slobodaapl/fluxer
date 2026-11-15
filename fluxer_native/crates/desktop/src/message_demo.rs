@@ -16,6 +16,11 @@ impl Fluxer {
             return;
         };
         self.message_demo_started = true;
+        // Synthetic links for the explicit offline fixture, never a live host.
+        self.message_links.configure_instance(&serde_json::json!({
+            "endpoints":{"webapp":"https://profile-review.example"},
+            "features":{"self_hosted":true}
+        }));
         let base = DateTime::parse_from_rfc3339("2026-11-11T18:00:00Z").expect("fixture time");
         let alex = self
             .state
@@ -129,6 +134,28 @@ impl Fluxer {
         }
         self.media_endpoint = fixture_emoji_endpoint();
         self.timeline.set_offset(point(px(0.), px(0.)));
+        if std::env::var("FLUXER_MESSAGE_LINK_DEMO").as_deref() == Ok("1")
+            && let (Some(handle), Some(message)) = (
+                cx.windows().first().copied(),
+                self.state.channel_messages(channel).next().cloned(),
+            )
+        {
+            cx.spawn(async move |entity, cx| {
+                Timer::after(Duration::from_millis(500)).await;
+                let _ = handle.update(cx, |_, window, cx| {
+                    let _ = entity.update(cx, |view, cx| {
+                        view.open_message_menu(
+                            message,
+                            point(px(430.), px(250.)),
+                            message_actions::MessageMenuContext::Timeline,
+                            window,
+                            cx,
+                        )
+                    });
+                });
+            })
+            .detach();
+        }
         cx.notify();
     }
 }

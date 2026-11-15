@@ -85,6 +85,14 @@ impl MessageLinks {
     pub fn channel_link(&self, guild: Option<Snowflake>, channel: Snowflake) -> Option<String> {
         channel_url(self.policy.web_app.as_ref()?, guild, channel)
     }
+    pub fn message_link(
+        &self,
+        guild: Option<Snowflake>,
+        channel: Snowflake,
+        message: Snowflake,
+    ) -> Option<String> {
+        message_url(self.policy.web_app.as_ref()?, guild, channel, message)
+    }
 }
 
 fn channel_url(webapp: &Url, guild: Option<Snowflake>, channel: Snowflake) -> Option<String> {
@@ -95,6 +103,22 @@ fn channel_url(webapp: &Url, guild: Option<Snowflake>, channel: Snowflake) -> Op
     base.join(&format!("/channels/{scope}/{channel}"))
         .ok()
         .map(Into::into)
+}
+
+fn message_url(
+    webapp: &Url,
+    guild: Option<Snowflake>,
+    channel: Snowflake,
+    message: Snowflake,
+) -> Option<String> {
+    if channel == Snowflake(0) || message == Snowflake(0) {
+        return None;
+    }
+    Some(format!(
+        "{}/{}",
+        channel_url(webapp, guild, channel)?,
+        message
+    ))
 }
 
 #[derive(Default)]
@@ -583,6 +607,36 @@ mod tests {
                 &reqwest::Url::parse("https://user:secret@chat.example").unwrap(),
                 None,
                 fluxer_core::Snowflake(22)
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn copied_message_links_roundtrip_guild_dm_voice_and_self_hosted_routes() {
+        let webapp = reqwest::Url::parse("https://self-hosted.example/app?ignored=true").unwrap();
+        for guild in [Some(Snowflake(1)), None] {
+            let link =
+                super::message_url(&webapp, guild, Snowflake(14), Snowflake(987654321)).unwrap();
+            let scope = guild
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "@me".into());
+            assert_eq!(
+                link,
+                format!("https://self-hosted.example/channels/{scope}/14/987654321")
+            );
+            let parsed = reqwest::Url::parse(&link).unwrap();
+            let route = internal_route(&parsed, None, Some(&webapp), Some(true)).unwrap();
+            assert_eq!(route.scope, guild);
+            assert_eq!(route.channel, Snowflake(14));
+            assert_eq!(route.message, Some(Snowflake(987654321)));
+        }
+        assert!(super::message_url(&webapp, None, Snowflake(14), Snowflake(0)).is_none());
+        assert!(
+            super::message_url(
+                &reqwest::Url::parse("https://user:secret@host").unwrap(),
+                None,
+                Snowflake(14),
+                Snowflake(99)
             )
             .is_none()
         );

@@ -392,7 +392,11 @@ impl Fluxer {
                 .into_iter()
                 .find(|action| format!("{action:?}") == wanted)
             {
-                if action != crate::message_actions::MessageAction::Copy {
+                if !matches!(
+                    action,
+                    crate::message_actions::MessageAction::Copy
+                        | crate::message_actions::MessageAction::CopyLink
+                ) {
                     if self.image_viewer.is_open() {
                         self.dismiss_image_viewer(window, cx);
                     }

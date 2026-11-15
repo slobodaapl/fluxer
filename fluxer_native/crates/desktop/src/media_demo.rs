@@ -122,7 +122,11 @@ impl Fluxer {
         );
         unavailable.extra.insert("expired".into(), json!(true));
         expired.attachments.push(unavailable);
-        let mut messages = vec![video, audio, gifv, spoiler, expired];
+        let mut messages = if std::env::var("FLUXER_MEDIA_DEMO_GIF_ONLY").as_deref() == Ok("1") {
+            vec![gifv]
+        } else {
+            vec![video, audio, gifv, spoiler, expired]
+        };
         for (index, message) in messages.iter_mut().enumerate() {
             message.timestamp = format!("2026-11-13T12:{index:02}:00Z");
         }
