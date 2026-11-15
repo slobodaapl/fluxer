@@ -7,6 +7,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     time::Duration,
 };
@@ -15,7 +16,38 @@ fn bad(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
 
+#[derive(Default)]
+pub(super) struct RangeProgress {
+    active: AtomicBool,
+    bytes: AtomicU64,
+    total: AtomicU64,
+    waiting: Arc<AtomicBool>,
+}
+impl RangeProgress {
+    pub fn wait_handle(&self) -> Arc<AtomicBool> {
+        self.waiting.clone()
+    }
+    pub fn progress(&self) -> Option<f32> {
+        let total = self.total.load(Ordering::Relaxed);
+        (self.active.load(Ordering::Relaxed) && total > 0).then(|| {
+            (self.bytes.load(Ordering::Relaxed) as f64 / total as f64).clamp(0.0, 1.0) as f32
+        })
+    }
+}
+struct WaitingGuard(Arc<AtomicBool>);
+impl WaitingGuard {
+    fn new(waiting: Arc<AtomicBool>) -> Self {
+        waiting.store(true, Ordering::Release);
+        Self(waiting)
+    }
+}
+impl Drop for WaitingGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 pub(super) struct RangeReader {
+    progress: Arc<RangeProgress>,
     url: String,
     client: Client,
     cancel: Arc<AtomicBool>,
@@ -26,6 +58,8 @@ pub(super) struct RangeReader {
     chunk: Vec<u8>,
     validator: Option<(header::HeaderName, header::HeaderValue)>,
     fallback: Option<tempfile::NamedTempFile>,
+    prefetch: Option<(u64, mpsc::Receiver<io::Result<Vec<u8>>>)>,
+    allow_prefetch: bool,
 }
 impl RangeReader {
     pub fn new(
@@ -41,10 +75,12 @@ impl RangeReader {
             return Err("This media file is too large for native playback".into());
         }
         let client = media_download::client_builder(Duration::from_secs(2))
+            .connect_timeout(Duration::from_secs(2))
             .build()
             .map_err(|_| "Could not start the media downloader")?;
         Ok(Self {
             url,
+            progress: Arc::new(RangeProgress::default()),
             client,
             cancel,
             interrupt,
@@ -54,7 +90,12 @@ impl RangeReader {
             chunk: Vec::new(),
             validator: None,
             fallback: None,
+            prefetch: None,
+            allow_prefetch: true,
         })
+    }
+    pub fn progress_handle(&self) -> Arc<RangeProgress> {
+        self.progress.clone()
     }
     fn cancelled(&self) -> io::Result<()> {
         if self.cancel.load(Ordering::Acquire) {
@@ -64,6 +105,9 @@ impl RangeReader {
         }
     }
     fn request(&mut self, start: u64) -> io::Result<()> {
+        let _waiting = self
+            .allow_prefetch
+            .then(|| WaitingGuard::new(self.progress.waiting.clone()));
         self.cancelled()?;
         let generation = self.interrupt.load(Ordering::Acquire);
         if start >= MAX_BYTES {
@@ -171,7 +215,52 @@ impl RangeReader {
         }
         self.chunk_at = start;
         self.chunk = chunk;
+        self.schedule_prefetch();
         Ok(())
+    }
+    fn schedule_prefetch(&mut self) {
+        if !self.allow_prefetch || self.fallback.is_some() {
+            return;
+        }
+        if let Some((_, rx)) = &self.prefetch {
+            match rx.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => return,
+                _ => self.prefetch = None,
+            }
+        }
+        let Some(size) = self.size else {
+            return;
+        };
+        let next = self.chunk_at.saturating_add(self.chunk.len() as u64);
+        if next >= size {
+            return;
+        }
+        let mut source = Self {
+            progress: self.progress.clone(),
+            url: self.url.clone(),
+            client: self.client.clone(),
+            cancel: self.cancel.clone(),
+            interrupt: self.interrupt.clone(),
+            size: Some(size),
+            pos: next,
+            chunk_at: 0,
+            chunk: Vec::new(),
+            validator: self.validator.clone(),
+            fallback: None,
+            prefetch: None,
+            allow_prefetch: false,
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        if std::thread::Builder::new()
+            .name("media-range-prefetch".into())
+            .spawn(move || {
+                let result = source.request(next).map(|()| source.chunk);
+                let _ = tx.send(result);
+            })
+            .is_ok()
+        {
+            self.prefetch = Some((next, rx));
+        }
     }
     fn full_download(&mut self, mut response: reqwest::blocking::Response) -> io::Result<()> {
         if response
@@ -191,22 +280,26 @@ impl RangeReader {
                 media_download::cache_directory().map_err(|_| bad("Media cache unavailable"))?,
             )
             .map_err(|_| bad("Media cache unavailable"))?;
-        let progress = AtomicU64::new(0);
+        self.progress
+            .total
+            .store(expected.unwrap_or(0), Ordering::Relaxed);
+        self.progress.active.store(true, Ordering::Relaxed);
         media_download::copy_bounded(
             &mut response,
             file.as_file_mut(),
             MAX_BYTES,
             &self.cancel,
-            &progress,
+            &self.progress.bytes,
         )
         .map_err(|_| bad("Media download failed"))?;
-        let length = progress.load(Ordering::Relaxed);
+        let length = self.progress.bytes.load(Ordering::Relaxed);
         if expected.is_some_and(|expected| expected != length) {
             return Err(bad("Incomplete media download"));
         }
         file.as_file_mut().flush()?;
         self.size = Some(length);
         self.fallback = Some(file);
+        self.progress.active.store(false, Ordering::Relaxed);
         Ok(())
     }
     fn ensure(&mut self) -> io::Result<()> {
@@ -242,7 +335,23 @@ impl Read for RangeReader {
             return Ok(n);
         }
         if self.pos < self.chunk_at || self.pos >= self.chunk_at + self.chunk.len() as u64 {
-            self.request(self.pos)?;
+            let prefetched = self.prefetch.as_ref().is_some_and(|(start, _)| {
+                self.pos >= *start && self.pos < start.saturating_add(CHUNK)
+            });
+            if prefetched {
+                let (start, rx) = self.prefetch.take().unwrap();
+                let _waiting = WaitingGuard::new(self.progress.waiting.clone());
+                match rx.recv_timeout(Duration::from_secs(3)) {
+                    Ok(Ok(chunk)) if self.pos < start + chunk.len() as u64 => {
+                        self.chunk_at = start;
+                        self.chunk = chunk;
+                        self.schedule_prefetch();
+                    }
+                    _ => self.request(self.pos)?,
+                }
+            } else {
+                self.request(self.pos)?;
+            }
         }
         let offset = (self.pos - self.chunk_at) as usize;
         let n = out.len().min(self.chunk.len() - offset);
@@ -482,6 +591,12 @@ mod tests {
             let addr = listener.local_addr().unwrap();
             let stopped = Arc::new(AtomicBool::new(false));
             let server_stop = stopped.clone();
+            let stall_next = Arc::new(AtomicBool::new(false));
+            let server_stall = stall_next.clone();
+            let stall_entered = Arc::new(AtomicBool::new(false));
+            let server_entered = stall_entered.clone();
+            let stall_release = Arc::new(AtomicBool::new(false));
+            let server_release = stall_release.clone();
             let sent = Arc::new(AtomicU64::new(0));
             let server_sent = sent.clone();
             let requests = Arc::new(AtomicU64::new(0));
@@ -514,6 +629,14 @@ mod tests {
                         break;
                     };
                     server_requests.fetch_add(1, Ordering::Release);
+                    if server_stall.swap(false, Ordering::AcqRel) {
+                        server_entered.store(true, Ordering::Release);
+                        while !server_release.load(Ordering::Acquire)
+                            && !server_stop.load(Ordering::Acquire)
+                        {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                    }
                     let (start, end) = range.split_once('-').unwrap();
                     let start: usize = start.parse().unwrap();
                     let end = end.parse::<usize>().unwrap().min(server_data.len() - 1);
@@ -536,10 +659,12 @@ mod tests {
                 interrupt.clone(),
             )
             .unwrap();
+            let waiting = source.progress_handle().wait_handle();
             let player = FilePlayer::open_reader(
                 Box::new(source),
                 cancel,
                 interrupt,
+                waiting,
                 FilePlaybackOptions::default(),
             )
             .unwrap();
@@ -567,6 +692,29 @@ mod tests {
             );
             let before = requests.load(Ordering::Acquire);
             player.play();
+            let cadence_deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut frames = 0;
+            while std::time::Instant::now() < cadence_deadline {
+                if player.take_frame().is_some() {
+                    frames += 1;
+                }
+                assert_ne!(
+                    player.snapshot().status,
+                    FilePlaybackStatus::Failed,
+                    "{:?}",
+                    player.snapshot().error
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                frames >= 30,
+                "insufficient frame cadence: {frames} frames in 3 seconds"
+            );
+            assert!(
+                player.snapshot().position >= 2.0,
+                "playback clock stalled: {:?}",
+                player.snapshot()
+            );
             let request_deadline = std::time::Instant::now() + Duration::from_secs(8);
             while requests.load(Ordering::Acquire) == before
                 && std::time::Instant::now() < request_deadline
@@ -577,12 +725,85 @@ mod tests {
                 requests.load(Ordering::Acquire) > before,
                 "playback did not issue another range"
             );
+            stall_next.store(true, Ordering::Release);
+            let stall_deadline = std::time::Instant::now() + Duration::from_secs(8);
+            while (!stall_entered.load(Ordering::Acquire)
+                || player.snapshot().status != FilePlaybackStatus::Loading)
+                && std::time::Instant::now() < stall_deadline
+            {
+                assert_ne!(
+                    player.snapshot().status,
+                    FilePlaybackStatus::Failed,
+                    "{:?}",
+                    player.snapshot().error
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                stall_entered.load(Ordering::Acquire),
+                "slow range did not start"
+            );
+            assert_eq!(
+                player.snapshot().status,
+                FilePlaybackStatus::Loading,
+                "underflow must show buffering"
+            );
+            let frozen = player.snapshot().position;
+            thread::sleep(Duration::from_millis(300));
+            assert!(
+                (player.snapshot().position - frozen).abs() < 0.05,
+                "clock advanced during underflow"
+            );
+            stall_release.store(true, Ordering::Release);
+            let resume_deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while player.snapshot().status == FilePlaybackStatus::Loading
+                && std::time::Instant::now() < resume_deadline
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_ne!(
+                player.snapshot().status,
+                FilePlaybackStatus::Failed,
+                "{:?}",
+                player.snapshot().error
+            );
+            assert!(
+                player.snapshot().position - frozen < 0.5,
+                "clock skipped buffered content after stall"
+            );
+            player.pause();
             player.seek(3.0);
             player.seek(8.0);
+            let reference = FilePlayer::open(path.clone(), FilePlaybackOptions::default()).unwrap();
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             loop {
-                if player.take_frame().is_some() && player.snapshot().position >= 7.9 {
+                if reference.take_frame().is_some() {
                     break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "reference open timed out"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            reference.seek(8.0);
+            let expected = loop {
+                if let Some(frame) = reference.take_frame()
+                    && reference.snapshot().position >= 7.9
+                {
+                    break frame;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "reference seek timed out"
+                );
+                thread::sleep(Duration::from_millis(10));
+            };
+            let actual = loop {
+                if let Some(frame) = player.take_frame()
+                    && player.snapshot().position >= 7.9
+                {
+                    break frame;
                 }
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -590,7 +811,13 @@ mod tests {
                     player.snapshot()
                 );
                 thread::sleep(Duration::from_millis(10));
-            }
+            };
+            assert_eq!(
+                actual.bgra.as_ref(),
+                expected.bgra.as_ref(),
+                "network seek must show the same frame as local decoding"
+            );
+            drop(reference);
             drop(player);
             stopped.store(true, Ordering::Release);
             server.join().unwrap();

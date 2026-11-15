@@ -17,12 +17,29 @@ enum PlayerEvent {
     Reveal,
     Original,
     Demo(PlayerAction),
+    Preferences(PlayableKind, PlaybackPreference),
+}
+
+/// Player slider value and mute state, scoped separately for audio and video.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PlaybackPreference {
+    pub volume: f32,
+    pub muted: bool,
+}
+impl Default for PlaybackPreference {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            muted: false,
+        }
+    }
 }
 
 struct MediaPlayer {
     source: PlayableMedia,
     focus: FocusHandle,
     download: Option<Download>,
+    range_progress: Option<Arc<crate::media_range::RangeProgress>>,
     file: Option<Arc<tempfile::NamedTempFile>>,
     player: Option<FilePlayer>,
     snapshot: Option<FilePlaybackSnapshot>,
@@ -54,7 +71,12 @@ struct MediaPlayer {
 impl EventEmitter<PlayerEvent> for MediaPlayer {}
 
 impl MediaPlayer {
-    fn new(source: PlayableMedia, output: Option<String>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        source: PlayableMedia,
+        output: Option<String>,
+        preference: PlaybackPreference,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let defaults = source.kind.defaults();
         let demo_auto = source.kind == PlayableKind::Video
             && source.title == "Generated silent MP4"
@@ -104,10 +126,11 @@ impl MediaPlayer {
         })
         .detach();
         Self {
-            source,
+            source: source.clone(),
             focus: cx.focus_handle(),
             output,
             download: None,
+            range_progress: None,
             file: None,
             player: None,
             snapshot: None,
@@ -124,8 +147,12 @@ impl MediaPlayer {
             wanted: demo_auto,
             user_paused: false,
             hidden_hold: false,
-            muted: defaults.muted,
-            volume: 1.,
+            muted: if source.kind == PlayableKind::Gifv {
+                defaults.muted
+            } else {
+                preference.muted
+            },
+            volume: preference.volume,
             last_policy: false,
             pending_seek: None,
             wake,
@@ -159,12 +186,20 @@ impl MediaPlayer {
                 cancel.clone(),
                 interrupt.clone(),
             );
+            let waiting = source
+                .as_ref()
+                .map(|source| source.progress_handle().wait_handle())
+                .unwrap_or_else(|_| Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            if let Ok(source) = &source {
+                self.range_progress = Some(source.progress_handle());
+            }
             let defaults = self.source.kind.defaults();
             match source.and_then(|source| {
                 FilePlayer::open_reader(
                     Box::new(source),
                     cancel,
                     interrupt,
+                    waiting,
                     FilePlaybackOptions {
                         autoplay: false,
                         looping: defaults.looping,
@@ -411,7 +446,17 @@ impl MediaPlayer {
             duration: snapshot.and_then(|s| s.duration).or(self.source.duration),
             loading: self.download.is_some()
                 || snapshot.is_some_and(|s| s.status == FilePlaybackStatus::Loading),
-            progress: self.download.as_ref().and_then(Download::progress),
+            buffering: snapshot
+                .is_some_and(|s| s.status == FilePlaybackStatus::Loading && s.position > 0.0),
+            progress: self
+                .download
+                .as_ref()
+                .and_then(Download::progress)
+                .or_else(|| {
+                    self.range_progress
+                        .as_ref()
+                        .and_then(|progress| progress.progress())
+                }),
             error: self
                 .download_error
                 .clone()
@@ -481,11 +526,29 @@ impl MediaPlayer {
                     player.set_volume(self.volume);
                     player.set_muted(self.muted);
                 }
+                if self.source.kind != PlayableKind::Gifv {
+                    cx.emit(PlayerEvent::Preferences(
+                        self.source.kind,
+                        PlaybackPreference {
+                            volume: self.volume,
+                            muted: self.muted,
+                        },
+                    ));
+                }
             }
             PlayerAction::Mute => {
                 self.muted = !self.muted;
                 if let Some(player) = &self.player {
                     player.set_muted(self.muted);
+                }
+                if self.source.kind != PlayableKind::Gifv {
+                    cx.emit(PlayerEvent::Preferences(
+                        self.source.kind,
+                        PlaybackPreference {
+                            volume: self.volume,
+                            muted: self.muted,
+                        },
+                    ));
                 }
             }
         }
@@ -627,6 +690,8 @@ pub(super) struct PlaybackUi {
     pub modal: PlayerModal,
     output: Option<String>,
     retained_browser: HashSet<String>,
+    audio_preference: PlaybackPreference,
+    video_preference: PlaybackPreference,
 }
 impl PlaybackUi {
     pub fn new(cx: &mut App) -> Self {
@@ -637,6 +702,36 @@ impl PlaybackUi {
             modal: PlayerModal::new(cx),
             output: None,
             retained_browser: HashSet::new(),
+            audio_preference: PlaybackPreference::default(),
+            video_preference: PlaybackPreference::default(),
+        }
+    }
+    pub fn set_preference(
+        &mut self,
+        kind: PlayableKind,
+        preference: PlaybackPreference,
+        cx: &mut App,
+    ) {
+        if !preference.volume.is_finite() || !(0.0..=1.0).contains(&preference.volume) {
+            return;
+        }
+        match kind {
+            PlayableKind::Audio => self.audio_preference = preference,
+            PlayableKind::Video => self.video_preference = preference,
+            PlayableKind::Gifv => return,
+        }
+        for player in self.players.values() {
+            player.update(cx, |player, cx| {
+                if player.source.kind == kind {
+                    player.volume = preference.volume;
+                    player.muted = preference.muted;
+                    if let Some(native) = &player.player {
+                        native.set_volume(preference.volume);
+                        native.set_muted(preference.muted);
+                    }
+                    cx.notify();
+                }
+            });
         }
     }
     pub fn begin_frame(
@@ -708,10 +803,17 @@ impl PlaybackUi {
         cx: &mut Context<Fluxer>,
     ) -> AnyElement {
         let id = source.resource_key.clone();
+        let preference = match source.kind {
+            PlayableKind::Audio => self.audio_preference,
+            PlayableKind::Video => self.video_preference,
+            PlayableKind::Gifv => PlaybackPreference::default(),
+        };
         self.seen.insert(id.clone());
         let entity =
             self.players.entry(id.clone()).or_insert_with(|| {
-                let entity = cx.new(|cx| MediaPlayer::new(source.clone(), self.output.clone(), cx));
+                let entity = cx.new(|cx| {
+                    MediaPlayer::new(source.clone(), self.output.clone(), preference, cx)
+                });
                 cx.subscribe_in(
                     &entity,
                     window,
@@ -745,6 +847,9 @@ impl PlaybackUi {
                             }
                             PlayerEvent::Demo(action) => {
                                 player.update(cx, |player, cx| player.action(*action, window, cx));
+                            }
+                            PlayerEvent::Preferences(kind, preference) => {
+                                this.playback.set_preference(*kind, *preference, cx);
                             }
                             PlayerEvent::Reveal => {
                                 this.revealed_media

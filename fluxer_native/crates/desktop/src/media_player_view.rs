@@ -23,6 +23,7 @@ pub(super) struct PlayerView {
     pub position: f64,
     pub duration: Option<f64>,
     pub loading: bool,
+    pub buffering: bool,
     /// Download progress, normalized to 0..1. None means indeterminate.
     pub progress: Option<f32>,
     pub error: Option<String>,
@@ -354,6 +355,7 @@ fn status(view: &PlayerView) -> Option<AnyElement> {
                 "Loading… {}%",
                 (progress.clamp(0., 1.) * 100.).round() as u32
             ),
+            None if view.buffering => "Buffering…".into(),
             None => "Loading…".into(),
         }
     } else {
@@ -722,6 +724,7 @@ mod tests {
             position: 8.,
             duration: Some(10.),
             loading: false,
+            buffering: false,
             progress: None,
             error: None,
             playing: false,

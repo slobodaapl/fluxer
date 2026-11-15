@@ -3,7 +3,7 @@
 use std::{
     io::{Read, Seek},
     path::PathBuf,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     sync::{Arc, Mutex, mpsc},
 };
 
@@ -71,7 +71,18 @@ enum Source {
     Path(PathBuf),
     Reader(Box<dyn PlaybackSource>),
 }
+struct PlaybackGate {
+    wanted: AtomicBool,
+    seeking: AtomicBool,
+    muted: AtomicBool,
+    volume: AtomicU32,
+    waiting: Arc<AtomicBool>,
+    underflow: AtomicBool,
+    video_only: AtomicBool,
+    video_deadline: Mutex<Option<std::time::Instant>>,
+}
 pub struct FilePlayer {
+    gate: Arc<PlaybackGate>,
     cancel: Arc<AtomicBool>,
     interrupt: Arc<AtomicU64>,
     ready: Arc<AtomicBool>,
@@ -89,6 +100,7 @@ impl FilePlayer {
             Source::Path(path),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
             options,
             fake,
         )
@@ -97,20 +109,29 @@ impl FilePlayer {
         source: Box<dyn PlaybackSource>,
         cancel: Arc<AtomicBool>,
         interrupt: Arc<AtomicU64>,
+        waiting: Arc<AtomicBool>,
         options: FilePlaybackOptions,
     ) -> Result<Self, String> {
-        Self::open_source_impl(Source::Reader(source), cancel, interrupt, options, false)
+        Self::open_source_impl(
+            Source::Reader(source),
+            cancel,
+            interrupt,
+            waiting,
+            options,
+            false,
+        )
     }
     fn open_source_impl(
         source: Source,
         cancel: Arc<AtomicBool>,
         interrupt: Arc<AtomicU64>,
+        waiting: Arc<AtomicBool>,
         options: FilePlaybackOptions,
         fake: bool,
     ) -> Result<Self, String> {
         #[cfg(not(ffmpeg_file_playback))]
         {
-            let _ = (source, cancel, interrupt, options, fake);
+            let _ = (source, cancel, interrupt, waiting, options, fake);
             Err("Native file playback requires FFmpeg on Linux".into())
         }
         #[cfg(ffmpeg_file_playback)]
@@ -133,15 +154,37 @@ impl FilePlayer {
             }));
             let (tx, rx) = mpsc::channel();
             let worker_shared = shared.clone();
+            let gate = Arc::new(PlaybackGate {
+                wanted: AtomicBool::new(options.autoplay),
+                seeking: AtomicBool::new(false),
+                muted: AtomicBool::new(options.muted),
+                volume: AtomicU32::new(options.volume.clamp(0.0, 1.0).to_bits()),
+                waiting,
+                underflow: AtomicBool::new(false),
+                video_only: AtomicBool::new(false),
+                video_deadline: Mutex::new(None),
+            });
+            let worker_gate = gate.clone();
             let ready = Arc::new(AtomicBool::new(false));
             let worker_ready = ready.clone();
             std::thread::Builder::new()
                 .name("file-playback".into())
-                .spawn(move || native::run(source, options, fake, rx, worker_shared, worker_ready))
+                .spawn(move || {
+                    native::run(
+                        source,
+                        options,
+                        fake,
+                        rx,
+                        worker_shared,
+                        worker_ready,
+                        worker_gate,
+                    )
+                })
                 .map_err(|e| e.to_string())?;
             Ok(Self {
                 tx,
                 shared,
+                gate,
                 cancel,
                 interrupt,
                 ready,
@@ -149,9 +192,11 @@ impl FilePlayer {
         }
     }
     pub fn play(&self) {
+        self.gate.wanted.store(true, Ordering::Release);
         let _ = self.tx.send(Command::Play);
     }
     pub fn pause(&self) {
+        self.gate.wanted.store(false, Ordering::Release);
         let _ = self.tx.send(Command::Pause);
     }
     pub fn seek(&self, seconds: f64) {
@@ -159,6 +204,7 @@ impl FilePlayer {
             let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
             shared.frame = None;
             shared.pending_seek = true;
+            self.gate.seeking.store(true, Ordering::Release);
             if self.ready.load(Ordering::Acquire) {
                 self.interrupt.fetch_add(1, Ordering::AcqRel);
             }
@@ -173,16 +219,21 @@ impl FilePlayer {
     }
     pub fn set_volume(&self, volume: f32) {
         if volume.is_finite() {
+            self.gate
+                .volume
+                .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Release);
             let _ = self.tx.send(Command::Volume(volume.clamp(0.0, 1.0)));
         }
     }
     pub fn set_muted(&self, muted: bool) {
+        self.gate.muted.store(muted, Ordering::Release);
         let _ = self.tx.send(Command::Muted(muted));
     }
     pub fn set_output_device(&self, id: Option<String>) {
         let _ = self.tx.send(Command::Output(id));
     }
     pub fn stop(&self) {
+        self.gate.wanted.store(false, Ordering::Release);
         self.cancel.store(true, Ordering::Release);
         let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
         shared.frame = None;
@@ -191,11 +242,27 @@ impl FilePlayer {
         let _ = self.tx.send(Command::Stop);
     }
     pub fn snapshot(&self) -> FilePlaybackSnapshot {
-        self.shared
+        let mut snapshot = self
+            .shared
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .snapshot
-            .clone()
+            .clone();
+        let video_stalled = self.gate.video_only.load(Ordering::Acquire)
+            && self
+                .gate
+                .video_deadline
+                .try_lock()
+                .ok()
+                .and_then(|deadline| *deadline)
+                .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+        if snapshot.status == FilePlaybackStatus::Playing
+            && self.gate.waiting.load(Ordering::Acquire)
+            && (self.gate.underflow.load(Ordering::Acquire) || video_stalled)
+        {
+            snapshot.status = FilePlaybackStatus::Loading;
+        }
+        snapshot
     }
     pub fn take_frame(&self) -> Option<FilePlaybackFrame> {
         self.shared
@@ -322,7 +389,7 @@ mod native {
         error: Option<String>,
     }
     impl Audio {
-        fn render(&mut self, output: &mut [f32]) {
+        fn render(&mut self, output: &mut [f32], freeze_underflow: bool) {
             output.fill(0.0);
             if !self.playing {
                 return;
@@ -331,7 +398,7 @@ mod native {
             let mut done = 0;
             while done < output.len() {
                 let Some(chunk) = self.chunks.front_mut() else {
-                    if self.started {
+                    if self.started && !freeze_underflow {
                         self.position += (output.len() - done) as f64 / 96000.0;
                     }
                     break;
@@ -383,20 +450,31 @@ mod native {
             .to_string_lossy()
             .into_owned()
     }
+    fn render_gated(audio: &Mutex<Audio>, gate: &PlaybackGate, output: &mut [f32]) {
+        output.fill(0.0);
+        if !gate.wanted.load(Ordering::Acquire) || gate.seeking.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut audio) = audio.try_lock() {
+            if gate.wanted.load(Ordering::Acquire) && !gate.seeking.load(Ordering::Acquire) {
+                audio.muted = gate.muted.load(Ordering::Acquire);
+                audio.volume = f32::from_bits(gate.volume.load(Ordering::Acquire));
+                let waiting = gate.waiting.load(Ordering::Acquire);
+                gate.underflow
+                    .store(waiting && audio.samples == 0, Ordering::Release);
+                audio.render(output, waiting);
+            }
+        }
+    }
     fn start_output(
         id: Option<&str>,
         audio: Arc<Mutex<Audio>>,
+        gate: Arc<PlaybackGate>,
     ) -> Result<fluxer_system_audio::SpeakerOutput, String> {
         let errors = audio.clone();
         fluxer_system_audio::SpeakerOutput::start(
             id,
-            move |out| {
-                if let Ok(mut a) = audio.try_lock() {
-                    a.render(out);
-                } else {
-                    out.fill(0.0);
-                }
-            },
+            move |out| render_gated(&audio, &gate, out),
             move |error| {
                 if let Ok(mut a) = errors.lock() {
                     a.error = Some(error);
@@ -451,6 +529,7 @@ mod native {
         rx: mpsc::Receiver<Command>,
         shared: Arc<Mutex<Shared>>,
         ready: Arc<AtomicBool>,
+        gate: Arc<PlaybackGate>,
     ) {
         let mut error = [0 as c_char; 512];
         let (mut reader, path) = match source {
@@ -495,6 +574,7 @@ mod native {
         let decoder = Decoder(p);
         ready.store(true, Ordering::Release);
         let has_audio = unsafe { flux_decoder_has_audio(p) != 0 };
+        gate.video_only.store(!has_audio, Ordering::Release);
         let duration = unsafe { flux_decoder_duration(p) };
         let mut playing = options.autoplay;
         options.volume = options.volume.clamp(0.0, 1.0);
@@ -513,7 +593,11 @@ mod native {
                 failed(&shared, error.to_string());
                 return;
             }
-            match start_output(options.output_device.as_deref(), audio.clone()) {
+            match start_output(
+                options.output_device.as_deref(),
+                audio.clone(),
+                gate.clone(),
+            ) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     failed(&shared, e);
@@ -614,6 +698,7 @@ mod native {
                     s.snapshot.position = pos;
                     if s.seek_generation == generation {
                         s.pending_seek = false;
+                        gate.seeking.store(false, Ordering::Release);
                     }
                 }
                 Ok(Command::Volume(v)) => {
@@ -623,7 +708,7 @@ mod native {
                 Ok(Command::Output(id)) => {
                     if has_audio && !fake {
                         output.take();
-                        match start_output(id.as_deref(), audio.clone()) {
+                        match start_output(id.as_deref(), audio.clone(), gate.clone()) {
                             Ok(v) => output = Some(v),
                             Err(e) => {
                                 failed(&shared, e);
@@ -639,10 +724,15 @@ mod native {
                 if elapsed >= 0.005 {
                     let count = ((elapsed * 48000.0) as usize).min(4800) * 2;
                     let mut samples = vec![0.0; count];
+                    gate.underflow.store(
+                        gate.waiting.load(Ordering::Acquire)
+                            && audio.lock().unwrap_or_else(|e| e.into_inner()).samples == 0,
+                        Ordering::Release,
+                    );
                     audio
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .render(&mut samples);
+                        .render(&mut samples, gate.waiting.load(Ordering::Acquire));
                     fake_time = Instant::now();
                 }
             }
@@ -755,8 +845,29 @@ mod native {
                     data: ptr::null_mut(),
                     len: 0,
                 };
+                let io_started = Instant::now();
+                let buffered_seconds = video
+                    .front()
+                    .map(|(pts, _)| (*pts - position).max(0.0))
+                    .unwrap_or(0.0);
+                if !has_audio {
+                    gate.underflow.store(video.is_empty(), Ordering::Release);
+                    if let Ok(mut deadline) = gate.video_deadline.lock() {
+                        *deadline =
+                            io_started.checked_add(Duration::from_secs_f64(buffered_seconds));
+                    }
+                }
                 let result =
                     unsafe { flux_decoder_next(p, &mut decoded, error.as_mut_ptr(), error.len()) };
+                if !has_audio && playing {
+                    let stall = (io_started.elapsed().as_secs_f64() - buffered_seconds).max(0.0);
+                    if let Some(adjusted) = clock_time.checked_add(Duration::from_secs_f64(stall)) {
+                        clock_time = adjusted;
+                    }
+                }
+                if !has_audio && result > 0 {
+                    gate.underflow.store(false, Ordering::Release);
+                }
                 if result < 0 {
                     if shared
                         .lock()
@@ -773,6 +884,17 @@ mod native {
                             .unwrap_or_else(|| error_text(&error)),
                     );
                     break;
+                }
+                if result > 0
+                    && shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .pending_seek
+                {
+                    unsafe {
+                        flux_decoder_data_free(decoded.data.cast());
+                    }
+                    continue;
                 }
                 if result == 0 {
                     eof = true;
@@ -864,6 +986,108 @@ mod native {
         drop(output);
         drop(decoder);
     }
+    #[cfg(test)]
+    mod gate_tests {
+        use super::*;
+        #[test]
+        fn network_underflow_freezes_audio_clock_and_reports_loading() {
+            let audio = Mutex::new(Audio {
+                chunks: VecDeque::new(),
+                samples: 0,
+                position: 2.0,
+                playing: true,
+                started: true,
+                volume: 1.0,
+                muted: false,
+                error: None,
+            });
+            let gate = Arc::new(PlaybackGate {
+                wanted: AtomicBool::new(true),
+                seeking: AtomicBool::new(false),
+                muted: AtomicBool::new(false),
+                volume: AtomicU32::new(1.0f32.to_bits()),
+                waiting: Arc::new(AtomicBool::new(true)),
+                underflow: AtomicBool::new(false),
+                video_only: AtomicBool::new(false),
+                video_deadline: Mutex::new(None),
+            });
+            let mut output = [1.0; 960];
+            render_gated(&audio, &gate, &mut output);
+            assert!(output.iter().all(|sample| *sample == 0.0));
+            assert_eq!(audio.lock().unwrap().position, 2.0);
+            let (tx, _rx) = mpsc::channel();
+            let player = FilePlayer {
+                gate: gate.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+                interrupt: Arc::new(AtomicU64::new(0)),
+                ready: Arc::new(AtomicBool::new(true)),
+                tx,
+                shared: Arc::new(Mutex::new(Shared {
+                    snapshot: FilePlaybackSnapshot {
+                        status: FilePlaybackStatus::Playing,
+                        position: 2.0,
+                        duration: Some(4.0),
+                        width: 0,
+                        height: 0,
+                        error: None,
+                    },
+                    frame: None,
+                    seek_generation: 0,
+                    pending_seek: false,
+                })),
+            };
+            assert_eq!(player.snapshot().status, FilePlaybackStatus::Loading);
+            gate.waiting.store(false, Ordering::Release);
+            assert_eq!(player.snapshot().status, FilePlaybackStatus::Playing);
+        }
+        #[test]
+        fn pause_and_seek_gate_queued_pcm_before_worker_handles_commands() {
+            let audio = Mutex::new(Audio {
+                chunks: VecDeque::from([AudioChunk {
+                    pts: 0.0,
+                    samples: vec![0.5; 8],
+                    offset: 0,
+                }]),
+                samples: 8,
+                position: 0.0,
+                playing: true,
+                started: true,
+                volume: 1.0,
+                muted: false,
+                error: None,
+            });
+            let gate = PlaybackGate {
+                wanted: AtomicBool::new(true),
+                seeking: AtomicBool::new(false),
+                muted: AtomicBool::new(false),
+                volume: AtomicU32::new(1.0f32.to_bits()),
+                waiting: Arc::new(AtomicBool::new(false)),
+                underflow: AtomicBool::new(false),
+                video_only: AtomicBool::new(false),
+                video_deadline: Mutex::new(None),
+            };
+            let mut output = [0.0; 2];
+            render_gated(&audio, &gate, &mut output);
+            assert_eq!(output, [0.5; 2]);
+            gate.muted.store(true, Ordering::Release);
+            render_gated(&audio, &gate, &mut output);
+            assert_eq!(output, [0.0; 2]);
+            gate.muted.store(false, Ordering::Release);
+            gate.wanted.store(false, Ordering::Release);
+            render_gated(&audio, &gate, &mut output);
+            assert_eq!(output, [0.0; 2]);
+            assert_eq!(audio.lock().unwrap().samples, 4);
+            gate.wanted.store(true, Ordering::Release);
+            gate.seeking.store(true, Ordering::Release);
+            render_gated(&audio, &gate, &mut output);
+            assert_eq!(output, [0.0; 2]);
+            assert_eq!(audio.lock().unwrap().samples, 4);
+            gate.wanted.store(false, Ordering::Release);
+            gate.seeking.store(false, Ordering::Release);
+            render_gated(&audio, &gate, &mut output);
+            assert_eq!(output, [0.0; 2]);
+        }
+    }
 }
 
 #[cfg(all(test, ffmpeg_file_playback))]
@@ -932,6 +1156,7 @@ mod tests {
             Source::Reader(Box::new(std::io::Cursor::new(playlist))),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
             FilePlaybackOptions::default(),
             true,
         )
@@ -951,6 +1176,7 @@ mod tests {
             Source::Reader(Box::new(std::io::Cursor::new(bytes))),
             Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicU64::new(0)),
+            Arc::new(AtomicBool::new(false)),
             FilePlaybackOptions::default(),
             true,
         )
