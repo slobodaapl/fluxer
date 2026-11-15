@@ -1008,7 +1008,7 @@ fn relationship_actions(kind: Option<u8>, enabled: bool) -> (bool, Option<Relati
 
 #[cfg(test)]
 mod relationship_reconciliation_tests {
-    use super::{relationship_actions, RelationshipAction};
+    use super::{RelationshipAction, relationship_actions};
     #[test]
     fn gateway_relationship_kinds_update_profile_actions() {
         assert_eq!(
