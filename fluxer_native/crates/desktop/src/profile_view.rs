@@ -14,6 +14,8 @@ pub(super) struct ProfileOpen {
     pub community_name: Option<String>,
     pub anchor: Point<Pixels>,
     pub webhook: bool,
+    pub can_message: bool,
+    pub blocked: bool,
 }
 
 pub(super) struct ProfileUi {
@@ -46,6 +48,9 @@ pub(super) enum ProfileAction {
         user_id: Snowflake,
         guild_id: Option<Snowflake>,
     },
+    Message {
+        user_id: Snowflake,
+    },
     Closed,
 }
 pub(super) struct ProfilePopup {
@@ -57,6 +62,7 @@ pub(super) struct ProfilePopup {
     selected: usize,
     armed: bool,
     copied: bool,
+    confirm_blocked_dm: bool,
 }
 impl EventEmitter<ProfileAction> for ProfilePopup {}
 impl ProfilePopup {
@@ -70,10 +76,18 @@ impl ProfilePopup {
             selected: 0,
             armed: false,
             copied: false,
+            confirm_blocked_dm: false,
         }
     }
     pub fn is_open(&self) -> bool {
         self.open.is_some()
+    }
+    pub fn close_after_action(&mut self, cx: &mut Context<Self>) {
+        self.open = None;
+        self.snapshot = None;
+        self.previous_focus = None;
+        cx.emit(ProfileAction::Closed);
+        cx.notify();
     }
     pub fn current_scope(&self) -> Option<(Snowflake, Option<Snowflake>)> {
         self.open.as_ref().map(|open| (open.user.id, open.guild_id))
@@ -88,6 +102,7 @@ impl ProfilePopup {
         self.selected = 0;
         self.armed = false;
         self.copied = false;
+        self.confirm_blocked_dm = false;
         window.focus(&self.focus);
         cx.notify();
     }
@@ -479,6 +494,39 @@ impl Render for ProfilePopup {
                     );
                 }
             }
+        }
+        if open.can_message {
+            content = content.child(
+                div()
+                    .id("profile-message")
+                    .cursor_pointer()
+                    .mt_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(0x5865f2))
+                    .text_size(px(12.))
+                    .child(if self.confirm_blocked_dm {
+                        "This user is blocked. Open DM anyway?"
+                    } else if open.blocked {
+                        "Open DM"
+                    } else {
+                        "Message"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(open) = &this.open {
+                            if open.blocked && !this.confirm_blocked_dm {
+                                this.confirm_blocked_dm = true;
+                                cx.notify();
+                            } else {
+                                cx.emit(ProfileAction::Message {
+                                    user_id: open.user.id,
+                                });
+                            }
+                        }
+                    })),
+            );
         }
         content = content.child(
             div()

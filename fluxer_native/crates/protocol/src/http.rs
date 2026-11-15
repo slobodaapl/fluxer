@@ -710,7 +710,7 @@ impl Client {
         self.request(
             Method::POST,
             "/users/@me/channels",
-            Some(&json!({"recipients":[recipient]})),
+            Some(&json!({"recipient_id":recipient})),
         )
         .await
     }

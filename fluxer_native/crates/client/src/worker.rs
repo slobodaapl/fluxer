@@ -760,6 +760,7 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::OpenDm { user_id } => self.open_dm(user_id).await?,
             Command::LoadUserProfile {
                 user_id,
                 guild_id,
@@ -1549,6 +1550,46 @@ impl Worker {
         }));
         self.emit(Event::Status("Signed in".into()));
         Ok(())
+    }
+
+    async fn open_dm(&mut self, user_id: Snowflake) -> Result<()> {
+        if self
+            .state
+            .current_user
+            .as_ref()
+            .is_none_or(|user| user.id == user_id)
+        {
+            return Err("Cannot open a direct message with this user".into());
+        }
+        let existing = self
+            .state
+            .channels
+            .values()
+            .find(|channel| {
+                channel.kind == fluxer_core::ChannelType::Dm
+                    && channel.recipients.iter().any(|user| user.id == user_id)
+            })
+            .map(|channel| channel.id);
+        let channel = if let Some(channel) = existing {
+            channel
+        } else {
+            if self.demo {
+                return Err("This demo has no direct message with that user".into());
+            }
+            let client = self.client.as_ref().ok_or("Not signed in")?;
+            let response = client
+                .create_dm(&user_id.to_string())
+                .await
+                .map_err(error)?;
+            let channel: fluxer_core::Channel = serde_json::from_value(response).map_err(error)?;
+            if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
+                return Err("Server returned an invalid direct message channel".into());
+            }
+            let id = channel.id;
+            self.state.channels.insert(id, channel);
+            id
+        };
+        self.select_channel(channel).await
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {

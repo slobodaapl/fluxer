@@ -526,6 +526,12 @@ impl Fluxer {
         cx.subscribe(
             &view.profile_ui.popup,
             |this, _, event: &profile_view::ProfileAction, cx| {
+                if let profile_view::ProfileAction::Message { user_id } = event {
+                    this.command(Command::OpenDm { user_id: *user_id }, cx);
+                    this.profile_ui.popup.update(cx, |popup, cx| {
+                        popup.close_after_action(cx);
+                    });
+                }
                 if let profile_view::ProfileAction::Retry { user_id, guild_id } = event {
                     this.command(
                         Command::LoadUserProfile {

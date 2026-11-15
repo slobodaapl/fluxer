@@ -536,3 +536,23 @@ async fn read_acks_use_authoritative_endpoint_and_only_missing_route_fallback() 
         }
     }
 }
+
+#[tokio::test]
+async fn one_to_one_dm_uses_recipient_id_request_shape() {
+    let (origin, mut requests) = http_server(vec![response(
+        "200 OK",
+        json!({"id":"90","type":1,"recipients":[{"id":"42","username":"Ada"}]}),
+    )])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("secret").unwrap());
+    let result = client.create_dm("42").await.unwrap();
+    assert_eq!(result["id"], "90");
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with("POST /api/v1/users/@me/channels "), "{request}");
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body, json!({"recipient_id":"42"}));
+}

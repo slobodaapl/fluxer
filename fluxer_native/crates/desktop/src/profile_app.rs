@@ -52,6 +52,17 @@ impl Fluxer {
             community_name,
             anchor,
             webhook,
+            can_message: !webhook
+                && self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|current| current.id != user_id),
+            blocked: self
+                .state
+                .relationships
+                .get(&user_id)
+                .is_some_and(|relationship| relationship.is_blocked()),
         };
         self.profile_ui
             .popup
