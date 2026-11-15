@@ -74,6 +74,8 @@ impl Fluxer {
                                         .text_ellipsis()
                                         .child(if self.voice_connecting {
                                             self.voice_status.clone()
+                                        } else if !self.audio_device_status.is_empty() {
+                                            "Audio device recovering".into()
                                         } else {
                                             "Voice connected".into()
                                         }),

@@ -2209,6 +2209,14 @@ impl Worker {
                 }
                 self.emit(Event::Media(event));
             }
+            MediaEvent::InputDeviceFailed => {
+                if let Some(media) = &mut self.media {
+                    media.input_device_failed();
+                    if let Ok(devices) = media.try_devices() {
+                        self.emit(Event::Devices(devices));
+                    }
+                }
+            }
             MediaEvent::Disconnected => {
                 self.leave_voice(true).await?;
             }

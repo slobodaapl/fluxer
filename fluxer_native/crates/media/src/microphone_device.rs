@@ -143,7 +143,8 @@ impl CaptureDevice {
                     if let Some(input) = &source
                         && let Err(error) = input.pump(&pcm)
                     {
-                        let _ = events.try_send(MediaEvent::Error(error.to_string()));
+                        let _ = error;
+                        let _ = events.try_send(MediaEvent::InputDeviceFailed);
                         source.take();
                         active.store(false, Ordering::Release);
                     }

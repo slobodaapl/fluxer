@@ -137,6 +137,8 @@ pub enum MediaEvent {
         output: f32,
     },
     Error(String),
+    /// The native input stream stopped; reconciliation may reopen it.
+    InputDeviceFailed,
 }
 
 struct VideoRenderer {
@@ -331,6 +333,10 @@ impl MediaEngine {
         self.output_selection.effective = Some(id.into());
         Ok(())
     }
+    pub fn input_device_failed(&mut self) {
+        self.input_selection.effective = None;
+    }
+
     /// Reconcile hotplug without creating capture outside a call or explicit test.
     pub fn reconcile_devices(&mut self) -> Result<DeviceInventory> {
         let inventory = self.try_devices()?;
