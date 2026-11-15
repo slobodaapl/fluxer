@@ -585,20 +585,13 @@ impl Fluxer {
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
         window.focus(&view.focus);
-        cx.subscribe(
+        cx.subscribe_in(
             &view.profile_ui.popup,
-            |this, _, event: &profile_view::ProfileAction, cx| {
+            window,
+            |this, _, event: &profile_view::ProfileAction, window, cx| {
                 if let profile_view::ProfileAction::Link(url) = event {
                     let target = message_markup::MessageTarget::Link(url.clone());
-                    if let Some(window) = cx.windows().first().copied() {
-                        let _ = window.update(cx, |root, window, cx| {
-                            if let Ok(entity) = root.downcast::<Fluxer>() {
-                                entity.update(cx, |this, cx| {
-                                    this.activate_message_target(&target, window, cx)
-                                });
-                            }
-                        });
-                    }
+                    this.activate_message_target(&target, window, cx);
                 }
                 if let profile_view::ProfileAction::Message { user_id } = event {
                     this.command(Command::OpenDm { user_id: *user_id }, cx);
@@ -2671,7 +2664,7 @@ impl Render for Fluxer {
             .when(self.friends_ui.confirm.is_some(), |view| view.child(self.relationship_confirmation(cx)))
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
-            .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))
+            .child(deferred(self.message_link_overlay(window,cx)).with_priority(11))
             .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
         let rendered = rendered

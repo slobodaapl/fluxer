@@ -43,7 +43,7 @@ impl Fluxer {
                         let member=view.state.members.get(&(Snowflake(1),Snowflake(101))).cloned();
                         (fluxer_client::ProfileStatus::Ready,Some(fluxer_core::UserProfile {
                             user,user_profile:fluxer_core::ProfileDetails {
-                                bio:(mode=="long").then(||"A long profile biography 🙂 with enough text to check wrapping and scrolling. ".repeat(25)),
+                                bio:(mode=="long").then(||format!("Profile website: https://profile-review.example/about\n\n{}", "A long profile biography 🙂 with enough text to check wrapping and scrolling. ".repeat(25))),
                                 pronouns:(mode=="long").then(||"they/them".into()),
                                 banner_color:Some(0x7860bc),..Default::default()
                             },guild_member:member,profile_limited:mode=="limited",..Default::default()
