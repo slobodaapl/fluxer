@@ -493,6 +493,14 @@ impl Fluxer {
             _ => None,
         };
         if self.status_ui.editor {
+            let emoji = custom_status_emoji(
+                self.status_ui.emoji_id.as_deref(),
+                self.status_ui.emoji_name.as_deref(),
+                self.media_endpoint.as_deref(),
+                window,
+                cx,
+            );
+            let emoji_label = if emoji.is_some() { "" } else { "Choose emoji" };
             let editor = div()
                 .id("custom-status-dialog")
                 .w(px(420.))
@@ -515,19 +523,15 @@ impl Fluxer {
                         .flex()
                         .gap_2()
                         .child(
-                            quiet_button(
-                                "status-emoji",
-                                self.status_ui
-                                    .emoji_name
-                                    .clone()
-                                    .unwrap_or_else(|| "Choose emoji".into()),
-                            )
-                            .track_focus(&self.status_ui.emoji_focus)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
+                            quiet_button("status-emoji", emoji_label)
+                                .flex()
+                                .items_center()
+                                .min_h(px(30.))
+                                .when_some(emoji, |button, emoji| button.child(emoji))
+                                .track_focus(&self.status_ui.emoji_focus)
+                                .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_status_emoji(window, cx)
-                                }),
-                            ),
+                                })),
                         )
                         .child(
                             quiet_button("status-emoji-clear", "Clear emoji")
@@ -617,6 +621,19 @@ impl Fluxer {
         };
         let custom_art =
             emoji_sprites::unicode_text(&custom_label, 12., window.scale_factor() > 1., cx);
+        let custom_emoji = self
+            .state
+            .user_settings
+            .get("custom_status")
+            .and_then(|custom| {
+                custom_status_emoji(
+                    custom.get("emoji_id").and_then(|value| value.as_str()),
+                    custom.get("emoji_name").and_then(|value| value.as_str()),
+                    self.media_endpoint.as_deref(),
+                    window,
+                    cx,
+                )
+            });
         anchored()
             .position_mode(AnchoredPositionMode::Window)
             .position(point(px(78.), window.viewport_size().height - px(65.)))
@@ -685,6 +702,10 @@ impl Fluxer {
                             .py_2()
                             .rounded_md()
                             .bg(rgb(if selected == 5 { 0x41424a } else { 0x232428 }))
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .when_some(custom_emoji, |row, emoji| row.child(emoji))
                             .child(custom_art)
                             .on_click(
                                 cx.listener(|this, _, window, cx| {
@@ -721,6 +742,28 @@ impl Fluxer {
             )
             .into_any_element()
     }
+}
+
+fn custom_status_emoji(
+    id: Option<&str>,
+    name: Option<&str>,
+    endpoint: Option<&str>,
+    window: &Window,
+    cx: &mut App,
+) -> Option<AnyElement> {
+    if let Some(id) = id.and_then(|id| id.parse::<Snowflake>().ok()) {
+        return endpoint.map(|endpoint| {
+            img(SharedString::from(format!(
+                "{}/emojis/{id}.webp?size=48",
+                endpoint.trim_end_matches('/')
+            )))
+            .size(px(20.))
+            .object_fit(ObjectFit::Contain)
+            .into_any_element()
+        });
+    }
+    name.filter(|name| !name.is_empty())
+        .map(|name| emoji_sprites::unicode_art(name, 20., window.scale_factor() > 1., cx))
 }
 
 fn picker_captures_key(focused: bool, open: bool, key: &str) -> bool {
