@@ -242,6 +242,10 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.pane != Pane::Settings || self.settings_section != settings_view::Section::Keybinds
+        {
+            self.interface.recording = None;
+        }
         if let Some(action) = self.interface.recording {
             if event.keystroke.key == "escape" {
                 self.interface.recording = None;
@@ -261,6 +265,13 @@ impl Fluxer {
             || self.profile_ui.is_open(cx)
             || self.image_viewer.is_open()
             || self.playback.modal.is_open()
+            || self.message_links.is_open()
+            || self.message_actions.is_blocking()
+            || self.search_ui.confirm.is_some()
+            || self.friends_ui.confirm.is_some()
+            || self.emoji_target.is_some()
+            || self.forwarding.is_some()
+            || self.quick_switcher.open
         {
             return;
         }

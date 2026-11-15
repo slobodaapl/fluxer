@@ -20,6 +20,9 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Recording belongs to the visible Keybinds page, never a hidden page
+        // reached through another section or navigation shortcut.
+        self.interface.recording = None;
         if self.pane != Pane::Settings {
             self.settings_return = self.pane;
         }
