@@ -11,6 +11,7 @@ use std::{cell::Cell, rc::Rc};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
+    InboxFilters,
     Stream(String),
     Media(crate::media_actions::MediaReference),
     User { channel: Snowflake, user: Snowflake },
@@ -342,6 +343,7 @@ impl Fluxer {
 
     fn context_target_valid(&self, target: &Target) -> bool {
         match target {
+            Target::InboxFilters => self.inbox_filters_available(),
             Target::Media(reference) => self.media_descriptor(reference).is_some(),
             Target::Stream(id) => {
                 self.available_streams.contains(id) || self.viewer.desired.contains(id)
@@ -382,6 +384,7 @@ impl Fluxer {
         }
         let mut items = Vec::new();
         match target {
+            Target::InboxFilters => return self.inbox_filter_items(),
             Target::Media(reference) => return self.media_context_items(reference),
             Target::Stream(identity) => {
                 items.push(Item::Header(self.stream_name(identity)));
@@ -726,6 +729,11 @@ impl Fluxer {
             None
         };
         match (target, id) {
+            (Target::InboxFilters, _) => {
+                if let Some(value) = muted {
+                    self.update_inbox_filter(id, value, cx);
+                }
+            }
             (Target::Media(reference), _) => {
                 self.perform_media_context_action(reference, event.clone(), window, cx)
             }
