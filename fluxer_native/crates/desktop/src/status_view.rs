@@ -23,6 +23,8 @@ pub(super) struct StatusUi {
     editor: bool,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
+    cancel_focus: FocusHandle,
+    save_focus: FocusHandle,
     window: Option<AnyWindowHandle>,
     selected: usize,
     armed: bool,
@@ -36,12 +38,17 @@ impl StatusUi {
             editor: false,
             focus: cx.focus_handle(),
             previous_focus: None,
+            cancel_focus: cx.focus_handle(),
+            save_focus: cx.focus_handle(),
             window: None,
             selected: 0,
             armed: false,
             input: cx.new(|cx| TextInput::new("What's happening?", cx)),
             status: None,
         }
+    }
+    pub fn is_editor(&self) -> bool {
+        self.open && self.editor
     }
     pub fn is_open(&self) -> bool {
         self.open
@@ -144,6 +151,21 @@ impl Fluxer {
             cx.notify();
         }
     }
+    fn cancel_status_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.status_ui.editor = false;
+        self.status_ui.armed = false;
+        window.focus(&self.status_ui.focus);
+        cx.notify();
+    }
+    fn save_status_editor(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.status_ui.status,
+            Some(RelationshipMutationStatus::Pending)
+        ) {
+            let text = self.status_ui.input.read(cx).content.to_string();
+            self.command(Command::SetCustomStatus { text }, cx);
+        }
+    }
     pub(super) fn handle_presence_mutation(
         &mut self,
         status: RelationshipMutationStatus,
@@ -210,22 +232,17 @@ impl Fluxer {
                         .justify_end()
                         .gap_2()
                         .child(
-                            quiet_button("status-cancel", "Cancel").on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    this.status_ui.editor = false;
-                                    window.focus(&this.status_ui.focus);
-                                    cx.notify();
-                                },
-                            )),
+                            quiet_button("status-cancel", "Cancel")
+                                .track_focus(&self.status_ui.cancel_focus)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.cancel_status_editor(window, cx);
+                                })),
                         )
                         .child(
                             quiet_button("status-save", if pending { "Saving…" } else { "Save" })
+                                .track_focus(&self.status_ui.save_focus)
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !pending {
-                                        let text =
-                                            this.status_ui.input.read(cx).content.to_string();
-                                        this.command(Command::SetCustomStatus { text }, cx);
-                                    }
+                                    this.save_status_editor(cx);
                                 })),
                         ),
                 );
@@ -238,10 +255,51 @@ impl Fluxer {
                 .items_center()
                 .justify_center()
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" {
-                        this.status_ui.editor = false;
-                        window.focus(&this.status_ui.focus);
-                        cx.notify();
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.cancel_status_editor(window, cx),
+                        "tab" => {
+                            let input = this.status_ui.input.focus_handle(cx);
+                            let current = if input.is_focused(window) {
+                                0
+                            } else if this.status_ui.cancel_focus.is_focused(window) {
+                                1
+                            } else {
+                                2
+                            };
+                            let next = editor_tab_target(current, event.keystroke.modifiers.shift);
+                            this.status_ui.armed = false;
+                            match next {
+                                0 => window.focus(&input),
+                                1 => window.focus(&this.status_ui.cancel_focus),
+                                _ => window.focus(&this.status_ui.save_focus),
+                            }
+                        }
+                        "enter" if !event.keystroke.modifiers.modified() => {
+                            if !event.is_held && !this.status_ui.input.read(cx).is_composing() {
+                                this.status_ui.armed = true;
+                            }
+                            // Let the input method consume composition confirmation.
+                            if this.status_ui.input.read(cx).is_composing() {
+                                return;
+                            }
+                        }
+                        _ => return,
+                    }
+                    cx.stop_propagation();
+                }))
+                .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                    if event.keystroke.key == "enter" {
+                        let armed = std::mem::take(&mut this.status_ui.armed);
+                        if armed
+                            && !event.keystroke.modifiers.modified()
+                            && !this.status_ui.input.read(cx).is_composing()
+                        {
+                            if this.status_ui.cancel_focus.is_focused(window) {
+                                this.cancel_status_editor(window, cx);
+                            } else {
+                                this.save_status_editor(cx);
+                            }
+                        }
                         cx.stop_propagation();
                     }
                 }))
@@ -413,5 +471,32 @@ impl Fluxer {
         )
         .with_priority(10)
         .into_any_element()
+    }
+}
+
+fn editor_tab_target(current: usize, reverse: bool) -> usize {
+    if reverse {
+        (current + 2) % 3
+    } else {
+        (current + 1) % 3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn editor_focus_cycles_in_both_directions() {
+        assert_eq!(
+            (0..3)
+                .map(|i| super::editor_tab_target(i, false))
+                .collect::<Vec<_>>(),
+            vec![1, 2, 0]
+        );
+        assert_eq!(
+            (0..3)
+                .map(|i| super::editor_tab_target(i, true))
+                .collect::<Vec<_>>(),
+            vec![2, 0, 1]
+        );
     }
 }

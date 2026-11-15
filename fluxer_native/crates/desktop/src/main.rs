@@ -1534,7 +1534,7 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.open {
+        if self.quick_switcher.open || self.status_ui.is_editor() {
             return;
         }
         if self.composer.focus_handle(cx).is_focused(window) {

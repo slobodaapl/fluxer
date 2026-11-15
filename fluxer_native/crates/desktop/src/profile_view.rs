@@ -136,18 +136,9 @@ impl ProfilePopup {
     ) {
         if let Some(open) = &mut self.open {
             let old = (open.blocked, open.friend_action);
-            open.blocked = kind == Some(2);
-            open.friend_action = if enabled && open.can_message {
-                match kind {
-                    None => Some(RelationshipAction::Send),
-                    Some(3) => Some(RelationshipAction::Accept),
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            (open.blocked, open.friend_action) =
+                relationship_actions(kind, enabled && open.can_message);
             if old != (open.blocked, open.friend_action) {
-                self.selected = 0;
                 self.armed = false;
             }
             cx.notify();
@@ -999,5 +990,39 @@ mod tests {
         assert!(origin.y + px(height) <= px(592.));
         let (_, width, height) = placement(point(px(50.), px(50.)), size(px(180.), px(200.)));
         assert_eq!((width, height), (164., 184.));
+    }
+}
+
+fn relationship_actions(kind: Option<u8>, enabled: bool) -> (bool, Option<RelationshipAction>) {
+    let action = if enabled {
+        match kind {
+            None => Some(RelationshipAction::Send),
+            Some(3) => Some(RelationshipAction::Accept),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    (kind == Some(2), action)
+}
+
+#[cfg(test)]
+mod relationship_reconciliation_tests {
+    use super::{relationship_actions, RelationshipAction};
+    #[test]
+    fn gateway_relationship_kinds_update_profile_actions() {
+        assert_eq!(
+            relationship_actions(None, true),
+            (false, Some(RelationshipAction::Send))
+        );
+        assert_eq!(
+            relationship_actions(Some(3), true),
+            (false, Some(RelationshipAction::Accept))
+        );
+        for kind in [1, 4] {
+            assert_eq!(relationship_actions(Some(kind), true), (false, None));
+        }
+        assert_eq!(relationship_actions(Some(2), true), (true, None));
+        assert_eq!(relationship_actions(None, false), (false, None));
     }
 }
