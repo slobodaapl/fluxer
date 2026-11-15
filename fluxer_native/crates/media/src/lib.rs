@@ -200,6 +200,8 @@ impl Default for SharedAudioSettings {
 pub struct MediaEngine {
     input_device: Mutex<Option<String>>,
     recovery_cancel: Option<Arc<AtomicBool>>,
+    input_retry_at: Option<std::time::Instant>,
+    output_retry_at: Option<std::time::Instant>,
     input_selection: DeviceSelection,
     output_selection: DeviceSelection,
     room: Option<Room>,
@@ -247,6 +249,8 @@ fn desired_device(
 pub struct DeviceRecovery {
     inventory: DeviceInventory,
     cancel: Arc<AtomicBool>,
+    input_retry_at: Option<std::time::Instant>,
+    output_retry_at: Option<std::time::Instant>,
 }
 
 impl MediaEngine {
@@ -259,6 +263,8 @@ impl MediaEngine {
         Ok(Self {
             input_device: Mutex::new(None),
             recovery_cancel: None,
+            input_retry_at: None,
+            output_retry_at: None,
             input_selection: DeviceSelection {
                 preferred: "input:default".into(),
                 effective: Some("input:default".into()),
@@ -312,6 +318,7 @@ impl MediaEngine {
 
     pub fn set_input_device(&mut self, id: &str) -> Result<()> {
         self.cancel_device_recovery();
+        self.input_retry_at = None;
         if !microphone_device::devices()?.iter().any(|d| d.id == id) {
             return Err(MediaError::UnknownDevice("input"));
         }
@@ -334,6 +341,7 @@ impl MediaEngine {
     }
     pub fn set_output_device(&mut self, id: &str) -> Result<()> {
         self.cancel_device_recovery();
+        self.output_retry_at = None;
         if !playback::devices()?.iter().any(|d| d.id == id) {
             return Err(MediaError::UnknownDevice("output"));
         }
@@ -351,6 +359,7 @@ impl MediaEngine {
     pub fn input_device_failed(&mut self) {
         self.cancel_device_recovery();
         self.input_selection.effective = None;
+        self.input_retry_at = None;
     }
 
     fn cancel_device_recovery(&mut self) {
@@ -371,6 +380,8 @@ impl MediaEngine {
             .as_ref()
             .map(|capture| capture.controller());
         let output = self.output.controller();
+        let input_retry_at = self.input_retry_at;
+        let output_retry_at = self.output_retry_at;
         tokio::task::spawn_blocking(move || {
             let inputs = microphone_device::devices()?;
             let outputs = playback::devices()?;
@@ -378,28 +389,65 @@ impl MediaEngine {
             let target_output = desired_device(&output_selection, &outputs, "output:default");
             let mut next_input = input_selection.clone();
             let mut next_output = output_selection.clone();
-            if next_input.effective != target_input {
+            let now = std::time::Instant::now();
+            let mut next_input_retry = input_retry_at;
+            let mut next_output_retry = output_retry_at;
+            if next_input.effective != target_input
+                && input_retry_at.is_none_or(|at| {
+                    now >= at || target_input.as_deref() != Some(input_selection.preferred.as_str())
+                })
+            {
                 next_input.effective = match target_input {
                     Some(id) if !cancel.load(Ordering::Acquire) => {
-                        if input
-                            .as_ref()
-                            .is_none_or(|c| c.set_device_guarded(&id, cancel.clone()).is_ok())
-                        {
+                        let open = |id: &str| {
+                            input
+                                .as_ref()
+                                .is_none_or(|c| c.set_device_guarded(id, cancel.clone()).is_ok())
+                        };
+                        if open(&id) {
+                            next_input_retry = None;
                             Some(id)
                         } else {
-                            None
+                            next_input_retry = Some(now + std::time::Duration::from_secs(30));
+                            if id != "input:default"
+                                && inputs.iter().any(|d| d.id == "input:default")
+                                && !cancel.load(Ordering::Acquire)
+                                && open("input:default")
+                            {
+                                Some("input:default".into())
+                            } else {
+                                None
+                            }
                         }
                     }
                     _ => None,
                 };
             }
-            if next_output.effective != target_output && !cancel.load(Ordering::Acquire) {
+            if next_output.effective != target_output
+                && !cancel.load(Ordering::Acquire)
+                && output_retry_at.is_none_or(|at| {
+                    now >= at
+                        || target_output.as_deref() != Some(output_selection.preferred.as_str())
+                })
+            {
                 next_output.effective = match target_output {
-                    Some(id)
-                        if !cancel.load(Ordering::Acquire)
-                            && output.set_device_guarded(&id, cancel.clone()).is_ok() =>
-                    {
-                        Some(id)
+                    Some(id) => {
+                        let open = |id: &str| output.set_device_guarded(id, cancel.clone()).is_ok();
+                        if open(&id) {
+                            next_output_retry = None;
+                            Some(id)
+                        } else {
+                            next_output_retry = Some(now + std::time::Duration::from_secs(30));
+                            if id != "output:default"
+                                && outputs.iter().any(|d| d.id == "output:default")
+                                && !cancel.load(Ordering::Acquire)
+                                && open("output:default")
+                            {
+                                Some("output:default".into())
+                            } else {
+                                None
+                            }
+                        }
                     }
                     _ => None,
                 };
@@ -412,6 +460,8 @@ impl MediaEngine {
                     output_selection: next_output,
                 },
                 cancel,
+                input_retry_at: next_input_retry,
+                output_retry_at: next_output_retry,
             })
         })
     }
@@ -424,6 +474,8 @@ impl MediaEngine {
             return None;
         }
         self.recovery_cancel = None;
+        self.input_retry_at = result.input_retry_at;
+        self.output_retry_at = result.output_retry_at;
         self.input_selection = result.inventory.input_selection.clone();
         self.output_selection = result.inventory.output_selection.clone();
         if let Ok(mut input) = self.input_device.lock() {
