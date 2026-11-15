@@ -2195,7 +2195,10 @@ async fn open_existing_dm_reuses_it_without_server_request() {
     worker.demo = true;
     worker.state.channels.insert(
         90.into(),
-        serde_json::from_value(json!({"id":"90","type":1,"recipients":[{"id":"42"}]})).unwrap(),
+        serde_json::from_value(
+            json!({"id":"90","type":1,"recipients":[{"id":"42","username":"Ada"}]}),
+        )
+        .unwrap(),
     );
     worker.open_dm(42.into()).await.unwrap();
     assert_eq!(worker.state.selected_channel, Some(90.into()));

@@ -1581,7 +1581,7 @@ impl Worker {
                 .create_dm(&user_id.to_string())
                 .await
                 .map_err(error)?;
-            let channel: fluxer_core::Channel = serde_json::from_value(response).map_err(error)?;
+            let channel: fluxer_core::Channel = self.state.decode_api(response).map_err(error)?;
             if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
                 return Err("Server returned an invalid direct message channel".into());
             }
