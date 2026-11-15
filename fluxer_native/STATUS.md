@@ -7,6 +7,37 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Paused communication push — 2026-11-15
+
+Work stopped at the user's request with code at `f59aa410d` on `yolo/gpui`.
+The complete handoff, integrated commits, retained worktrees, test evidence,
+known defects and ordered resume steps are in
+[PUSH_2026_11_15.md](PUSH_2026_11_15.md#paused-checkpoint--2026-11-15).
+All delivered Terra/Sol slices are merged. No final push build was installed or
+relaunched; the installed executable predates this push and `push-qa` is only an
+intermediate executable.
+
+The latest completed workspace run passed **560 tests, 13 ignored**, but started
+before the final composer projection and member-list layout changes. A fresh
+final-HEAD formatting/strict-Clippy/test/audit gate and GUI acceptance are still
+required. Earlier strict Clippy/audit passed on intermediate integration states.
+The historical counts and pending statements below describe earlier checkpoints;
+use the push handoff for current scope.
+
+New work includes device recovery/preferences; indexed virtual member lists;
+own permanent/custom text status; composer completion/slowmode; DMs/Friends and
+relationship actions; native notification policy/delivery; quick switcher and
+remote mentions inbox; image zoom/pan; progressive range playback with buffering
+and immediate controls; and account-scoped file-player volume/mute. These are
+partial feature areas, not a declaration of full parity.
+
+Two visual defects were corrected in code but await recapture: raw mention IDs/
+outline suggestion emoji and the blank member-list viewport. The custom-status
+editor keyboard flow and open-profile relationship-action refresh need follow-up.
+Real-account, physical-device and subjective checks remain pending in REVIEW.md.
+
+## Earlier baseline and historical evidence
+
 | Area | Evidence | Remaining validation/work |
 |---|---|---|
 | Inventory/plan | 47 feature areas, 25 native addons, 22 settings tabs audited | Detailed scenario coverage continues through release gates |

@@ -5,6 +5,29 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Push paused — 2026-11-15
+
+The user requested a stop. Code is merged through `f59aa410d`; agents are stopped,
+worktrees retained, and no final executable has been installed/relaunched.
+[PUSH_2026_11_15.md](PUSH_2026_11_15.md#paused-checkpoint--2026-11-15)
+contains the exact checkpoint and resume order. Latest completed tests: 560 passed,
+13 ignored on a pre-final integration build; final-HEAD release checks remain open.
+No new scenario below is user-accepted.
+
+| ID | Review when resumed | Evidence / status |
+|---|---|---|
+| PUSH-A | Unplug/reconnect selected microphone/output, change defaults, fail/recover capture, repeat join/leave and reconnect; check named fallback, retained volume/DSP/mutes, no unintended capture and honest stopped sharing | Fake-owner/inventory/cancellation and preference/wire tests pass. **Physical devices, network/suspend and cross-client call behavior pending.** |
+| PUSH-B | Open Members, scroll a large community, change permissions/channel, resize, inspect roles/presence/custom status, click avatar/name and adjacent gaps; change own status and custom text | 600-row fixture initially painted blank. Definite-viewport correction merged, **visual recheck required**. Own-status keyboard dialog and profile relationship-action refresh remain follow-up findings. |
+| PUSH-C | Complete @user/@role/#channel/:emoji with keyboard/pointer, edit/delete/undo token, test IME/multiline/code, obey slowmode/exemptions and authoritative rejection | Original GUI showed raw IDs and outline emoji. Shared-art/named atomic projection correction merged; focused tests pass, **new GUI captures and live review pending**. |
+| PUSH-D | Home/Friends Online/All/Pending/Blocked, Message/open-existing DM, accept/decline/cancel/remove/block/unblock, cancel confirmations, retry failures and switch accounts | Exact transport and async fencing tests pass. **Real-account/cross-client/UI review pending.** Full profile modal is still open scope. |
+| PUSH-E | Ctrl-K/Ctrl-T switcher keyboard/wheel, Inbox Unreads/Mentions/filter/pagination/error/retry, read preservation, notification suppression/click target/sound and separate settings page | Private notification sink and source REST/policy tests pass. **Final GUI and real OS/account review pending**; no real alerts/sounds emitted during this push's validation. |
+| PUSH-F | Image click/fit/zoom/pan/resize/gallery/Escape/focus; start media before full transfer, slow/stall/seek/pause/mute/stop, retain separate audio/video volume and mute across restart/account boundaries | Generated codec/throttled HTTP/frame/cancellation/preference tests pass. **Final viewer GUI, CDN/network/output/hardware and sustained performance review pending.** |
+
+Multi-stream acceptance remains deferred at the user's request. Existing review
+items below remain applicable. Historical "complete download first" and "zoom/
+preferences future work" statements are superseded by the implemented but not yet
+accepted push scope above.
+
 ## Ready for review
 
 Implementation is on `yolo/gpui`. Attachment work started from build
