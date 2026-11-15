@@ -53,6 +53,7 @@ mod rich_message;
 mod scrollbar;
 mod search_browser;
 mod settings_view;
+mod status_view;
 mod stream_grid;
 mod stream_layout;
 mod stream_view;
@@ -325,6 +326,7 @@ struct Fluxer {
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
     friends_ui: friends_view::FriendsUi,
+    status_ui: status_view::StatusUi,
     members_open: bool,
     members_start: u32,
     members_identity: Option<String>,
@@ -448,6 +450,7 @@ impl Fluxer {
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
             friends_ui: friends_view::FriendsUi::new(cx),
+            status_ui: status_view::StatusUi::new(cx),
             members_open: false,
             members_start: 0,
             members_identity: None,
@@ -809,6 +812,7 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::DirectMessageOpen { user_id, status } => {
                     self.friends_ui.dm_status.insert(user_id, status.clone());
                     self.profile_ui
@@ -895,6 +899,7 @@ impl Fluxer {
                         self.members_scroll = UniformListScrollHandle::new();
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.status_ui.reset(cx);
                         self.friends_ui.status.clear();
                         self.friends_ui.dm_status.clear();
                         self.friends_ui.confirm = None;
@@ -2594,6 +2599,7 @@ impl Render for Fluxer {
             .child(content)
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
+            .when(self.status_ui.is_open(), |view| view.child(self.status_surface(window,cx)))
             .when(self.friends_ui.confirm.is_some(), |view| view.child(self.relationship_confirmation(cx)))
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))

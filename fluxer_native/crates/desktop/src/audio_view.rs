@@ -217,6 +217,7 @@ impl Fluxer {
                                         self.profile_trigger(view, user, None, false, cx)
                                     }),
                             )
+                            .child(self.status_indicator(cx))
                             .child(
                                 div().flex_1().min_w_0().flex().items_center().child(
                                     div()

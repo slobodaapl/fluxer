@@ -84,6 +84,13 @@ pub enum RelationshipMutationStatus {
 }
 
 pub enum Command {
+    SetPresenceStatus {
+        status: String,
+    },
+    SetCustomStatus {
+        text: String,
+    },
+    ClearCustomStatus,
     ChangeRelationship {
         user_id: Snowflake,
         action: RelationshipAction,
@@ -342,6 +349,7 @@ pub enum Event {
         account_id: Snowflake,
         message: Box<fluxer_core::Message>,
     },
+    PresenceMutation(RelationshipMutationStatus),
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,

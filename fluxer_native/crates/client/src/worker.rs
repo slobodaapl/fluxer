@@ -24,6 +24,8 @@ mod attachment_flow;
 mod navigation_flow;
 #[path = "worker_people.rs"]
 mod people_flow;
+#[path = "worker_presence.rs"]
+mod presence_flow;
 #[path = "worker_profile.rs"]
 mod profile_flow;
 
@@ -152,6 +154,7 @@ pub(crate) struct Worker {
     dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
     dm_generation: u64,
     dm_job: Option<DmJob>,
+    presence: presence_flow::PresenceState,
     people: people_flow::PeopleState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
@@ -217,6 +220,7 @@ impl Worker {
             dm_rx,
             dm_generation: 0,
             dm_job: None,
+            presence: presence_flow::PresenceState::new(),
             people: people_flow::PeopleState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
@@ -481,6 +485,7 @@ impl Worker {
             None;
         loop {
             enum Incoming {
+                Presence(Option<presence_flow::PresenceEvent>),
                 People(Option<people_flow::PeopleEvent>),
                 Dm(Option<DmEvent>),
                 DevicePoll,
@@ -509,6 +514,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.presence.rx.recv()=>Incoming::Presence(event),
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
@@ -527,6 +533,11 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::Presence(Some(event)) => {
+                    self.presence_event(event).await;
+                    Ok(())
+                }
+                Incoming::Presence(None) => Ok(()),
                 Incoming::People(Some(event)) => {
                     self.people_event(event);
                     Ok(())
@@ -667,6 +678,7 @@ impl Worker {
 
     async fn reset(&mut self) {
         self.cancel_open_dm();
+        self.clear_presence();
         self.clear_people();
         self.clear_navigation();
         self.clear_profiles();
@@ -916,6 +928,7 @@ impl Worker {
                 self.reset().await;
                 self.demo = true;
                 self.state = ClientState::demo();
+                self.state.user_settings = json!({"status":"online","custom_status":null});
                 self.emit(Event::Demo(true));
                 self.snapshot();
             }
@@ -941,6 +954,27 @@ impl Worker {
                 self.state.settings.locale = locale;
                 self.persist_selection().await;
                 self.snapshot();
+            }
+            Command::SetPresenceStatus { status } => {
+                if let Err(message) = self.set_presence_status(status).await {
+                    self.emit(Event::PresenceMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
+            }
+            Command::SetCustomStatus { text } => {
+                if let Err(message) = self.set_custom_status(text).await {
+                    self.emit(Event::PresenceMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
+            }
+            Command::ClearCustomStatus => {
+                if let Err(message) = self.clear_custom_status().await {
+                    self.emit(Event::PresenceMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
             }
             Command::ChangeRelationship { user_id, action } => {
                 if let Err(message) = self.change_relationship(user_id, action) {
@@ -1829,6 +1863,7 @@ impl Worker {
             // HTTP routing separately uses discovery's api_code_version.
             .with_api_version(1)
             .with_e2ee_capable(true)
+            .with_presence(Value::Null)
             .with_initial_guild(self.selected_guild.map(|guild| guild.to_string()))
             .with_locale(self.locale.clone());
         let (tx, rx) = async_mpsc::channel(128);
@@ -2366,6 +2401,7 @@ impl Worker {
                                     .is_some_and(|messages| messages.contains_key(&id))
                             });
                     let previous_voice = self.state.voice.clone();
+                    let previous_presence = self.presence_payload();
                     self.state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
@@ -2374,6 +2410,11 @@ impl Worker {
                         && let Some(list) = self.state.member_lists.get_mut(&(guild, channel))
                     {
                         list.identity = self.member_list_identity.clone().unwrap_or_default();
+                    }
+                    if matches!(name.as_str(), "READY" | "USER_SETTINGS_UPDATE")
+                        && self.presence_payload() != previous_presence
+                    {
+                        self.publish_presence().await;
                     }
                     self.navigation_gateway(&name, &data);
                     if name == "MESSAGE_CREATE"

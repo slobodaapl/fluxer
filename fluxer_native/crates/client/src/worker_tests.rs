@@ -2755,3 +2755,165 @@ async fn relationship_failure_is_visible_and_stale_completion_cannot_cross_accou
     assert!(worker.state.relationships.is_empty());
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn presence_settings_match_source_patch_gateway_and_rollback() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for (index, expected) in [
+            json!({"status":"idle","status_resets_at":null,"status_resets_to":null}),
+            json!({"custom_status":{"text":"Busy","expires_at":null,"emoji_name":"🌟"}}),
+            json!({"custom_status":null}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request.starts_with("PATCH /api/v1/users/@me/settings "));
+            assert_eq!(
+                serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+                expected
+            );
+            let (status, body) = if index == 0 {
+                ("403 Forbidden", json!({"code":"INVALID_STATUS"}))
+            } else {
+                ("200 OK", json!({}))
+            };
+            let body = body.to_string();
+            socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker.state.user_settings = json!({"status":"online","status_resets_at":null,"status_resets_to":null,"custom_status":{"text":"Old","expires_at":null,"emoji_name":"🌟"}});
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    let (tx, mut rx) = async_mpsc::channel(4);
+    worker.gateway_commands = Some(tx);
+    worker.set_presence_status("idle".into()).await.unwrap();
+    let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
+        panic!("presence")
+    };
+    assert_eq!(
+        value,
+        json!({"status":"idle","afk":false,"mobile":false,"custom_status":{"text":"Old","expires_at":null,"emoji_id":null,"emoji_name":"🌟"}})
+    );
+    let result = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.presence_event(result).await;
+    let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
+        panic!("rollback presence")
+    };
+    assert_eq!(value["status"], "online");
+    assert_eq!(worker.state.user_settings["status"], "online");
+    assert!(events.try_iter().any(|event| matches!(
+        event,
+        Event::PresenceMutation(crate::RelationshipMutationStatus::Failed(_))
+    )));
+    worker.set_custom_status("  Busy  ".into()).await.unwrap();
+    let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
+        panic!("presence")
+    };
+    assert_eq!(value["custom_status"]["text"], "Busy");
+    let result = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.presence_event(result).await;
+    assert_eq!(worker.state.user_settings["custom_status"]["text"], "Busy");
+    worker.clear_custom_status().await.unwrap();
+    let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
+        panic!("clear presence")
+    };
+    assert!(value["custom_status"].is_null());
+    let result = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.presence_event(result).await;
+    assert!(worker.state.user_settings["custom_status"].is_null());
+    server.await.unwrap();
+    worker.reset().await;
+    assert!(worker.state.current_user.is_none());
+}
+
+#[tokio::test]
+async fn presence_failure_preserves_newer_gateway_values_and_reset_fences_completion() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for status in [403, 200] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut socket).await;
+            let body = json!({}).to_string();
+            socket.write_all(format!("HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",if status==403{"Forbidden"}else{"OK"},body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker.state.user_settings = json!({"status":"online"});
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker.set_presence_status("idle".into()).await.unwrap();
+    let event = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker
+        .state
+        .apply_gateway("USER_SETTINGS_UPDATE", json!({"status":"dnd"}))
+        .unwrap();
+    worker.presence_event(event).await;
+    assert_eq!(worker.state.user_settings["status"], "dnd");
+    worker.set_presence_status("online".into()).await.unwrap();
+    let stale = timeout(Duration::from_secs(5), worker.presence.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.reset().await;
+    let _ = events.try_iter().count();
+    worker.presence_event(stale).await;
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.state.user_settings.is_null());
+    assert!(
+        !events
+            .try_iter()
+            .any(|event| matches!(event, Event::PresenceMutation(_)))
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn demo_presence_changes_are_local_without_a_client() {
+    let (mut worker, _) = worker();
+    worker.demo = true;
+    worker.state = ClientState::demo();
+    worker.state.user_settings = json!({"status":"online","custom_status":null});
+    worker.set_presence_status("idle".into()).await.unwrap();
+    assert_eq!(worker.state.user_settings["status"], "idle");
+    worker
+        .set_custom_status("Offline sample".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.user_settings["custom_status"]["text"],
+        "Offline sample"
+    );
+    worker.clear_custom_status().await.unwrap();
+    assert!(worker.state.user_settings["custom_status"].is_null());
+    assert!(worker.client.is_none());
+}
