@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Compact profile surface. Display precedence follows features/user/models/Profile.ts;
 //! geometry follows UserProfileSurfaceGeometry.ts. Remote bio remains inert text.
-use fluxer_client::{ProfileSnapshot, ProfileStatus};
+use fluxer_client::{
+    DirectMessageStatus, ProfileSnapshot, ProfileStatus, RelationshipAction,
+    RelationshipMutationStatus,
+};
 use fluxer_core::{Member, ProfileDetails, Role, Snowflake, User};
 use gpui::{prelude::*, *};
 
@@ -16,6 +19,8 @@ pub(super) struct ProfileOpen {
     pub webhook: bool,
     pub can_message: bool,
     pub blocked: bool,
+    pub friend_action: Option<RelationshipAction>,
+    pub can_relationship: bool,
 }
 
 pub(super) struct ProfileUi {
@@ -51,6 +56,10 @@ pub(super) enum ProfileAction {
     Message {
         user_id: Snowflake,
     },
+    Relationship {
+        user_id: Snowflake,
+        action: RelationshipAction,
+    },
     Closed,
 }
 pub(super) struct ProfilePopup {
@@ -63,6 +72,9 @@ pub(super) struct ProfilePopup {
     armed: bool,
     copied: bool,
     confirm_blocked_dm: bool,
+    confirm_block: bool,
+    dm_status: Option<DirectMessageStatus>,
+    relationship_status: Option<RelationshipMutationStatus>,
 }
 impl EventEmitter<ProfileAction> for ProfilePopup {}
 impl ProfilePopup {
@@ -77,6 +89,9 @@ impl ProfilePopup {
             armed: false,
             copied: false,
             confirm_blocked_dm: false,
+            confirm_block: false,
+            dm_status: None,
+            relationship_status: None,
         }
     }
     pub fn is_open(&self) -> bool {
@@ -103,8 +118,128 @@ impl ProfilePopup {
         self.armed = false;
         self.copied = false;
         self.confirm_blocked_dm = false;
+        self.confirm_block = false;
+        self.dm_status = None;
+        self.relationship_status = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+    pub fn apply_relationship_status(
+        &mut self,
+        user: Snowflake,
+        status: RelationshipMutationStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open.as_ref().is_some_and(|open| open.user.id == user) {
+            self.relationship_status = Some(status);
+            cx.notify();
+        }
+    }
+    pub fn apply_relationship_kind(
+        &mut self,
+        kind: Option<u8>,
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(open) = &mut self.open {
+            let old = (open.blocked, open.friend_action);
+            open.blocked = kind == Some(2);
+            open.friend_action = if enabled && open.can_message {
+                match kind {
+                    None => Some(RelationshipAction::Send),
+                    Some(3) => Some(RelationshipAction::Accept),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if old != (open.blocked, open.friend_action) {
+                self.selected = 0;
+                self.armed = false;
+            }
+            cx.notify();
+        }
+    }
+    fn block_action(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.relationship_status,
+            Some(RelationshipMutationStatus::Pending)
+        ) {
+            return;
+        }
+        if let Some(open) = &self.open {
+            if !open.can_relationship {
+                return;
+            }
+            if open.blocked {
+                self.relationship_status = Some(RelationshipMutationStatus::Pending);
+                cx.emit(ProfileAction::Relationship {
+                    user_id: open.user.id,
+                    action: RelationshipAction::Remove,
+                });
+            } else {
+                self.confirm_block = true;
+                self.selected = 0;
+                self.armed = false;
+                cx.notify();
+            }
+        }
+    }
+    fn confirm_primary(&mut self, cx: &mut Context<Self>) {
+        if self.confirm_block {
+            self.confirm_block = false;
+            self.relationship_status = Some(RelationshipMutationStatus::Pending);
+            if let Some(open) = &self.open {
+                cx.emit(ProfileAction::Relationship {
+                    user_id: open.user.id,
+                    action: RelationshipAction::Block,
+                });
+            }
+            cx.notify();
+        } else {
+            self.confirm_blocked_dm = false;
+            self.dm_status = Some(DirectMessageStatus::Pending);
+            if let Some(open) = &self.open {
+                cx.emit(ProfileAction::Message {
+                    user_id: open.user.id,
+                });
+            }
+            cx.notify();
+        }
+    }
+    fn cancel_confirmation(&mut self, cx: &mut Context<Self>) {
+        self.confirm_blocked_dm = false;
+        self.confirm_block = false;
+        self.armed = false;
+        cx.notify();
+    }
+    fn friend_action(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.relationship_status,
+            Some(RelationshipMutationStatus::Pending)
+        ) {
+            return;
+        }
+        if let Some(open) = &self.open {
+            if let Some(action) = open.friend_action {
+                self.relationship_status = Some(RelationshipMutationStatus::Pending);
+                cx.emit(ProfileAction::Relationship {
+                    user_id: open.user.id,
+                    action,
+                });
+            }
+        }
+    }
+    pub fn apply_dm_status(
+        &mut self,
+        user: Snowflake,
+        status: DirectMessageStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open.as_ref().is_some_and(|open| open.user.id == user) {
+            self.dm_status = Some(status);
+            cx.notify();
+        }
     }
     pub fn apply_snapshot(&mut self, snapshot: ProfileSnapshot, cx: &mut Context<Self>) {
         if self.open.as_ref().is_some_and(|open| {
@@ -151,7 +286,7 @@ impl ProfilePopup {
     }
     fn message(&mut self, cx: &mut Context<Self>) {
         let Some(open) = &self.open else { return };
-        if !open.can_message {
+        if !open.can_message || matches!(self.dm_status, Some(DirectMessageStatus::Pending)) {
             return;
         }
         if open.blocked && !self.confirm_blocked_dm {
@@ -160,28 +295,34 @@ impl ProfilePopup {
             self.armed = false;
             cx.notify();
         } else {
+            self.dm_status = Some(DirectMessageStatus::Pending);
             cx.emit(ProfileAction::Message {
                 user_id: open.user.id,
             });
+            cx.notify();
         }
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
             "escape" => {
-                if self.confirm_blocked_dm {
-                    self.confirm_blocked_dm = false;
-                    self.armed = false;
-                    cx.notify();
+                if self.confirm_blocked_dm || self.confirm_block {
+                    self.cancel_confirmation(cx);
                 } else {
                     self.dismiss(window, cx);
                 }
             }
             "tab" => {
-                let count = if self.confirm_blocked_dm {
+                let count = if self.confirm_blocked_dm || self.confirm_block {
                     2
                 } else {
                     1 + usize::from(self.failed())
                         + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
+                        + usize::from(
+                            self.open
+                                .as_ref()
+                                .is_some_and(|o| o.friend_action.is_some()),
+                        )
+                        + usize::from(self.open.as_ref().is_some_and(|o| o.can_relationship))
                 };
                 self.selected = if event.keystroke.modifiers.shift {
                     (self.selected + count - 1) % count
@@ -214,19 +355,31 @@ impl ProfilePopup {
         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
             let armed = std::mem::take(&mut self.armed);
             if armed && !event.keystroke.modifiers.modified() {
-                if self.confirm_blocked_dm {
+                if self.confirm_blocked_dm || self.confirm_block {
                     if self.selected == 0 {
-                        self.confirm_blocked_dm = false;
-                        cx.notify();
+                        self.cancel_confirmation(cx);
                     } else {
-                        self.message(cx);
+                        self.confirm_primary(cx);
                     }
                 } else if self.selected == 0 {
                     self.activate(false, cx);
                 } else if self.failed() && self.selected == 1 {
                     self.activate(true, cx);
-                } else {
+                } else if self.open.as_ref().is_some_and(|o| o.can_message)
+                    && self.selected == 1 + usize::from(self.failed())
+                {
                     self.message(cx);
+                } else if self
+                    .open
+                    .as_ref()
+                    .is_some_and(|o| o.friend_action.is_some())
+                    && self.selected
+                        == 1 + usize::from(self.failed())
+                            + usize::from(self.open.as_ref().is_some_and(|o| o.can_message))
+                {
+                    self.friend_action(cx);
+                } else {
+                    self.block_action(cx);
                 }
             }
         }
@@ -297,7 +450,9 @@ impl Render for ProfilePopup {
         let Some(open) = &self.open else {
             return div().into_any_element();
         };
-        if self.confirm_blocked_dm {
+        if self.confirm_blocked_dm || self.confirm_block {
+            let is_block = self.confirm_block;
+            let title = if is_block { "Block user" } else { "Open DM" };
             let name = open.user.display_name().to_owned();
             return div()
                 .absolute()
@@ -326,11 +481,15 @@ impl Render for ProfilePopup {
                             div()
                                 .text_size(px(20.))
                                 .font_weight(FontWeight::BOLD)
-                                .child("Open DM"),
+                                .child(title),
                         )
-                        .child(format!(
-                            "{name} is blocked. Are you sure you want to open a direct message?"
-                        ))
+                        .child(if is_block {
+                            format!("Block {name}? They will be added to your blocked list.")
+                        } else {
+                            format!(
+                                "{name} is blocked. Are you sure you want to open a direct message?"
+                            )
+                        })
                         .child(
                             div()
                                 .flex()
@@ -350,9 +509,7 @@ impl Render for ProfilePopup {
                                         }))
                                         .child("Cancel")
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.confirm_blocked_dm = false;
-                                            this.armed = false;
-                                            cx.notify();
+                                            this.cancel_confirmation(cx);
                                         })),
                                 )
                                 .child(
@@ -367,8 +524,10 @@ impl Render for ProfilePopup {
                                         } else {
                                             0x5865f2
                                         }))
-                                        .child("Open DM")
-                                        .on_click(cx.listener(|this, _, _, cx| this.message(cx))),
+                                        .child(title)
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.confirm_primary(cx)),
+                                        ),
                                 ),
                         ),
                 )
@@ -626,7 +785,11 @@ impl Render for ProfilePopup {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgb(0x5865f2))
+                    .bg(rgb(if self.selected == 1 + usize::from(self.failed()) {
+                        0x7289ef
+                    } else {
+                        0x5865f2
+                    }))
                     .text_size(px(12.))
                     .child(if open.blocked { "Open DM" } else { "Message" })
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -634,6 +797,96 @@ impl Render for ProfilePopup {
                         this.message(cx);
                     })),
             );
+        }
+        if let Some(action) = open.friend_action {
+            let pending = matches!(
+                self.relationship_status,
+                Some(RelationshipMutationStatus::Pending)
+            );
+            content = content.child(
+                div()
+                    .id("profile-friend-action")
+                    .cursor_pointer()
+                    .mt_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgb(
+                        if self.selected
+                            == 1 + usize::from(self.failed()) + usize::from(open.can_message)
+                        {
+                            0x535064
+                        } else {
+                            0x383a40
+                        },
+                    ))
+                    .text_size(px(12.))
+                    .child(if pending {
+                        "Updating…"
+                    } else if action == RelationshipAction::Send {
+                        "Add Friend"
+                    } else {
+                        "Accept Friend Request"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.friend_action(cx);
+                    })),
+            );
+        }
+        if open.can_relationship {
+            content = content.child(
+                div()
+                    .id("profile-block-action")
+                    .cursor_pointer()
+                    .mt_1()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_size(px(12.))
+                    .text_color(rgb(0xf2b8b5))
+                    .bg(rgb(
+                        if self.selected
+                            == 1 + usize::from(self.failed())
+                                + usize::from(open.can_message)
+                                + usize::from(open.friend_action.is_some())
+                        {
+                            0x535064
+                        } else {
+                            0x232428
+                        },
+                    ))
+                    .child(if open.blocked { "Unblock" } else { "Block" })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.block_action(cx);
+                    })),
+            );
+        }
+        if let Some(RelationshipMutationStatus::Failed(message)) = &self.relationship_status {
+            content = content.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(rgb(0xf2b8b5))
+                    .child(format!("Couldn't update relationship: {message}")),
+            );
+        }
+        if let Some(status) = &self.dm_status {
+            match status {
+                DirectMessageStatus::Pending => {
+                    content =
+                        content.child(div().text_size(px(12.)).child("Opening direct message…"))
+                }
+                DirectMessageStatus::Failed(message) => {
+                    content = content.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(0xf2b8b5))
+                            .child(format!("Couldn't open direct message: {message}")),
+                    )
+                }
+                DirectMessageStatus::Complete => {}
+            }
         }
         content = content.child(
             div()

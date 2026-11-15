@@ -22,6 +22,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 mod attachment_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
+#[path = "worker_people.rs"]
+mod people_flow;
 #[path = "worker_profile.rs"]
 mod profile_flow;
 
@@ -131,6 +133,7 @@ impl VoiceTarget {
 }
 
 struct DmEvent {
+    user_id: Snowflake,
     generation: u64,
     result: Result<Value>,
 }
@@ -149,6 +152,7 @@ pub(crate) struct Worker {
     dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
     dm_generation: u64,
     dm_job: Option<DmJob>,
+    people: people_flow::PeopleState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     attachments: attachment_flow::AttachmentState,
@@ -213,6 +217,7 @@ impl Worker {
             dm_rx,
             dm_generation: 0,
             dm_job: None,
+            people: people_flow::PeopleState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             attachments: attachment_flow::AttachmentState::new(),
@@ -476,6 +481,7 @@ impl Worker {
             None;
         loop {
             enum Incoming {
+                People(Option<people_flow::PeopleEvent>),
                 Dm(Option<DmEvent>),
                 DevicePoll,
                 DeviceRecovery(
@@ -503,6 +509,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
                 result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
@@ -520,6 +527,11 @@ impl Worker {
                 result=restore_result(&mut self.restore_task)=>Incoming::Restore(Box::new(result)),
             };
             let result = match incoming {
+                Incoming::People(Some(event)) => {
+                    self.people_event(event);
+                    Ok(())
+                }
+                Incoming::People(None) => Ok(()),
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
                 Incoming::DevicePoll => {
@@ -655,6 +667,7 @@ impl Worker {
 
     async fn reset(&mut self) {
         self.cancel_open_dm();
+        self.clear_people();
         self.clear_navigation();
         self.clear_profiles();
         self.clear_attachments();
@@ -929,6 +942,14 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::ChangeRelationship { user_id, action } => {
+                if let Err(message) = self.change_relationship(user_id, action) {
+                    self.emit(Event::RelationshipMutation {
+                        user_id,
+                        status: crate::RelationshipMutationStatus::Failed(message),
+                    });
+                }
+            }
             Command::SetMemberList { channel_id, start } => {
                 self.set_member_list(channel_id, start).await?
             }
@@ -937,7 +958,23 @@ impl Worker {
                 query,
                 limit,
             } => self.query_guild_members(guild_id, query, limit).await?,
-            Command::OpenDm { user_id } => self.open_dm(user_id).await?,
+            Command::OpenDm { user_id } => {
+                self.emit(Event::DirectMessageOpen {
+                    user_id,
+                    status: crate::DirectMessageStatus::Pending,
+                });
+                if let Err(message) = self.open_dm(user_id).await {
+                    self.emit(Event::DirectMessageOpen {
+                        user_id,
+                        status: crate::DirectMessageStatus::Failed(message),
+                    });
+                } else if self.dm_job.is_none() {
+                    self.emit(Event::DirectMessageOpen {
+                        user_id,
+                        status: crate::DirectMessageStatus::Complete,
+                    });
+                }
+            }
             Command::LoadUserProfile {
                 user_id,
                 guild_id,
@@ -1972,7 +2009,11 @@ impl Worker {
                 Ok(result) => result.map_err(error),
                 Err(_) => Err("Opening the direct message timed out".into()),
             };
-            let _ = tx.send(DmEvent { generation, result });
+            let _ = tx.send(DmEvent {
+                user_id,
+                generation,
+                result,
+            });
         });
         self.dm_job = Some(DmJob { generation, task });
         self.emit(Event::Status("Opening direct message…".into()));
@@ -1987,13 +2028,26 @@ impl Worker {
             return Ok(());
         }
         self.dm_job = None;
-        let channel: fluxer_core::Channel = self.state.decode_api(event.result?).map_err(error)?;
-        if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
-            return Err("Server returned an invalid direct message channel".into());
+        let result: Result<()> = async {
+            let channel: fluxer_core::Channel =
+                self.state.decode_api(event.result?).map_err(error)?;
+            if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
+                return Err("Server returned an invalid direct message channel".into());
+            }
+            let id = channel.id;
+            self.state.channels.insert(id, channel);
+            self.select_channel(id).await
         }
-        let id = channel.id;
-        self.state.channels.insert(id, channel);
-        self.select_channel(id).await
+        .await;
+        let status = match result {
+            Ok(()) => crate::DirectMessageStatus::Complete,
+            Err(message) => crate::DirectMessageStatus::Failed(message),
+        };
+        self.emit(Event::DirectMessageOpen {
+            user_id: event.user_id,
+            status,
+        });
+        Ok(())
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {

@@ -58,6 +58,29 @@ impl Fluxer {
                     .current_user
                     .as_ref()
                     .is_some_and(|current| current.id != user_id),
+            can_relationship: !self.demo
+                && !webhook
+                && self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|current| current.id != user_id),
+            friend_action: if !self.demo
+                && !webhook
+                && self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|current| current.id != user_id)
+            {
+                match self.state.relationships.get(&user_id).map(|r| r.kind) {
+                    None => Some(fluxer_client::RelationshipAction::Send),
+                    Some(3) => Some(fluxer_client::RelationshipAction::Accept),
+                    _ => None,
+                }
+            } else {
+                None
+            },
             blocked: self
                 .state
                 .relationships

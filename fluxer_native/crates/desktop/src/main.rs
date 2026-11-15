@@ -17,6 +17,7 @@ mod controls;
 mod dropdown;
 mod emoji_picker;
 mod emoji_sprites;
+mod friends_view;
 mod gif_demo;
 mod image_demo;
 mod image_gallery;
@@ -127,6 +128,7 @@ const MUTED: u32 = 0xa19bb3;
 #[derive(Clone, Copy, PartialEq)]
 enum Pane {
     Chat,
+    Friends,
     Call,
     Settings,
     Screens,
@@ -317,6 +319,7 @@ struct Fluxer {
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
+    friends_ui: friends_view::FriendsUi,
     members_open: bool,
     members_start: u32,
     members_identity: Option<String>,
@@ -436,6 +439,7 @@ impl Fluxer {
             context: context_actions::ContextUi::new(cx),
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
+            friends_ui: friends_view::FriendsUi::new(cx),
             members_open: false,
             members_start: 0,
             members_identity: None,
@@ -558,9 +562,15 @@ impl Fluxer {
             |this, _, event: &profile_view::ProfileAction, cx| {
                 if let profile_view::ProfileAction::Message { user_id } = event {
                     this.command(Command::OpenDm { user_id: *user_id }, cx);
-                    this.profile_ui.popup.update(cx, |popup, cx| {
-                        popup.close_after_action(cx);
-                    });
+                }
+                if let profile_view::ProfileAction::Relationship { user_id, action } = event {
+                    this.command(
+                        Command::ChangeRelationship {
+                            user_id: *user_id,
+                            action: *action,
+                        },
+                        cx,
+                    );
                 }
                 if let profile_view::ProfileAction::Retry { user_id, guild_id } = event {
                     this.command(
@@ -789,6 +799,18 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::DirectMessageOpen { user_id, status } => {
+                    self.friends_ui.dm_status.insert(user_id, status.clone());
+                    self.profile_ui
+                        .popup
+                        .update(cx, |popup, cx| popup.apply_dm_status(user_id, status, cx));
+                }
+                Event::RelationshipMutation { user_id, status } => {
+                    self.friends_ui.status.insert(user_id, status.clone());
+                    self.profile_ui.popup.update(cx, |popup, cx| {
+                        popup.apply_relationship_status(user_id, status, cx)
+                    });
+                }
                 Event::UserProfile(snapshot) => self
                     .profile_ui
                     .popup
@@ -841,6 +863,12 @@ impl Fluxer {
                     {
                         self.profile_ui.reset(cx);
                     }
+                    if let Some((user, _)) = self.profile_ui.popup.read(cx).current_scope() {
+                        let kind = self.state.relationships.get(&user).map(|r| r.kind);
+                        self.profile_ui.popup.update(cx, |popup, cx| {
+                            popup.apply_relationship_kind(kind, !self.demo, cx)
+                        });
+                    }
                     if old != self.state.selected_channel {
                         self.profile_ui.reset(cx);
                         self.members_identity = None;
@@ -850,6 +878,9 @@ impl Fluxer {
                         self.members_scroll = UniformListScrollHandle::new();
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.friends_ui.status.clear();
+                        self.friends_ui.dm_status.clear();
+                        self.friends_ui.confirm = None;
                         self.members_open = false;
                         self.members_identity = None;
                         self.members_request_generation =
@@ -1797,6 +1828,7 @@ impl Fluxer {
                     .text_size(px(24.))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.selected_guild = None;
+                        this.pane = Pane::Friends;
                         cx.notify();
                     })),
             )
@@ -1893,6 +1925,17 @@ impl Fluxer {
                             .child(emoji_sprites::unicode_text(&name, 18., false, cx)),
                     ),
             )
+            .when(self.selected_guild.is_none(), |view| {
+                view.child(
+                    controls::quiet_button("friends-navigation", "Friends")
+                        .mx_2()
+                        .my_2()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.pane = Pane::Friends;
+                            cx.notify();
+                        })),
+                )
+            })
             .child(
                 div()
                     .id("channels")
@@ -2406,6 +2449,7 @@ impl Render for Fluxer {
                         })
                         .into_any_element()
                 }
+                Pane::Friends => self.friends_view(window, cx),
                 Pane::Call => self.call_view(window, cx),
                 Pane::Settings => self.settings(cx),
                 Pane::Screens => self.screens(cx),
@@ -2492,6 +2536,7 @@ impl Render for Fluxer {
             .child(content)
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
+            .when(self.friends_ui.confirm.is_some(), |view| view.child(self.relationship_confirmation(cx)))
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(7))

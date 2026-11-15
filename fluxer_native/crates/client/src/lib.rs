@@ -69,7 +69,25 @@ pub enum ProfileStatus {
     Failed(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationshipAction {
+    Send,
+    Accept,
+    Remove,
+    Block,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RelationshipMutationStatus {
+    Pending,
+    Complete,
+    Failed(String),
+}
+
 pub enum Command {
+    ChangeRelationship {
+        user_id: Snowflake,
+        action: RelationshipAction,
+    },
     SetMemberList {
         channel_id: Option<Snowflake>,
         start: u32,
@@ -302,8 +320,23 @@ pub enum VoiceStatus {
     Reconnecting,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectMessageStatus {
+    Pending,
+    Complete,
+    Failed(String),
+}
+
 pub enum Event {
     LiveMessageCreated {account_id:Snowflake,message:Box<fluxer_core::Message>},
+    DirectMessageOpen {
+        user_id: Snowflake,
+        status: DirectMessageStatus,
+    },
+    RelationshipMutation {
+        user_id: Snowflake,
+        status: RelationshipMutationStatus,
+    },
     UserProfile(ProfileSnapshot),
     MessageAckResult {
         channel_id: Snowflake,

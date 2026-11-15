@@ -2184,7 +2184,7 @@ async fn open_dm_failure_keeps_navigation_and_account_state() {
         .await
         .unwrap()
         .unwrap();
-    assert!(worker.finish_open_dm(event).await.is_err());
+    worker.finish_open_dm(event).await.unwrap();
     assert_eq!(worker.state.selected_channel, Some(11.into()));
     assert_eq!(worker.state.channels, before);
     server.await.unwrap();
@@ -2301,6 +2301,7 @@ async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
         .unwrap();
     worker
         .finish_open_dm(DmEvent {
+            user_id: 42.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
         })
@@ -2311,6 +2312,7 @@ async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
     worker.reset().await;
     worker
         .finish_open_dm(DmEvent {
+            user_id: 42.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
         })
@@ -2491,4 +2493,136 @@ async fn member_list_channel_less_updates_require_registered_wire_id_and_current
         worker.state.member_lists[&(1.into(), 11.into())].rows.len(),
         2
     );
+}
+
+#[tokio::test]
+async fn relationship_mutations_match_classic_requests_and_remain_gateway_authoritative() {
+    use crate::RelationshipAction;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for (method, body) in [
+            ("POST", Some(json!({}))),
+            ("PUT", None),
+            ("PUT", Some(json!({"type":2}))),
+            ("DELETE", None),
+        ] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request.starts_with(&format!("{method} /api/v1/users/@me/relationships/42 ")));
+            let raw = request.split_once("\r\n\r\n").unwrap().1;
+            match body {
+                Some(expected) => assert_eq!(serde_json::from_str::<Value>(raw).unwrap(), expected),
+                None => assert!(raw.is_empty()),
+            };
+            socket
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        }
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    for (action, kind) in [
+        (RelationshipAction::Send, None),
+        (RelationshipAction::Accept, Some(3)),
+        (RelationshipAction::Block, Some(1)),
+        (RelationshipAction::Remove, Some(2)),
+    ] {
+        worker.state.relationships.remove(&42.into());
+        if let Some(kind) = kind {
+            worker.state.relationships.insert(
+                42.into(),
+                fluxer_core::Relationship {
+                    id: 42.into(),
+                    kind,
+                    ..Default::default()
+                },
+            );
+        }
+        let before = worker.state.relationships.clone();
+        worker.change_relationship(42.into(), action).unwrap();
+        let event = timeout(Duration::from_secs(5), worker.people.rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        worker.people_event(event);
+        assert_eq!(worker.state.relationships, before);
+    }
+    assert!(
+        worker
+            .change_relationship(100.into(), RelationshipAction::Block)
+            .is_err()
+    );
+    worker.reset().await;
+    assert!(
+        worker
+            .change_relationship(42.into(), RelationshipAction::Send)
+            .is_err()
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn relationship_failure_is_visible_and_stale_completion_cannot_cross_accounts() {
+    use crate::{RelationshipAction, RelationshipMutationStatus};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for status in [403, 200] {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _ = read_request(&mut socket).await;
+            let body = if status == 403 {
+                json!({"code":"FRIEND_REQUEST_BLOCKED"})
+            } else {
+                json!({})
+            }
+            .to_string();
+            socket.write_all(format!("HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",if status==403{"Forbidden"}else{"OK"},body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker
+        .change_relationship(42.into(), RelationshipAction::Send)
+        .unwrap();
+    let first = timeout(Duration::from_secs(5), worker.people.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.people_event(first);
+    assert!(events.try_iter().any(|event|matches!(event,Event::RelationshipMutation{user_id,status:RelationshipMutationStatus::Failed(_)} if user_id==42.into())));
+    worker
+        .change_relationship(42.into(), RelationshipAction::Send)
+        .unwrap();
+    let stale = timeout(Duration::from_secs(5), worker.people.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.reset().await;
+    let _ = events.try_iter().count();
+    worker.people_event(stale);
+    assert!(
+        !events
+            .try_iter()
+            .any(|event| matches!(event, Event::RelationshipMutation { .. }))
+    );
+    assert!(worker.state.relationships.is_empty());
+    server.await.unwrap();
 }
