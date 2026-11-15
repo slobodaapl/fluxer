@@ -54,6 +54,7 @@ mod rich_message;
 mod scrollbar;
 mod search_browser;
 mod settings_view;
+mod native_preferences;
 mod status_view;
 mod stream_grid;
 mod stream_layout;
@@ -314,6 +315,7 @@ struct Fluxer {
     session_context_loaded: bool,
     pane: Pane,
     settings_section: settings_view::Section,
+    interface: native_preferences::NativePreferences,
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
@@ -433,6 +435,7 @@ impl Fluxer {
             session_context_loaded: false,
             pane: Pane::Chat,
             settings_section: settings_view::Section::Voice,
+            interface: native_preferences::NativePreferences::new(demo),
             settings_return: Pane::Chat,
             selected_guild: None,
             slowmode: composer_slowmode::Slowmode::default(),
@@ -814,6 +817,12 @@ impl Fluxer {
             changed = true;
             match event {
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
+                Event::DisplaySettingsMutation(status) => {
+                    self.interface.server_pending = matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
+                    self.interface.server_error = match status {fluxer_client::RelationshipMutationStatus::Failed(message)=>Some(message),_=>None};
+                    if !self.interface.server_pending {self.interface.font_draft=None;}
+                    cx.notify();
+                },
                 Event::DirectMessageOpen { user_id, status } => {
                     self.friends_ui.dm_status.insert(user_id, status.clone());
                     self.profile_ui
@@ -2549,7 +2558,7 @@ impl Render for Fluxer {
         };
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| this.status_key_down(event, window, cx)))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| this.status_key_up(event, window, cx)))
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
@@ -2668,14 +2677,6 @@ fn main() {
                 KeyBinding::new("escape", PickerDismiss, Some("ChatPicker")),
                 KeyBinding::new("ctrl-q", Quit, None),
                 KeyBinding::new("cmd-q", Quit, None),
-                KeyBinding::new("ctrl-k", OpenQuickSwitcher, None),
-                KeyBinding::new("ctrl-t", OpenQuickSwitcher, None),
-                KeyBinding::new("cmd-k", OpenQuickSwitcher, None),
-                KeyBinding::new("cmd-t", OpenQuickSwitcher, None),
-                KeyBinding::new("ctrl-f", OpenSearch, None),
-                KeyBinding::new("cmd-f", OpenSearch, None),
-                KeyBinding::new("ctrl-,", OpenSettings, None),
-                KeyBinding::new("cmd-,", OpenSettings, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_window_closed(|cx| {

@@ -291,6 +291,8 @@ impl Fluxer {
                                 let timestamp_tooltip = message.timestamp.clone();
                                 let gutter = if is_pin {
                                     pin_system_message::gutter()
+                                } else if fluxer_core::compact_messages(&self.state.user_settings) {
+                                    div().w(px(40.)).flex_shrink_0().text_size(px(11.)).text_color(rgb(MUTED)).child(timestamp_label.clone()).into_any_element()
                                 } else if layout.starts_group {
                                     div().w(px(COZY_AVATAR_SIZE)).flex_shrink_0().pt(px(2.))
                                         .child(self.profile_trigger(div().id(("profile-avatar",id.0)).size(px(COZY_AVATAR_SIZE)).child(rich_message::avatar(&message.author,self.media_endpoint.as_deref(),COZY_AVATAR_SIZE)),message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx))
@@ -330,7 +332,8 @@ impl Fluxer {
                                         .group(group)
                                         .track_focus(&row_focus)
                                         .px(px(16.))
-                                        .py(px(COZY_SPACING_Y))
+                                        .py(px(if fluxer_core::compact_messages(&self.state.user_settings) { 0. } else { COZY_SPACING_Y }))
+                                        .text_size(px(fluxer_core::message_font_size(&self.state.user_settings)))
                                         .rounded_md()
                                         .hover(|row| row.bg(rgb(0x25222f)))
                                         .focus(|row| row.bg(rgb(0x2f293c)))
@@ -404,7 +407,7 @@ impl Fluxer {
                                         .flex_shrink_0()
                                         .flex()
                                         .gap(px(COZY_GUTTER))
-                                        .line_height(px(COZY_LINE_HEIGHT))
+                                        .line_height(px(fluxer_core::message_font_size(&self.state.user_settings) * 1.375))
                                         .child(gutter)
                                         .child(
                                             div()
@@ -413,7 +416,7 @@ impl Fluxer {
                                                 .flex()
                                                 .flex_col()
                                                 .gap_0()
-                                                .when(layout.starts_group && !is_pin, |body| {
+                                                .when((layout.starts_group || fluxer_core::compact_messages(&self.state.user_settings)) && (!fluxer_core::compact_messages(&self.state.user_settings) || !has_text) && !is_pin, |body| {
                                                     body.child(
                                             div()
                                                 .h(px(COZY_LINE_HEIGHT))
@@ -455,13 +458,14 @@ impl Fluxer {
                                                             .gap_1()
                                                             .w_full()
                                                             .min_w_0()
+                                                            .when(fluxer_core::compact_messages(&self.state.user_settings), |row| row.child(
+                                                                div().id(("compact-author",id.0)).font_weight(FontWeight::SEMIBOLD).flex_shrink_0().child(message.author.display_name().to_owned()).map(|view|self.profile_trigger(view,message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx))
+                                                            ))
                                                             .child(
                                                                 div()
                                                                     .flex_1()
                                                                     .min_w_0()
-                                                                    .line_height(px(
-                                                                        COZY_LINE_HEIGHT,
-                                                                    ))
+                                                                    .line_height(px(fluxer_core::message_font_size(&self.state.user_settings) * 1.375))
                                                                     .child(
                                                                         self.message_text
                                                                             .get(&id)
@@ -493,7 +497,7 @@ impl Fluxer {
                                                         &message,
                                                         rich_message::MediaMotion {
                                                             enabled: !(self.image_viewer.is_open() || self.playback.modal.is_open()),
-                                                            autoplay: media_animation::gif_autoplay(&self.state.user_settings),
+                                                            autoplay: media_animation::effective_gif_autoplay(&self.state.user_settings, self.interface.reduced_motion()),
                                                             surface: "timeline",
  hide_downloads: crate::media_context_policy::hide_media_downloads(message.channel_id, crate::media_context_policy::MediaKind::Image, &self.state.channels),
                                                         },
@@ -599,7 +603,7 @@ impl Fluxer {
                                                 .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c))),
                                         )
                                     })
-                                    .when(layout.space_before > 0, |entry| {
+                                    .when(layout.space_before > 0 && !fluxer_core::compact_messages(&self.state.user_settings), |entry| {
                                         entry.child(
                                             div().h(px(layout.space_before as f32)).flex_shrink_0(),
                                         )

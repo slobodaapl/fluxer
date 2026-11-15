@@ -5,6 +5,10 @@ use crate::controls::{Icon, icon_button, quiet_button};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
+    Appearance,
+    Accessibility,
+    MessagesMedia,
+    Keybinds,
     Voice,
     Notifications,
 }
@@ -29,6 +33,7 @@ impl Fluxer {
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.interface.recording = None;
         self.pane = self.settings_return;
         if self.pane == Pane::Chat {
             self.composer.focus_handle(cx).focus(window);
@@ -41,6 +46,10 @@ impl Fluxer {
     pub(super) fn settings_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = match self.settings_section {
             Section::Voice => self.voice_settings(cx),
+            Section::Appearance
+            | Section::Accessibility
+            | Section::MessagesMedia
+            | Section::Keybinds => self.expanded_settings(cx),
             Section::Notifications => div()
                 .id("notification-settings-body")
                 .flex_1()
@@ -76,6 +85,18 @@ impl Fluxer {
                     )
                     .children(
                         [
+                            (Section::Appearance, "settings-appearance", "Appearance"),
+                            (
+                                Section::Accessibility,
+                                "settings-accessibility",
+                                "Accessibility",
+                            ),
+                            (
+                                Section::MessagesMedia,
+                                "settings-messages-media",
+                                "Messages & media",
+                            ),
+                            (Section::Keybinds, "settings-keybinds", "Keybinds"),
                             (Section::Voice, "settings-voice", "Voice & audio"),
                             (
                                 Section::Notifications,
@@ -125,4 +146,220 @@ impl Fluxer {
             )
             .into_any_element()
     }
+}
+
+fn setting_row(title: &str, description: &str, control: impl IntoElement) -> Div {
+    div()
+        .w_full()
+        .py_4()
+        .border_b_1()
+        .border_color(rgb(0x403a4c))
+        .flex()
+        .items_center()
+        .gap_4()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title.to_owned()),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .text_size(px(13.))
+                        .text_color(rgb(MUTED))
+                        .child(description.to_owned()),
+                ),
+        )
+        .child(control)
+}
+impl Fluxer {
+    fn expanded_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::controls::{slider, toggle};
+        use crate::native_preferences::Shortcut;
+        use fluxer_core::DisplaySetting;
+        let pending = self.interface.server_pending;
+        let mut body = div().max_w(px(720.)).flex().flex_col().gap_2();
+        match self.settings_section {
+            Section::Appearance => {
+                let compact = fluxer_core::compact_messages(&self.state.user_settings);
+                let size = self
+                    .interface
+                    .font_draft
+                    .unwrap_or_else(|| fluxer_core::message_font_size(&self.state.user_settings));
+                body =
+                    body.child(settings_heading("Appearance"))
+                        .child(muted("Message presentation · saved to your account"))
+                        .child(setting_row(
+                            "Compact messages",
+                            "Hide avatars and reduce spacing between messages.",
+                            toggle("settings-compact", compact, "Compact messages").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if !pending {
+                                        this.save_display_setting(
+                                            DisplaySetting::Compact(!compact),
+                                            cx,
+                                        );
+                                    }
+                                }),
+                            ),
+                        ))
+                        .child(
+                            div()
+                                .py_4()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(format!("Message text size · {size:.0}px")),
+                                )
+                                .child(div().mt_2().child(slider(
+                                    "settings-font-size",
+                                    size,
+                                    8.,
+                                    48.,
+                                    1.,
+                                    "Message text size",
+                                    cx.listener(|this, size: &f32, _, cx| {
+                                        if !this.interface.server_pending {
+                                            this.interface.font_draft = Some(*size);
+                                            cx.notify();
+                                        }
+                                    }),
+                                )))
+                                .child(
+                                    div()
+                                        .mt_2()
+                                        .flex()
+                                        .justify_between()
+                                        .child(muted("8px"))
+                                        .child(muted("48px")),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    quiet_button(
+                                        "settings-apply-size",
+                                        if pending {
+                                            "Saving…"
+                                        } else {
+                                            "Apply text size"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.save_display_setting(
+                                                DisplaySetting::FontSize(size as f64),
+                                                cx,
+                                            );
+                                        },
+                                    )),
+                                )
+                                .when(self.interface.font_draft.is_some(), |row| {
+                                    row.child(
+                                        quiet_button("settings-cancel-size", "Reset preview")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.interface.font_draft = None;
+                                                cx.notify();
+                                            })),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div().mt_4().p_4().rounded_md().bg(rgb(0x25222e)).child(
+                                div()
+                                    .text_size(px(size))
+                                    .line_height(px(size * 1.375))
+                                    .child(
+                                        "The quick brown fox jumps over the lazy dog.
+A preview of your message text size.",
+                                    ),
+                            ),
+                        );
+            }
+            Section::Accessibility => {
+                let reduced = self.interface.reduced_motion();
+                body=body.child(settings_heading("Accessibility")).child(muted("Motion preferences · saved on this device"))
+                    .child(setting_row("Reduce motion", "Pause automatic GIF animation in chat and search. Hover or open an image to play it intentionally.",toggle("settings-reduced-motion",reduced,"Reduce motion").on_click(cx.listener(|this,_,_,cx|{this.interface.toggle_motion();cx.notify();}))))
+                    .child(div().mt_4().text_color(rgb(MUTED)).child("Message text size and compact display are available under Appearance."));
+            }
+            Section::MessagesMedia => {
+                let autoplay = media_animation::gif_autoplay(&self.state.user_settings);
+                body=body.child(settings_heading("Messages & media")).child(muted("Animation preferences · saved to your account"))
+                    .child(setting_row("Automatically play GIFs", "Play animated images without hovering. Reduced motion takes priority on this device.",toggle("settings-gif-autoplay",autoplay,"Automatically play GIFs").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::GifAutoplay(!autoplay),cx);}}))));
+            }
+            Section::Keybinds => {
+                body = body.child(settings_heading("Keybinds")).child(muted(
+                    "Shortcuts work while the native app is focused and are saved on this device.",
+                ));
+                for action in Shortcut::ALL {
+                    let recording = self.interface.recording == Some(action);
+                    let label = if recording {
+                        "Press a shortcut…".to_owned()
+                    } else {
+                        self.interface.binding(action).to_owned()
+                    };
+                    body = body.child(setting_row(
+                        action.label(),
+                        if recording {
+                            "Escape cancels recording."
+                        } else {
+                            "Click to record a new shortcut."
+                        },
+                        quiet_button(
+                            ("settings-keybind", action.index()),
+                            SharedString::from(label),
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.interface.recording = Some(action);
+                                this.interface.error = None;
+                                this.focus.focus(window);
+                                cx.notify();
+                            },
+                        )),
+                    ));
+                }
+                body=body.child(div().mt_4().child(quiet_button("settings-reset-keybinds","Reset shortcuts").on_click(cx.listener(|this,_,_,cx|{this.interface.reset();cx.notify();}))))
+                    .child(div().mt_2().text_size(px(13.)).text_color(rgb(MUTED)).child("F8 remains reserved for in-app push to talk. These shortcuts do not control the app globally."));
+            }
+            _ => {}
+        }
+        if matches!(
+            self.settings_section,
+            Section::Appearance | Section::MessagesMedia
+        ) {
+            if pending {
+                body = body.child(muted("Saving account preference…"));
+            }
+            if let Some(error) = &self.interface.server_error {
+                body = body.child(div().mt_2().text_color(rgb(0xe79a9e)).child(error.clone()));
+            }
+        }
+        if let Some(error) = &self.interface.error {
+            body = body.child(div().mt_2().text_color(rgb(0xe79a9e)).child(error.clone()));
+        }
+        div()
+            .id("expanded-settings-body")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .child(body)
+            .into_any_element()
+    }
+}
+
+fn settings_heading(title: &str) -> Div {
+    div()
+        .text_size(px(24.))
+        .font_weight(FontWeight::BOLD)
+        .mb_2()
+        .child(title.to_owned())
 }

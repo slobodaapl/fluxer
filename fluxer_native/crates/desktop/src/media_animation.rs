@@ -70,6 +70,10 @@ pub(super) fn animated_proxy_url(raw: &str, full_size: bool) -> Option<String> {
     Some(url.into())
 }
 
+pub(super) fn effective_gif_autoplay(settings: &Value, reduced_motion: bool) -> bool {
+    gif_autoplay(settings) && !reduced_motion
+}
+
 pub(super) fn gif_autoplay(settings: &Value) -> bool {
     settings
         .get("gif_auto_play")
@@ -124,6 +128,13 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reduced_motion_prevents_automatic_playback_without_changing_account_preference() {
+        let settings = json!({"gif_auto_play":true});
+        assert!(!effective_gif_autoplay(&settings,true));
+        assert!(effective_gif_autoplay(&settings,false));
+        assert!(!effective_gif_autoplay(&json!({"gif_auto_play":false}),false));
+    }
     #[test]
     fn authoritative_autoplay_false_is_preserved_and_missing_setting_uses_source_default() {
         assert!(!gif_autoplay(&json!({"gif_auto_play":false})));

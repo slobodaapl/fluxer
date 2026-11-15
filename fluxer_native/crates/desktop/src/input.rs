@@ -2042,7 +2042,7 @@ impl Render for TextInput {
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .when(!self.read_only, |view| view.bg(rgb(0x292735)))
-            .line_height(px(if self.read_only { 22. } else { 24. }))
+            .line_height(if self.read_only { window.line_height() } else { px(24.) })
             .when(!self.read_only, |view| view.text_size(px(14.)))
             .text_color(rgb(0xe9e7f2))
             .child(
