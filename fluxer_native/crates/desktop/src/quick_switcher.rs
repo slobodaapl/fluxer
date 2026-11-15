@@ -71,16 +71,17 @@ fn query_mode(query: &str) -> (Option<char>, String) {
 }
 fn score(text: &str, query: &str) -> Option<u32> {
     let text = text.to_lowercase();
+    let query = query.to_lowercase();
     if query.is_empty() {
         return Some(100);
     }
     if text == query {
         return Some(0);
     }
-    if text.starts_with(query) {
+    if text.starts_with(&query) {
         return Some(10 + text.chars().count() as u32);
     }
-    if let Some(index) = text.find(query) {
+    if let Some(index) = text.find(&query) {
         return Some(100 + index as u32);
     }
     let mut search = query.chars();
