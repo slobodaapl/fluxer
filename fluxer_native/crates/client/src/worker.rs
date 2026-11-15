@@ -1494,8 +1494,12 @@ impl Worker {
             }
             Command::SetFilePlaybackPreference { kind, preference } => {
                 match kind {
-                    crate::FilePlaybackKind::Audio => self.audio_preferences.audio_playback = preference.sanitized(),
-                    crate::FilePlaybackKind::Video => self.audio_preferences.video_playback = preference.sanitized(),
+                    crate::FilePlaybackKind::Audio => {
+                        self.audio_preferences.audio_playback = preference.sanitized()
+                    }
+                    crate::FilePlaybackKind::Video => {
+                        self.audio_preferences.video_playback = preference.sanitized()
+                    }
                 }
                 self.persist_audio_preferences();
             }

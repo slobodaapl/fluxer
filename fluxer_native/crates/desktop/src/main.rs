@@ -1142,12 +1142,18 @@ impl Fluxer {
                 } => {
                     self.playback.set_preference(
                         playable_media::PlayableKind::Audio,
-                        media_player::PlaybackPreference { volume: audio_playback.volume, muted: audio_playback.muted },
+                        media_player::PlaybackPreference {
+                            volume: audio_playback.volume,
+                            muted: audio_playback.muted,
+                        },
                         cx,
                     );
                     self.playback.set_preference(
                         playable_media::PlayableKind::Video,
-                        media_player::PlaybackPreference { volume: video_playback.volume, muted: video_playback.muted },
+                        media_player::PlaybackPreference {
+                            volume: video_playback.volume,
+                            muted: video_playback.muted,
+                        },
                         cx,
                     );
                     self.context.user_audio = users
