@@ -2340,7 +2340,9 @@ impl Fluxer {
     }
 
     fn picker_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.status_ui.is_open() || self.context_menu_open(cx) {
+        if (self.status_ui.is_open() && self.emoji_target != Some(EmojiTarget::CustomStatus))
+            || self.context_menu_open(cx)
+        {
             cx.stop_propagation();
             return;
         }
@@ -2349,11 +2351,10 @@ impl Fluxer {
         }
         cx.stop_propagation();
         if key == "escape" {
-            self.emoji_target = None;
+            self.close_emoji_focus(window, cx);
             if !self.forward_pending {
                 self.forwarding = None;
             }
-            self.composer.focus_handle(cx).focus(window);
         } else if self.emoji_target.is_some() {
             let choices = self.emoji_picker.choices.clone();
             self.emoji_index = self.emoji_index.min(choices.len().saturating_sub(1));
