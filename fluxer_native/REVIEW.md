@@ -5,6 +5,27 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Recovery/settings/profiles/desktop integration — 2026-11-15
+
+Roadmap items **1/3/4/5** and Linux external call control are integrated on
+`yolo/gpui`; **#2 total media resource budgeting remains deferred**. This expands
+those areas without claiming complete classic parity. Full acceptance evidence,
+source contracts and limitations are in
+[EXPANSION_2026_11_15.md](EXPANSION_2026_11_15.md).
+
+| ID | Review | Evidence / status |
+|---|---|---|
+| EXP-1 | Device loss/restoration, network drop, leave/mute during reconnect, suspend/resume and honest reshare behavior | Actor/order/cancel/recovery fixtures pass; actual synthetic LiveKit pending-publication cancellation passed. **Physical GoXLR/network/suspend and two-client call acceptance pending.** |
+| EXP-3 | Appearance font/compact, GIF autoplay/reduced motion, shortcut recording/cancel/reset and persisted settings | Source wire/protobuf, rollback and real-file persistence tests pass; owned GUI navigation/font 8/16/48px/compact/name click/keybind flows checked. **Real account saves and subjective/IME review pending.** |
+| EXP-4 | Full profile, biography links, cached artwork, custom emoji/status expiry dropdowns and idle | Owned GUI modal/link-warning/cancel and status controls checked; expiry failure/retry and private Wayland/backend fixtures pass. **Live timed/idle behavior and account switching pending.** |
+| EXP-5 | Notification click/focus/sound, daemon restart, accepted remote ACK/delete clear, role/DM mentions and manual unread preservation | Real private-bus lifecycle/race/owner/cancellation and gateway/read-state fixtures pass. **Actual OS notifications/sounds and two-client acceptance pending.** |
+| EXP-IPC | StreamDeck mute/deafen/explicit state, stop share/disconnect, property-driven indicators | Private D-Bus RPC/property/change-signal/ownership/timeout tests plus actor generation/account/deadline tests pass. **Physical StreamDeck and live-call acceptance pending.** Command setup: [EXTERNAL_CONTROL.md](EXTERNAL_CONTROL.md). |
+
+The earlier records below remain useful for their specific scenarios. The new
+full profile modal is implemented; the older PUSH-D open item predates it.
+Multi-stream review remains deferred by the user. No full feature-ledger item is
+accepted solely because a native button or automated fixture exists.
+
 ## Communication push ready for user review — 2026-11-15
 
 All delivered agent work is integrated on `yolo/gpui`, including final status-modal

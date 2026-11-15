@@ -24,3 +24,14 @@ Verification performed without opening the app or writing to an account:
 - Animation policy tests include reduced-motion precedence while preserving account autoplay, and existing authoritative false/default/proxy behavior (4 passed).
 
 Manual acceptance remaining for root's GUI fixture pass: visually inspect compact rows/replies/media-only messages at 8/16/48px; use the slider and apply; verify keyboard focus/capture/cancel/reset; hover/open GIFs with both motion policies; verify settings close/return navigation; test authenticated save-error UI using a fixture server. No real account, hardware, audio capture, or installed app was touched. Full classic settings coverage (themes, all accessibility controls, and full message/media preference registry) is outside this coherent expansion; no empty destination is exposed.
+
+## Root offline GUI acceptance
+
+Integrated settings navigation and Notifications presentation were checked in an
+owned 880px-wide demo window. Appearance preview/apply and actual compact chat
+were inspected at 8/16/48px. Inline author clicks open the proper profile; text
+wraps under the first line. Rebinding the switcher to Ctrl-Shift-J changes the
+actual dispatched action; Escape cancels recording without closing settings,
+reset restores defaults, and leaving Keybinds cancels recording. No account
+setting writes were made. Actual-account save errors, IME and subjective review
+remain pending. Captures: `target/qa/expansion2-2026-11-15/`.

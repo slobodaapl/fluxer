@@ -49,7 +49,49 @@ in the external-control documentation.
 
 ## Acceptance record
 
-Implementation and validation are in progress. Do not mark the full migration,
-physical recovery, actual StreamDeck hardware or cross-client acceptance complete
-based only on isolated fixtures. The running live debugger application is left
-alone during implementation; final installation/restart is an integration step.
+All five delivery lanes are integrated on `yolo/gpui`. Implementation expands
+these areas; it does not establish complete classic feature parity. The broader
+media resource/concurrency budget (#2), including decoder/GPU/player memory
+outside the existing compressed-media cache, remains deferred for design.
+
+Delivered:
+
+- Cancellable voice connection/recovery, gateway intent replay, bounded guild
+  transport rejoin, Linux suspend detection, and honest stopped-share/reshare
+  feedback. Pending-room cancellation closes joined participants even while
+  track publication is pending. Credential-first SFU ordering matches the server.
+- Account compact display, font size and GIF autoplay preferences with exact
+  source wire/protobuf preservation; local reduced motion and configurable native
+  shortcuts; separate functional settings sections and save/error handling.
+- Full profile modal reusing profile/artwork resources, biography link navigation,
+  status emoji and duration dropdowns, expiry retry/backoff, and supported Wayland
+  input-idle integration. Biography link warnings retain the profile on cancel.
+- Notification transport ownership/teardown, bounded targets and session/channel
+  fencing, cross-client accepted ACK/delete dismissal, and corrected role/DM
+  mention accounting without changing existing read-ack policy.
+- Linux D-Bus call control and `scripts/fluxer-call` for command-capable StreamDeck
+  hosts, with authoritative property/change feedback and serialized actor actions.
+  Windows/macOS adapters and a dedicated StreamDeck plugin are future work.
+
+The full gate passed 638 tests (14 ignored), inventory audit, formatting and
+strict workspace/all-target Clippy, including final GUI corrections. The loopback LiveKit
+cancellation test additionally passed against a disposable synthetic server;
+D-Bus tests use private buses. No real call joins, account setting writes,
+physical capture or user notifications/sounds were used for acceptance.
+
+Owned GUI fixtures under `target/qa/expansion2-2026-11-15/` checked settings
+navigation, font preview/apply at 8/16/48px, compact wrapping/inline-author clicks,
+shortcut record/rebind/dispatch/cancel/reset and leaving the recording page,
+notification settings, full profiles and biography warning/cancel/focus, custom
+status text/emoji artwork, mouse and keyboard selection/clearing/save, Escape focus
+restoration, and duration dropdowns. GUI review caught and fixed
+profile-link reentrant dispatch, warning stacking, nested deferred dropdown
+rendering, compact first-block layout, and GPUI mixed-font coalescing. Generated
+screenshots are evidence of these specific offline paths, not live acceptance.
+
+Manual review remains required for physical device loss/restoration and selected
+GoXLR devices; network and suspend recovery; real Fluxer interoperability while
+sharing/watching; timed presence across account/reconnect; OS notification clicks,
+sounds and cross-client read state; actual StreamDeck button and live state
+feedback. Record outcomes against the review IDs in `REVIEW.md` and per-lane QA
+notes; do not infer hardware or full migration acceptance from fixtures.
