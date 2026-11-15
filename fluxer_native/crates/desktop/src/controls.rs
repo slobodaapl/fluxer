@@ -44,10 +44,12 @@ pub(super) enum Icon {
     NotificationsOff,
     MarkRead,
     MarkUnread,
+    Inbox,
 }
 impl Icon {
     fn path(self) -> &'static str {
         match self {
+            Self::Inbox=>"icons/Inbox.svg",
             Self::Play => "icons/Play.svg",
             Self::Pause => "icons/Pause.svg",
             Self::React => "icons/React.svg",
@@ -104,6 +106,7 @@ const ASSETS: &[(&str, &[u8])] = &[
         "icons/MarkUnread.svg",
         include_bytes!("../assets/icons/MarkUnread.svg"),
     ),
+    ("icons/Inbox.svg",include_bytes!("../assets/icons/Inbox.svg")),
     ("icons/Play.svg", include_bytes!("../assets/icons/Play.svg")),
     (
         "icons/Pause.svg",

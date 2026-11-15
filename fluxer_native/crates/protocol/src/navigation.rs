@@ -33,6 +33,16 @@ fn api_client() -> Result<reqwest::Client> {
         .build()?)
 }
 impl Client {
+    pub async fn recent_mentions(&self,before:Option<&str>,everyone:bool,roles:bool,guilds:bool)->Result<Value> {
+        let path={
+            let mut query=url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("everyone",if everyone{"true"}else{"false"}).append_pair("roles",if roles{"true"}else{"false"}).append_pair("guilds",if guilds{"true"}else{"false"}).append_pair("limit","50");
+            if let Some(before)=before {query.append_pair("before",before);}
+            format!("/users/@me/mentions?{}",query.finish())
+        };
+        self.request(Method::GET,&path,None).await
+    }
+
     /// `params` already has SearchUtils.toApiParams snake_case fields, context,
     /// page, sort and scope. Do not silently remap or discard caller filters.
     pub async fn search_messages(&self, params: &Value) -> Result<SearchResponse> {

@@ -8,7 +8,7 @@ mod worker;
 
 pub use attachments::{AttachmentId, AttachmentPreview, AttachmentStatus, StagedAttachment};
 pub use navigation::{
-    HistorySnapshot, PinnedMessage, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort,
+    MentionFilters, MentionsSnapshot, HistorySnapshot, PinnedMessage, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort,
     SearchStatus,
 };
 
@@ -137,6 +137,8 @@ pub enum Command {
     SelectChannel {
         channel_id: Snowflake,
     },
+    FetchMentions {before:Option<Snowflake>,filters:MentionFilters},
+    CloseMentions,
     SearchMessages {
         channel_id: Snowflake,
         query: String,
@@ -328,6 +330,7 @@ pub enum DirectMessageStatus {
 }
 
 pub enum Event {
+    Mentions(MentionsSnapshot),
     LiveMessageCreated {
         account_id: Snowflake,
         message: Box<fluxer_core::Message>,

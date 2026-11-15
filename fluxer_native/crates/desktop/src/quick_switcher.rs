@@ -134,6 +134,9 @@ impl Fluxer {
         {
             return;
         }
+        if self.inbox_ui.open {
+            self.close_inbox(window, cx);
+        }
         self.quick_switcher.previous = window.focused(cx);
         self.quick_switcher.open = true;
         self.quick_switcher.armed = None;
@@ -393,6 +396,7 @@ impl Fluxer {
                     }cx.stop_propagation();
                 }))
                 .capture_key_up(cx.listener(|this,event:&KeyUpEvent,window,cx|{if event.keystroke.key=="enter"{if let Some(target)=this.quick_switcher.armed.take(){this.activate_quick_result(target,window,cx);}cx.stop_propagation();}}))
+                .on_scroll_wheel(cx.listener(|this,event:&ScrollWheelEvent,_,cx|{let count=this.quick_switcher.results.len();let delta=event.delta.pixel_delta(px(48.)).y;if count>0 && delta!=px(0.){this.quick_switcher.selected=if delta<px(0.){(this.quick_switcher.selected+1).min(count-1)}else{this.quick_switcher.selected.saturating_sub(1)};this.quick_switcher.armed=None;cx.notify();}cx.stop_propagation();}))
                 .child(div().p_3().flex().items_center().gap_2().child(icon(Icon::Search,20.)).child(div().flex_1().child(self.quick_switcher.input.clone())).child(icon_button("close-quick-switcher",Icon::Close,"Close quick switcher").on_click(cx.listener(|this,_,window,cx|this.close_quick_switcher(window,cx)))))
                 .child(div().px_4().pb_2().text_size(px(10.)).text_color(rgb(MUTED)).child(caption))
                 .children(self.quick_switcher.results.iter().enumerate().skip(first).take(visible).map(|(index,row)|{

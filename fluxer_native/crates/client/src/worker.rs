@@ -1001,6 +1001,8 @@ impl Worker {
                 sort,
                 page,
             } => self.search_messages(channel_id, query, scope, scope_override, sort, page)?,
+            Command::FetchMentions {before,filters} => self.fetch_mentions(before,filters),
+            Command::CloseMentions => self.navigation_close_mentions(),
             Command::CloseSearch { channel_id } => self.close_search(channel_id),
             Command::LoadPins { channel_id, more } => self.load_pins(channel_id, more)?,
             Command::ClosePins { channel_id } => self.close_pins(channel_id),
@@ -2382,14 +2384,9 @@ impl Worker {
                             .cloned()
                     {
                         self.reconcile_attachment_message(&message);
-                        if !self.demo
-                            && new_live_message
-                            && let Some(account) = self.state.current_user.as_ref()
-                        {
-                            self.emit(Event::LiveMessageCreated {
-                                account_id: account.id,
-                                message: Box::new(message),
-                            });
+                        if new_live_message {self.navigation_mention_message(&message);}
+                        if !self.demo && new_live_message && let Some(account)=self.state.current_user.as_ref() {
+                            self.emit(Event::LiveMessageCreated {account_id:account.id,message:Box::new(message)});
                         }
                     }
                     if matches!(

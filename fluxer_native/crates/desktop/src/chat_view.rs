@@ -118,6 +118,7 @@ impl Fluxer {
                                     cx.notify();
                                 }))
                             ))
+                            .child(self.inbox_button(cx))
                             .child(
                                 icon_button("search", Icon::Search, "Search messages · Ctrl+F")
                                     .on_click(cx.listener(|this, _, window, cx| {

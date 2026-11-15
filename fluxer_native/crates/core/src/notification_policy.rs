@@ -143,18 +143,7 @@ impl ClientState {
         if level == 2 {
             return none;
         }
-        let guild = self.guild_notification_settings(channel.guild_id);
-        let suppress = |key: &str| guild.extra.get(key).and_then(Value::as_bool) == Some(true);
-        let roles = channel
-            .guild_id
-            .and_then(|id| self.members.get(&(id, me.id)))
-            .map(|m| &m.roles);
-        let mentioned = message.mentions.iter().any(|user| user.id == me.id)
-            || (member && message.mention_everyone && !suppress("suppress_everyone"))
-            || (!suppress("suppress_roles")
-                && roles.is_some_and(|roles| {
-                    message.mention_roles.iter().any(|id| roles.contains(id))
-                }));
+        let mentioned = self.message_mentions_current_user(message, !member);
         if level != 0 && !channel.kind.is_private() && !mentioned {
             return none;
         }
@@ -167,7 +156,29 @@ impl ClientState {
             }),
         }
     }
-    fn notification_content_allowed(&self, channel: &crate::Channel) -> bool {
+    pub fn message_mentions_current_user(&self, message: &Message, ignore_everyone: bool) -> bool {
+        let Some(me) = self.current_user.as_ref() else {
+            return false;
+        };
+        let Some(channel) = self.channels.get(&message.channel_id) else {
+            return false;
+        };
+        let settings = self.guild_notification_settings(channel.guild_id);
+        let suppressed = |key: &str| settings.extra.get(key).and_then(Value::as_bool) == Some(true);
+        message.mentions.iter().any(|user| user.id == me.id)
+            || (!ignore_everyone && message.mention_everyone && !suppressed("suppress_everyone"))
+            || (!suppressed("suppress_roles")
+                && channel
+                    .guild_id
+                    .and_then(|guild| self.members.get(&(guild, me.id)))
+                    .is_some_and(|member| {
+                        message
+                            .mention_roles
+                            .iter()
+                            .any(|id| member.roles.contains(id))
+                    }))
+    }
+    pub fn notification_content_allowed(&self, channel: &crate::Channel) -> bool {
         let channel = if channel.kind.is_thread() {
             channel
                 .parent_id
@@ -254,10 +265,31 @@ impl ClientState {
 }
 #[derive(ProstMessage)]
 struct Preferences {
+    #[prost(message, optional, tag = "41")]
+    mentions: Option<MentionPreferences>,
     #[prost(message, optional, tag = "62")]
     agreements: Option<Agreements>,
     #[prost(message, optional, tag = "100")]
     sound: Option<Sound>,
+}
+#[derive(ProstMessage)]
+struct MentionPreferences {
+    #[prost(bool, optional, tag = "1")]
+    everyone: Option<bool>,
+    #[prost(bool, optional, tag = "2")]
+    roles: Option<bool>,
+    #[prost(bool, optional, tag = "3")]
+    guilds: Option<bool>,
+}
+pub fn recent_mention_filters(settings: &Value) -> (bool, bool, bool) {
+    let prefs = decode_preferences(settings)
+        .and_then(|p| p.mentions)
+        .unwrap_or_default();
+    (
+        prefs.everyone.unwrap_or(true),
+        prefs.roles.unwrap_or(true),
+        prefs.guilds.unwrap_or(true),
+    )
 }
 #[derive(ProstMessage)]
 struct Agreements {
@@ -373,6 +405,7 @@ mod tests {
         assert!(notification_sound_volume(&Value::Null, MessageSound::SameChannel).is_none());
         let prefs = Preferences {
             agreements: None,
+            mentions: None,
             sound: Some(Sound {
                 all_disabled: true,
                 ..Default::default()
@@ -436,5 +469,19 @@ mod tests {
             (notification_sound_volume(&settings, MessageSound::Message).unwrap() - 0.16).abs()
                 < 0.0001
         );
+    }
+    #[test]
+    fn recent_mention_filters_use_synced_optional_defaults() {
+        assert_eq!(recent_mention_filters(&Value::Null), (true, true, true));
+        let prefs = Preferences {
+            mentions: Some(MentionPreferences {
+                everyone: Some(false),
+                roles: None,
+                guilds: Some(false),
+            }),
+            ..Default::default()
+        };
+        let settings = serde_json::json!({"synced_preferences":general_purpose::STANDARD.encode(prefs.encode_to_vec())});
+        assert_eq!(recent_mention_filters(&settings), (false, true, false));
     }
 }

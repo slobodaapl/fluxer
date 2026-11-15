@@ -392,3 +392,13 @@ async fn slowmode_snapshot_uses_exact_authenticated_source_get() {
     assert!(request.body.is_empty());
     assert!(request.headers.contains_key("authorization"));
 }
+
+#[tokio::test]
+async fn mentions_use_source_filters_limit_and_before_cursor_without_mutating_reads() {
+    let mut server=Server::new(vec![Reply::json(200,json!([])),Reply::json(200,json!([]))]).await;
+    let client=client(&server.origin);
+    client.recent_mentions(None,true,true,true).await.unwrap();
+    client.recent_mentions(Some("123"),false,true,false).await.unwrap();
+    let first=server.next().await;assert_eq!(first.line,"GET /api/v1/users/@me/mentions?everyone=true&roles=true&guilds=true&limit=50 HTTP/1.1");assert!(first.body.is_empty());assert_eq!(first.headers["authorization"],"synthetic-session");
+    let older=server.next().await;assert_eq!(older.line,"GET /api/v1/users/@me/mentions?everyone=false&roles=true&guilds=false&limit=50&before=123 HTTP/1.1");assert!(older.body.is_empty());
+}

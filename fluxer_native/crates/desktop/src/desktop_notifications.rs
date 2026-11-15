@@ -62,6 +62,7 @@ pub(super) struct DesktopNotifications {
     tx: mpsc::SyncSender<Delivery>,
     feedback: mpsc::Receiver<Feedback>,
     status: Option<String>,
+    edited: bool,
     seen: VecDeque<(Snowflake, Snowflake)>,
     focused: bool,
     last_scope: Option<(Snowflake, Option<Snowflake>)>,
@@ -97,13 +98,21 @@ impl DesktopNotifications {
             tx,
             feedback,
             status: None,
+            edited: false,
             seen: VecDeque::new(),
             focused: true,
             last_scope: None,
         }
     }
-    fn save(&self) {
-        let _ = self.tx.try_send(Delivery::Save(self.preferences.clone()));
+    fn save(&mut self) {
+        self.edited = true;
+        if self
+            .tx
+            .try_send(Delivery::Save(self.preferences.clone()))
+            .is_err()
+        {
+            self.status = Some("Notification settings could not be queued; try again".into());
+        }
     }
 }
 fn escaped(text: &str) -> String {
@@ -132,7 +141,7 @@ impl NotificationSink for Freedesktop {
             ("suppress-sound", zbus::zvariant::Value::from(true)),
             (
                 "desktop-entry",
-                zbus::zvariant::Value::from("fluxer-native"),
+                zbus::zvariant::Value::from("app.fluxer.Native"),
             ),
         ]);
         proxy
@@ -257,7 +266,21 @@ fn delivery(
         u32,
         Target,
     >::new()));
-    for request in alerts {
+    loop {
+        let request = match alerts.recv_timeout(Duration::from_millis(250)) {
+            Ok(request) => request,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                playing.retain(|playing| {
+                    !matches!(
+                        playing.player.snapshot().status,
+                        fluxer_media::FilePlaybackStatus::Ended
+                            | fluxer_media::FilePlaybackStatus::Failed
+                    )
+                });
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
         playing.retain(|playing| {
             !matches!(
                 playing.player.snapshot().status,
@@ -423,10 +446,15 @@ impl Fluxer {
             let Some(channel) = self.state.channels.get(&message.channel_id) else {
                 return;
             };
+            let name = channel
+                .guild_id
+                .and_then(|guild| self.state.members.get(&(guild, message.author.id)))
+                .and_then(|member| member.nick.as_deref())
+                .unwrap_or(message.author.display_name());
             let title = if channel.guild_id.is_some() {
                 format!("{} (#{})", message.author.display_name(), channel.name)
             } else {
-                message.author.display_name().into()
+                name.into()
             };
             let body = if self.native_notifications.preferences.hide_preview {
                 "New message".into()
@@ -509,8 +537,10 @@ impl Fluxer {
             match event {
                 Feedback::Click(target) => targets.push(target),
                 Feedback::Loaded(preferences) => {
-                    self.native_notifications.preferences = preferences;
-                    cx.notify();
+                    if !self.native_notifications.edited {
+                        self.native_notifications.preferences = preferences;
+                        cx.notify();
+                    }
                 }
                 Feedback::Failure(error) => {
                     self.native_notifications.status = Some(error);

@@ -126,6 +126,12 @@ pub struct ChannelNotificationSettings {
     pub effective_message_notifications: i8,
 }
 impl ClientState {
+    /// UnreadInboxVisibility.ts with the default (non-customized) unread badges.
+    pub fn unread_inbox_visible(&self,channel_id:Snowflake,now_ms:i64)->bool {
+        let Some(channel)=self.channels.get(&channel_id)else{return false;};
+        let mentions=self.read_states.get(&channel_id).map_or(0,|read|read.mention_count);
+        mentions>0 || (self.is_unread(channel_id) && !self.channel_notification_settings(channel.guild_id,channel_id,now_ms).effective_muted)
+    }
     /// ReadStateEntry.computeMentionCountAfterAck scans buffered messages by timestamp.
     pub fn manual_ack_mention_count(&self, channel_id: Snowflake, previous: Snowflake) -> u32 {
         let Some(me) = self.current_user.as_ref() else {
@@ -427,4 +433,13 @@ mod tests {
         );
         assert_eq!(state.guild_effective_message_notifications(None), 0);
     }
+    #[test] fn unread_inbox_preserves_mentions_through_inherited_category_mute() {
+        let mut state=ClientState::demo();let channel=Snowflake(11);let guild=Some(Snowflake(1));let parent=Snowflake(10);
+        state.channels.get_mut(&channel).unwrap().last_message_id=Some(Snowflake(200));state.channels.get_mut(&channel).unwrap().parent_id=Some(parent);
+        let mut muted=ChannelNotificationOverride::new(parent);muted.muted=true;state.user_guild_settings.entry(guild).or_default().channel_overrides.insert(parent,muted);
+        state.read_states.insert(channel,crate::ReadState{id:channel,last_message_id:Some(Snowflake(100)),..Default::default()});
+        assert!(!state.unread_inbox_visible(channel,0));state.read_states.get_mut(&channel).unwrap().mention_count=1;assert!(state.unread_inbox_visible(channel,0));
+        state.read_states.get_mut(&channel).unwrap().mention_count=0;state.read_states.get_mut(&channel).unwrap().last_message_id=Some(Snowflake(200));assert!(!state.unread_inbox_visible(channel,0));
+    }
+
 }
