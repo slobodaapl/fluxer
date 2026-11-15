@@ -68,6 +68,11 @@ pub enum ProfileStatus {
 }
 
 pub enum Command {
+    QueryGuildMembers {
+        guild_id: Snowflake,
+        query: String,
+        limit: u32,
+    },
     OpenDm {
         user_id: Snowflake,
     },

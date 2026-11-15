@@ -889,6 +889,27 @@ impl ClientState {
                 let target: Id = decode(event, data)?;
                 self.relationships.remove(&target.id);
             }
+            "GUILD_MEMBERS_CHUNK" => {
+                #[derive(Deserialize)]
+                struct Chunk {
+                    guild_id: Snowflake,
+                    #[serde(default)]
+                    members: Vec<Member>,
+                    #[serde(default)]
+                    presences: Vec<Presence>,
+                }
+                let chunk: Chunk = decode(event, data)?;
+                if self.guilds.contains_key(&chunk.guild_id) {
+                    for member in chunk.members {
+                        self.cache_user(member.user.clone());
+                        self.members
+                            .insert((chunk.guild_id, member.user.id), member);
+                    }
+                    for presence in chunk.presences {
+                        self.presences.insert(presence.user.id, presence);
+                    }
+                }
+            }
             "PRESENCE_UPDATE" => {
                 let presence: Presence = decode(event, data)?;
                 self.presences.insert(presence.user.id, presence);

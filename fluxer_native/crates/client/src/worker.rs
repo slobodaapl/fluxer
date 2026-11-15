@@ -166,6 +166,8 @@ pub(crate) struct Worker {
     expected_user_id: Option<Snowflake>,
     selected_guild: Option<Snowflake>,
     synced_guilds: BTreeMap<Snowflake, String>,
+    member_query_nonce: u64,
+    member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
     /// Media watch epochs fence frames and lifecycle notifications queued before
@@ -218,6 +220,8 @@ impl Worker {
             expected_user_id: None,
             selected_guild: None,
             synced_guilds: BTreeMap::new(),
+            member_query_nonce: 0,
+            member_query: None,
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
             video_generations: BTreeMap::new(),
@@ -515,6 +519,7 @@ impl Worker {
         self.expected_user_id = None;
         self.selected_guild = None;
         self.synced_guilds.clear();
+        self.member_query = None;
         self.pending_mfa = None;
         self.pending_ip = None;
         if let Some(task) = self.ip_poll_task.take() {
@@ -760,6 +765,11 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::QueryGuildMembers {
+                guild_id,
+                query,
+                limit,
+            } => self.query_guild_members(guild_id, query, limit).await?,
             Command::OpenDm { user_id } => self.open_dm(user_id).await?,
             Command::LoadUserProfile {
                 user_id,
@@ -1552,6 +1562,34 @@ impl Worker {
         Ok(())
     }
 
+    async fn query_guild_members(
+        &mut self,
+        guild_id: Snowflake,
+        query: String,
+        limit: u32,
+    ) -> Result<()> {
+        if self.demo {
+            return Ok(());
+        }
+        if !self.gateway_ready
+            || self.selected_guild != Some(guild_id)
+            || !self.state.guilds.contains_key(&guild_id)
+            || query.is_empty()
+            || !(1..=100).contains(&limit)
+        {
+            return Err("Cannot search members in this community".into());
+        }
+        let tx = self
+            .gateway_commands
+            .as_ref()
+            .ok_or("Gateway is disconnected")?;
+        self.member_query_nonce = self.member_query_nonce.wrapping_add(1);
+        let nonce = format!("native-member-{}", self.member_query_nonce);
+        tx.send(GatewayCommand::Send { op: 8, data: json!({"guild_id":guild_id.to_string(), "query":query, "limit":limit, "presences":true, "nonce":nonce}) }).await.map_err(|_| "Gateway is disconnected".to_owned())?;
+        self.member_query = Some((guild_id, nonce));
+        Ok(())
+    }
+
     async fn open_dm(&mut self, user_id: Snowflake) -> Result<()> {
         if self
             .state
@@ -1761,6 +1799,17 @@ impl Worker {
                     && name != "READY"
                 {
                     return Ok(());
+                }
+                if name == "GUILD_MEMBERS_CHUNK" {
+                    let matches = self.member_query.as_ref().is_some_and(|(guild, nonce)| {
+                        self.selected_guild == Some(*guild)
+                            && data.get("guild_id").and_then(Value::as_str)
+                                == Some(guild.to_string().as_str())
+                            && data.get("nonce").and_then(Value::as_str) == Some(nonce.as_str())
+                    });
+                    if !matches {
+                        return Ok(());
+                    }
                 }
                 if matches!(
                     name.as_str(),

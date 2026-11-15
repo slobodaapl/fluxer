@@ -2203,3 +2203,57 @@ async fn open_existing_dm_reuses_it_without_server_request() {
     worker.open_dm(42.into()).await.unwrap();
     assert_eq!(worker.state.selected_channel, Some(90.into()));
 }
+
+#[tokio::test]
+async fn member_query_sends_source_shape_and_rejects_stale_chunks() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.selected_guild = Some(1.into());
+    worker.gateway_ready = true;
+    let (tx, mut rx) = async_mpsc::channel(4);
+    worker.gateway_commands = Some(tx);
+    worker
+        .query_guild_members(1.into(), "al".into(), 25)
+        .await
+        .unwrap();
+    let GatewayCommand::Send { op, data } = rx.recv().await.unwrap() else {
+        panic!("expected request")
+    };
+    assert_eq!(op, 8);
+    assert_eq!(data["guild_id"], "1");
+    assert_eq!(data["query"], "al");
+    assert_eq!(data["limit"], 25);
+    assert_eq!(data["presences"], true);
+    let nonce = data["nonce"].as_str().unwrap().to_owned();
+    let chunk = |nonce: &str| json!({"guild_id":"1","members":[{"user":{"id":"987","username":"Alice"},"roles":[]}],"presences":[],"chunk_index":0,"chunk_count":1,"nonce":nonce});
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBERS_CHUNK".into(),
+            data: chunk("stale"),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert!(!worker.state.members.contains_key(&(1.into(), 987.into())));
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBERS_CHUNK".into(),
+            data: chunk(&nonce),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.state.members[&(1.into(), 987.into())].user.username,
+        "Alice"
+    );
+    worker.selected_guild = Some(2.into());
+    worker
+        .gateway(GatewayEvent::Dispatch {
+            name: "GUILD_MEMBERS_CHUNK".into(),
+            data: chunk(&nonce),
+            sequence: None,
+        })
+        .await
+        .unwrap();
+}
