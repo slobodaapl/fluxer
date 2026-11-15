@@ -4,6 +4,7 @@
 //! follow the schemas in `packages/schema`; see README.md for migration limits.
 mod attachment_policy;
 mod demo;
+mod display_settings;
 mod id;
 mod member_list;
 mod models;
@@ -16,6 +17,7 @@ mod voice;
 
 pub use attachment_policy::*;
 pub use id::Snowflake;
+pub use display_settings::*;
 pub use member_list::*;
 pub use models::*;
 pub use notification_policy::*;

@@ -147,6 +147,7 @@ pub enum Command {
         deadline: std::time::Instant,
         reply: tokio::sync::oneshot::Sender<Result<Option<CallControlSnapshot>, String>>,
     },
+    UpdateDisplaySetting(fluxer_core::DisplaySetting),
     SetPresenceStatus {
         status: String,
     },
@@ -413,6 +414,7 @@ pub enum Event {
         message: Box<fluxer_core::Message>,
     },
     PresenceMutation(RelationshipMutationStatus),
+    DisplaySettingsMutation(RelationshipMutationStatus),
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,

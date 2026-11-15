@@ -3088,3 +3088,78 @@ async fn voice_changes_and_leave_during_gateway_reconnect_are_replayed_in_order(
     }
     assert!(rx.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn display_settings_exact_transport_rollback_and_pending_scope() {
+    use fluxer_core::DisplaySetting;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        for (index, expected) in [
+            json!({"message_display_compact":true}),
+            json!({"gif_auto_play":false}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            assert!(request.starts_with("PATCH /api/v1/users/@me/settings "));
+            assert_eq!(
+                serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+                expected
+            );
+            let status = if index == 0 {
+                "403 Forbidden"
+            } else {
+                "200 OK"
+            };
+            let body = "{}";
+            socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        }
+    });
+    let (mut worker, events) = worker();
+    worker.state = ClientState::demo();
+    worker.state.user_settings =
+        json!({"status":"online","message_display_compact":false,"gif_auto_play":true});
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker
+        .set_display_setting(DisplaySetting::Compact(true))
+        .await
+        .unwrap();
+    assert_eq!(worker.state.user_settings["message_display_compact"], true);
+    assert!(
+        worker
+            .set_display_setting(DisplaySetting::GifAutoplay(false))
+            .await
+            .is_err()
+    );
+    let result = timeout(Duration::from_secs(5), worker.display_settings.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.display_settings_event(result).await;
+    assert_eq!(worker.state.user_settings["message_display_compact"], false);
+    assert_eq!(worker.state.user_settings["status"], "online");
+    assert!(events.try_iter().any(|event| matches!(
+        event,
+        Event::DisplaySettingsMutation(crate::RelationshipMutationStatus::Failed(_))
+    )));
+    worker
+        .set_display_setting(DisplaySetting::GifAutoplay(false))
+        .await
+        .unwrap();
+    let result = timeout(Duration::from_secs(5), worker.display_settings.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.display_settings_event(result).await;
+    assert_eq!(worker.state.user_settings["gif_auto_play"], false);
+    server.await.unwrap();
+}

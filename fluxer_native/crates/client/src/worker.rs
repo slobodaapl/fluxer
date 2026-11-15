@@ -26,6 +26,8 @@ mod navigation_flow;
 mod people_flow;
 #[path = "worker_presence.rs"]
 mod presence_flow;
+#[path = "worker_settings.rs"]
+mod display_settings_flow;
 #[path = "worker_profile.rs"]
 mod profile_flow;
 
@@ -155,6 +157,7 @@ pub(crate) struct Worker {
     dm_generation: u64,
     dm_job: Option<DmJob>,
     presence: presence_flow::PresenceState,
+    display_settings: display_settings_flow::DisplaySettingsState,
     people: people_flow::PeopleState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
@@ -225,6 +228,7 @@ impl Worker {
             dm_generation: 0,
             dm_job: None,
             presence: presence_flow::PresenceState::new(),
+            display_settings: display_settings_flow::DisplaySettingsState::new(),
             people: people_flow::PeopleState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
@@ -536,6 +540,7 @@ impl Worker {
         loop {
             enum Incoming {
                 Presence(Option<presence_flow::PresenceEvent>),
+                DisplaySettings(Option<display_settings_flow::DisplaySettingsEvent>),
                 People(Option<people_flow::PeopleEvent>),
                 Dm(Option<DmEvent>),
                 DevicePoll,
@@ -565,6 +570,7 @@ impl Worker {
             }
             let incoming = tokio::select! {
                 event=self.presence.rx.recv()=>Incoming::Presence(event),
+                event=self.display_settings.rx.recv()=>Incoming::DisplaySettings(event),
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
@@ -588,6 +594,8 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Presence(None) => Ok(()),
+                Incoming::DisplaySettings(Some(event)) => {self.display_settings_event(event).await; Ok(())}
+                Incoming::DisplaySettings(None) => Ok(()),
                 Incoming::People(Some(event)) => {
                     self.people_event(event);
                     Ok(())
@@ -729,6 +737,7 @@ impl Worker {
     async fn reset(&mut self) {
         self.cancel_open_dm();
         self.clear_presence();
+        self.clear_display_settings();
         self.clear_people();
         self.clear_navigation();
         self.clear_profiles();
@@ -1037,6 +1046,9 @@ impl Worker {
                 self.state.settings.locale = locale;
                 self.persist_selection().await;
                 self.snapshot();
+            }
+            Command::UpdateDisplaySetting(setting) => {
+                if let Err(message) = self.set_display_setting(setting).await {self.emit(Event::DisplaySettingsMutation(crate::RelationshipMutationStatus::Failed(message)));}
             }
             Command::SetPresenceStatus { status } => {
                 if let Err(message) = self.set_presence_status(status).await {
