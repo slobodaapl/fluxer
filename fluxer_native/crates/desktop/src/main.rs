@@ -466,7 +466,7 @@ impl Fluxer {
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
             friends_ui: friends_view::FriendsUi::new(cx),
-            status_ui: status_view::StatusUi::new(cx),
+            status_ui: status_view::StatusUi::new(window, cx),
             members_open: false,
             members_start: 0,
             members_identity: None,
@@ -1579,7 +1579,7 @@ impl Fluxer {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         if self.status_ui.is_open() {
-            self.arm_status_submit(cx);
+            self.arm_status_submit(window, cx);
             return;
         }
         if self.quick_switcher.open {

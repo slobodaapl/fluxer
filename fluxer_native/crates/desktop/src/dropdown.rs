@@ -14,6 +14,7 @@ pub struct Dropdown {
     options: Vec<(String, String)>,
     selected: Option<String>,
     open: bool,
+    popup_priority: usize,
     highlighted: usize,
     focus: FocusHandle,
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -43,6 +44,7 @@ impl Dropdown {
             options,
             selected,
             open: false,
+            popup_priority: 0,
             highlighted: 0,
             focus,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -50,6 +52,27 @@ impl Dropdown {
             prefix: String::new(),
             typed_at: Instant::now(),
         }
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+    pub fn set_popup_priority(&mut self, priority: usize) {
+        self.popup_priority = priority;
+    }
+    pub fn show(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open(window, cx);
+    }
+    pub fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.key_down(event, window, cx);
     }
 
     pub fn selected(&self) -> Option<&str> {
@@ -267,83 +290,89 @@ impl Render for Dropdown {
                     }))
                     .when(self.open, |view| {
                         let bounds = bounds.get();
-                        view.child(deferred(
-                            div().absolute().top_0().left_0().child(
-                                anchored()
-                                    .position_mode(AnchoredPositionMode::Local)
-                                    .position(point(px(0.), px(42.)))
-                                    .snap_to_window_with_margin(px(8.))
-                                    .child(
-                                        div()
-                                            .id("menu")
-                                            .w(bounds.size.width)
-                                            .max_h(px(288.))
-                                            .overflow_y_scroll()
-                                            .track_scroll(&self.scroll)
-                                            .occlude()
-                                            .p_1()
-                                            .rounded_md()
-                                            .border_1()
-                                            .border_color(rgb(0x514861))
-                                            .bg(rgb(0x252330))
-                                            .shadow_lg()
-                                            .on_mouse_down_out(cx.listener(
-                                                |this, event: &MouseDownEvent, _, cx| {
-                                                    if !this.bounds.get().contains(&event.position)
-                                                    {
-                                                        this.open = false;
-                                                        cx.notify();
-                                                    }
-                                                },
-                                            ))
-                                            .children(self.options.iter().enumerate().map(
-                                                |(index, (id, label))| {
-                                                    let selected =
-                                                        Some(id.as_str()) == self.selected();
-                                                    div()
-                                                        .id(index)
-                                                        .h(px(34.))
-                                                        .px_2()
-                                                        .flex()
-                                                        .items_center()
-                                                        .gap_2()
-                                                        .rounded_sm()
-                                                        .cursor_pointer()
-                                                        .text_size(px(13.))
-                                                        .bg(rgb(if index == self.highlighted {
-                                                            0x44395e
-                                                        } else {
-                                                            0x252330
-                                                        }))
-                                                        .hover(|style| style.bg(rgb(0x44395e)))
-                                                        .child(
-                                                            div()
-                                                                .w(px(16.))
-                                                                .text_color(rgb(super::ACCENT))
-                                                                .child(if selected {
-                                                                    "✓"
-                                                                } else {
-                                                                    ""
-                                                                }),
-                                                        )
-                                                        .child(
-                                                            div()
-                                                                .flex_1()
-                                                                .min_w_0()
-                                                                .text_ellipsis()
-                                                                .child(label.clone()),
-                                                        )
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                cx.stop_propagation();
-                                                                this.choose(index, cx);
-                                                            },
-                                                        ))
-                                                },
-                                            )),
-                                    ),
-                            ),
-                        ))
+                        view.child(
+                            deferred(
+                                div().absolute().top_0().left_0().child(
+                                    anchored()
+                                        .position_mode(AnchoredPositionMode::Local)
+                                        .position(point(px(0.), px(42.)))
+                                        .snap_to_window_with_margin(px(8.))
+                                        .child(
+                                            div()
+                                                .id("menu")
+                                                .w(bounds.size.width)
+                                                .max_h(px(288.))
+                                                .overflow_y_scroll()
+                                                .track_scroll(&self.scroll)
+                                                .occlude()
+                                                .p_1()
+                                                .rounded_md()
+                                                .border_1()
+                                                .border_color(rgb(0x514861))
+                                                .bg(rgb(0x252330))
+                                                .shadow_lg()
+                                                .on_mouse_down_out(cx.listener(
+                                                    |this, event: &MouseDownEvent, _, cx| {
+                                                        if !this
+                                                            .bounds
+                                                            .get()
+                                                            .contains(&event.position)
+                                                        {
+                                                            this.open = false;
+                                                            cx.notify();
+                                                        }
+                                                    },
+                                                ))
+                                                .children(self.options.iter().enumerate().map(
+                                                    |(index, (id, label))| {
+                                                        let selected =
+                                                            Some(id.as_str()) == self.selected();
+                                                        div()
+                                                            .id(index)
+                                                            .h(px(34.))
+                                                            .px_2()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .rounded_sm()
+                                                            .cursor_pointer()
+                                                            .text_size(px(13.))
+                                                            .bg(rgb(if index == self.highlighted {
+                                                                0x44395e
+                                                            } else {
+                                                                0x252330
+                                                            }))
+                                                            .hover(|style| style.bg(rgb(0x44395e)))
+                                                            .child(
+                                                                div()
+                                                                    .w(px(16.))
+                                                                    .text_color(rgb(super::ACCENT))
+                                                                    .child(if selected {
+                                                                        "✓"
+                                                                    } else {
+                                                                        ""
+                                                                    }),
+                                                            )
+                                                            .child(
+                                                                div()
+                                                                    .flex_1()
+                                                                    .min_w_0()
+                                                                    .text_ellipsis()
+                                                                    .child(label.clone()),
+                                                            )
+                                                            .on_click(cx.listener(
+                                                                move |this, _, _, cx| {
+                                                                    cx.stop_propagation();
+                                                                    this.choose(index, cx);
+                                                                },
+                                                            ))
+                                                    },
+                                                )),
+                                        ),
+                                ),
+                            )
+                            .with_priority(self.popup_priority),
+                        )
                     }),
             )
             .when(self.options.is_empty(), |view| {

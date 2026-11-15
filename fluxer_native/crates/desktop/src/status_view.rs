@@ -25,13 +25,12 @@ pub(super) struct StatusUi {
     previous_focus: Option<FocusHandle>,
     cancel_focus: FocusHandle,
     save_focus: FocusHandle,
-    expiry_focus: FocusHandle,
+    expiry_picker: Entity<Dropdown>,
+    duration_picker: Entity<Dropdown>,
     emoji_focus: FocusHandle,
     emoji_clear_focus: FocusHandle,
     emoji_id: Option<String>,
     emoji_name: Option<String>,
-    expiry: usize,
-    status_expiry: usize,
     window: Option<AnyWindowHandle>,
     selected: usize,
     armed: bool,
@@ -39,7 +38,20 @@ pub(super) struct StatusUi {
     status: Option<RelationshipMutationStatus>,
 }
 impl StatusUi {
-    pub fn new(cx: &mut Context<Fluxer>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Fluxer>) -> Self {
+        let options = || {
+            EXPIRY_LABELS
+                .iter()
+                .enumerate()
+                .map(|(i, label)| (i.to_string(), (*label).to_owned()))
+                .collect()
+        };
+        let expiry_picker =
+            cx.new(|cx| Dropdown::new("Clear after", options(), Some("7".into()), window, cx));
+        let duration_picker =
+            cx.new(|cx| Dropdown::new("Status duration", options(), Some("0".into()), window, cx));
+        expiry_picker.update(cx, |picker, _| picker.set_popup_priority(11));
+        duration_picker.update(cx, |picker, _| picker.set_popup_priority(11));
         Self {
             open: false,
             editor: false,
@@ -47,13 +59,12 @@ impl StatusUi {
             previous_focus: None,
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
-            expiry_focus: cx.focus_handle(),
+            expiry_picker,
+            duration_picker,
             emoji_focus: cx.focus_handle(),
             emoji_clear_focus: cx.focus_handle(),
             emoji_id: None,
             emoji_name: None,
-            expiry: 7,
-            status_expiry: 0,
             window: None,
             selected: 0,
             armed: false,
@@ -73,6 +84,10 @@ impl StatusUi {
         self.armed = false;
         self.input
             .update(cx, |input, cx| input.set(String::new(), cx));
+        self.expiry_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
+        self.duration_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
     }
 }
 impl Fluxer {
@@ -110,6 +125,13 @@ impl Fluxer {
         self.dismiss_user_profile(window, cx);
         self.status_ui.previous_focus = window.focused(cx);
         self.status_ui.window = Some(window.window_handle());
+        self.status_ui
+            .expiry_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
+        self.status_ui.duration_picker.update(cx, |picker, cx| {
+            picker.dismiss(cx);
+            picker.set_selected("0", cx);
+        });
         self.status_ui.open = true;
         self.status_ui.editor = false;
         self.status_ui.selected = 0;
@@ -119,6 +141,12 @@ impl Fluxer {
         cx.notify();
     }
     fn close_status(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.status_ui
+            .expiry_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
+        self.status_ui
+            .duration_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
         self.status_ui.open = false;
         self.status_ui.editor = false;
         self.status_ui.window = None;
@@ -140,14 +168,15 @@ impl Fluxer {
             self.command(
                 Command::SetPresenceStatus {
                     status: status.into(),
-                    duration_minutes: EXPIRY_MINUTES[self.status_ui.status_expiry],
+                    duration_minutes: EXPIRY_MINUTES
+                        [picker_index(&self.status_ui.duration_picker, cx)],
                 },
                 cx,
             );
         } else if index == 4 {
-            self.status_ui.status_expiry =
-                (self.status_ui.status_expiry + 1) % EXPIRY_MINUTES.len();
-            cx.notify();
+            self.status_ui
+                .duration_picker
+                .update(cx, |picker, cx| picker.show(window, cx));
         } else if index == 6 {
             self.command(Command::ClearCustomStatus, cx);
         } else {
@@ -170,7 +199,7 @@ impl Fluxer {
                 .and_then(|v| v.get("emoji_name"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
-            self.status_ui.expiry = custom
+            let expiry = custom
                 .and_then(|v| v.get("expires_at"))
                 .and_then(serde_json::Value::as_str)
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
@@ -184,6 +213,10 @@ impl Fluxer {
                 } else {
                     7
                 });
+            self.status_ui.expiry_picker.update(cx, |picker, cx| {
+                picker.dismiss(cx);
+                picker.set_selected(&expiry.to_string(), cx);
+            });
             self.status_ui.editor = true;
             self.status_ui.status = None;
             self.status_ui.input.read(cx).focus_handle(cx).focus(window);
@@ -191,6 +224,9 @@ impl Fluxer {
         }
     }
     fn cancel_status_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.status_ui
+            .expiry_picker
+            .update(cx, |picker, cx| picker.dismiss(cx));
         self.status_ui.editor = false;
         self.status_ui.armed = false;
         window.focus(&self.status_ui.focus);
@@ -235,10 +271,11 @@ impl Fluxer {
             Some(RelationshipMutationStatus::Pending)
         ) {
             let text = self.status_ui.input.read(cx).content.to_string();
-            let expires_at = EXPIRY_MINUTES[self.status_ui.expiry].map(|minutes| {
-                (chrono::Utc::now() + chrono::Duration::minutes(minutes))
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-            });
+            let expires_at =
+                EXPIRY_MINUTES[picker_index(&self.status_ui.expiry_picker, cx)].map(|minutes| {
+                    (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                });
             self.command(
                 Command::SetCustomStatus {
                     text,
@@ -252,8 +289,16 @@ impl Fluxer {
     }
     // Enter resolves to the app Submit action before raw key dispatch. Arm here
     // and save on release, so the input's action path follows the same modal flow.
-    pub(super) fn arm_status_submit(&mut self, cx: &Context<Self>) {
-        if self.status_ui.editor && !self.status_ui.input.read(cx).is_composing() {
+    pub(super) fn arm_status_submit(&mut self, window: &Window, cx: &Context<Self>) {
+        if self.status_ui.editor
+            && !self
+                .status_ui
+                .expiry_picker
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+            && !self.status_ui.input.read(cx).is_composing()
+        {
             self.status_ui.armed = true;
         }
     }
@@ -269,6 +314,19 @@ impl Fluxer {
             return;
         }
         let key = event.keystroke.key.as_str();
+        let picker = if self.status_ui.editor {
+            self.status_ui.expiry_picker.clone()
+        } else {
+            self.status_ui.duration_picker.clone()
+        };
+        let focused = picker.read(cx).focus_handle().is_focused(window);
+        let open = picker.read(cx).is_open();
+        if picker_captures_key(focused, open, key) {
+            self.status_ui.armed = false;
+            picker.update(cx, |picker, cx| picker.handle_key_down(event, window, cx));
+            cx.stop_propagation();
+            return;
+        }
         if self.status_ui.editor {
             match key {
                 "escape" => self.cancel_status_editor(window, cx),
@@ -280,7 +338,13 @@ impl Fluxer {
                         1
                     } else if self.status_ui.emoji_clear_focus.is_focused(window) {
                         2
-                    } else if self.status_ui.expiry_focus.is_focused(window) {
+                    } else if self
+                        .status_ui
+                        .expiry_picker
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+                    {
                         3
                     } else if self.status_ui.cancel_focus.is_focused(window) {
                         4
@@ -293,7 +357,7 @@ impl Fluxer {
                         0 => window.focus(&input),
                         1 => window.focus(&self.status_ui.emoji_focus),
                         2 => window.focus(&self.status_ui.emoji_clear_focus),
-                        3 => window.focus(&self.status_ui.expiry_focus),
+                        3 => window.focus(&self.status_ui.expiry_picker.read(cx).focus_handle()),
                         4 => window.focus(&self.status_ui.cancel_focus),
                         _ => window.focus(&self.status_ui.save_focus),
                     }
@@ -323,6 +387,11 @@ impl Fluxer {
                     cx.notify();
                 }
                 "down" | "tab" => {
+                    if key == "tab" && focused {
+                        picker.update(cx, |picker, cx| picker.dismiss(cx));
+                        window.focus(&self.status_ui.focus);
+                        self.status_ui.selected = 4;
+                    }
                     self.status_ui.selected = if key == "tab" && event.keystroke.modifiers.shift {
                         (self.status_ui.selected + count - 1) % count
                     } else {
@@ -349,6 +418,21 @@ impl Fluxer {
             return;
         }
         let key = event.keystroke.key.as_str();
+        let picker = if self.status_ui.editor {
+            &self.status_ui.expiry_picker
+        } else {
+            &self.status_ui.duration_picker
+        };
+        if picker.read(cx).focus_handle().is_focused(window)
+            && matches!(
+                key,
+                "enter" | "space" | "up" | "down" | "home" | "end" | "escape"
+            )
+        {
+            self.status_ui.armed = false;
+            cx.stop_propagation();
+            return;
+        }
         if (self.status_ui.editor && key == "enter")
             || (!self.status_ui.editor && matches!(key, "enter" | "space"))
         {
@@ -361,10 +445,6 @@ impl Fluxer {
                         } else if self.status_ui.emoji_clear_focus.is_focused(window) {
                             self.status_ui.emoji_id = None;
                             self.status_ui.emoji_name = None;
-                            cx.notify();
-                        } else if self.status_ui.expiry_focus.is_focused(window) {
-                            self.status_ui.expiry =
-                                (self.status_ui.expiry + 1) % EXPIRY_MINUTES.len();
                             cx.notify();
                         } else if self.status_ui.emoji_focus.is_focused(window) {
                             self.open_status_emoji(window, cx);
@@ -385,6 +465,12 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) {
         if status == RelationshipMutationStatus::Complete {
+            self.status_ui
+                .expiry_picker
+                .update(cx, |picker, cx| picker.dismiss(cx));
+            self.status_ui
+                .duration_picker
+                .update(cx, |picker, cx| picker.dismiss(cx));
             self.status_ui.open = false;
             self.status_ui.editor = false;
             if let (Some(window), Some(focus)) = (
@@ -453,17 +539,7 @@ impl Fluxer {
                                 })),
                         ),
                 )
-                .child(
-                    quiet_button(
-                        "status-expiry",
-                        format!("Clear after: {}", EXPIRY_LABELS[self.status_ui.expiry]),
-                    )
-                    .track_focus(&self.status_ui.expiry_focus)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.status_ui.expiry = (this.status_ui.expiry + 1) % EXPIRY_MINUTES.len();
-                        cx.notify();
-                    })),
-                )
+                .child(self.status_ui.expiry_picker.clone())
                 .when(
                     matches!(
                         self.status_ui.status,
@@ -561,9 +637,11 @@ impl Fluxer {
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .on_mouse_down_out(
-                            cx.listener(|this, _, window, cx| this.close_status(window, cx)),
-                        )
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                            if !this.status_ui.duration_picker.read(cx).is_open() {
+                                this.close_status(window, cx);
+                            }
+                        }))
                         .children(
                             [
                                 ("online", "Online", 0x43b581),
@@ -597,18 +675,10 @@ impl Fluxer {
                             }),
                         )
                         .child(
-                            quiet_button(
-                                "status-duration",
-                                format!(
-                                    "Status duration: {}",
-                                    EXPIRY_LABELS[self.status_ui.status_expiry]
-                                ),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.status_ui.status_expiry =
-                                    (this.status_ui.status_expiry + 1) % EXPIRY_MINUTES.len();
-                                cx.notify();
-                            })),
+                            div()
+                                .rounded_md()
+                                .bg(rgb(if selected == 4 { 0x41424a } else { 0x232428 }))
+                                .child(self.status_ui.duration_picker.clone()),
                         )
                         .child(
                             div()
@@ -655,6 +725,19 @@ impl Fluxer {
     }
 }
 
+fn picker_captures_key(focused: bool, open: bool, key: &str) -> bool {
+    focused
+        && (matches!(key, "enter" | "space" | "up" | "down" | "home" | "end")
+            || (open && key == "escape"))
+}
+fn picker_index(picker: &Entity<Dropdown>, cx: &App) -> usize {
+    picker
+        .read(cx)
+        .selected()
+        .and_then(|id| id.parse::<usize>().ok())
+        .filter(|i| *i < EXPIRY_MINUTES.len())
+        .unwrap_or(0)
+}
 fn custom_status_active(value: &serde_json::Value) -> bool {
     !value.is_null()
         && !value
@@ -707,6 +790,16 @@ fn editor_tab_target(current: usize, reverse: bool) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dropdown_keys_do_not_submit_or_close_the_status_surface() {
+        use super::picker_captures_key;
+        assert!(picker_captures_key(true, false, "enter"));
+        assert!(picker_captures_key(true, true, "enter"));
+        assert!(picker_captures_key(true, true, "escape"));
+        assert!(!picker_captures_key(true, false, "escape"));
+        assert!(!picker_captures_key(false, true, "enter"));
+        assert!(!picker_captures_key(true, true, "tab"));
+    }
     #[test]
     fn expiry_preset_matches_source_tolerance_and_fallback() {
         assert_eq!(super::expiry_index(0), 7);
