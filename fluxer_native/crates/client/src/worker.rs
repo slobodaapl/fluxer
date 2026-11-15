@@ -86,7 +86,11 @@ type BrowserPollResult = std::result::Result<
 
 impl VoiceTarget {
     fn accepts(&self, update: &VoiceServerUpdate) -> bool {
-        if self.connection_id.as_deref() != Some(update.connection_id.as_str()) {
+        if self
+            .connection_id
+            .as_ref()
+            .is_some_and(|id| id != &update.connection_id)
+        {
             return false;
         }
         if update
@@ -103,7 +107,8 @@ impl VoiceTarget {
         {
             return false;
         }
-        true
+        update.channel_id.is_some()
+            || self.connection_id.as_deref() == Some(update.connection_id.as_str())
     }
     fn payload(
         &self,

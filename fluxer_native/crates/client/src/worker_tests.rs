@@ -861,7 +861,7 @@ fn voice_credentials_require_the_requested_channel_and_current_connection() {
         channel_id: 100.into(),
         connection_id: None,
     };
-    assert!(!target.accepts(&voice_update(Some("100"), "new")));
+    assert!(target.accepts(&voice_update(Some("100"), "new")));
     assert!(!target.accepts(&voice_update(Some("200"), "new")));
     assert!(!target.accepts(&voice_update(None, "unknown")));
     target.connection_id = Some("new".into());
@@ -3440,7 +3440,7 @@ async fn same_channel_rejoin_rejects_retired_state_and_credentials_before_new_st
     );
     assert!(worker.pending_voice_server.is_empty());
     assert!(worker.media.is_none());
-    let new_credentials = json!({"token":"new","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","channel_id":"100","ice_servers":[{}]});
+    let new_credentials = json!({"token":"new","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","ice_servers":[{}]});
     worker
         .gateway(dispatch("VOICE_SERVER_UPDATE", new_credentials))
         .await
@@ -3623,8 +3623,26 @@ async fn transport_recovery_rejects_retired_server_credentials_and_own_state() {
     );
     assert!(worker.pending_voice_server.is_empty());
     assert!(worker.media.is_none());
-    worker.gateway(dispatch("VOICE_SERVER_UPDATE", json!({"token":"fresh","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","channel_id":"100","ice_servers":[{}]}))).await.unwrap();
+    worker.gateway(dispatch("VOICE_SERVER_UPDATE", json!({"token":"fresh","endpoint":"wss://example.invalid","connection_id":"new","guild_id":"10","ice_servers":[{}]}))).await.unwrap();
     let result = worker.gateway(dispatch("VOICE_STATE_UPDATE", json!({"user_id":"1","guild_id":"10","channel_id":"100","connection_id":"new","session_id":"session"}))).await;
     assert!(result.unwrap_err().contains("mesh voice"));
     assert!(worker.media.is_none());
+}
+
+#[test]
+fn guild_sfu_credentials_are_accepted_before_own_voice_state() {
+    // guild_voice_connection_join.erl stores the SFU join pending;
+    // guild_voice_connection_confirm.erl broadcasts own state after LiveKit joins.
+    let target = VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: None,
+    };
+    let update: VoiceServerUpdate = serde_json::from_value(json!({
+        "token":"synthetic", "endpoint":"wss://voice.example", "connection_id":"fresh",
+        "guild_id":"10", "channel_id":"100"
+    }))
+    .unwrap();
+    assert!(update.ice_servers.is_empty());
+    assert!(target.accepts(&update));
 }
