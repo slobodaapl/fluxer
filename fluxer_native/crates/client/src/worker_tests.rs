@@ -2797,7 +2797,10 @@ async fn presence_settings_match_source_patch_gateway_and_rollback() {
     );
     let (tx, mut rx) = async_mpsc::channel(4);
     worker.gateway_commands = Some(tx);
-    worker.set_presence_status("idle".into()).await.unwrap();
+    worker
+        .set_presence_status("idle".into(), None)
+        .await
+        .unwrap();
     let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
         panic!("presence")
     };
@@ -2819,7 +2822,10 @@ async fn presence_settings_match_source_patch_gateway_and_rollback() {
         event,
         Event::PresenceMutation(crate::RelationshipMutationStatus::Failed(_))
     )));
-    worker.set_custom_status("  Busy  ".into()).await.unwrap();
+    worker
+        .set_custom_status("  Busy  ".into(), None, None, None)
+        .await
+        .unwrap();
     let GatewayCommand::Presence(value) = rx.recv().await.unwrap() else {
         panic!("presence")
     };
@@ -2868,7 +2874,10 @@ async fn presence_failure_preserves_newer_gateway_values_and_reset_fences_comple
         .unwrap()
         .with_token(SessionToken::new("fixture-secret").unwrap()),
     );
-    worker.set_presence_status("idle".into()).await.unwrap();
+    worker
+        .set_presence_status("idle".into(), None)
+        .await
+        .unwrap();
     let event = timeout(Duration::from_secs(5), worker.presence.rx.recv())
         .await
         .unwrap()
@@ -2879,7 +2888,10 @@ async fn presence_failure_preserves_newer_gateway_values_and_reset_fences_comple
         .unwrap();
     worker.presence_event(event).await;
     assert_eq!(worker.state.user_settings["status"], "dnd");
-    worker.set_presence_status("online".into()).await.unwrap();
+    worker
+        .set_presence_status("online".into(), None)
+        .await
+        .unwrap();
     let stale = timeout(Duration::from_secs(5), worker.presence.rx.recv())
         .await
         .unwrap()
@@ -2903,10 +2915,13 @@ async fn demo_presence_changes_are_local_without_a_client() {
     worker.demo = true;
     worker.state = ClientState::demo();
     worker.state.user_settings = json!({"status":"online","custom_status":null});
-    worker.set_presence_status("idle".into()).await.unwrap();
+    worker
+        .set_presence_status("idle".into(), None)
+        .await
+        .unwrap();
     assert_eq!(worker.state.user_settings["status"], "idle");
     worker
-        .set_custom_status("Offline sample".into())
+        .set_custom_status("Offline sample".into(), None, None, None)
         .await
         .unwrap();
     assert_eq!(
@@ -2924,7 +2939,10 @@ async fn demo_empty_custom_status_saves_as_clear_and_completes() {
     worker.demo = true;
     worker.state = ClientState::demo();
     worker.state.user_settings = json!({"status":"online","custom_status":{"text":"Old"}});
-    worker.set_custom_status("  ".into()).await.unwrap();
+    worker
+        .set_custom_status("  ".into(), None, None, None)
+        .await
+        .unwrap();
     assert!(worker.state.user_settings["custom_status"].is_null());
     assert!(events.try_iter().any(|event| matches!(
         event,

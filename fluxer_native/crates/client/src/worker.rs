@@ -533,6 +533,10 @@ impl Worker {
     pub(crate) async fn run(mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
         self.snapshot();
         let mut device_poll = tokio::time::interval(Duration::from_secs(5));
+        let mut presence_poll = tokio::time::interval(Duration::from_secs(1));
+        let mut last_timed_presence = None;
+        let mut attempted_status_expiry = None;
+        let mut expiry_account = None;
         let mut last_devices = None;
         let mut recovery_requested = false;
         let mut recovery: Option<JoinHandle<fluxer_media::Result<fluxer_media::DeviceRecovery>>> =
@@ -544,6 +548,7 @@ impl Worker {
                 People(Option<people_flow::PeopleEvent>),
                 Dm(Option<DmEvent>),
                 DevicePoll,
+                PresencePoll,
                 DeviceRecovery(
                     std::result::Result<
                         fluxer_media::Result<fluxer_media::DeviceRecovery>,
@@ -573,6 +578,7 @@ impl Worker {
                 event=self.display_settings.rx.recv()=>Incoming::DisplaySettings(event),
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
+                _ = presence_poll.tick() => Incoming::PresencePoll,
                 _ = device_poll.tick(), if self.media.is_some() && recovery.is_none() => Incoming::DevicePoll,
                 result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
@@ -606,6 +612,26 @@ impl Worker {
                 Incoming::People(None) => Ok(()),
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
+                Incoming::PresencePoll => {
+                    let account = self.state.current_user.as_ref().map(|user| user.id);
+                    if account != expiry_account {
+                        expiry_account = account;
+                        attempted_status_expiry = None;
+                        last_timed_presence = None;
+                    }
+                    self.presence_expiry_tick(&mut attempted_status_expiry)
+                        .await;
+                    let current = self.presence_payload();
+                    if last_timed_presence
+                        .as_ref()
+                        .is_some_and(|previous| Some(previous) != current.as_ref())
+                    {
+                        self.publish_presence().await;
+                        self.snapshot();
+                    }
+                    last_timed_presence = current;
+                    Ok(())
+                }
                 Incoming::DevicePoll => {
                     if let Some(media) = &mut self.media {
                         recovery_requested = false;
@@ -1057,15 +1083,26 @@ impl Worker {
                     ));
                 }
             }
-            Command::SetPresenceStatus { status } => {
-                if let Err(message) = self.set_presence_status(status).await {
+            Command::SetPresenceStatus {
+                status,
+                duration_minutes,
+            } => {
+                if let Err(message) = self.set_presence_status(status, duration_minutes).await {
                     self.emit(Event::PresenceMutation(
                         crate::RelationshipMutationStatus::Failed(message),
                     ));
                 }
             }
-            Command::SetCustomStatus { text } => {
-                if let Err(message) = self.set_custom_status(text).await {
+            Command::SetCustomStatus {
+                text,
+                emoji_id,
+                emoji_name,
+                expires_at,
+            } => {
+                if let Err(message) = self
+                    .set_custom_status(text, emoji_id, emoji_name, expires_at)
+                    .await
+                {
                     self.emit(Event::PresenceMutation(
                         crate::RelationshipMutationStatus::Failed(message),
                     ));

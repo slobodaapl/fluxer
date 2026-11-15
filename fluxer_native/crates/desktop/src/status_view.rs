@@ -25,6 +25,12 @@ pub(super) struct StatusUi {
     previous_focus: Option<FocusHandle>,
     cancel_focus: FocusHandle,
     save_focus: FocusHandle,
+    expiry_focus: FocusHandle,
+    emoji_focus: FocusHandle,
+    emoji_id: Option<String>,
+    emoji_name: Option<String>,
+    expiry: usize,
+    status_expiry: usize,
     window: Option<AnyWindowHandle>,
     selected: usize,
     armed: bool,
@@ -40,6 +46,12 @@ impl StatusUi {
             previous_focus: None,
             cancel_focus: cx.focus_handle(),
             save_focus: cx.focus_handle(),
+            expiry_focus: cx.focus_handle(),
+            emoji_focus: cx.focus_handle(),
+            emoji_id: None,
+            emoji_name: None,
+            expiry: 7,
+            status_expiry: 0,
             window: None,
             selected: 0,
             armed: false,
@@ -126,10 +138,15 @@ impl Fluxer {
             self.command(
                 Command::SetPresenceStatus {
                     status: status.into(),
+                    duration_minutes: EXPIRY_MINUTES[self.status_ui.status_expiry],
                 },
                 cx,
             );
-        } else if index == 5 {
+        } else if index == 4 {
+            self.status_ui.status_expiry =
+                (self.status_ui.status_expiry + 1) % EXPIRY_MINUTES.len();
+            cx.notify();
+        } else if index == 6 {
             self.command(Command::ClearCustomStatus, cx);
         } else {
             let text = self
@@ -142,6 +159,29 @@ impl Fluxer {
             self.status_ui
                 .input
                 .update(cx, |input, cx| input.set(text, cx));
+            let custom = self.state.user_settings.get("custom_status");
+            self.status_ui.emoji_id = custom
+                .and_then(|v| v.get("emoji_id"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            self.status_ui.emoji_name = custom
+                .and_then(|v| v.get("emoji_name"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            self.status_ui.expiry = custom
+                .and_then(|v| v.get("expires_at"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|date| {
+                    expiry_index(
+                        (date.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds(),
+                    )
+                })
+                .unwrap_or(if custom.is_some_and(|v| !v.is_null()) {
+                    0
+                } else {
+                    7
+                });
             self.status_ui.editor = true;
             self.status_ui.status = None;
             self.status_ui.input.read(cx).focus_handle(cx).focus(window);
@@ -154,13 +194,58 @@ impl Fluxer {
         window.focus(&self.status_ui.focus);
         cx.notify();
     }
+    pub(super) fn close_emoji_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.emoji_target.take();
+        if target == Some(EmojiTarget::CustomStatus) {
+            window.focus(&self.status_ui.emoji_focus);
+        } else {
+            self.composer.focus_handle(cx).focus(window);
+        }
+        cx.notify();
+    }
+    fn open_status_emoji(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let size = window.viewport_size();
+        self.open_emoji(
+            EmojiTarget::CustomStatus,
+            point(size.width / 2., size.height / 2.),
+            window,
+            cx,
+        );
+    }
+    pub(super) fn set_status_emoji(
+        &mut self,
+        choice: &chat_helpers::EmojiChoice,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_ui.emoji_id = choice.id.map(|id| id.to_string());
+        self.status_ui.emoji_name = Some(if choice.id.is_some() {
+            choice.name.clone()
+        } else {
+            choice.reaction.clone()
+        });
+        window.focus(&self.status_ui.emoji_focus);
+        cx.notify();
+    }
     fn save_status_editor(&mut self, cx: &mut Context<Self>) {
         if !matches!(
             self.status_ui.status,
             Some(RelationshipMutationStatus::Pending)
         ) {
             let text = self.status_ui.input.read(cx).content.to_string();
-            self.command(Command::SetCustomStatus { text }, cx);
+            let expires_at = EXPIRY_MINUTES[self.status_ui.expiry].map(|minutes| {
+                (chrono::Utc::now() + chrono::Duration::minutes(minutes))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            });
+            self.command(
+                Command::SetCustomStatus {
+                    text,
+                    emoji_id: self.status_ui.emoji_id.clone(),
+                    emoji_name: self.status_ui.emoji_name.clone(),
+                    expires_at,
+                },
+                cx,
+            );
         }
     }
     // Enter resolves to the app Submit action before raw key dispatch. Arm here
@@ -178,7 +263,7 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.status_ui.open {
+        if !self.status_ui.open || self.emoji_target.is_some() {
             return;
         }
         let key = event.keystroke.key.as_str();
@@ -189,16 +274,22 @@ impl Fluxer {
                     let input = self.status_ui.input.focus_handle(cx);
                     let current = if input.is_focused(window) {
                         0
-                    } else if self.status_ui.cancel_focus.is_focused(window) {
+                    } else if self.status_ui.emoji_focus.is_focused(window) {
                         1
-                    } else {
+                    } else if self.status_ui.expiry_focus.is_focused(window) {
                         2
+                    } else if self.status_ui.cancel_focus.is_focused(window) {
+                        3
+                    } else {
+                        4
                     };
                     let next = editor_tab_target(current, event.keystroke.modifiers.shift);
                     self.status_ui.armed = false;
                     match next {
                         0 => window.focus(&input),
-                        1 => window.focus(&self.status_ui.cancel_focus),
+                        1 => window.focus(&self.status_ui.emoji_focus),
+                        2 => window.focus(&self.status_ui.expiry_focus),
+                        3 => window.focus(&self.status_ui.cancel_focus),
                         _ => window.focus(&self.status_ui.save_focus),
                     }
                 }
@@ -213,7 +304,7 @@ impl Fluxer {
                 _ => return,
             }
         } else {
-            let count = 5 + usize::from(
+            let count = 6 + usize::from(
                 self.state
                     .user_settings
                     .get("custom_status")
@@ -249,7 +340,7 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.status_ui.open {
+        if !self.status_ui.open || self.emoji_target.is_some() {
             return;
         }
         let key = event.keystroke.key.as_str();
@@ -262,6 +353,12 @@ impl Fluxer {
                     if !self.status_ui.input.read(cx).is_composing() {
                         if self.status_ui.cancel_focus.is_focused(window) {
                             self.cancel_status_editor(window, cx);
+                        } else if self.status_ui.expiry_focus.is_focused(window) {
+                            self.status_ui.expiry =
+                                (self.status_ui.expiry + 1) % EXPIRY_MINUTES.len();
+                            cx.notify();
+                        } else if self.status_ui.emoji_focus.is_focused(window) {
+                            self.open_status_emoji(window, cx);
                         } else {
                             self.save_status_editor(cx);
                         }
@@ -318,6 +415,44 @@ impl Fluxer {
                         .child("Set a custom status"),
                 )
                 .child(self.status_ui.input.clone())
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            quiet_button(
+                                "status-emoji",
+                                self.status_ui
+                                    .emoji_name
+                                    .clone()
+                                    .unwrap_or_else(|| "Choose emoji".into()),
+                            )
+                            .track_focus(&self.status_ui.emoji_focus)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.open_status_emoji(window, cx)
+                                }),
+                            ),
+                        )
+                        .child(quiet_button("status-emoji-clear", "Clear emoji").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.status_ui.emoji_id = None;
+                                this.status_ui.emoji_name = None;
+                                cx.notify();
+                            }),
+                        )),
+                )
+                .child(
+                    quiet_button(
+                        "status-expiry",
+                        format!("Clear after: {}", EXPIRY_LABELS[self.status_ui.expiry]),
+                    )
+                    .track_focus(&self.status_ui.expiry_focus)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.status_ui.expiry = (this.status_ui.expiry + 1) % EXPIRY_MINUTES.len();
+                        cx.notify();
+                    })),
+                )
                 .when(
                     matches!(
                         self.status_ui.status,
@@ -449,15 +584,29 @@ impl Fluxer {
                             }),
                         )
                         .child(
+                            quiet_button(
+                                "status-duration",
+                                format!(
+                                    "Status duration: {}",
+                                    EXPIRY_LABELS[self.status_ui.status_expiry]
+                                ),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.status_ui.status_expiry =
+                                    (this.status_ui.status_expiry + 1) % EXPIRY_MINUTES.len();
+                                cx.notify();
+                            })),
+                        )
+                        .child(
                             div()
                                 .id("self-custom-status")
                                 .px_2()
                                 .py_2()
                                 .rounded_md()
-                                .bg(rgb(if selected == 4 { 0x41424a } else { 0x232428 }))
+                                .bg(rgb(if selected == 5 { 0x41424a } else { 0x232428 }))
                                 .child(custom_art)
                                 .on_click(cx.listener(|this, _, window, cx| {
-                                    this.select_status(4, window, cx)
+                                    this.select_status(5, window, cx)
                                 })),
                         )
                         .when(has_custom, |view| {
@@ -467,10 +616,10 @@ impl Fluxer {
                                     .px_2()
                                     .py_2()
                                     .rounded_md()
-                                    .bg(rgb(if selected == 5 { 0x41424a } else { 0x232428 }))
+                                    .bg(rgb(if selected == 6 { 0x41424a } else { 0x232428 }))
                                     .child("Clear custom status")
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.select_status(5, window, cx)
+                                        this.select_status(6, window, cx)
                                     })),
                             )
                         })
@@ -493,29 +642,70 @@ impl Fluxer {
     }
 }
 
+const EXPIRY_MINUTES: [Option<i64>; 9] = [
+    None,
+    Some(15),
+    Some(30),
+    Some(60),
+    Some(180),
+    Some(240),
+    Some(480),
+    Some(1440),
+    Some(4320),
+];
+const EXPIRY_LABELS: [&str; 9] = [
+    "Don't clear",
+    "15 minutes",
+    "30 minutes",
+    "1 hour",
+    "3 hours",
+    "4 hours",
+    "8 hours",
+    "24 hours",
+    "3 days",
+];
+fn expiry_index(seconds: i64) -> usize {
+    if seconds <= 0 {
+        return 7;
+    }
+    EXPIRY_MINUTES
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, m)| seconds <= m.unwrap() * 60 + 60)
+        .map(|(i, _)| i)
+        .unwrap_or(8)
+}
 fn editor_tab_target(current: usize, reverse: bool) -> usize {
     if reverse {
-        (current + 2) % 3
+        (current + 4) % 5
     } else {
-        (current + 1) % 3
+        (current + 1) % 5
     }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
+    fn expiry_preset_matches_source_tolerance_and_fallback() {
+        assert_eq!(super::expiry_index(0), 7);
+        assert_eq!(super::expiry_index(15 * 60 + 60), 1);
+        assert_eq!(super::expiry_index(15 * 60 + 61), 2);
+        assert_eq!(super::expiry_index(10 * 24 * 60 * 60), 8);
+    }
+    #[test]
     fn editor_focus_cycles_in_both_directions() {
         assert_eq!(
-            (0..3)
+            (0..5)
                 .map(|i| super::editor_tab_target(i, false))
                 .collect::<Vec<_>>(),
-            vec![1, 2, 0]
+            vec![1, 2, 3, 4, 0]
         );
         assert_eq!(
-            (0..3)
+            (0..5)
                 .map(|i| super::editor_tab_target(i, true))
                 .collect::<Vec<_>>(),
-            vec![2, 0, 1]
+            vec![4, 0, 1, 2, 3]
         );
     }
 }

@@ -164,13 +164,13 @@ impl Fluxer {
                 // Let the trigger's own click toggle the picker, instead of
                 // closing on mouse-down and reopening on click.
                 if (event.position.x-anchor.x).abs() > px(24.) || (event.position.y-anchor.y).abs() > px(24.) {
-                    this.emoji_target = None; this.composer.focus_handle(cx).focus(window); cx.notify();
+                    this.close_emoji_focus(window, cx);
                 }
             }))
             .child(div().h(px(34.)).px_3().flex().items_center().justify_between()
                 .child(div().text_size(px(12.)).font_weight(FontWeight::SEMIBOLD).child(if matches!(self.emoji_target,Some(EmojiTarget::Reaction(_))) { "Add a reaction" } else { "Emoji" }))
                 .child(button("close-emoji", "×").px_2().py_0().on_click(cx.listener(|this, _, window, cx| {
-                    this.emoji_target = None; this.composer.focus_handle(cx).focus(window); cx.notify();
+                    this.close_emoji_focus(window, cx);
                 }))))
             .child(div().flex_1().min_h_0().flex()
                 .child(div().id("emoji-category-rail").w(px(44.)).flex_shrink_0().overflow_y_scroll().py_1().flex().flex_col().items_center().gap_1().bg(rgb(0x1c1925))
@@ -230,6 +230,11 @@ impl Fluxer {
                     .child(popup),
             ),
         )
+        .with_priority(if self.emoji_target == Some(EmojiTarget::CustomStatus) {
+            11
+        } else {
+            0
+        })
         .into_any_element()
     }
 

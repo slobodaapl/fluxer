@@ -46,7 +46,7 @@ impl Worker {
             .and_then(Value::as_str)
             .filter(|s| matches!(*s, "online" | "idle" | "dnd" | "invisible"))
             .unwrap_or("online");
-        let custom = settings.get("custom_status").and_then(Value::as_object).map(|s| {
+        let custom = settings.get("custom_status").filter(|s| !expired(s.get("expires_at"))).and_then(Value::as_object).map(|s| {
             let mut result=json!({"text":s.get("text").cloned().unwrap_or(Value::Null),"expires_at":s.get("expires_at").cloned().unwrap_or(Value::Null),"emoji_id":s.get("emoji_id").cloned().unwrap_or(Value::Null),"emoji_name":s.get("emoji_name").cloned().unwrap_or(Value::Null)});
             if let Some(animated)=s.get("emoji_animated").filter(|v|v.is_boolean()){result["emoji_animated"]=animated.clone();} result
         }).unwrap_or(Value::Null);
@@ -57,12 +57,20 @@ impl Worker {
             let _ = tx.send(GatewayCommand::Presence(payload)).await;
         }
     }
-    pub(super) async fn set_presence_status(&mut self, status: String) -> Result<()> {
+    pub(super) async fn set_presence_status(
+        &mut self,
+        status: String,
+        duration_minutes: Option<i64>,
+    ) -> Result<()> {
         if !matches!(status.as_str(), "online" | "idle" | "dnd" | "invisible") {
             return Err("Invalid status".into());
         }
+        let expiry = duration_minutes.map(|n| {
+            (chrono::Utc::now() + chrono::Duration::minutes(n))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        });
         self.update_presence_settings(
-            json!({"status":status,"status_resets_at":null,"status_resets_to":null}),
+            json!({"status":status,"status_resets_at":expiry,"status_resets_to": if duration_minutes.is_some() { Some("online") } else { None }}),
         )
         .await
     }
@@ -70,37 +78,46 @@ impl Worker {
         self.update_presence_settings(json!({"custom_status":null}))
             .await
     }
-    pub(super) async fn set_custom_status(&mut self, text: String) -> Result<()> {
-        let text = text.trim();
-        if text.encode_utf16().count() > 128 {
-            return Err("Custom status is too long".into());
-        }
-        let prior = self
-            .state
-            .user_settings
-            .get("custom_status")
-            .and_then(Value::as_object);
-        let emoji_id = prior
-            .and_then(|v| v.get("emoji_id"))
-            .filter(|v| !v.is_null())
-            .cloned();
-        let emoji_name = prior
-            .and_then(|v| v.get("emoji_name"))
-            .filter(|v| !v.is_null())
-            .cloned();
-        let custom = if text.is_empty() && emoji_id.is_none() && emoji_name.is_none() {
-            Value::Null
-        } else {
-            let mut value = json!({"text":if text.is_empty(){Value::Null}else{json!(text)},"expires_at":prior.and_then(|v|v.get("expires_at")).cloned().unwrap_or(Value::Null)});
-            if let Some(id) = emoji_id {
-                value["emoji_id"] = id;
-            } else if let Some(name) = emoji_name {
-                value["emoji_name"] = name;
-            }
-            value
-        };
+    pub(super) async fn set_custom_status(
+        &mut self,
+        text: String,
+        emoji_id: Option<String>,
+        emoji_name: Option<String>,
+        expires_at: Option<String>,
+    ) -> Result<()> {
+        let custom = custom_status_payload(&text, emoji_id, emoji_name, expires_at)?;
         self.update_presence_settings(json!({"custom_status":custom}))
             .await
+    }
+    pub(super) async fn presence_expiry_tick(&mut self, attempted: &mut Option<String>) {
+        if self.presence.job.is_some() || self.state.current_user.is_none() {
+            return;
+        }
+        let reset = self
+            .state
+            .user_settings
+            .get("status_resets_at")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if reset.is_none() {
+            *attempted = None;
+        }
+        if expired(self.state.user_settings.get("status_resets_at")) && reset != *attempted {
+            *attempted = reset;
+            let fallback = self
+                .state
+                .user_settings
+                .get("status_resets_to")
+                .and_then(Value::as_str)
+                .filter(|s| matches!(*s, "online" | "idle" | "dnd" | "invisible"))
+                .unwrap_or("online")
+                .to_owned();
+            let _ = self
+                .update_presence_settings(
+                    json!({"status":fallback,"status_resets_at":null,"status_resets_to":null}),
+                )
+                .await;
+        }
     }
     async fn update_presence_settings(&mut self, patch: Value) -> Result<()> {
         if self.state.current_user.is_none() {
@@ -207,5 +224,64 @@ impl Worker {
                 )));
             }
         }
+    }
+}
+
+fn expired(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_str)
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .is_some_and(|date| date <= chrono::Utc::now())
+}
+
+fn custom_status_payload(
+    text: &str,
+    emoji_id: Option<String>,
+    emoji_name: Option<String>,
+    expires_at: Option<String>,
+) -> Result<Value> {
+    let text = text.trim();
+    if text.encode_utf16().count() > 128 {
+        return Err("Custom status is too long".into());
+    }
+    let emoji_id = emoji_id.filter(|s| !s.trim().is_empty());
+    let emoji_name = emoji_name.filter(|s| !s.trim().is_empty());
+    if text.is_empty() && emoji_id.is_none() && emoji_name.is_none() {
+        return Ok(Value::Null);
+    }
+    let mut value =
+        json!({"text":if text.is_empty(){Value::Null}else{json!(text)}, "expires_at":expires_at});
+    if let Some(id) = emoji_id {
+        value["emoji_id"] = json!(id);
+    } else if let Some(name) = emoji_name {
+        value["emoji_name"] = json!(name);
+    }
+    Ok(value)
+}
+#[cfg(test)]
+mod expiry_tests {
+    use super::*;
+    #[test]
+    fn custom_status_api_omits_the_other_emoji_field_and_counts_utf16() {
+        let id =
+            custom_status_payload(" hi ", Some("42".into()), Some("wave".into()), None).unwrap();
+        assert_eq!(id, json!({"text":"hi", "expires_at":null,"emoji_id":"42"}));
+        let unicode = custom_status_payload("", None, Some("👋".into()), None).unwrap();
+        assert_eq!(
+            unicode,
+            json!({"text":null, "expires_at":null, "emoji_name":"👋"})
+        );
+        assert_eq!(
+            custom_status_payload(" ", None, None, None).unwrap(),
+            Value::Null
+        );
+        assert!(custom_status_payload(&"😀".repeat(65), None, None, None).is_err());
+    }
+    #[test]
+    fn expiry_ignores_missing_and_invalid_timestamps() {
+        assert!(!expired(None));
+        assert!(!expired(Some(&json!("nonsense"))));
+        assert!(expired(Some(&json!("2000-01-01T00:00:00Z"))));
+        assert!(!expired(Some(&json!("2999-01-01T00:00:00Z"))));
     }
 }

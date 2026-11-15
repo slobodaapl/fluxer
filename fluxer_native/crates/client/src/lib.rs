@@ -150,9 +150,13 @@ pub enum Command {
     UpdateDisplaySetting(fluxer_core::DisplaySetting),
     SetPresenceStatus {
         status: String,
+        duration_minutes: Option<i64>,
     },
     SetCustomStatus {
         text: String,
+        emoji_id: Option<String>,
+        emoji_name: Option<String>,
+        expires_at: Option<String>,
     },
     ClearCustomStatus,
     ChangeRelationship {

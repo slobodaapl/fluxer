@@ -297,6 +297,7 @@ fn screen_source_id(source: &ScreenSource) -> String {
 #[derive(Clone, Copy, PartialEq)]
 enum EmojiTarget {
     Composer,
+    CustomStatus,
     Reaction(Snowflake),
 }
 
@@ -575,6 +576,18 @@ impl Fluxer {
         cx.subscribe(
             &view.profile_ui.popup,
             |this, _, event: &profile_view::ProfileAction, cx| {
+                if let profile_view::ProfileAction::Link(url) = event {
+                    let target = message_markup::MessageTarget::Link(url.clone());
+                    if let Some(window) = cx.windows().first().copied() {
+                        let _ = window.update(cx, |root, window, cx| {
+                            if let Ok(entity) = root.downcast::<Fluxer>() {
+                                entity.update(cx, |this, cx| {
+                                    this.activate_message_target(&target, window, cx)
+                                });
+                            }
+                        });
+                    }
+                }
                 if let profile_view::ProfileAction::Message { user_id } = event {
                     this.command(Command::OpenDm { user_id: *user_id }, cx);
                 }
@@ -2253,6 +2266,10 @@ impl Fluxer {
                 EmojiTarget::Composer => self.composer.update(cx, |input, cx| {
                     input.insert_text(&choice.insert, window, cx)
                 }),
+                EmojiTarget::CustomStatus => {
+                    self.set_status_emoji(choice, window, cx);
+                    return;
+                }
                 EmojiTarget::Reaction(message_id) => self.command(
                     Command::React {
                         message_id,
@@ -2578,7 +2595,7 @@ impl Render for Fluxer {
                 if this.status_ui.is_open() { return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
-                if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) && !this.message_links.is_open() {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.playback.modal.is_open() {this.playback.close(window,cx);cx.stop_propagation();return;}
@@ -2590,9 +2607,8 @@ impl Render for Fluxer {
                 if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
 
                 if event.keystroke.key == "escape" && (this.emoji_target.is_some() || this.forwarding.is_some()) {
-                    this.emoji_target=None;
+                    this.close_emoji_focus(window, cx);
                     if !this.forward_pending { this.forwarding=None; }
-                    this.composer.focus_handle(cx).focus(window);
                     cx.notify();
                     cx.stop_propagation();
                     return;

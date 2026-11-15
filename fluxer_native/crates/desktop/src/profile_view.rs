@@ -61,6 +61,7 @@ pub(super) enum ProfileAction {
         user_id: Snowflake,
         action: RelationshipAction,
     },
+    Link(String),
     Closed,
 }
 pub(super) struct ProfilePopup {
@@ -816,7 +817,44 @@ impl Render for ProfilePopup {
             );
         }
         if !bio.is_empty() {
-            content = content.child(div().mt_2().text_size(px(13.)).child(label(bio, 13., cx)));
+            let message = fluxer_core::Message {
+                content: bio.to_owned(),
+                ..Default::default()
+            };
+            let document = crate::message_markup::document(
+                &message,
+                &Default::default(),
+                open.media_endpoint.as_deref(),
+                crate::message_markup::MessageContext::InlinePreview,
+            );
+            let mut biography = div().mt_2().text_size(px(13.)).flex().flex_wrap();
+            for (index, span) in document.spans.iter().enumerate() {
+                let text = &document.text[span.range.clone()];
+                if span.spoilers.is_empty() && !span.style.code {
+                    if let Some(crate::message_markup::MessageTarget::Link(url)) = &span.target {
+                        let url = url.clone();
+                        biography = biography.child(
+                            div()
+                                .id(("profile-bio-link", index))
+                                .cursor_pointer()
+                                .text_color(rgb(0x83bdf5))
+                                .child(label(text, 13., cx))
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.stop_propagation();
+                                    cx.emit(ProfileAction::Link(url.clone()));
+                                })),
+                        );
+                        continue;
+                    }
+                }
+                let shown = if span.spoilers.is_empty() {
+                    text
+                } else {
+                    "▰▰▰"
+                };
+                biography = biography.child(label(shown, 13., cx));
+            }
+            content = content.child(biography);
         }
         if !open.webhook && user.id.get() != 0 {
             // packages/snowflake/src/Snowflake.ts: Fluxer uses the 2015 epoch.
