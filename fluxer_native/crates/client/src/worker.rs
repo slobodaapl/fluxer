@@ -1458,6 +1458,13 @@ impl Worker {
                 }
                 result.map_err(error)?;
             }
+            Command::SetFilePlaybackPreference { kind, preference } => {
+                match kind {
+                    crate::FilePlaybackKind::Audio => self.audio_preferences.audio_playback = preference.sanitized(),
+                    crate::FilePlaybackKind::Video => self.audio_preferences.video_playback = preference.sanitized(),
+                }
+                self.persist_audio_preferences();
+            }
             Command::SetUserAudioPreference { user, preference } => {
                 if preference
                     .gain
@@ -1780,6 +1787,8 @@ impl Worker {
                 self.audio_preferences.output_label.clone(),
             ),
             users: self.audio_preferences.users.clone(),
+            audio_playback: self.audio_preferences.audio_playback,
+            video_playback: self.audio_preferences.video_playback,
         });
         self.saved_session = Some(SavedSession {
             instance: client.instance().clone(),
@@ -2537,6 +2546,8 @@ impl Worker {
                                 self.audio_preferences.output_label.clone(),
                             ),
                             users: self.audio_preferences.users.clone(),
+                            audio_playback: self.audio_preferences.audio_playback,
+                            video_playback: self.audio_preferences.video_playback,
                         });
                     }
                     if name == "READY" && self.restoring_gateway {

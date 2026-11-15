@@ -956,6 +956,46 @@ async fn uncorrelated_early_voice_credentials_are_buffered_and_cleared_on_leave(
 }
 
 #[tokio::test]
+async fn playback_preferences_are_separate_and_do_not_initialize_media() {
+    let (mut worker, _) = worker();
+    worker
+        .command(Command::SetFilePlaybackPreference {
+            kind: crate::FilePlaybackKind::Audio,
+            preference: crate::FilePlaybackPreference {
+                volume: f32::NAN,
+                muted: true,
+            },
+        })
+        .await
+        .unwrap();
+    worker
+        .command(Command::SetFilePlaybackPreference {
+            kind: crate::FilePlaybackKind::Video,
+            preference: crate::FilePlaybackPreference {
+                volume: -2.0,
+                muted: false,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        worker.audio_preferences.audio_playback,
+        crate::FilePlaybackPreference {
+            volume: 1.0,
+            muted: true
+        }
+    );
+    assert_eq!(
+        worker.audio_preferences.video_playback,
+        crate::FilePlaybackPreference {
+            volume: 0.0,
+            muted: false
+        }
+    );
+    assert!(worker.media.is_none());
+}
+
+#[tokio::test]
 async fn demo_never_initializes_capture_or_claims_voice_transmission() {
     let (mut worker, _) = worker();
     worker.command(Command::Demo).await.unwrap();

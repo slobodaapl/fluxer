@@ -8,6 +8,39 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// Media player useMediaVolume persists audio settings; VideoVolume persists
+// video settings. Native keeps both scoped to the authenticated account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilePlaybackKind {
+    Audio,
+    Video,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilePlaybackPreference {
+    pub volume: f32,
+    pub muted: bool,
+}
+impl Default for FilePlaybackPreference {
+    fn default() -> Self {
+        Self {
+            volume: 1.0,
+            muted: false,
+        }
+    }
+}
+impl FilePlaybackPreference {
+    pub fn sanitized(self) -> Self {
+        Self {
+            volume: if self.volume.is_finite() {
+                self.volume.clamp(0.0, 1.0)
+            } else {
+                1.0
+            },
+            muted: self.muted,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct UserAudioPreference {
     pub muted: Option<bool>,
@@ -23,6 +56,8 @@ pub(crate) struct AudioPreferences {
     pub dsp: AudioSettings,
     pub mixer: AudioMixSettings,
     pub users: BTreeMap<String, UserAudioPreference>,
+    pub audio_playback: FilePlaybackPreference,
+    pub video_playback: FilePlaybackPreference,
 }
 impl Default for AudioPreferences {
     fn default() -> Self {
@@ -34,6 +69,8 @@ impl Default for AudioPreferences {
             dsp: AudioSettings::default(),
             mixer: AudioMixSettings::default(),
             users: BTreeMap::new(),
+            audio_playback: FilePlaybackPreference::default(),
+            video_playback: FilePlaybackPreference::default(),
         }
     }
 }
@@ -70,7 +107,9 @@ pub(crate) fn load(key: &str) -> Result<AudioPreferences, String> {
     let Some(path) = path() else {
         return Err("Audio preferences location unavailable".into());
     };
-    let prefs = read(&path)?.remove(key).unwrap_or_default();
+    let mut prefs = read(&path)?.remove(key).unwrap_or_default();
+    prefs.audio_playback = prefs.audio_playback.sanitized();
+    prefs.video_playback = prefs.video_playback.sanitized();
     if !prefs.mixer.validate()
         || prefs.input.is_empty()
         || prefs.output.is_empty()
@@ -111,6 +150,41 @@ fn save_at(path: &Path, key: &str, prefs: &AudioPreferences) -> Result<(), Strin
 mod tests {
     use super::*;
     #[test]
+    fn playback_preferences_are_sanitized_and_old_records_get_defaults() {
+        let old: AudioPreferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.audio_playback, FilePlaybackPreference::default());
+        assert_eq!(old.video_playback, FilePlaybackPreference::default());
+        assert_eq!(
+            FilePlaybackPreference {
+                volume: f32::NAN,
+                muted: true
+            }
+            .sanitized(),
+            FilePlaybackPreference {
+                volume: 1.0,
+                muted: true
+            }
+        );
+        assert_eq!(
+            FilePlaybackPreference {
+                volume: -3.0,
+                muted: false
+            }
+            .sanitized()
+            .volume,
+            0.0
+        );
+        assert_eq!(
+            FilePlaybackPreference {
+                volume: 4.0,
+                muted: false
+            }
+            .sanitized()
+            .volume,
+            1.0
+        );
+    }
+    #[test]
     fn oversized_preferences_are_bounded_and_preserved() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("large.json");
@@ -133,6 +207,14 @@ mod tests {
             input: "input:usb".into(),
             ..Default::default()
         };
+        first.audio_playback = FilePlaybackPreference {
+            volume: 0.25,
+            muted: true,
+        };
+        first.video_playback = FilePlaybackPreference {
+            volume: 0.8,
+            muted: false,
+        };
         first.users.insert(
             "123".into(),
             UserAudioPreference {
@@ -148,6 +230,22 @@ mod tests {
         )
         .unwrap();
         let stored = read(&path).unwrap();
+        assert_eq!(
+            stored["https://one.example::1"].audio_playback,
+            first.audio_playback
+        );
+        assert_eq!(
+            stored["https://one.example::1"].video_playback,
+            first.video_playback
+        );
+        assert_eq!(
+            stored["https://one.example::2"].audio_playback,
+            FilePlaybackPreference::default()
+        );
+        assert_eq!(
+            stored["https://one.example::2"].video_playback,
+            FilePlaybackPreference::default()
+        );
         assert_eq!(stored["https://one.example::1"].input, "input:usb");
         assert_eq!(
             stored["https://one.example::1"].users["123"].gain,

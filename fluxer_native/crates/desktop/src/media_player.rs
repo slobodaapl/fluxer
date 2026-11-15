@@ -734,6 +734,10 @@ impl PlaybackUi {
             });
         }
     }
+    pub fn reset_preferences(&mut self, cx: &mut App) {
+        self.set_preference(PlayableKind::Audio, PlaybackPreference::default(), cx);
+        self.set_preference(PlayableKind::Video, PlaybackPreference::default(), cx);
+    }
     pub fn begin_frame(
         &mut self,
         output: Option<String>,
@@ -850,6 +854,21 @@ impl PlaybackUi {
                             }
                             PlayerEvent::Preferences(kind, preference) => {
                                 this.playback.set_preference(*kind, *preference, cx);
+                                let kind = match kind {
+                                    PlayableKind::Audio => fluxer_client::FilePlaybackKind::Audio,
+                                    PlayableKind::Video => fluxer_client::FilePlaybackKind::Video,
+                                    PlayableKind::Gifv => return,
+                                };
+                                this.command(
+                                    Command::SetFilePlaybackPreference {
+                                        kind,
+                                        preference: fluxer_client::FilePlaybackPreference {
+                                            volume: preference.volume,
+                                            muted: preference.muted,
+                                        },
+                                    },
+                                    cx,
+                                );
                             }
                             PlayerEvent::Reveal => {
                                 this.revealed_media

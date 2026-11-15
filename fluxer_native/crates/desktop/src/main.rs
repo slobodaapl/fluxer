@@ -907,6 +907,7 @@ impl Fluxer {
                         self.profile_ui.reset(cx);
                         self.context.user_audio.clear();
                         self.context.connection_audio.clear();
+                        self.playback.reset_preferences(cx);
                     }
                     if previous_voice_channel != self.state.voice.channel_id {
                         self.context.connection_audio.clear();
@@ -1131,7 +1132,19 @@ impl Fluxer {
                     input,
                     output,
                     users,
+                    audio_playback,
+                    video_playback,
                 } => {
+                    self.playback.set_preference(
+                        playable_media::PlayableKind::Audio,
+                        media_player::PlaybackPreference { volume: audio_playback.volume, muted: audio_playback.muted },
+                        cx,
+                    );
+                    self.playback.set_preference(
+                        playable_media::PlayableKind::Video,
+                        media_player::PlaybackPreference { volume: video_playback.volume, muted: video_playback.muted },
+                        cx,
+                    );
                     self.context.user_audio = users
                         .into_iter()
                         .filter_map(|(id, preference)| {
