@@ -242,6 +242,19 @@ fn paragraph_indent(document: &MessageDocument, paragraph: &Range<usize>) -> Pix
         + if code { 8. } else { 0. }
         + if alert { 16. } else { 0. })
 }
+fn heading_is_first(document: &MessageDocument, start: usize) -> bool {
+    let body_start = if document
+        .spans
+        .first()
+        .is_some_and(|span| matches!(span.target, Some(MessageTarget::Author { .. })))
+    {
+        document.spans.get(1).map_or(0, |span| span.range.end)
+    } else {
+        0
+    }
+    .min(start);
+    document.text[body_start..start].trim().is_empty()
+}
 pub(super) fn layout(
     document: &MessageDocument,
     runs: &[TextRun],
@@ -385,22 +398,7 @@ pub(super) fn layout(
             }
         });
         if let Some(block) = heading_block.filter(|block| block.range.start == paragraph.start) {
-            let body_start = document
-                .spans
-                .iter()
-                .take(2)
-                .filter(|span| {
-                    matches!(span.target, Some(MessageTarget::Author { .. }))
-                        || (span.range.start > 0
-                            && document.text[span.range.clone()].trim().is_empty())
-                })
-                .map(|span| span.range.end)
-                .max()
-                .unwrap_or(0)
-                .min(block.range.start);
-            let first = document.text[body_start..block.range.start]
-                .trim()
-                .is_empty();
+            let first = heading_is_first(document, block.range.start);
             y += window.rem_size() * if first { 0.25 } else { 1.25 };
         }
         let scale = match heading {
@@ -787,6 +785,33 @@ mod tests {
             underline: None,
             strikethrough: None,
         }
+    }
+
+    #[test]
+    fn first_heading_ignores_only_the_compact_author_prefix() {
+        let doc = document("**prior** text\n# heading");
+        let heading = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, MessageBlockKind::Heading { .. }))
+            .unwrap();
+        assert!(!heading_is_first(&doc, heading.range.start));
+        let msg = Message::text(
+            100.into(),
+            10.into(),
+            User {
+                username: "É".into(),
+                ..Default::default()
+            },
+            "# heading",
+        );
+        let compact = document(&msg.content).with_author(&msg);
+        let heading = compact
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, MessageBlockKind::Heading { .. }))
+            .unwrap();
+        assert!(heading_is_first(&compact, heading.range.start));
     }
 
     #[test]
