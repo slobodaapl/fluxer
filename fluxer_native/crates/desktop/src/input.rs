@@ -2,7 +2,12 @@
 use crate::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::message_markup::{MessageDocument, MessageTarget};
 use std::ops::Range;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+#[path = "code_highlight.rs"]
+mod code_highlight;
 #[path = "composer_completion.rs"]
 pub mod composer_completion;
 #[path = "composer_tokens.rs"]
@@ -13,11 +18,11 @@ mod inline_emoji;
 mod message_text;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ShapedLine,
-    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
-    point, prelude::*, px, relative, rgb, rgba, size,
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
+    fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::*;
 
@@ -293,6 +298,10 @@ pub struct TextInput {
     pub completion_enter_guard: bool,
     completion_dismissed: Option<composer_completion::Trigger>,
     message_document: Option<Arc<MessageDocument>>,
+    highlighted: Vec<code_highlight::Token>,
+    highlight_generation: u64,
+    table_scrolls: BTreeMap<usize, Pixels>,
+    table_drag: Option<usize>,
     revealed_spoilers: BTreeSet<u32>,
     inline_press: Option<(Point<Pixels>, usize, bool)>,
     hover_interactive: bool,
@@ -311,6 +320,7 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<DocumentLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    last_visible_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
     scroll_x: Pixels,
     scroll_y: Pixels,
@@ -339,6 +349,10 @@ impl TextInput {
             completion_enter_guard: false,
             completion_dismissed: None,
             message_document: None,
+            highlighted: Vec::new(),
+            highlight_generation: 0,
+            table_scrolls: BTreeMap::new(),
+            table_drag: None,
             revealed_spoilers: BTreeSet::new(),
             inline_press: None,
             hover_interactive: false,
@@ -357,6 +371,7 @@ impl TextInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            last_visible_bounds: None,
             is_selecting: false,
             scroll_x: px(0.),
             scroll_y: px(0.),
@@ -382,7 +397,8 @@ impl TextInput {
     ) -> Self {
         let document = document.into();
         let mut input = Self::read_only(&document.text, cx);
-        input.message_document = Some(document);
+        input.message_document = Some(document.clone());
+        code_highlight::schedule(&mut input, document, cx);
         input
     }
     pub fn update_message_document(
@@ -408,12 +424,14 @@ impl TextInput {
             self.revealed_spoilers.clear();
         }
         if text_changed {
+            self.table_scrolls.clear();
             self.content = document.text.clone().into();
             self.selected_range = 0..0;
             self.selection_reversed = false;
             self.selection_origin = None;
         }
-        self.message_document = Some(document);
+        self.message_document = Some(document.clone());
+        code_highlight::schedule(self, document, cx);
         self.inline_press = None;
         self.hover_interactive = false;
         self.last_layout = None;
@@ -442,26 +460,31 @@ impl TextInput {
                         let span = document.spans.iter().find(|span| {
                             span.range.contains(&index) && span.target.as_ref() == Some(&target)
                         })?;
-                        layout.lines.iter().find_map(|line| {
-                            let start = line.range.start.max(span.range.start);
-                            let end = line.range.end.min(span.range.end);
-                            if start >= end {
-                                return None;
-                            }
-                            let left = bounds.left()
-                                + line.indent
-                                + line.layout.x_for_index(start - line.range.start)
-                                - self.scroll_x;
-                            let right = bounds.left()
-                                + line.indent
-                                + line.layout.x_for_index(end - line.range.start)
-                                - self.scroll_x;
-                            let rect = Bounds::new(
-                                point(left, bounds.top() + line.y - self.scroll_y),
-                                size((right - left).max(px(1.)), line.height),
-                            );
-                            rect.intersects(&bounds).then_some(rect)
-                        })
+                        let visible = self.last_visible_bounds?;
+                        layout
+                            .lines
+                            .iter()
+                            .filter(|line| line.range.contains(&index))
+                            .find_map(|line| {
+                                let start = line.range.start.max(span.range.start);
+                                let end = line.range.end.min(span.range.end);
+                                if start >= end {
+                                    return None;
+                                }
+                                let left = bounds.left()
+                                    + line.indent
+                                    + line.layout.x_for_index(start - line.range.start)
+                                    - self.scroll_x;
+                                let right = bounds.left()
+                                    + line.indent
+                                    + line.layout.x_for_index(end - line.range.start)
+                                    - self.scroll_x;
+                                let rect = Bounds::new(
+                                    point(left, bounds.top() + line.y - self.scroll_y),
+                                    size((right - left).max(px(1.)), line.height),
+                                );
+                                rect.intersects(&visible).then(|| rect.intersect(&visible))
+                            })
                     });
             cx.emit(MessageActivated { target, anchor });
         }
@@ -878,8 +901,22 @@ impl TextInput {
         let x = self
             .preferred_x
             .unwrap_or_else(|| layout.position_for_index(cursor).x);
-        let next = (row as isize + direction)
-            .clamp(0, layout.lines.len().saturating_sub(1) as isize) as usize;
+        let current_y = layout.lines[row].y;
+        let next_y = layout
+            .lines
+            .iter()
+            .map(|line| line.y)
+            .filter(|y| {
+                if direction < 0 {
+                    *y < current_y
+                } else {
+                    *y > current_y
+                }
+            })
+            .reduce(|a, b| if direction < 0 { a.max(b) } else { a.min(b) });
+        let next = next_y
+            .map(|y| layout.row_for_position(point(x, y)))
+            .unwrap_or(row);
         let index = grapheme_offset(
             &self.content,
             layout.lines[next].range.start
@@ -900,7 +937,37 @@ impl TextInput {
         }
     }
     fn scroll(&mut self, event: &gpui::ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.multiline || self.read_only {
+        if self.read_only {
+            if let (Some(layout), Some(bounds)) = (&self.last_layout, self.last_bounds) {
+                let local_y = event.position.y - bounds.top() + self.scroll_y;
+                let delta = event.delta.pixel_delta(layout.line_height);
+                let dx = if delta.x != px(0.) {
+                    delta.x
+                } else if event.modifiers.shift {
+                    delta.y
+                } else {
+                    px(0.)
+                };
+                if bounds.contains(&event.position) && dx != px(0.) {
+                    if let Some(table) = layout
+                        .table_regions
+                        .iter()
+                        .find(|t| local_y >= t.y && local_y < t.y + t.height)
+                    {
+                        let entry = self.table_scrolls.entry(table.start).or_default();
+                        let next = (*entry - dx)
+                            .clamp(px(0.), (table.width - bounds.size.width).max(px(0.)));
+                        if next != *entry {
+                            *entry = next;
+                            cx.notify();
+                            cx.stop_propagation();
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if !self.multiline {
             return;
         }
         if let (Some(layout), Some(bounds)) = (&self.last_layout, self.last_bounds) {
@@ -938,6 +1005,19 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle);
+        if let (Some(layout), Some(bounds)) = (&self.last_layout, self.last_bounds) {
+            let local_y = event.position.y - bounds.top() + self.scroll_y;
+            if let Some(table) = layout.table_regions.iter().find(|table| {
+                table.width > table.viewport
+                    && local_y >= table.y + table.height - px(8.)
+                    && local_y < table.y + table.height
+            }) {
+                self.table_drag = Some(table.start);
+                self.drag_table_scroll(event.position, cx);
+                cx.stop_propagation();
+                return;
+            }
+        }
         self.is_selecting = true;
 
         let index = self.index_for_mouse_position(event.position);
@@ -966,6 +1046,10 @@ impl TextInput {
     }
 
     fn on_mouse_up(&mut self, event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.table_drag.take().is_some() {
+            cx.stop_propagation();
+            return;
+        }
         self.is_selecting = false;
         if let Some((origin, index, dragged)) = self.inline_press.take()
             && !dragged
@@ -979,7 +1063,34 @@ impl TextInput {
         }
     }
 
+    fn drag_table_scroll(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let (Some(id), Some(layout), Some(bounds)) =
+            (self.table_drag, &self.last_layout, self.last_bounds)
+        else {
+            return;
+        };
+        let Some(table) = layout.table_regions.iter().find(|table| table.start == id) else {
+            return;
+        };
+        let thumb = (table.viewport * (table.viewport / table.width))
+            .max(px(20.))
+            .min(table.viewport);
+        let travel = table.viewport - thumb;
+        let ratio = if travel > px(0.) {
+            ((position.x - bounds.left() - thumb / 2.) / travel).clamp(0., 1.)
+        } else {
+            0.
+        };
+        self.table_scrolls
+            .insert(id, (table.width - table.viewport) * ratio);
+        cx.notify();
+    }
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.table_drag.is_some() {
+            self.drag_table_scroll(event.position, cx);
+            cx.stop_propagation();
+            return;
+        }
         if let Some((origin, _, dragged)) = &mut self.inline_press
             && ((event.position.x - origin.x).abs() > px(3.)
                 || (event.position.y - origin.y).abs() > px(3.))
@@ -1114,7 +1225,7 @@ impl TextInput {
         if local.y < px(0.) || local.y >= layout.height() {
             return None;
         }
-        let row = layout.row_for_y(local.y);
+        let row = layout.row_for_position(local);
         let line = &layout.lines[row];
         if local.x < line.indent || local.x > line.indent + line.layout.width {
             return None;
@@ -1382,23 +1493,79 @@ struct VisualLine {
     indent: Pixels,
     y: Pixels,
     height: Pixels,
+    cell_right: Option<Pixels>,
+}
+#[derive(Clone)]
+struct TableCell {
+    x: Pixels,
+    y: Pixels,
+    width: Pixels,
+    height: Pixels,
+    header: bool,
+    row: usize,
+}
+#[derive(Clone)]
+struct TableRegion {
+    start: usize,
+    y: Pixels,
+    height: Pixels,
+    width: Pixels,
+    viewport: Pixels,
+    offset: Pixels,
+}
+#[derive(Clone)]
+struct CodeHeader {
+    range: Range<usize>,
+    language: Option<String>,
+    y: Pixels,
 }
 #[derive(Clone)]
 struct DocumentLayout {
     lines: Vec<VisualLine>,
+    code_headers: Vec<CodeHeader>,
+    table_cells: Vec<TableCell>,
+    table_regions: Vec<TableRegion>,
+    content_height: Pixels,
     line_height: Pixels,
 }
 impl DocumentLayout {
     fn height(&self) -> Pixels {
         self.lines
-            .last()
-            .map_or(px(0.), |line| line.y + line.height)
+            .iter()
+            .map(|line| line.y + line.height)
+            .chain(
+                self.table_regions
+                    .iter()
+                    .map(|table| table.y + table.height),
+            )
+            .fold(self.content_height, Pixels::max)
     }
     fn row_for_y(&self, y: Pixels) -> usize {
         self.lines
             .iter()
             .position(|line| y < line.y + line.height)
             .unwrap_or_else(|| self.lines.len().saturating_sub(1))
+    }
+    fn row_for_position(&self, position: Point<Pixels>) -> usize {
+        let mut best = None;
+        for (index, line) in self.lines.iter().enumerate() {
+            if position.y < line.y || position.y >= line.y + line.height {
+                continue;
+            }
+            let right = line.cell_right.unwrap_or(line.indent + line.layout.width);
+            let distance = if position.x < line.indent {
+                line.indent - position.x
+            } else if position.x > right {
+                position.x - right
+            } else {
+                px(0.)
+            };
+            if best.as_ref().is_none_or(|(_, d)| distance < *d) {
+                best = Some((index, distance));
+            }
+        }
+        best.map(|(i, _)| i)
+            .unwrap_or_else(|| self.row_for_y(position.y))
     }
     fn row_for_index(&self, index: usize) -> usize {
         row_for_index(
@@ -1428,7 +1595,7 @@ impl DocumentLayout {
         if position.y >= self.height() {
             return self.lines.last().map_or(0, |line| line.range.end);
         }
-        let row = self.row_for_y(position.y.max(px(0.)));
+        let row = self.row_for_position(position);
         let line = &self.lines[row];
         line.range.start
             + line
@@ -1449,6 +1616,7 @@ struct PrepaintState {
     selections: Vec<PaintQuad>,
     backgrounds: Vec<PaintQuad>,
     emoji_images: Vec<gpui::AnyElement>,
+    code_controls: Vec<gpui::AnyElement>,
 }
 impl IntoElement for TextElement {
     type Element = Self;
@@ -1478,11 +1646,15 @@ impl Element for TextElement {
                 let text_style = window.text_style();
                 let font_size = text_style.font_size.to_pixels(window.rem_size());
                 let line_height = window.line_height();
-                let runs = message_text::runs(
-                    &document,
-                    &text_style.to_run(document.text.len()),
-                    &input.revealed_spoilers,
+                let runs = message_text::highlight_runs(
+                    message_text::runs(
+                        &document,
+                        &text_style.to_run(document.text.len()),
+                        &input.revealed_spoilers,
+                    ),
+                    &input.highlighted,
                 );
+                let table_scrolls = input.table_scrolls.clone();
                 let mut style = Style::default();
                 style.size.width = relative(1.).into();
                 return (
@@ -1497,6 +1669,7 @@ impl Element for TextElement {
                             font_size,
                             line_height,
                             width,
+                            &table_scrolls,
                             window,
                         );
                         let measured_width = layout
@@ -1590,18 +1763,28 @@ impl Element for TextElement {
             strikethrough: None,
         };
         let mut lines = Vec::new();
+        let mut table_cells = Vec::new();
+        let mut table_regions = Vec::new();
+        let mut content_height = px(0.);
         let composer_tokens = input.composer_tokens();
         if let Some(document) = input.message_document.as_ref() {
-            let runs = message_text::runs(document, &base, &input.revealed_spoilers);
-            lines = message_text::layout(
+            let runs = message_text::highlight_runs(
+                message_text::runs(document, &base, &input.revealed_spoilers),
+                &input.highlighted,
+            );
+            let document_layout = message_text::layout(
                 document,
                 &runs,
                 font_size,
                 window.line_height(),
                 Some(bounds.size.width.max(px(1.))),
+                &input.table_scrolls,
                 window,
-            )
-            .lines;
+            );
+            lines = document_layout.lines;
+            table_cells = document_layout.table_cells;
+            table_regions = document_layout.table_regions;
+            content_height = document_layout.content_height;
         } else if input.multiline && !empty {
             for paragraph in logical_lines(&display) {
                 let paragraph_runs =
@@ -1629,6 +1812,7 @@ impl Element for TextElement {
                         indent: px(0.),
                         y: window.line_height() * lines.len(),
                         height: window.line_height(),
+                        cell_right: None,
                     });
                 }
             }
@@ -1652,10 +1836,20 @@ impl Element for TextElement {
                 indent: px(0.),
                 y: window.line_height() * lines.len(),
                 height: window.line_height(),
+                cell_right: None,
             });
         }
+        let code_headers = if let Some(document) = input.message_document.as_ref() {
+            message_text::code_headers(document, &lines, window.line_height())
+        } else {
+            Vec::new()
+        };
         let layout = DocumentLayout {
             lines,
+            code_headers,
+            table_cells,
+            table_regions,
+            content_height,
             line_height: window.line_height(),
         };
         let position = layout.position_for_index(input.cursor_offset());
@@ -1697,7 +1891,7 @@ impl Element for TextElement {
                         .min(line.range.len());
                     let x1 = line.indent + line.layout.x_for_index(from);
                     let x2 = if range.end > line.range.end {
-                        bounds.size.width
+                        line.cell_right.unwrap_or(bounds.size.width)
                     } else {
                         line.indent + line.layout.x_for_index(to)
                     };
@@ -1753,7 +1947,23 @@ impl Element for TextElement {
                 cx,
             ));
         }
+        let code_controls = document
+            .as_ref()
+            .map(|doc| {
+                message_text::code_controls(
+                    doc,
+                    &revealed,
+                    &layout,
+                    bounds,
+                    scroll,
+                    self.input.entity_id().as_u64(),
+                    window,
+                    cx,
+                )
+            })
+            .unwrap_or_default();
         PrepaintState {
+            code_controls,
             backgrounds,
             emoji_images,
             layout,
@@ -1785,16 +1995,34 @@ impl Element for TextElement {
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase == gpui::DispatchPhase::Capture
                 && !bounds.contains(&event.position)
-                && input.read(cx).is_selecting
+                && (input.read(cx).is_selecting || input.read(cx).table_drag.is_some())
             {
                 input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
             }
         });
-        for background in prepaint.backgrounds.drain(..) {
-            window.paint_quad(background);
-        }
-        let input = self.input.read(cx);
-        if input.read_only && input.message_document.is_some() {
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for background in prepaint.backgrounds.drain(..) {
+                window.paint_quad(background);
+            }
+            let input = self.input.read(cx);
+            if input.read_only && input.message_document.is_some() {
+                for line in &prepaint.layout.lines {
+                    let origin = point(
+                        bounds.left() + line.indent - prepaint.scroll.x,
+                        bounds.top() + line.y - prepaint.scroll.y,
+                    );
+                    if origin.y + line.height >= bounds.top() && origin.y <= bounds.bottom() {
+                        line.layout
+                            .paint_background(origin, line.height, window, cx)
+                            .expect("paint rich message run backgrounds");
+                    }
+                }
+            }
+            for selection in prepaint.selections.drain(..) {
+                if focus.is_focused(window) {
+                    window.paint_quad(selection);
+                }
+            }
             for line in &prepaint.layout.lines {
                 let origin = point(
                     bounds.left() + line.indent - prepaint.scroll.x,
@@ -1802,36 +2030,28 @@ impl Element for TextElement {
                 );
                 if origin.y + line.height >= bounds.top() && origin.y <= bounds.bottom() {
                     line.layout
-                        .paint_background(origin, line.height, window, cx)
-                        .expect("paint rich message run backgrounds");
+                        .paint(origin, line.height, window, cx)
+                        .expect("paint native composer");
                 }
             }
-        }
-        for selection in prepaint.selections.drain(..) {
-            if focus.is_focused(window) {
-                window.paint_quad(selection);
+            for control in &mut prepaint.code_controls {
+                control.paint(window, cx);
             }
-        }
-        for line in &prepaint.layout.lines {
-            let origin = point(
-                bounds.left() + line.indent - prepaint.scroll.x,
-                bounds.top() + line.y - prepaint.scroll.y,
-            );
-            if origin.y + line.height >= bounds.top() && origin.y <= bounds.bottom() {
-                line.layout
-                    .paint(origin, line.height, window, cx)
-                    .expect("paint native composer");
+            for image in &mut prepaint.emoji_images {
+                image.paint(window, cx);
             }
-        }
-        for image in &mut prepaint.emoji_images {
-            image.paint(window, cx);
-        }
+        });
         if focus.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take()
         {
             window.paint_quad(cursor);
         }
+        let parent_mask = window.content_mask().bounds;
+        let visible_bounds = bounds
+            .intersects(&parent_mask)
+            .then(|| bounds.intersect(&parent_mask));
         self.input.update(cx, |input, cx| {
+            input.last_visible_bounds = visible_bounds;
             let rows = prepaint.layout.lines.len();
             if !input.read_only && input.rows != rows {
                 input.rows = rows;

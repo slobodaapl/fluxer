@@ -10,8 +10,7 @@
 //! Markup.module.css (concealed spoilers are not selectable).
 //!
 //! All parser AST variants retain their text. Remaining presentation differences
-//! are reported in `unsupported`: table grids/table-aware clipboard,
-//! live localized timestamps, and command/guild-navigation activation. Unicode
+//! are reported in `unsupported`: live localized timestamps and command/guild-navigation activation. Unicode
 //! literals use the platform font; preferred-tone shortcode substitution and
 //! emoji-only jumbo sizing are not applied by this projection.
 use fluxer_core::{ClientState, Message, Snowflake};
@@ -101,7 +100,10 @@ pub enum MessageBlockKind {
         ordered: bool,
         depth: u8,
     },
-    Table,
+    Table {
+        rows: Vec<Vec<Range<usize>>>,
+        alignments: Vec<fluxer_markdown_parser::ast::TableAlignment>,
+    },
     Alert {
         kind: fluxer_markdown_parser::ast::AlertType,
     },
@@ -140,6 +142,11 @@ impl MessageDocument {
         }
         for block in &mut doc.blocks {
             block.range = block.range.start + offset..block.range.end + offset;
+            if let MessageBlockKind::Table { rows, .. } = &mut block.kind {
+                for cell in rows.iter_mut().flatten() {
+                    *cell = cell.start + offset..cell.end + offset;
+                }
+            }
         }
         doc.spans.splice(
             0..0,
@@ -246,6 +253,8 @@ struct Run {
     target: Option<MessageTarget>,
     spoilers: Vec<u32>,
     list_depth: u8,
+    ordered_depth: u8,
+    unordered_depth: u8,
 }
 struct Resolver<'a> {
     message: &'a Message,
@@ -536,14 +545,26 @@ impl Projector<'_> {
             } => self.doc.push(raw, run, None),
             Node::List { ordered, items } => {
                 nested.list_depth = run.list_depth.saturating_add(1);
+                if *ordered {
+                    nested.ordered_depth = run.ordered_depth.saturating_add(1);
+                } else {
+                    nested.unordered_depth = run.unordered_depth.saturating_add(1);
+                }
+                let first_ordinal = items.first().and_then(|item| item.ordinal).unwrap_or(1);
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
                         self.doc.push("\n", run, None);
                     }
                     let marker = if *ordered {
-                        format!("{}. ", item.ordinal.unwrap_or(index + 1))
+                        format!(
+                            "{}. ",
+                            ordered_marker(
+                                first_ordinal.saturating_add(index),
+                                nested.ordered_depth
+                            )
+                        )
                     } else {
-                        match nested.list_depth {
+                        match nested.unordered_depth {
                             1 => "• ",
                             2 => "◦ ",
                             _ => "▪ ",
@@ -558,15 +579,42 @@ impl Projector<'_> {
                     depth: nested.list_depth,
                 });
             }
-            Node::Table { header, rows, .. } => {
-                self.node(header, run);
-                for row in rows {
-                    self.doc.push("\n", run, None);
-                    self.node(row, run);
+            Node::Table {
+                header,
+                rows,
+                alignments,
+            } => {
+                let mut cell_rows = Vec::new();
+                for (row_index, row) in std::iter::once(header.as_ref())
+                    .chain(rows.iter())
+                    .enumerate()
+                {
+                    if row_index > 0 {
+                        self.doc.push("\n", run, None);
+                    }
+                    if let Node::TableRow { cells } = row {
+                        let mut ranges = Vec::new();
+                        for (column, cell) in cells.iter().enumerate() {
+                            if column > 0 {
+                                self.doc.push("\t", run, None);
+                            }
+                            let cell_start = self.doc.text.len();
+                            let mut cell_run = run.clone();
+                            if row_index == 0 {
+                                cell_run.style.bold = true;
+                            }
+                            self.node(cell, &cell_run);
+                            ranges.push(cell_start..self.doc.text.len());
+                        }
+                        cell_rows.push(ranges);
+                    } else {
+                        self.node(row, run);
+                    }
                 }
-                block = Some(MessageBlockKind::Table);
-                self.doc
-                    .note("Table grid/layout and Markdown table selection copy");
+                block = Some(MessageBlockKind::Table {
+                    rows: cell_rows,
+                    alignments: alignments.clone(),
+                });
             }
             Node::TableRow { cells } => {
                 for (index, cell) in cells.iter().enumerate() {
@@ -609,6 +657,42 @@ impl Projector<'_> {
             });
         }
     }
+}
+fn ordered_marker(mut number: usize, depth: u8) -> String {
+    if depth == 2 && number > 0 {
+        let mut letters = Vec::new();
+        while number > 0 {
+            number -= 1;
+            letters.push((b'a' + (number % 26) as u8) as char);
+            number /= 26;
+        }
+        return letters.into_iter().rev().collect();
+    }
+    if depth >= 3 && (1..=3999).contains(&number) {
+        let mut result = String::new();
+        for (value, glyph) in [
+            (1000, "m"),
+            (900, "cm"),
+            (500, "d"),
+            (400, "cd"),
+            (100, "c"),
+            (90, "xc"),
+            (50, "l"),
+            (40, "xl"),
+            (10, "x"),
+            (9, "ix"),
+            (5, "v"),
+            (4, "iv"),
+            (1, "i"),
+        ] {
+            while number >= value {
+                result.push_str(glyph);
+                number -= value;
+            }
+        }
+        return result;
+    }
+    number.to_string()
 }
 fn is_block(node: &Node) -> bool {
     matches!(
@@ -915,6 +999,61 @@ mod tests {
             end = span.range.end;
         }
         assert_eq!(end, doc.text.len());
+    }
+    #[test]
+    fn table_cells_keep_unicode_alignment_selection_and_author_offsets() {
+        let source = "| Name | Value |\n| :--- | ---: |\n| 雪 | ||hidden|| |";
+        let doc = render(source);
+        let block = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, MessageBlockKind::Table { .. }))
+            .expect("table");
+        let MessageBlockKind::Table { rows, alignments } = &block.kind else {
+            unreachable!()
+        };
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(&doc.text[rows[1][0].clone()], "雪");
+        assert_eq!(
+            alignments[1],
+            fluxer_markdown_parser::ast::TableAlignment::Right
+        );
+        assert_eq!(
+            doc.copy_range(block.range.clone(), &BTreeSet::new()),
+            "Name\tValue\n雪\t"
+        );
+        let mut msg = message(source);
+        msg.author.username = "É".into();
+        let compact = doc.with_author(&msg);
+        let offset = compact.text.len() - doc.text.len();
+        let shifted = compact
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let MessageBlockKind::Table { rows, .. } = &b.kind {
+                    Some(rows)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            shifted[1][0],
+            (rows[1][0].start + offset)..(rows[1][0].end + offset)
+        );
+        assert_eq!(compact.source, source);
+    }
+
+    #[test]
+    fn nested_ordered_markers_follow_css_and_continue_first_ordinal() {
+        assert_eq!(ordered_marker(1, 1), "1");
+        assert_eq!(ordered_marker(27, 2), "aa");
+        assert_eq!(ordered_marker(49, 3), "xlix");
+        let doc = render("3. outer\n   1. inner\n      1. deep");
+        assert!(doc.text.contains("3. outer"));
+        assert!(doc.text.contains("a. inner"));
+        assert!(doc.text.contains("i. deep"));
     }
     #[test]
     fn nested_lists_and_alert_keep_ranges_for_compact_author_and_copy() {

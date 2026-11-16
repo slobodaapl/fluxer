@@ -138,6 +138,48 @@ pub(super) fn runs(
         })
         .collect()
 }
+/// Apply non-overlapping, byte-indexed syntax tokens without revealing masked runs.
+pub(super) fn highlight_runs(runs: Vec<TextRun>, tokens: &[code_highlight::Token]) -> Vec<TextRun> {
+    let mut output = Vec::new();
+    let mut offset = 0;
+    for run in runs {
+        let end = offset + run.len;
+        let mut cursor = offset;
+        for token in tokens
+            .iter()
+            .filter(|t| t.range.start < end && t.range.end > offset)
+        {
+            let from = token.range.start.max(offset).max(cursor);
+            let to = token.range.end.min(end);
+            if from > cursor {
+                output.push(TextRun {
+                    len: from - cursor,
+                    ..run.clone()
+                });
+            }
+            if to > from {
+                let mut part = TextRun {
+                    len: to - from,
+                    ..run.clone()
+                };
+                if run.color.a > 0. {
+                    part.color = rgb(token.color).into();
+                }
+                output.push(part);
+                cursor = to;
+            }
+        }
+        if cursor < end {
+            output.push(TextRun {
+                len: end - cursor,
+                ..run
+            });
+        }
+        offset = end;
+    }
+    output
+}
+
 /// Clip globally indexed runs to a visual row without splitting their styles.
 pub(super) fn clip(runs: &[TextRun], range: &Range<usize>) -> Vec<TextRun> {
     let mut offset = 0;
@@ -186,24 +228,161 @@ pub(super) fn layout(
     font_size: Pixels,
     line_height: Pixels,
     width: Option<Pixels>,
+    table_scrolls: &BTreeMap<usize, Pixels>,
     window: &mut Window,
 ) -> DocumentLayout {
     let mut lines = Vec::new();
     let mut y = px(0.);
+    let mut code_headers = Vec::new();
+    let mut table_cells = Vec::new();
+    let mut table_regions = Vec::new();
+    let mut table_end = 0;
     for paragraph in logical_lines(&document.text) {
-        let indent = paragraph_indent(document, &paragraph);
-        let heading = document
-            .blocks
-            .iter()
-            .filter_map(|block| {
-                if block.range.start <= paragraph.start && block.range.end > paragraph.start {
-                    if let MessageBlockKind::Heading { level } = block.kind {
-                        return Some(level);
+        if paragraph.start < table_end {
+            continue;
+        }
+        if let Some(block) = document.blocks.iter().find(|block| {
+            block.range.start == paragraph.start
+                && matches!(block.kind, MessageBlockKind::Table { .. })
+        }) {
+            if let MessageBlockKind::Table { rows, alignments } = &block.kind {
+                let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+                if columns > 0 {
+                    let available = width.unwrap_or(px(480.));
+                    let cell_width = (available / columns as f32).max(px(80.));
+                    let table_width = cell_width * columns;
+                    let offset = table_scrolls
+                        .get(&block.range.start)
+                        .copied()
+                        .unwrap_or(px(0.))
+                        .clamp(px(0.), (table_width - available).max(px(0.)));
+                    let top = y;
+                    for (row_index, row) in rows.iter().enumerate() {
+                        let mut column_lines = Vec::new();
+                        let mut row_height = line_height;
+                        for (column, cell) in row.iter().enumerate() {
+                            let text = &document.text[cell.clone()];
+                            let cell_runs = clip(runs, cell);
+                            let breaks = inline_emoji::wrap_breaks(
+                                text,
+                                font_size,
+                                &cell_runs,
+                                Some((cell_width - px(24.)).max(px(1.))),
+                                window,
+                            );
+                            let mut shaped = Vec::new();
+                            for range in visual_ranges(cell.clone(), &breaks) {
+                                let shape = inline_emoji::shape_line(
+                                    &document.text[range.clone()],
+                                    font_size,
+                                    &clip(runs, &range),
+                                    window,
+                                );
+                                shaped.push((range, shape));
+                            }
+                            row_height = row_height.max(line_height * shaped.len());
+                            column_lines.push((column, shaped));
+                        }
+                        row_height += px(12.);
+                        for column in 0..columns {
+                            table_cells.push(TableCell {
+                                x: cell_width * column - offset,
+                                y,
+                                width: cell_width,
+                                height: row_height,
+                                header: row_index == 0,
+                                row: row_index,
+                            });
+                        }
+                        for (column, shaped) in column_lines {
+                            for (line_index, (range, shape)) in shaped.into_iter().enumerate() {
+                                let left = cell_width * column - offset;
+                                let inner = (cell_width - px(24.)).max(px(1.));
+                                let alignment = alignments
+                                    .get(column)
+                                    .copied()
+                                    .unwrap_or(fluxer_markdown_parser::ast::TableAlignment::None);
+                                let shift = match alignment {
+                                    fluxer_markdown_parser::ast::TableAlignment::Center => {
+                                        ((inner - shape.width) / 2.).max(px(0.))
+                                    }
+                                    fluxer_markdown_parser::ast::TableAlignment::Right => {
+                                        (inner - shape.width).max(px(0.))
+                                    }
+                                    _ => px(0.),
+                                };
+                                lines.push(VisualLine {
+                                    range,
+                                    layout: shape,
+                                    indent: left + px(12.) + shift,
+                                    y: y + px(6.) + line_height * line_index,
+                                    height: line_height,
+                                    cell_right: Some(left + cell_width - px(12.)),
+                                });
+                            }
+                        }
+                        y += row_height;
                     }
+                    if table_width > available {
+                        y += px(8.);
+                    }
+                    table_regions.push(TableRegion {
+                        start: block.range.start,
+                        y: top,
+                        height: y - top,
+                        width: table_width,
+                        viewport: available,
+                        offset,
+                    });
+                    table_end = block.range.end;
+                    continue;
                 }
+            }
+        }
+        for block in &document.blocks {
+            if block.range.start == paragraph.start {
+                if let MessageBlockKind::Code { language } = &block.kind {
+                    code_headers.push(CodeHeader {
+                        range: block.range.clone(),
+                        language: language.clone(),
+                        y,
+                    });
+                    y += line_height;
+                }
+            }
+        }
+        let indent = paragraph_indent(document, &paragraph);
+        let heading_block = document.blocks.iter().find(|block| {
+            block.range.start <= paragraph.start
+                && block.range.end > paragraph.start
+                && matches!(block.kind, MessageBlockKind::Heading { .. })
+        });
+        let heading = heading_block.and_then(|block| {
+            if let MessageBlockKind::Heading { level } = block.kind {
+                Some(level)
+            } else {
                 None
-            })
-            .min();
+            }
+        });
+        if let Some(block) = heading_block.filter(|block| block.range.start == paragraph.start) {
+            let body_start = document
+                .spans
+                .iter()
+                .take(2)
+                .filter(|span| {
+                    matches!(span.target, Some(MessageTarget::Author { .. }))
+                        || (span.range.start > 0
+                            && document.text[span.range.clone()].trim().is_empty())
+                })
+                .map(|span| span.range.end)
+                .max()
+                .unwrap_or(0)
+                .min(block.range.start);
+            let first = document.text[body_start..block.range.start]
+                .trim()
+                .is_empty();
+            y += window.rem_size() * if first { 0.25 } else { 1.25 };
+        }
         let scale = match heading {
             Some(1) => 1.375,
             Some(2) => 1.25,
@@ -213,7 +392,11 @@ pub(super) fn layout(
             _ => 1.,
         };
         let row_font_size = font_size * scale;
-        let row_height = line_height * scale;
+        let row_height = if heading.is_some() {
+            row_font_size * 1.2
+        } else {
+            line_height
+        };
         let text: SharedString = document.text[paragraph.clone()].to_owned().into();
         let paragraph_runs = clip(runs, &paragraph);
         let breaks = inline_emoji::wrap_breaks(
@@ -223,7 +406,7 @@ pub(super) fn layout(
             width.map(|width| (width - indent).max(px(1.))),
             window,
         );
-        for range in visual_ranges(paragraph, &breaks) {
+        for range in visual_ranges(paragraph.clone(), &breaks) {
             let text: SharedString = document.text[range.clone()].to_owned().into();
             let layout =
                 inline_emoji::shape_line(&text, row_font_size, &clip(runs, &range), window);
@@ -233,12 +416,143 @@ pub(super) fn layout(
                 indent,
                 y,
                 height: row_height,
+                cell_right: None,
             });
             y += row_height;
         }
+        if heading_block.is_some_and(|block| block.range.end == paragraph.end) {
+            y += window.rem_size() * 0.75;
+        }
     }
-    DocumentLayout { lines, line_height }
+    DocumentLayout {
+        lines,
+        code_headers,
+        table_cells,
+        table_regions,
+        content_height: y,
+        line_height,
+    }
 }
+// Rebuild header geometry from the first code row after the shared layout has
+// been moved into the prepaint state.
+pub(super) fn code_headers(
+    document: &MessageDocument,
+    lines: &[VisualLine],
+    height: Pixels,
+) -> Vec<CodeHeader> {
+    document
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let MessageBlockKind::Code { language } = &block.kind else {
+                return None;
+            };
+            let line = lines
+                .iter()
+                .find(|line| line.range.start == block.range.start)?;
+            Some(CodeHeader {
+                range: block.range.clone(),
+                language: language.clone(),
+                y: line.y - height,
+            })
+        })
+        .collect()
+}
+
+fn code_for_copy(
+    document: &MessageDocument,
+    range: &Range<usize>,
+    revealed: &BTreeSet<u32>,
+) -> Option<String> {
+    if !valid(document)
+        || document.spans.iter().any(|span| {
+            span.range.start < range.end
+                && span.range.end > range.start
+                && concealed(span, revealed)
+        })
+    {
+        return None;
+    }
+    document.text.get(range.clone()).map(str::to_owned)
+}
+
+pub(super) fn code_controls(
+    document: &MessageDocument,
+    revealed: &BTreeSet<u32>,
+    layout: &DocumentLayout,
+    bounds: Bounds<Pixels>,
+    scroll: Point<Pixels>,
+    owner: u64,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let mut controls = Vec::new();
+    for (index, header) in layout.code_headers.iter().enumerate() {
+        let Some(code) = code_for_copy(document, &header.range, revealed) else {
+            continue;
+        };
+        let y = bounds.top() + header.y - scroll.y;
+        if y + layout.line_height < bounds.top() || y > bounds.bottom() {
+            continue;
+        }
+        let label: String = header
+            .language
+            .as_deref()
+            .unwrap_or("")
+            .chars()
+            .take(40)
+            .collect();
+        let width = bounds.size.width;
+        let keyboard_code = code.clone();
+        let mut element = div()
+            .id(SharedString::from(format!("code-header-{owner}-{index}")))
+            .w(width)
+            .h(layout.line_height)
+            .px_2()
+            .flex()
+            .items_center()
+            .justify_between()
+            .bg(rgb(0x25222b))
+            .text_size(px(11.))
+            .text_color(rgb(0xa9a4b5))
+            .child(label)
+            .child(
+                div()
+                    .id(("copy-code", index))
+                    .px_2()
+                    .cursor_pointer()
+                    .focusable()
+                    .tab_stop(true)
+                    .focus(|style| style.bg(rgb(0x514a5d)).text_color(rgb(0xffffff)))
+                    .on_key_down(move |event, _, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            cx.write_to_clipboard(ClipboardItem::new_string(keyboard_code.clone()));
+                            cx.stop_propagation();
+                        }
+                    })
+                    .text_color(rgb(0xc8c2d4))
+                    .hover(|style| style.text_color(rgb(0xffffff)))
+                    .on_click(move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                        cx.stop_propagation();
+                    })
+                    .child("Copy"),
+            )
+            .into_any_element();
+        element.layout_as_root(
+            size(
+                AvailableSpace::Definite(width),
+                AvailableSpace::Definite(layout.line_height),
+            ),
+            window,
+            cx,
+        );
+        element.prepaint_at(point(bounds.left() - scroll.x, y), window, cx);
+        controls.push(element);
+    }
+    controls
+}
+
 pub(super) fn backgrounds(
     document: &MessageDocument,
     layout: &DocumentLayout,
@@ -246,6 +560,62 @@ pub(super) fn backgrounds(
     scroll: Point<Pixels>,
 ) -> Vec<PaintQuad> {
     let mut quads = Vec::new();
+    for table in &layout.table_regions {
+        if table.width <= table.viewport {
+            continue;
+        }
+        let y = bounds.top() + table.y + table.height - px(6.) - scroll.y;
+        let thumb = (table.viewport * (table.viewport / table.width))
+            .max(px(20.))
+            .min(table.viewport);
+        let travel = table.viewport - thumb;
+        let x = bounds.left()
+            + if table.width > table.viewport {
+                travel * (table.offset / (table.width - table.viewport))
+            } else {
+                px(0.)
+            };
+        quads.push(fill(
+            Bounds::new(point(bounds.left(), y), size(table.viewport, px(4.))),
+            rgb(0x24212a),
+        ));
+        quads.push(fill(
+            Bounds::new(point(x, y), size(thumb, px(4.))),
+            rgb(0x777080),
+        ));
+    }
+    for cell in &layout.table_cells {
+        let left = (bounds.left() + cell.x - scroll.x).max(bounds.left());
+        let right = (bounds.left() + cell.x + cell.width - scroll.x).min(bounds.right());
+        let top = bounds.top() + cell.y - scroll.y;
+        if right <= left || top + cell.height < bounds.top() || top > bounds.bottom() {
+            continue;
+        }
+        let color = if cell.header {
+            0x302c38
+        } else if cell.row % 2 == 0 {
+            0x25232b
+        } else {
+            0x292630
+        };
+        quads.push(fill(
+            Bounds::new(point(left, top), size(right - left, cell.height)),
+            rgb(color),
+        ));
+        quads.push(fill(
+            Bounds::new(
+                point(left, top + cell.height - px(1.)),
+                size(right - left, px(1.)),
+            ),
+            rgb(0x514c5b),
+        ));
+        if cell.x >= px(0.) {
+            quads.push(fill(
+                Bounds::new(point(left, top), size(px(1.), cell.height)),
+                rgb(0x514c5b),
+            ));
+        }
+    }
     for line in &layout.lines {
         let y = bounds.top() + line.y - scroll.y;
         if y + line.height < bounds.top() || y > bounds.bottom() {
@@ -405,6 +775,42 @@ mod tests {
             underline: None,
             strikethrough: None,
         }
+    }
+
+    #[test]
+    fn syntax_colors_never_reveal_masked_ranges_and_preserve_byte_partition() {
+        let doc = document("||secret 雪|| visible");
+        let tokens = vec![code_highlight::Token {
+            range: 0..doc.text.len(),
+            color: 0xff7b72,
+        }];
+        let result = highlight_runs(runs(&doc, &base(), &BTreeSet::new()), &tokens);
+        assert_eq!(
+            result.iter().map(|run| run.len).sum::<usize>(),
+            doc.text.len()
+        );
+        assert_eq!(result[0].color.a, 0.);
+        assert!(result.last().unwrap().color.a > 0.);
+    }
+
+    #[test]
+    fn code_copy_uses_exact_block_text_and_respects_concealment() {
+        let doc = document("```rust\nlet 雪 = \"✨\";\n```");
+        let block = doc
+            .blocks
+            .iter()
+            .find(|block| matches!(block.kind, MessageBlockKind::Code { .. }))
+            .unwrap();
+        assert_eq!(
+            code_for_copy(&doc, &block.range, &BTreeSet::new()).as_deref(),
+            Some("let 雪 = \"✨\";\n")
+        );
+        let mut concealed = doc.clone();
+        for span in &mut concealed.spans {
+            span.spoilers.push(7);
+        }
+        assert!(code_for_copy(&concealed, &block.range, &BTreeSet::new()).is_none());
+        assert!(code_for_copy(&concealed, &block.range, &BTreeSet::from([7])).is_some());
     }
 
     #[test]

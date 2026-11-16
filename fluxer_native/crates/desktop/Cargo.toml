@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+arborium = { version = "=2.18.2", features = ["all-languages"] }
+arborium-highlight = "=2.18.2"
+arborium-theme = "=2.18.2"
 fluxer-core.workspace = true
 fluxer-protocol.workspace = true
 gpui = "=0.2.2"
