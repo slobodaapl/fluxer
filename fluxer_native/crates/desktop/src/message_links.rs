@@ -368,21 +368,33 @@ impl Fluxer {
                             "escape" => this.dismiss_message_link(window, cx),
                             "tab" => {
                                 this.message_links.keys.clear();
-                                if this.message_links.visit.is_focused(window) {
-                                    this.message_links.cancel.focus(window);
-                                } else {
-                                    this.message_links.visit.focus(window);
+                                let mut handles = vec![];
+                                if let Some(text) = &this.message_links.text {
+                                    handles.push(text.focus_handle(cx));
                                 }
+                                handles.extend([
+                                    this.message_links.cancel.clone(),
+                                    this.message_links.visit.clone(),
+                                ]);
+                                crate::overlay::cycle_focus(
+                                    window,
+                                    &handles,
+                                    event.keystroke.modifiers.shift,
+                                );
                             }
                             "enter" | "space" if !event.keystroke.modifiers.modified() => {
-                                this.message_links.keys.press(
-                                    if this.message_links.visit.is_focused(window) {
-                                        ConfirmationChoice::Confirm
-                                    } else {
-                                        ConfirmationChoice::Cancel
-                                    },
-                                    event.is_held,
-                                );
+                                let choice = if this.message_links.visit.is_focused(window) {
+                                    Some(ConfirmationChoice::Confirm)
+                                } else if this.message_links.cancel.is_focused(window) {
+                                    Some(ConfirmationChoice::Cancel)
+                                } else {
+                                    None
+                                };
+                                if let Some(choice) = choice {
+                                    this.message_links.keys.press(choice, event.is_held);
+                                } else {
+                                    this.message_links.keys.clear();
+                                }
                             }
                             _ => return,
                         }

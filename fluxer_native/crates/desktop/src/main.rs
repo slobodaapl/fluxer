@@ -922,6 +922,7 @@ impl Fluxer {
                         })
                     {
                         self.profile_ui.reset(cx);
+                        self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                     }
                     if let Some((user, _)) = self.profile_ui.popup.read(cx).current_scope() {
                         let kind = self.state.relationships.get(&user).map(|r| r.kind);
@@ -931,6 +932,7 @@ impl Fluxer {
                     }
                     if old != self.state.selected_channel {
                         self.profile_ui.reset(cx);
+                        self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                         self.members_identity = None;
                         self.members_request_generation =
                             self.members_request_generation.wrapping_add(1);
@@ -949,6 +951,7 @@ impl Fluxer {
                         self.reset_context_menu(cx);
                         self.media_ui.reset();
                         self.profile_ui.reset(cx);
+                        self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                         self.context.user_audio.clear();
                         self.context.connection_audio.clear();
                         self.playback.reset_preferences(cx);
@@ -2511,6 +2514,7 @@ impl Fluxer {
 impl Render for Fluxer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = std::time::Instant::now();
+        self.role_mention.update(cx, |popup, cx| popup.reconcile(&self.state, window, cx));
         let output = self
             .output_picker
             .read(cx)
@@ -2620,18 +2624,16 @@ impl Render for Fluxer {
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if this.status_ui.is_open() { return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
-                if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.role_mention.read(cx).is_open() {this.role_mention.update(cx, |popup,cx| popup.dismiss(window,cx));cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) && !this.message_links.is_open() {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
-                if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.playback.modal.is_open() {this.playback.close(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.image_viewer.is_open() {this.dismiss_image_viewer(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.message_actions.is_blocking() {this.dismiss_message_actions(window,cx);cx.stop_propagation();return;}
                 if this.search_ui.confirm.is_some() && event.keystroke.key=="escape" {
                     this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
                 }
-                if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
 
                 if event.keystroke.key == "escape" && (this.emoji_target.is_some() || this.forwarding.is_some()) {
                     this.close_emoji_focus(window, cx);
@@ -2640,6 +2642,8 @@ impl Render for Fluxer {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key == "escape" && this.pane == Pane::Call {
                     if window.is_fullscreen() {
                         window.toggle_fullscreen();

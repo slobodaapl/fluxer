@@ -49,7 +49,7 @@ impl Fluxer {
                 .filter_map(|m| chat_helpers::referenced_message(&self.state, m))
                 .map(|m| (m.channel_id, m.id)),
         );
-        self.message_content.cache.retain_visible(&retained);
+        self.message_content.retain_documents(&retained);
         for message in messages
             .iter()
             .filter(|message| !pin_system_message::is_pin_system_message(message))

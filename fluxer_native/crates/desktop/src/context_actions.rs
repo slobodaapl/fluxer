@@ -272,6 +272,7 @@ impl Fluxer {
     pub(super) fn context_menu_open(&self, cx: &App) -> bool {
         self.context.menu.read(cx).is_open()
             || self.profile_ui.is_open(cx)
+            || self.role_mention.read(cx).is_open()
             || self.message_links.input_context_menu_open(cx)
             || [
                 &self.composer,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Shared overlay geometry and focus traversal. Callers own drawing and defer
 //! only once: GPUI does not support deferred children inside deferred drawing.
-use gpui::{Bounds, FocusHandle, Pixels, Point, Size, Window, point, px, size};
+use gpui::{Bounds, FocusHandle, Pixels, Size, Window, point, px, size};
 
 fn finite(value: Pixels) -> f32 {
     let value = f32::from(value);

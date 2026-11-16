@@ -44,6 +44,10 @@ impl MessageContent {
         self.replies.clear();
         self.mention_users.clear();
     }
+    pub fn retain_documents(&mut self, retained: &BTreeSet<(Snowflake, Snowflake)>) {
+        self.cache.retain_visible(retained);
+        self.mention_users.retain(|key, _| retained.contains(key));
+    }
     pub fn retain_replies(&mut self, channel: Option<Snowflake>, visible: &BTreeSet<Snowflake>) {
         self.replies
             .retain(|(c, id), _| Some(*c) == channel && visible.contains(id));
@@ -113,13 +117,16 @@ impl Fluxer {
                             user,
                             guild,
                             false,
-                            window.mouse_position(),
+                            event
+                                .anchor
+                                .map(|bounds| point(bounds.right(), bounds.top()))
+                                .unwrap_or_else(|| window.mouse_position()),
                             window,
                             cx,
                         );
                     }
                 } else if let message_markup::MessageTarget::Role(id) = event.target {
-                    this.open_role_mention(id, channel, window, cx);
+                    this.open_role_mention(id, channel, event.anchor, window, cx);
                 } else {
                     this.activate_message_target(&event.target, window, cx);
                 }
