@@ -55,10 +55,12 @@ a tooltip on timestamp row 250, and keyboard reveal/first-Enter activation of an
 otherwise offscreen eighth-column role and the following user profile at 880×720.
 No live messages, account-setting mutations, call joins or capture were performed.
 
-The installed application is being updated after the final gate. Its actual build
-and launch evidence are recorded in `results.json` and the live debugger directory
-pointed to by `/tmp/fluxer-live-debug-dir`; check those rather than assuming an older
-open window contains these changes.
+The installed application is **375faae7b-local**, relaunched after the final gate
+under GDB/Vulkan validation. Its authenticated session and selected community/
+channel restored; the audio-preference file is unchanged. Build/launch evidence
+is recorded in `results.json` and the live debugger directory pointed to by
+`/tmp/fluxer-live-debug-dir`. The build includes the preserved local DSP work.
+Intentional debugger SIGINT events during setup are recorded as such.
 
 ## Review queue and limits
 

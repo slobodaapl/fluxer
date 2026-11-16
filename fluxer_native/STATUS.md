@@ -7,6 +7,23 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Chat rendering push integrated — 2026-11-16
+
+The Terra/Sol chat worktrees and root fixes are merged into `yolo/gpui`: measured
+headings/lists, real tables, Arborium highlighting and code Copy, scoped mention
+cards and keyboard reveal, jumbo/animated emoji and localized timestamps. READY
+reconnects preserve drafts/UI; real account/instance boundaries reset private
+state and restore authoritative drafts. The full local workspace gate passes
+**674 tests, zero failures, 14 ignored**, audit, formatting and strict Clippy.
+
+The installed live app is **375faae7b-local**, with session restoration and unchanged
+audio preferences checked under GDB/Vulkan validation. See
+[CHAT_PARITY_2026_11_16.md](CHAT_PARITY_2026_11_16.md) for evidence, limitations and
+[REVIEW.md](REVIEW.md) for pending acceptance. The local gate/build includes the
+preexisting uncommitted DSP work, which remains separate from the chat commits.
+Full migration parity, manual acceptance, the deferred aggregate media budget and
+multi-stream review remain open.
+
 ## Communication push integrated — 2026-11-15
 
 All delivered work is on `yolo/gpui`, including the final status-input/modal and
