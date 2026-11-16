@@ -151,7 +151,7 @@ impl Fluxer {
                     "Line {index}: scrolling should keep keyboard focus visible.\n"
                 ));
             }
-            long.push_str("\n```rust\nfn example() { println!(\"code stays inert\"); }\n```\n\n| One | Two | Three | Four | Five | Six |\n| --- | --- | --- | --- | --- | --- |\n| text | text | text | text | text | <@&555> |\n\nAt the end <@101>.");
+            long.push_str("\n```rust\nfn example() { println!(\"code stays inert\"); }\n```\n\n| One | Two | Three | Four | Five | Six | Seven | Eight |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n| text | text | text | text | text | text | text | <@&555> |\n\nAt the end <@101>.");
             let id = Snowflake(21_010);
             let mut message = Message::text(id, channel, sam.clone(), &long);
             message.timestamp = (base + DateDuration::seconds(90_100)).to_rfc3339();

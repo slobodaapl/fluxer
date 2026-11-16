@@ -2204,6 +2204,7 @@ impl Element for TextElement {
         // vertical reveal, so nested list retries see the correct target.
         let revealing = input.inline_reveal && input.focus_handle.is_focused(window);
         let mut table_adjustment = None;
+        let mut timeline_changed = false;
         if revealing
             && let Some(range) = input.inline_focus.as_ref()
             && let Some((line, left, right)) = inline_target_line(&layout, range)
@@ -2244,6 +2245,7 @@ impl Element for TextElement {
                         );
                         if next != -old.y {
                             timeline.set_offset(point(old.x, -next));
+                            timeline_changed = true;
                         }
                     }
                 } else {
@@ -2397,6 +2399,12 @@ impl Element for TextElement {
             ));
         }
         if revealing {
+            // The parent Div has already been laid out. Notifications during
+            // prepaint do not schedule a frame, so refresh after this frame to
+            // apply the horizontal change and then the timeline offset.
+            if table_adjustment.is_some() || timeline_changed {
+                window.on_next_frame(|window, _| window.refresh());
+            }
             self.input.update(cx, |input, cx| {
                 if let Some((table, offset)) = table_adjustment {
                     input.table_scrolls.insert(table, offset);
