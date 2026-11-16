@@ -10,9 +10,9 @@
 //! Markup.module.css (concealed spoilers are not selectable).
 //!
 //! All parser AST variants retain their text. Remaining presentation differences
-//! are reported in `unsupported`: live localized timestamps and command/guild-navigation activation. Unicode
-//! literals use the platform font; preferred-tone shortcode substitution and
-//! emoji-only jumbo sizing are not applied by this projection.
+//! are reported in `unsupported`: command/guild-navigation activation and
+//! remaining block presentation details. Timestamp tokens keep source byte ranges
+//! and use locale-aware presentation at layout time; Unicode uses bundled art.
 use fluxer_core::{ClientState, Message, Snowflake};
 use fluxer_markdown_parser::{
     EmojiContext, MarkdownParser, Node, ParserFlags,
@@ -120,6 +120,11 @@ pub struct MessageDocument {
     pub spans: Vec<MessageSpan>,
     pub blocks: Vec<MessageBlock>,
     pub unsupported: Vec<&'static str>,
+    pub jumbo_emojis: bool,
+    pub restricted_inline: bool,
+    pub emoji_autoplay: bool,
+    pub timestamp_preferences: crate::message_timestamp::Preferences,
+    pub timestamps: Vec<crate::message_timestamp::Timestamp>,
 }
 impl MessageDocument {
     /// A compact author's name shares the first text line and wrapping. Keep
@@ -140,6 +145,11 @@ impl MessageDocument {
         for span in &mut doc.spans {
             span.range = span.range.start + offset..span.range.end + offset;
         }
+        for timestamp in &mut doc.timestamps {
+            timestamp.range = timestamp.range.start + offset..timestamp.range.end + offset;
+        }
+        // Compact authors never participate in emoji-only sizing.
+        doc.jumbo_emojis = false;
         for block in &mut doc.blocks {
             block.range = block.range.start + offset..block.range.end + offset;
             if let MessageBlockKind::Table { rows, .. } = &mut block.kind {
@@ -182,6 +192,11 @@ impl MessageDocument {
             spans: vec![],
             blocks: vec![],
             unsupported: vec![],
+            jumbo_emojis: false,
+            restricted_inline: false,
+            emoji_autoplay: true,
+            timestamp_preferences: Default::default(),
+            timestamps: vec![],
         };
         doc.push(source, &Run::default(), None);
         doc
@@ -210,7 +225,23 @@ impl MessageDocument {
                 result.push_str(&emoji.name);
                 result.push(':');
             } else {
-                result.push_str(&self.text[start..end]);
+                let mut cursor = start;
+                for timestamp in self
+                    .timestamps
+                    .iter()
+                    .filter(|timestamp| timestamp.range.start < end && timestamp.range.end > start)
+                {
+                    let from = timestamp.range.start.max(cursor);
+                    result.push_str(&self.text[cursor..from]);
+                    result.push_str(&crate::message_timestamp::format(
+                        timestamp.seconds,
+                        timestamp.style,
+                        &self.timestamp_preferences,
+                        crate::message_timestamp::now(),
+                    ));
+                    cursor = timestamp.range.end.min(end);
+                }
+                result.push_str(&self.text[cursor..end]);
             }
         }
         result
@@ -647,7 +678,13 @@ impl Projector<'_> {
                     fluxer_markdown_parser::ast::TimestampStyle::ShortDateMediumTime => "S",
                 };
                 self.doc.push(&format!("<t:{timestamp}:{code}>"), run, None);
-                self.doc.note("Localized/live timestamp rendering");
+                self.doc
+                    .timestamps
+                    .push(crate::message_timestamp::Timestamp {
+                        range: start..self.doc.text.len(),
+                        seconds: i64::try_from(*timestamp).unwrap_or(i64::MAX),
+                        style: *style,
+                    });
             }
         }
         if let Some(kind) = block {
@@ -827,7 +864,7 @@ pub fn document(
     context: MessageContext,
 ) -> MessageDocument {
     match parse_nodes(&message.content, context) {
-        Ok(nodes) => project(message, state, media, &nodes),
+        Ok(nodes) => project(message, state, media, &nodes, context),
         Err(_) => {
             let mut doc = MessageDocument::plain(&message.content);
             doc.note("Parser error: literal source fallback");
@@ -840,6 +877,7 @@ fn project(
     state: &ClientState,
     media: Option<&str>,
     nodes: &[Node],
+    context: MessageContext,
 ) -> MessageDocument {
     let mut projector = Projector {
         doc: MessageDocument {
@@ -848,6 +886,11 @@ fn project(
             spans: vec![],
             blocks: vec![],
             unsupported: vec![],
+            jumbo_emojis: false,
+            restricted_inline: false,
+            emoji_autoplay: true,
+            timestamp_preferences: Default::default(),
+            timestamps: vec![],
         },
         resolver: Resolver {
             message,
@@ -856,6 +899,15 @@ fn project(
         },
         next_spoiler: 0,
     };
+    projector.doc.jumbo_emojis = crate::emoji_presentation::jumbo(
+        nodes,
+        context == MessageContext::Standard,
+        &state.user_settings,
+    );
+    projector.doc.restricted_inline = context != MessageContext::Standard;
+    projector.doc.emoji_autoplay = crate::emoji_presentation::autoplay(&state.user_settings, false);
+    projector.doc.timestamp_preferences =
+        crate::message_timestamp::Preferences::from_settings(&state.user_settings);
     projector.nodes(nodes, &Run::default());
     projector.doc
 }
@@ -912,6 +964,12 @@ impl MessageCache {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         message.content.hash(&mut hash);
         media.hash(&mut hash);
+        let time_preferences =
+            crate::message_timestamp::Preferences::from_settings(&state.user_settings);
+        time_preferences.locale.hash(&mut hash);
+        time_preferences.hour12.hash(&mut hash);
+        crate::emoji_presentation::autoplay(&state.user_settings, false).hash(&mut hash);
+        fluxer_core::compact_messages(&state.user_settings).hash(&mut hash);
         dependencies(&nodes, &resolver, &mut hash);
         let fingerprint = hash.finish();
         let key = (message.channel_id, message.id, context);
@@ -920,7 +978,7 @@ impl MessageCache {
         {
             return doc.clone();
         }
-        let doc = Arc::new(project(message, state, media, &nodes));
+        let doc = Arc::new(project(message, state, media, &nodes, context));
         self.documents.insert(key, (fingerprint, doc.clone()));
         while self.documents.len() > 256 {
             let key = *self.documents.keys().next().unwrap();
@@ -1351,6 +1409,55 @@ mod tests {
         assert_eq!(cache.bytes, 0);
     }
     #[test]
+    fn jumbo_uses_actual_parser_unicode_nodes_and_excludes_compact_and_inline_contexts() {
+        let source = "👋🏽 👨‍👩‍👧‍👦 🇺🇸 🫱🏻‍🫲🏼 <:party:123>";
+        let message = Message::text(100.into(), 10.into(), Default::default(), source);
+        let mut state = ClientState::default();
+        let full = document(&message, &state, None, MessageContext::Standard);
+        assert!(full.jumbo_emojis);
+        assert_eq!(full.source, source);
+        assert!(!document(&message, &state, None, MessageContext::InlineReply).jumbo_emojis);
+        assert!(!document(&message, &state, None, MessageContext::InlinePreview).jumbo_emojis);
+        state.user_settings = serde_json::json!({"message_display_compact":true});
+        assert!(!document(&message, &state, None, MessageContext::Standard).jumbo_emojis);
+        assert!(!render(":unknown: words").jumbo_emojis);
+        assert!(render(&"🙂 ".repeat(30)).jumbo_emojis);
+        assert!(!render(&"🙂 ".repeat(31)).jumbo_emojis);
+    }
+    #[test]
+    fn timestamps_keep_source_ranges_and_copy_visible_localized_labels_without_hidden_leaks() {
+        let source = "é 🙂 <t:1700000000:D> ||<t:1700000001:T>|| 日本語";
+        let doc = render(source);
+        assert_eq!(doc.source, source);
+        assert_eq!(doc.timestamps.len(), 2);
+        let timestamp = &doc.timestamps[0];
+        assert_eq!(&doc.text[timestamp.range.clone()], "<t:1700000000:D>");
+        let label = crate::message_timestamp::format(
+            timestamp.seconds,
+            timestamp.style,
+            &doc.timestamp_preferences,
+            crate::message_timestamp::now(),
+        );
+        assert_eq!(
+            doc.copy_range(timestamp.range.clone(), &BTreeSet::new()),
+            label
+        );
+        assert_eq!(
+            doc.copy_range(0..doc.text.len(), &BTreeSet::new()),
+            format!("é 🙂 {label}  日本語")
+        );
+        assert_eq!(
+            doc.timestamps[1].range.start,
+            doc.text.find("<t:1700000001").unwrap()
+        );
+        let message = Message::text(100.into(), 10.into(), Default::default(), source);
+        let compact = doc.with_author(&message);
+        assert_eq!(
+            &compact.text[compact.timestamps[0].range.clone()],
+            "<t:1700000000:D>"
+        );
+    }
+    #[test]
     fn ast_fallbacks_preserve_visible_content_and_report_remaining_presentation() {
         let doc = render("a | b\n--- | ---\n**one** | ||secret||\n\n<t:123:s>");
         assert!(doc.text.contains("one"));
@@ -1359,9 +1466,6 @@ mod tests {
             !doc.copy_range(0..doc.text.len(), &BTreeSet::new())
                 .contains("secret")
         );
-        assert!(
-            doc.unsupported
-                .contains(&"Localized/live timestamp rendering")
-        );
+        assert_eq!(doc.timestamps.len(), 1);
     }
 }

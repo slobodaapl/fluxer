@@ -255,6 +255,52 @@ fn heading_is_first(document: &MessageDocument, start: usize) -> bool {
     .min(start);
     document.text[body_start..start].trim().is_empty()
 }
+/// Labels occupy atomic source ranges; layout, hit testing, selection and image
+/// placement use one projection. Never rewrite document.text or source offsets.
+fn display_tokens(document: &MessageDocument, current: i64) -> Vec<composer_tokens::Token> {
+    let mut tokens: Vec<_> = document
+        .timestamps
+        .iter()
+        .map(|timestamp| composer_tokens::Token {
+            source: timestamp.range.clone(),
+            label: crate::message_timestamp::format(
+                timestamp.seconds,
+                timestamp.style,
+                &document.timestamp_preferences,
+                current,
+            ),
+        })
+        .collect();
+    let spacer = if document.jumbo_emojis {
+        "\u{2003}"
+    } else if document.restricted_inline {
+        "\u{2003}\u{2005}"
+    } else {
+        "\u{2003}\u{2002}"
+    };
+    tokens.extend(
+        document
+            .spans
+            .iter()
+            .filter(|span| span.custom_emoji.is_some())
+            .map(|span| composer_tokens::Token {
+                source: span.range.clone(),
+                label: spacer.into(),
+            }),
+    );
+    tokens.extend(
+        document
+            .text
+            .grapheme_indices(true)
+            .filter(|(_, grapheme)| crate::chat_helpers::unicode_catalog_contains(grapheme))
+            .map(|(start, grapheme)| composer_tokens::Token {
+                source: start..start + grapheme.len(),
+                label: spacer.into(),
+            }),
+    );
+    tokens.sort_by_key(|token| token.source.start);
+    tokens
+}
 pub(super) fn layout(
     document: &MessageDocument,
     runs: &[TextRun],
@@ -265,6 +311,7 @@ pub(super) fn layout(
     window: &mut Window,
 ) -> DocumentLayout {
     let mut lines = Vec::new();
+    let tokens = display_tokens(document, crate::message_timestamp::now());
     let mut y = px(0.);
     let mut code_headers = Vec::new();
     let mut table_cells = Vec::new();
@@ -292,28 +339,46 @@ pub(super) fn layout(
                     let top = y;
                     for (row_index, row) in rows.iter().enumerate() {
                         let mut column_lines = Vec::new();
-                        let mut row_height = line_height;
+                        let has_emoji = row.iter().any(|cell| {
+                            document.text[cell.clone()]
+                                .graphemes(true)
+                                .any(crate::chat_helpers::unicode_catalog_contains)
+                                || document.spans.iter().any(|span| {
+                                    span.custom_emoji.is_some()
+                                        && span.range.start >= cell.start
+                                        && span.range.start < cell.end
+                                })
+                        });
+                        let cell_line_height = if has_emoji {
+                            line_height.max(font_size * 1.5)
+                        } else {
+                            line_height
+                        };
+                        let mut row_height = cell_line_height;
                         for (column, cell) in row.iter().enumerate() {
                             let text = &document.text[cell.clone()];
                             let cell_runs = clip(runs, cell);
-                            let breaks = inline_emoji::wrap_breaks(
+                            let cell_tokens = composer_tokens::clip(&tokens, cell);
+                            let breaks = inline_emoji::wrap_message_breaks(
                                 text,
                                 font_size,
                                 &cell_runs,
                                 Some((cell_width - px(24.)).max(px(1.))),
+                                &cell_tokens,
                                 window,
                             );
                             let mut shaped = Vec::new();
                             for range in visual_ranges(cell.clone(), &breaks) {
-                                let shape = inline_emoji::shape_line(
+                                let shape = inline_emoji::shape_message_line(
                                     &document.text[range.clone()],
                                     font_size,
                                     &clip(runs, &range),
+                                    &composer_tokens::clip(&tokens, &range),
                                     window,
                                 );
                                 shaped.push((range, shape));
                             }
-                            row_height = row_height.max(line_height * shaped.len());
+                            row_height = row_height.max(cell_line_height * shaped.len());
                             column_lines.push((column, shaped));
                         }
                         row_height += px(12.);
@@ -348,8 +413,8 @@ pub(super) fn layout(
                                     range,
                                     layout: shape,
                                     indent: left + px(12.) + shift,
-                                    y: y + px(6.) + line_height * line_index,
-                                    height: line_height,
+                                    y: y + px(6.) + cell_line_height * line_index,
+                                    height: cell_line_height,
                                     cell_right: Some(left + cell_width - px(12.)),
                                 });
                             }
@@ -409,25 +474,82 @@ pub(super) fn layout(
             Some(6) => 0.875,
             _ => 1.,
         };
+        let has_emoji = document.spans.iter().any(|span| {
+            span.custom_emoji.is_some()
+                && span.range.start >= paragraph.start
+                && span.range.start < paragraph.end
+        }) || document.text[paragraph.clone()]
+            .graphemes(true)
+            .any(crate::chat_helpers::unicode_catalog_contains);
         let row_font_size = font_size * scale;
-        let row_height = if heading.is_some() {
+        let jumbo_size = window.rem_size() * 3.;
+        let row_height = if document.jumbo_emojis && has_emoji {
+            jumbo_size + px(2.)
+        } else if has_emoji {
+            (if heading.is_some() {
+                row_font_size * 1.2
+            } else {
+                line_height
+            })
+            .max(
+                row_font_size
+                    * if document.restricted_inline {
+                        1.25
+                    } else {
+                        1.5
+                    },
+            )
+        } else if heading.is_some() {
             row_font_size * 1.2
         } else {
             line_height
         };
         let text: SharedString = document.text[paragraph.clone()].to_owned().into();
         let paragraph_runs = clip(runs, &paragraph);
-        let breaks = inline_emoji::wrap_breaks(
-            &text,
-            row_font_size,
-            &paragraph_runs,
-            width.map(|width| (width - indent).max(px(1.))),
-            window,
-        );
+        let paragraph_tokens = composer_tokens::clip(&tokens, &paragraph);
+        let available = width.map(|width| (width - indent).max(px(1.)));
+        let breaks = if document.jumbo_emojis {
+            inline_emoji::wrap_jumbo_breaks(
+                &text,
+                row_font_size,
+                &paragraph_runs,
+                available,
+                &paragraph_tokens,
+                jumbo_size,
+                window,
+            )
+        } else {
+            inline_emoji::wrap_message_breaks(
+                &text,
+                row_font_size,
+                &paragraph_runs,
+                available,
+                &paragraph_tokens,
+                window,
+            )
+        };
         for range in visual_ranges(paragraph.clone(), &breaks) {
             let text: SharedString = document.text[range.clone()].to_owned().into();
-            let layout =
-                inline_emoji::shape_line(&text, row_font_size, &clip(runs, &range), window);
+            let clipped_runs = clip(runs, &range);
+            let clipped_tokens = composer_tokens::clip(&tokens, &range);
+            let layout = if document.jumbo_emojis {
+                inline_emoji::shape_jumbo_line(
+                    &text,
+                    row_font_size,
+                    &clipped_runs,
+                    &clipped_tokens,
+                    jumbo_size,
+                    window,
+                )
+            } else {
+                inline_emoji::shape_message_line(
+                    &text,
+                    row_font_size,
+                    &clipped_runs,
+                    &clipped_tokens,
+                    window,
+                )
+            };
             lines.push(VisualLine {
                 range,
                 layout,
@@ -684,7 +806,33 @@ fn emoji_fallback() -> AnyElement {
         .child("◇")
         .into_any_element()
 }
+/// Cache ownership follows one projected message. Retain only resources whose
+/// actual image boxes intersect the current ancestor clip and viewport.
+pub(super) struct EmojiCache {
+    images: Entity<gpui::RetainAllImageCache>,
+    visible: BTreeSet<String>,
+}
+impl EmojiCache {
+    pub(super) fn new(cx: &mut App) -> Entity<Self> {
+        let images = gpui::RetainAllImageCache::new(cx);
+        cx.new(|_| Self {
+            images,
+            visible: BTreeSet::new(),
+        })
+    }
+    fn retain(&mut self, visible: BTreeSet<String>, window: &mut Window, cx: &mut Context<Self>) {
+        for source in self.visible.difference(&visible) {
+            self.images.update(cx, |images, cx| {
+                images.remove(&gpui::Resource::Uri(source.clone().into()), window, cx)
+            });
+        }
+        self.visible = visible;
+    }
+}
 pub(super) fn emoji_images(
+    cache: &Entity<EmojiCache>,
+    reduced_motion: bool,
+    hovered: bool,
     document: &MessageDocument,
     revealed: &BTreeSet<u32>,
     layout: &DocumentLayout,
@@ -696,7 +844,10 @@ pub(super) fn emoji_images(
     if !valid(document) {
         return Vec::new();
     }
-    let viewport = Bounds::new(point(px(0.), px(0.)), window.viewport_size());
+    let viewport = Bounds::new(point(px(0.), px(0.)), window.viewport_size())
+        .intersect(&window.content_mask().bounds);
+    let image_cache = cache.read(cx).images.clone();
+    let mut retained = BTreeSet::new();
     let mut images = Vec::new();
     for span in &document.spans {
         let Some(emoji) = &span.custom_emoji else {
@@ -718,7 +869,7 @@ pub(super) fn emoji_images(
                 .layout
                 .x_for_index(span.range.end.min(line.range.end) - line.range.start);
         let width = (end_x - x).max(px(1.));
-        let height = (line.height - px(2.)).max(px(1.));
+        let height = width;
         let origin = point(
             bounds.left() + x - scroll.x,
             bounds.top() + line.y - scroll.y + px(1.),
@@ -729,18 +880,37 @@ pub(super) fn emoji_images(
         if images.len() >= 64 {
             break;
         }
-        let mut element = if let Some(url) = emoji
-            .url
-            .as_ref()
-            .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
-        {
-            img(SharedString::from(url.clone()))
-                .w(width)
-                .h(height)
-                .object_fit(ObjectFit::Contain)
-                .with_loading(emoji_fallback)
-                .with_fallback(emoji_fallback)
-                .into_any_element()
+        let animated = emoji.animated && (hovered || document.emoji_autoplay && !reduced_motion);
+        let mut element = if let Some(url) = emoji.url.as_ref().and_then(|url| {
+            crate::emoji_presentation::image_url(url, animated, document.jumbo_emojis)
+        }) {
+            retained.insert(url.clone());
+            if emoji.animated
+                && let Some(other) = emoji.url.as_ref().and_then(|raw| {
+                    crate::emoji_presentation::image_url(raw, !animated, document.jumbo_emojis)
+                })
+            {
+                retained.insert(other);
+            }
+            let cache = image_cache.clone();
+            crate::visible_image::VisibleImage::new(
+                crate::media_animation::image_id(
+                    &format!("inline-emoji-{}", span.range.start),
+                    &url,
+                ),
+                width.into(),
+                height.into(),
+                move || {
+                    img(SharedString::from(url.clone()))
+                        .image_cache(&cache)
+                        .object_fit(ObjectFit::Contain)
+                        .with_loading(emoji_fallback)
+                        .with_fallback(emoji_fallback)
+                },
+            )
+            .enabled(animated)
+            .autoplay(true)
+            .into_any_element()
         } else {
             div()
                 .w(width)
@@ -759,6 +929,7 @@ pub(super) fn emoji_images(
         element.prepaint_at(origin, window, cx);
         images.push(element);
     }
+    cache.update(cx, |cache, cx| cache.retain(retained, window, cx));
     images
 }
 
@@ -1037,4 +1208,124 @@ mod tests {
         assert_eq!(glyph_row(rows.clone(), 9), Some(2));
         assert_eq!(glyph_row(rows, 12), None);
     }
+}
+
+struct TimestampTooltip(String);
+impl gpui::Render for TimestampTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .max_w(px(480.))
+            .bg(rgb(0x15121c))
+            .text_size(px(12.))
+            .text_color(rgb(0xece9f6))
+            .child(self.0.clone())
+    }
+}
+
+#[derive(Default)]
+struct TimestampClock(std::collections::HashSet<gpui::WindowId>);
+impl gpui::Global for TimestampClock {}
+
+/// One pending refresh per window, independent of timestamp/message count.
+/// Only visible and unconcealed relative widgets re-arm this one-shot timer.
+fn refresh_relative(window: &Window, cx: &mut App) {
+    let handle = window.window_handle();
+    let id = handle.window_id();
+    if !cx.has_global::<TimestampClock>() {
+        cx.set_global(TimestampClock::default());
+    }
+    if !cx.global_mut::<TimestampClock>().0.insert(id) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        gpui::Timer::after(std::time::Duration::from_secs(1)).await;
+        let _ = cx.update(|cx| {
+            cx.global_mut::<TimestampClock>().0.remove(&id);
+            let _ = handle.update(cx, |_, window, _| window.refresh());
+        });
+    })
+    .detach();
+}
+
+pub(super) fn timestamp_widgets(
+    document: &MessageDocument,
+    revealed: &BTreeSet<u32>,
+    layout: &DocumentLayout,
+    bounds: Bounds<Pixels>,
+    scroll: Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let mask = bounds
+        .intersect(&window.content_mask().bounds)
+        .intersect(&Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
+    let mut widgets = Vec::new();
+    for timestamp in document.timestamps.iter().take(128) {
+        if hidden_at(document, revealed, timestamp.range.start).is_some() {
+            continue;
+        }
+        let Some(line) = layout
+            .lines
+            .iter()
+            .find(|line| line.range.contains(&timestamp.range.start))
+        else {
+            continue;
+        };
+        let x = line.indent
+            + line
+                .layout
+                .x_for_index(timestamp.range.start - line.range.start);
+        let end = line.indent
+            + line
+                .layout
+                .x_for_index(timestamp.range.end.min(line.range.end) - line.range.start);
+        let rect = Bounds::new(
+            point(
+                bounds.left() + x - scroll.x,
+                bounds.top() + line.y - scroll.y,
+            ),
+            size((end - x).max(px(1.)), line.height),
+        );
+        let visible = rect.intersect(&mask);
+        if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
+            continue;
+        }
+        if timestamp.style == fluxer_markdown_parser::ast::TimestampStyle::RelativeTime {
+            refresh_relative(window, cx);
+        }
+        let timestamp = timestamp.clone();
+        let preferences = document.timestamp_preferences.clone();
+        let mut widget = div()
+            .id(SharedString::from(format!(
+                "timestamp-{}",
+                timestamp.range.start
+            )))
+            .w(rect.size.width)
+            .h(rect.size.height)
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    TimestampTooltip(crate::message_timestamp::tooltip(
+                        &timestamp,
+                        &preferences,
+                        crate::message_timestamp::now(),
+                    ))
+                })
+                .into()
+            })
+            .into_any_element();
+        widget.layout_as_root(
+            size(
+                AvailableSpace::Definite(rect.size.width),
+                AvailableSpace::Definite(rect.size.height),
+            ),
+            window,
+            cx,
+        );
+        widget.prepaint_at(rect.origin, window, cx);
+        widgets.push(widget);
+    }
+    widgets
 }

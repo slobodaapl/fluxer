@@ -63,7 +63,10 @@ impl Fluxer {
                 document
             };
             if let Some(input) = self.message_text.get(&message.id) {
-                input.update(cx, |input, cx| input.update_message_document(document, cx));
+                input.update(cx, |input, cx| {
+                    input.set_emoji_reduced_motion(self.interface.reduced_motion());
+                    input.update_message_document(document, cx);
+                });
             } else {
                 let input = self.message_text_input(document, message, window, cx);
                 self.message_text.insert(message.id, input);

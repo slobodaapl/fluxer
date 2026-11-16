@@ -830,7 +830,10 @@ impl Fluxer {
         }
         let document = self.message_document(&message, message_markup::MessageContext::Standard);
         let input = if let Some(input) = self.search_ui.text.get(&key) {
-            input.update(cx, |input, cx| input.update_message_document(document, cx));
+            input.update(cx, |input, cx| {
+                input.set_emoji_reduced_motion(self.interface.reduced_motion());
+                input.update_message_document(document, cx);
+            });
             input.clone()
         } else {
             let input = self.message_text_input(document, &message, window, cx);

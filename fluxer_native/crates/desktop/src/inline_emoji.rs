@@ -20,7 +20,16 @@ impl Projection {
     fn new(text: &str, runs: &[TextRun]) -> Self {
         Self::with_tokens(text, runs, &[])
     }
+    #[cfg(test)]
     fn with_tokens(text: &str, runs: &[TextRun], tokens: &[composer_tokens::Token]) -> Self {
+        Self::with_tokens_mode(text, runs, tokens, true)
+    }
+    fn with_tokens_mode(
+        text: &str,
+        runs: &[TextRun],
+        tokens: &[composer_tokens::Token],
+        style_tokens: bool,
+    ) -> Self {
         let mut display = String::new();
         let mut display_runs = Vec::new();
         let mut replacements = Vec::new();
@@ -52,13 +61,25 @@ impl Projection {
             });
             if let Some(mut run) = clipped.into_iter().next() {
                 run.len = label.len();
-                run.underline = None;
-                run.strikethrough = None;
-                if named {
+                let timestamp = named
+                    && !style_tokens
+                    && text[replacements.last().unwrap().source.clone()].starts_with("<t:");
+                if !timestamp {
+                    run.underline = None;
+                    run.strikethrough = None;
+                }
+                if named && style_tokens {
                     run.color = rgb(0xc8b7ff).into();
                     run.background_color = Some(rgba(0x7560a844).into());
-                } else {
+                } else if !named {
                     run.color = rgba(0x00000000).into();
+                }
+                if named
+                    && !style_tokens
+                    && text[replacements.last().unwrap().source.clone()].starts_with("<t:")
+                    && run.color.a > 0.
+                {
+                    run.background_color = Some(rgba(0x8a849b30).into());
                 }
                 display_runs.push(run);
             }
@@ -164,7 +185,26 @@ pub(super) fn shape_line_with_tokens(
     tokens: &[composer_tokens::Token],
     window: &mut Window,
 ) -> EmojiLine {
-    let projection = Projection::with_tokens(text, runs, tokens);
+    shape_with_mode(text, font_size, runs, tokens, true, window)
+}
+pub(super) fn shape_message_line(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    tokens: &[composer_tokens::Token],
+    window: &mut Window,
+) -> EmojiLine {
+    shape_with_mode(text, font_size, runs, tokens, false, window)
+}
+fn shape_with_mode(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    tokens: &[composer_tokens::Token],
+    styled: bool,
+    window: &mut Window,
+) -> EmojiLine {
+    let projection = Projection::with_tokens_mode(text, runs, tokens, styled);
     let shaped =
         window
             .text_system()
@@ -189,7 +229,28 @@ pub(super) fn wrap_breaks_with_tokens(
     tokens: &[composer_tokens::Token],
     window: &mut Window,
 ) -> Vec<usize> {
-    let projection = Projection::with_tokens(text, runs, tokens);
+    wrap_with_mode(text, font_size, runs, width, tokens, true, window)
+}
+pub(super) fn wrap_message_breaks(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    width: Option<Pixels>,
+    tokens: &[composer_tokens::Token],
+    window: &mut Window,
+) -> Vec<usize> {
+    wrap_with_mode(text, font_size, runs, width, tokens, false, window)
+}
+fn wrap_with_mode(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    width: Option<Pixels>,
+    tokens: &[composer_tokens::Token],
+    styled: bool,
+    window: &mut Window,
+) -> Vec<usize> {
+    let projection = Projection::with_tokens_mode(text, runs, tokens, styled);
     window
         .text_system()
         .shape_text(
@@ -247,7 +308,7 @@ pub(super) fn images(
             let width = (line.layout.x_for_index(local + grapheme.len())
                 - line.layout.x_for_index(local))
             .max(px(1.));
-            let height = (line.height - px(2.)).max(px(1.));
+            let height = width;
             let origin = point(bounds.left() + x - scroll.x, y + px(1.));
             if !Bounds::new(origin, size(width, height)).intersects(&bounds) {
                 continue;
@@ -315,6 +376,35 @@ mod tests {
         );
     }
     #[test]
+    fn timestamp_labels_are_atomic_utf8_safe_and_preserve_concealed_run_style() {
+        let text = "é <t:1700000000:D> 雪";
+        let start = text.find("<t:").unwrap();
+        let end = text.find('>').unwrap() + 1;
+        let token = composer_tokens::Token {
+            source: start..end,
+            label: "14 novembre 2023".into(),
+        };
+        let base = TextRun {
+            len: text.len(),
+            font: gpui::font("sans-serif"),
+            color: rgba(0x00000000).into(),
+            background_color: Some(rgb(0x34313b).into()),
+            underline: None,
+            strikethrough: None,
+        };
+        let projection = Projection::with_tokens_mode(text, &[base.clone()], &[token], false);
+        assert_eq!(projection.text.as_ref(), "é 14 novembre 2023 雪");
+        assert_eq!(projection.source_break(start + 3), start);
+        assert_eq!(projection.source_index(projection.display_index(end)), end);
+        assert_eq!(projection.source_index(projection.text.len()), text.len());
+        assert!(
+            projection
+                .runs
+                .iter()
+                .all(|run| run.color.a == 0. && run.background_color == base.background_color)
+        );
+    }
+    #[test]
     fn unknown_emoji_sequence_is_not_partially_replaced() {
         let text = "👨\u{200d}🦕";
         let projection = Projection::new(text, &[]);
@@ -341,4 +431,92 @@ mod tests {
         assert_eq!(projection.source_index(projection.text.len()), text.len());
         assert_eq!(text, "é <@103> 🙂 <#11>");
     }
+}
+
+/// Jumbo is an image width, never the surrounding text's font size. Reserve
+/// fixed 3rem boxes while keeping inter-emoji whitespace at the account font.
+pub(super) fn shape_jumbo_line(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    tokens: &[composer_tokens::Token],
+    emoji_size: Pixels,
+    window: &mut Window,
+) -> EmojiLine {
+    let projection = Projection::with_tokens_mode(text, runs, tokens, false);
+    let mut shaped =
+        window
+            .text_system()
+            .shape_line(projection.text.clone(), font_size, &projection.runs, None);
+    let shifts: Vec<_> = projection
+        .replacements
+        .iter()
+        .map(|replacement| {
+            let width = shaped.x_for_index(replacement.display.end)
+                - shaped.x_for_index(replacement.display.start);
+            (replacement.display.end, emoji_size - width)
+        })
+        .collect();
+    let mut glyph_runs = shaped.runs.clone();
+    for run in &mut glyph_runs {
+        for glyph in &mut run.glyphs {
+            for (end, shift) in &shifts {
+                if glyph.index >= *end {
+                    glyph.position.x += *shift;
+                }
+            }
+        }
+    }
+    let layout = gpui::LineLayout {
+        font_size: shaped.font_size,
+        width: shifts
+            .iter()
+            .fold(shaped.width, |width, (_, shift)| width + *shift),
+        ascent: shaped.ascent,
+        descent: shaped.descent,
+        runs: glyph_runs,
+        len: shaped.len(),
+    };
+    *std::ops::DerefMut::deref_mut(&mut shaped) = Arc::new(layout);
+    EmojiLine { shaped, projection }
+}
+pub(super) fn wrap_jumbo_breaks(
+    text: &str,
+    font_size: Pixels,
+    runs: &[TextRun],
+    width: Option<Pixels>,
+    tokens: &[composer_tokens::Token],
+    emoji_size: Pixels,
+    window: &mut Window,
+) -> Vec<usize> {
+    let Some(width) = width else {
+        return vec![];
+    };
+    let Some(run) = runs.first() else {
+        return vec![];
+    };
+    let projection = Projection::with_tokens_mode(text, runs, tokens, false);
+    let mut fragments = Vec::new();
+    let mut cursor = 0;
+    for replacement in &projection.replacements {
+        if cursor < replacement.display.start {
+            fragments.push(gpui::LineFragment::text(
+                &projection.text[cursor..replacement.display.start],
+            ));
+        }
+        fragments.push(gpui::LineFragment::element(
+            emoji_size,
+            replacement.display.len(),
+        ));
+        cursor = replacement.display.end;
+    }
+    if cursor < projection.text.len() {
+        fragments.push(gpui::LineFragment::text(&projection.text[cursor..]));
+    }
+    window
+        .text_system()
+        .line_wrapper(run.font.clone(), font_size)
+        .wrap_line(&fragments, width)
+        .map(|boundary| projection.source_break(boundary.ix))
+        .collect()
 }

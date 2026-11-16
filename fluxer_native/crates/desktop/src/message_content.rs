@@ -79,7 +79,11 @@ impl Fluxer {
     ) -> Entity<TextInput> {
         let channel = message.channel_id;
         let message_id = message.id;
-        let input = cx.new(|cx| TextInput::read_only_document(document, cx));
+        let input = cx.new(|cx| {
+            let mut input = TextInput::read_only_document(document, cx);
+            input.set_emoji_reduced_motion(self.interface.reduced_motion());
+            input
+        });
         cx.subscribe_in(
             &input,
             window,
@@ -181,7 +185,10 @@ impl Fluxer {
         let document = self.message_document(&source, MessageContext::InlineReply);
         let key = (message.channel_id, message.id);
         let input = if let Some(input) = self.message_content.replies.get(&key) {
-            input.update(cx, |input, cx| input.update_message_document(document, cx));
+            input.update(cx, |input, cx| {
+                input.set_emoji_reduced_motion(self.interface.reduced_motion());
+                input.update_message_document(document, cx);
+            });
             input.clone()
         } else {
             let input = self.message_text_input(document, &source, window, cx);

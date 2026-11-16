@@ -8,7 +8,9 @@ impl Fluxer {
         if self.message_demo_started
             || !self.demo
             || self.state.current_user.is_none()
-            || !std::env::args().any(|arg| arg == "--demo-messages" || arg == "--demo-mentions")
+            || !(std::env::args()
+                .any(|arg| matches!(arg.as_str(), "--demo-messages" | "--demo-mentions"))
+                || crate::emoji_time_demo::enabled())
         {
             return;
         }
@@ -174,7 +176,11 @@ impl Fluxer {
                 });
             }
         }
-        self.media_endpoint = fixture_emoji_endpoint();
+        self.media_endpoint = if crate::emoji_time_demo::enabled() {
+            crate::emoji_time_demo::populate(self, channel, &alex)
+        } else {
+            fixture_emoji_endpoint()
+        };
         self.timeline.set_offset(point(px(0.), px(0.)));
         if std::env::var("FLUXER_MESSAGE_LINK_DEMO").as_deref() == Ok("1")
             && let (Some(handle), Some(message)) = (

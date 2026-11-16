@@ -302,6 +302,9 @@ pub struct TextInput {
     highlight_generation: u64,
     table_scrolls: BTreeMap<usize, Pixels>,
     table_drag: Option<usize>,
+    emoji_cache: Entity<message_text::EmojiCache>,
+    emoji_reduced_motion: bool,
+    emoji_hovered: bool,
     revealed_spoilers: BTreeSet<u32>,
     inline_press: Option<(Point<Pixels>, usize, bool)>,
     hover_interactive: bool,
@@ -353,6 +356,9 @@ impl TextInput {
             highlight_generation: 0,
             table_scrolls: BTreeMap::new(),
             table_drag: None,
+            emoji_cache: message_text::EmojiCache::new(cx),
+            emoji_reduced_motion: false,
+            emoji_hovered: false,
             revealed_spoilers: BTreeSet::new(),
             inline_press: None,
             hover_interactive: false,
@@ -401,6 +407,9 @@ impl TextInput {
         code_highlight::schedule(&mut input, document, cx);
         input
     }
+    pub fn set_emoji_reduced_motion(&mut self, value: bool) {
+        self.emoji_reduced_motion = value;
+    }
     pub fn update_message_document(
         &mut self,
         document: impl Into<Arc<MessageDocument>>,
@@ -430,6 +439,7 @@ impl TextInput {
             self.selection_reversed = false;
             self.selection_origin = None;
         }
+        self.emoji_cache = message_text::EmojiCache::new(cx);
         self.message_document = Some(document.clone());
         code_highlight::schedule(self, document, cx);
         self.inline_press = None;
@@ -1930,10 +1940,24 @@ impl Element for TextElement {
             .unwrap_or_default();
         let content = input.content.clone();
         let secret = input.secret;
+        let emoji_cache = input.emoji_cache.clone();
+        let emoji_reduced_motion = input.emoji_reduced_motion;
+        let emoji_hovered = input.emoji_hovered;
         let mut emoji_images = document
             .as_ref()
             .map(|document| {
-                message_text::emoji_images(document, &revealed, &layout, bounds, scroll, window, cx)
+                message_text::emoji_images(
+                    &emoji_cache,
+                    emoji_reduced_motion,
+                    emoji_hovered,
+                    document,
+                    &revealed,
+                    &layout,
+                    bounds,
+                    scroll,
+                    window,
+                    cx,
+                )
             })
             .unwrap_or_default();
         if !empty && !secret && document.as_ref().is_none_or(|doc| message_text::valid(doc)) {
@@ -1962,6 +1986,11 @@ impl Element for TextElement {
                 )
             })
             .unwrap_or_default();
+        if let Some(document) = document.as_ref() {
+            emoji_images.extend(message_text::timestamp_widgets(
+                document, &revealed, &layout, bounds, scroll, window, cx,
+            ));
+        }
         PrepaintState {
             code_controls,
             backgrounds,
@@ -2241,6 +2270,7 @@ impl Render for TextInput {
             )
         });
         let editor = div()
+            .id("text-input")
             .flex()
             .w_full()
             .min_w_0()
@@ -2298,6 +2328,12 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_context_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_hover(cx.listener(|this, hovered, _, cx| {
+                if this.emoji_hovered != *hovered {
+                    this.emoji_hovered = *hovered;
+                    cx.notify();
+                }
+            }))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::scroll))
             .when(!self.read_only, |view| view.bg(rgb(0x292735)))
