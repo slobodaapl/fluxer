@@ -41,10 +41,12 @@ impl Fluxer {
     pub(super) fn message_text_input(
         &self,
         document: Arc<MessageDocument>,
-        channel: Snowflake,
+        message: &Message,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
+        let channel = message.channel_id;
+        let mentioned_users = message.mentions.clone();
         let input = cx.new(|cx| TextInput::read_only_document(document, cx));
         cx.subscribe_in(
             &input,
@@ -56,8 +58,40 @@ impl Fluxer {
                         .channels
                         .get(&channel)
                         .and_then(|channel| channel.guild_id);
-                    let user = this.profile_user(id, &id.to_string());
-                    this.open_user_profile(user, guild, false, window.mouse_position(), window, cx);
+                    let user = this
+                        .state
+                        .users
+                        .get(&id)
+                        .cloned()
+                        .or_else(|| mentioned_users.iter().find(|user| user.id == id).cloned())
+                        .or_else(|| {
+                            this.state
+                                .messages
+                                .values()
+                                .flat_map(|messages| messages.values())
+                                .flat_map(|message| message.mentions.iter())
+                                .find(|user| user.id == id)
+                                .cloned()
+                        })
+                        .or_else(|| {
+                            this.state
+                                .current_user
+                                .as_ref()
+                                .filter(|user| user.id == id)
+                                .cloned()
+                        });
+                    if let Some(user) = user {
+                        this.open_user_profile(
+                            user,
+                            guild,
+                            false,
+                            window.mouse_position(),
+                            window,
+                            cx,
+                        );
+                    }
+                } else if let message_markup::MessageTarget::Role(id) = event.target {
+                    this.open_role_mention(id, channel, window, cx);
                 } else {
                     this.activate_message_target(&event.target, window, cx);
                 }
@@ -116,7 +150,7 @@ impl Fluxer {
             input.update(cx, |input, cx| input.update_message_document(document, cx));
             input.clone()
         } else {
-            let input = self.message_text_input(document, source.channel_id, window, cx);
+            let input = self.message_text_input(document, &source, window, cx);
             self.message_content.replies.insert(key, input.clone());
             input
         };

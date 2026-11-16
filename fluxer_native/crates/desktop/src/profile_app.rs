@@ -37,6 +37,10 @@ impl Fluxer {
         if self.demo && std::env::var_os("FLUXER_PROFILE_DEMO").is_some() {
             eprintln!("PROFILE_DEMO open={user_id} webhook={webhook}");
         }
+        if self.role_mention.read(cx).is_open() {
+            self.role_mention
+                .update(cx, |popup, cx| popup.dismiss(window, cx));
+        }
         self.reset_context_menu(cx);
         self.dismiss_message_actions(window, cx);
         self.emoji_target = None;

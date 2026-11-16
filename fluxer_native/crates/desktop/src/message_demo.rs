@@ -8,7 +8,7 @@ impl Fluxer {
         if self.message_demo_started
             || !self.demo
             || self.state.current_user.is_none()
-            || !std::env::args().any(|arg| arg == "--demo-messages")
+            || !std::env::args().any(|arg| arg == "--demo-messages" || arg == "--demo-mentions")
         {
             return;
         }
@@ -105,6 +105,7 @@ impl Fluxer {
             (&alex, 86_400, "A new calendar day gets a quiet divider."),
             (&alex, 86_430, "And the new day's messages group normally."),
         ];
+        let mention_fixture = std::env::args().any(|arg| arg == "--demo-mentions");
         let mut fixture = BTreeMap::new();
         for (index, (author, seconds, content)) in messages.into_iter().enumerate() {
             let id = Snowflake(20_000 + index as u64);
@@ -124,13 +125,54 @@ impl Fluxer {
             }
             fixture.insert(id, message);
         }
+        if mention_fixture {
+            for (index, content) in [
+                "Populated: <@101> <@&555> adjacent text; unresolved <@999999> <@&999999>.",
+                "Empty cache: <@&556>. Long role: <@&557> at a narrow window edge.",
+                "Concealed ||<@101> <@&555>|| and code `<@101> <@&555>`.",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let id = Snowflake(21_000 + index as u64);
+                let mut message = Message::text(id, channel, sam.clone(), content);
+                message.timestamp =
+                    (base + DateDuration::seconds(90_000 + index as i64)).to_rfc3339();
+                fixture.insert(id, message);
+            }
+            let member = self
+                .state
+                .members
+                .entry((Snowflake(1), alex.id))
+                .or_insert_with(|| fluxer_core::Member {
+                    user: alex.clone(),
+                    ..Default::default()
+                });
+            if !member.roles.contains(&Snowflake(555)) {
+                member.roles.push(Snowflake(555));
+            }
+        }
         self.state.messages.insert(channel, fixture);
         if let Some(guild) = self.state.guilds.get_mut(&Snowflake(1)) {
             guild.roles.push(fluxer_core::Role {
                 id: Snowflake(555),
                 name: "Design".into(),
+                color: 0x9b87f5,
                 ..Default::default()
             });
+            if mention_fixture {
+                guild.roles.push(fluxer_core::Role {
+                    id: Snowflake(556),
+                    name: "No cached assignments".into(),
+                    ..Default::default()
+                });
+                guild.roles.push(fluxer_core::Role {
+                    id: Snowflake(557),
+                    name: "A very long role name for narrow window placement and truncation".into(),
+                    color: 0x5fbda9,
+                    ..Default::default()
+                });
+            }
         }
         self.media_endpoint = fixture_emoji_endpoint();
         self.timeline.set_offset(point(px(0.), px(0.)));

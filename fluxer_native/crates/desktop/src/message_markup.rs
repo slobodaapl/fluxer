@@ -313,10 +313,18 @@ impl Resolver<'_> {
     }
     fn mention(&self, kind: &MentionKind) -> (String, Option<MessageTarget>) {
         match kind {
-            MentionKind::User { id } => (
-                self.user_label(id),
-                id.parse().ok().map(MessageTarget::User),
-            ),
+            MentionKind::User { id } => {
+                let user = id.parse().ok().filter(|user_id| {
+                    self.state.users.contains_key(user_id)
+                        || self.message.mentions.iter().any(|user| user.id == *user_id)
+                        || self
+                            .state
+                            .current_user
+                            .as_ref()
+                            .is_some_and(|user| user.id == *user_id)
+                });
+                (self.user_label(id), user.map(MessageTarget::User))
+            }
             MentionKind::Role { id } => {
                 let role = self
                     .guild()
@@ -327,7 +335,7 @@ impl Resolver<'_> {
                         "@{}",
                         role.map(|r| r.name.as_str()).unwrap_or("Unknown role")
                     ),
-                    id.parse().ok().map(MessageTarget::Role),
+                    role.map(|role| MessageTarget::Role(role.id)),
                 )
             }
             MentionKind::Channel { id } => {

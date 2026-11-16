@@ -54,6 +54,7 @@ mod profile_triggers;
 mod profile_view;
 mod quick_switcher;
 mod rich_message;
+mod role_mention;
 mod scrollbar;
 mod search_browser;
 mod settings_view;
@@ -332,6 +333,7 @@ struct Fluxer {
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
+    role_mention: Entity<role_mention::RoleMention>,
     friends_ui: friends_view::FriendsUi,
     status_ui: status_view::StatusUi,
     members_open: bool,
@@ -466,6 +468,7 @@ impl Fluxer {
             context: context_actions::ContextUi::new(cx),
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
+            role_mention: cx.new(role_mention::RoleMention::new),
             friends_ui: friends_view::FriendsUi::new(cx),
             status_ui: status_view::StatusUi::new(window, cx),
             members_open: false,
@@ -2618,6 +2621,7 @@ impl Render for Fluxer {
                 if this.status_ui.is_open() { return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
+                if event.keystroke.key=="escape" && this.role_mention.read(cx).is_open() {this.role_mention.update(cx, |popup,cx| popup.dismiss(window,cx));cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.profile_ui.is_open(cx) && !this.message_links.is_open() {this.dismiss_user_profile(window,cx);cx.stop_propagation();return;}
                 if this.context_menu_open(cx) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
@@ -2662,6 +2666,7 @@ impl Render for Fluxer {
             .child(content)
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
+            .child(self.role_mention.clone())
             .when(self.status_ui.is_open(), |view| view.child(self.status_surface(window,cx)))
             .when(self.friends_ui.confirm.is_some(), |view| view.child(self.relationship_confirmation(cx)))
             .child(self.context.menu.clone())

@@ -833,7 +833,7 @@ impl Fluxer {
             input.update(cx, |input, cx| input.update_message_document(document, cx));
             input.clone()
         } else {
-            let input = self.message_text_input(document, message.channel_id, window, cx);
+            let input = self.message_text_input(document, &message, window, cx);
             self.search_ui.text.insert(key, input.clone());
             input
         };

@@ -58,7 +58,11 @@ pub(super) fn target_at(
         .filter(|target| {
             matches!(
                 target,
-                MessageTarget::Link(_) | MessageTarget::Channel(_) | MessageTarget::Author { .. }
+                MessageTarget::Link(_)
+                    | MessageTarget::Channel(_)
+                    | MessageTarget::Author { .. }
+                    | MessageTarget::User(_)
+                    | MessageTarget::Role(_)
             )
         })
         .cloned()
@@ -540,9 +544,15 @@ mod tests {
     fn malformed_byte_ranges_fail_closed_and_nonactionable_mentions_stay_text() {
         let mut doc = MessageDocument::plain("雪");
         doc.spans[0].target = Some(MessageTarget::User(12.into()));
-        assert!(target_at(&doc, &BTreeSet::new(), 0).is_none());
+        assert_eq!(
+            target_at(&doc, &BTreeSet::new(), 0),
+            Some(MessageTarget::User(12.into()))
+        );
         doc.spans[0].target = Some(MessageTarget::Role(34.into()));
-        assert!(target_at(&doc, &BTreeSet::new(), 0).is_none());
+        assert_eq!(
+            target_at(&doc, &BTreeSet::new(), 0),
+            Some(MessageTarget::Role(34.into()))
+        );
         doc.spans[0].target = Some(MessageTarget::Channel(56.into()));
         assert_eq!(
             target_at(&doc, &BTreeSet::new(), 0),
