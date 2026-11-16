@@ -632,15 +632,17 @@ async fn concurrent_demo_sends_reserve_distinct_confirmed_message_ids() {
 #[tokio::test]
 async fn ready_identity_precedes_account_presentation_and_reconnect_keeps_drafts() {
     let (mut worker, events) = demo();
+    let account = worker.state.current_user.as_ref().unwrap().id;
+    events.try_iter().for_each(drop);
     worker.attachments.channels.insert(100.into(), Vec::new());
     for session in ["first", "reconnected"] {
         worker.gateway(GatewayEvent::Dispatch {
             name: "READY".into(), sequence: Some(1),
-            data: json!({"session_id":session,"user":{"id":"7","username":"fixture"},
-                "guilds":[{"id":"10","name":"Fixture","owner_id":"7","channels":[{"id":"100","name":"text","type":0}]}]}),
+            data: json!({"session_id":session,"user":{"id":account.to_string(),"username":"fixture"},
+                "guilds":[{"id":"10","name":"Fixture","owner_id":account.to_string(),"channels":[{"id":"100","name":"text","type":0}]}]}),
         }).await.unwrap();
         let delivered: Vec<_> = events.try_iter().collect();
-        let context = delivered.iter().position(|event| matches!(event, Event::SessionContext { account_id: Some(id), selected_guild: Some(guild), .. } if *id == Snowflake(7) && *guild == Snowflake(10))).expect("authoritative identity");
+        let context = delivered.iter().position(|event| matches!(event, Event::SessionContext { account_id: Some(id), selected_guild: Some(guild), .. } if *id == account && *guild == Snowflake(10))).expect("authoritative identity");
         let presentation = delivered
             .iter()
             .position(|event| {
