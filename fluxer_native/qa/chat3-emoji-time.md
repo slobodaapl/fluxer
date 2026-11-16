@@ -40,6 +40,12 @@ Validation: final offline desktop gate passed **280 tests, 1 ignored**, with the
 
 Root owns GUI validation and integrated binary build. Check multiple animated frames, pause/resume on scroll and concealment, no loading forever after returning, bitmap sizes/spacing at changed account fonts and display scale, timestamp tooltip/copy, French/24-hour settings, and relative refresh while scrolling offscreen. No GUI execution is claimed by this worktree task.
 
+## Literal code follow-up
+
+`renderers/common/CodeElements.tsx` renders code content as literal text. Inline and fenced code Unicode therefore bypass emoji image substitution and emoji-driven line-height expansion. Composer fallback remains enabled, while message projection consumes only its explicit eligible replacement tokens. The same non-code eligibility gates token generation, Unicode bitmap painting, custom-image painting, and row-height contribution. Ordinary table/body Unicode continues to use bundled Fluxer artwork. Selection and source copy preserve the original Unicode bytes.
+
+Follow-up validation: all 38 `input::` tests passed through the locked offline worktree manifest (`/tmp/chat3-code-unicode-input-tests.log`). Regression tests inspect actual inline/fenced AST code spans beside ordinary body/table emoji, exact 16px→24px ordinary emoji height contribution, absent code height contribution/tokens, literal message projection, composer fallback, explicit message token round-trips, and unchanged source/copy.
+
 ## Limits
 
 System ICU/CLDR versions can differ in punctuation from the web runtime's ICU version. Without system ICU (and on non-Linux targets), formatting falls back to local ISO-style English; full locale parity is provided on this Linux target. Browser-locale AUTO override is a web local accessibility setting; native AUTO uses account locale. Existing profile bio rendering loops spans outside TextInput and does not render its custom emoji placeholders; converting that separate widget is outside the main chat/reply/search scope. Existing unsupported table/alert markers are owned by the rich-blocks integration.

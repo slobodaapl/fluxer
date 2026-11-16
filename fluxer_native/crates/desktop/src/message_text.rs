@@ -255,6 +255,45 @@ fn heading_is_first(document: &MessageDocument, start: usize) -> bool {
     .min(start);
     document.text[body_start..start].trim().is_empty()
 }
+/// CodeElements render literal code text. Only non-code spans participate in
+/// image replacement, bitmap painting, and emoji-driven row height.
+pub(super) fn unicode_image_at(document: &MessageDocument, index: usize) -> bool {
+    document
+        .spans
+        .get(
+            document
+                .spans
+                .partition_point(|span| span.range.end <= index),
+        )
+        .is_some_and(|span| span.range.contains(&index) && !span.style.code)
+}
+pub(super) fn inline_emoji_height(
+    document: &MessageDocument,
+    range: &Range<usize>,
+    font_size: Pixels,
+) -> Option<Pixels> {
+    let has_custom = document.spans.iter().any(|span| {
+        span.custom_emoji.is_some()
+            && !span.style.code
+            && span.range.start >= range.start
+            && span.range.start < range.end
+    });
+    let has_unicode =
+        document.text[range.clone()]
+            .grapheme_indices(true)
+            .any(|(start, grapheme)| {
+                crate::chat_helpers::unicode_catalog_contains(grapheme)
+                    && unicode_image_at(document, range.start + start)
+            });
+    (has_custom || has_unicode).then_some(
+        font_size
+            * if document.restricted_inline {
+                1.25
+            } else {
+                1.5
+            },
+    )
+}
 /// Labels occupy atomic source ranges; layout, hit testing, selection and image
 /// placement use one projection. Never rewrite document.text or source offsets.
 fn display_tokens(document: &MessageDocument, current: i64) -> Vec<composer_tokens::Token> {
@@ -282,7 +321,7 @@ fn display_tokens(document: &MessageDocument, current: i64) -> Vec<composer_toke
         document
             .spans
             .iter()
-            .filter(|span| span.custom_emoji.is_some())
+            .filter(|span| span.custom_emoji.is_some() && !span.style.code)
             .map(|span| composer_tokens::Token {
                 source: span.range.clone(),
                 label: spacer.into(),
@@ -292,7 +331,10 @@ fn display_tokens(document: &MessageDocument, current: i64) -> Vec<composer_toke
         document
             .text
             .grapheme_indices(true)
-            .filter(|(_, grapheme)| crate::chat_helpers::unicode_catalog_contains(grapheme))
+            .filter(|(start, grapheme)| {
+                crate::chat_helpers::unicode_catalog_contains(grapheme)
+                    && unicode_image_at(document, *start)
+            })
             .map(|(start, grapheme)| composer_tokens::Token {
                 source: start..start + grapheme.len(),
                 label: spacer.into(),
@@ -339,21 +381,10 @@ pub(super) fn layout(
                     let top = y;
                     for (row_index, row) in rows.iter().enumerate() {
                         let mut column_lines = Vec::new();
-                        let has_emoji = row.iter().any(|cell| {
-                            document.text[cell.clone()]
-                                .graphemes(true)
-                                .any(crate::chat_helpers::unicode_catalog_contains)
-                                || document.spans.iter().any(|span| {
-                                    span.custom_emoji.is_some()
-                                        && span.range.start >= cell.start
-                                        && span.range.start < cell.end
-                                })
-                        });
-                        let cell_line_height = if has_emoji {
-                            line_height.max(font_size * 1.5)
-                        } else {
-                            line_height
-                        };
+                        let cell_line_height = row
+                            .iter()
+                            .filter_map(|cell| inline_emoji_height(document, cell, font_size))
+                            .fold(line_height, Pixels::max);
                         let mut row_height = cell_line_height;
                         for (column, cell) in row.iter().enumerate() {
                             let text = &document.text[cell.clone()];
@@ -475,31 +506,18 @@ pub(super) fn layout(
             Some(6) => 0.875,
             _ => 1.,
         };
-        let has_emoji = document.spans.iter().any(|span| {
-            span.custom_emoji.is_some()
-                && span.range.start >= paragraph.start
-                && span.range.start < paragraph.end
-        }) || document.text[paragraph.clone()]
-            .graphemes(true)
-            .any(crate::chat_helpers::unicode_catalog_contains);
         let row_font_size = font_size * scale;
         let jumbo_size = window.rem_size() * 3.;
-        let row_height = if document.jumbo_emojis && has_emoji {
+        let emoji_height = inline_emoji_height(document, &paragraph, row_font_size);
+        let row_height = if document.jumbo_emojis && emoji_height.is_some() {
             jumbo_size + px(2.)
-        } else if has_emoji {
+        } else if let Some(emoji_height) = emoji_height {
             (if heading.is_some() {
                 row_font_size * 1.2
             } else {
                 line_height
             })
-            .max(
-                row_font_size
-                    * if document.restricted_inline {
-                        1.25
-                    } else {
-                        1.5
-                    },
-            )
+            .max(emoji_height)
         } else if heading.is_some() {
             row_font_size * 1.2
         } else {
@@ -854,7 +872,7 @@ pub(super) fn emoji_images(
         let Some(emoji) = &span.custom_emoji else {
             continue;
         };
-        if concealed(span, revealed) {
+        if span.style.code || concealed(span, revealed) {
             continue;
         }
         let Some(row) = glyph_row(
@@ -1039,6 +1057,44 @@ mod tests {
         assert!(code_for_copy(&concealed, &block.range, &BTreeSet::from([7])).is_some());
     }
 
+    #[test]
+    fn code_unicode_remains_literal_while_table_and_body_keep_bundled_art_dimensions() {
+        let source = "Inline `let s=\"✨\";` and ✨\n\n```rust\nlet s=\"✨\";\n```\n\nemoji | text\n--- | ---\n✨ | ordinary";
+        let doc = document(source);
+        let tokens = display_tokens(&doc, 0);
+        let mut code_emoji = 0;
+        let mut ordinary_emoji = 0;
+        for (index, grapheme) in doc
+            .text
+            .grapheme_indices(true)
+            .filter(|(_, g)| crate::chat_helpers::unicode_catalog_contains(g))
+        {
+            let range = index..index + grapheme.len();
+            let code = doc
+                .spans
+                .iter()
+                .find(|span| span.range.contains(&index))
+                .unwrap()
+                .style
+                .code;
+            if code {
+                code_emoji += 1;
+                assert!(!unicode_image_at(&doc, index));
+                assert!(inline_emoji_height(&doc, &range, px(16.)).is_none());
+                assert!(!tokens.iter().any(|token| token.source == range));
+            } else {
+                ordinary_emoji += 1;
+                assert!(unicode_image_at(&doc, index));
+                assert_eq!(inline_emoji_height(&doc, &range, px(16.)), Some(px(24.)));
+                assert!(tokens.iter().any(|token| token.source == range));
+            }
+            assert_eq!(doc.copy_range(range, &BTreeSet::new()), grapheme);
+        }
+        assert_eq!(code_emoji, 2);
+        assert_eq!(ordinary_emoji, 2);
+        assert_eq!(doc.source, source);
+        assert!(doc.text.contains("let s=\"✨\";"));
+    }
     #[test]
     fn compact_author_preserves_source_spoilers_ranges_and_exact_hit_target() {
         let message = Message::text(

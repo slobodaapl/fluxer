@@ -41,7 +41,8 @@ impl Projection {
         spans.extend(
             text.grapheme_indices(true)
                 .filter(|(start, grapheme)| {
-                    crate::chat_helpers::unicode_catalog_contains(grapheme)
+                    style_tokens
+                        && crate::chat_helpers::unicode_catalog_contains(grapheme)
                         && !tokens.iter().any(|token| token.source.contains(start))
                 })
                 .map(|(start, grapheme)| (start..start + grapheme.len(), "\u{2003}".into(), false)),
@@ -296,7 +297,10 @@ pub(super) fn images(
                 continue;
             }
             let index = line.range.start + local;
-            if document.is_some_and(|doc| message_text::hidden_at(doc, revealed, index).is_some()) {
+            if document.is_some_and(|doc| {
+                !message_text::unicode_image_at(doc, index)
+                    || message_text::hidden_at(doc, revealed, index).is_some()
+            }) {
                 continue;
             }
             let Some(source) =
@@ -403,6 +407,25 @@ mod tests {
                 .iter()
                 .all(|run| run.color.a == 0. && run.background_color == base.background_color)
         );
+    }
+    #[test]
+    fn message_projection_does_not_reintroduce_literal_code_emoji() {
+        let text = "let s=\"✨\";";
+        let message = Projection::with_tokens_mode(text, &[], &[], false);
+        assert_eq!(message.text.as_ref(), text);
+        assert!(message.replacements.is_empty());
+        let composer = Projection::with_tokens_mode(text, &[], &[], true);
+        assert_eq!(composer.replacements.len(), 1);
+        assert_ne!(composer.text.as_ref(), text);
+        let start = text.find('✨').unwrap();
+        let tokens = [composer_tokens::Token {
+            source: start..start + "✨".len(),
+            label: "\u{2003}\u{2002}".into(),
+        }];
+        let explicit = Projection::with_tokens_mode(text, &[], &tokens, false);
+        assert_eq!(explicit.replacements.len(), 1);
+        assert_eq!(explicit.source_index(explicit.display_index(start)), start);
+        assert_eq!(explicit.source_index(explicit.text.len()), text.len());
     }
     #[test]
     fn unknown_emoji_sequence_is_not_partially_replaced() {
