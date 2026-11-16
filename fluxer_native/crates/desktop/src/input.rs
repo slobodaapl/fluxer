@@ -1158,20 +1158,20 @@ impl TextInput {
                 } else {
                     px(0.)
                 };
-                if bounds.contains(&event.position) && dx != px(0.) {
-                    if let Some(table) = layout
+                if bounds.contains(&event.position)
+                    && dx != px(0.)
+                    && let Some(table) = layout
                         .table_regions
                         .iter()
                         .find(|t| local_y >= t.y && local_y < t.y + t.height)
-                    {
-                        let entry = self.table_scrolls.entry(table.start).or_default();
-                        let next = (*entry - dx)
-                            .clamp(px(0.), (table.width - bounds.size.width).max(px(0.)));
-                        if next != *entry {
-                            *entry = next;
-                            cx.notify();
-                            cx.stop_propagation();
-                        }
+                {
+                    let entry = self.table_scrolls.entry(table.start).or_default();
+                    let next =
+                        (*entry - dx).clamp(px(0.), (table.width - bounds.size.width).max(px(0.)));
+                    if next != *entry {
+                        *entry = next;
+                        cx.notify();
+                        cx.stop_propagation();
                     }
                 }
             }
@@ -2204,51 +2204,50 @@ impl Element for TextElement {
         // vertical reveal, so nested list retries see the correct target.
         let revealing = input.inline_reveal && input.focus_handle.is_focused(window);
         let mut table_adjustment = None;
-        if revealing {
-            if let Some(range) = input.inline_focus.as_ref() {
-                if let Some((line, left, right)) = inline_target_line(&layout, range) {
-                    if let Some(table) = layout
-                        .table_regions
-                        .iter()
-                        .find(|table| line.y >= table.y && line.y < table.y + table.height)
-                    {
+        if revealing
+            && let Some(range) = input.inline_focus.as_ref()
+            && let Some((line, left, right)) = inline_target_line(&layout, range)
+        {
+            if let Some(table) = layout
+                .table_regions
+                .iter()
+                .find(|table| line.y >= table.y && line.y < table.y + table.height)
+            {
+                let next = reveal_offset(
+                    table.offset,
+                    left,
+                    right,
+                    px(0.),
+                    table.viewport,
+                    (table.width - table.viewport).max(px(0.)),
+                );
+                if next != table.offset {
+                    table_adjustment = Some((table.start, next));
+                }
+            }
+            if table_adjustment.is_none() {
+                let target = Bounds::new(
+                    point(bounds.left() + left, bounds.top() + line.y - input.scroll_y),
+                    size((right - left).max(px(1.)), line.height),
+                );
+                if let Some(timeline) = input.inline_timeline.as_ref() {
+                    let viewport = timeline.bounds();
+                    if viewport.size.height > px(0.) {
+                        let old = timeline.offset();
                         let next = reveal_offset(
-                            table.offset,
-                            left,
-                            right,
-                            px(0.),
-                            table.viewport,
-                            (table.width - table.viewport).max(px(0.)),
+                            -old.y,
+                            target.top(),
+                            target.bottom(),
+                            viewport.top(),
+                            viewport.bottom(),
+                            timeline.max_offset().height,
                         );
-                        if next != table.offset {
-                            table_adjustment = Some((table.start, next));
+                        if next != -old.y {
+                            timeline.set_offset(point(old.x, -next));
                         }
                     }
-                    if table_adjustment.is_none() {
-                        let target = Bounds::new(
-                            point(bounds.left() + left, bounds.top() + line.y - input.scroll_y),
-                            size((right - left).max(px(1.)), line.height),
-                        );
-                        if let Some(timeline) = input.inline_timeline.as_ref() {
-                            let viewport = timeline.bounds();
-                            if viewport.size.height > px(0.) {
-                                let old = timeline.offset();
-                                let next = reveal_offset(
-                                    -old.y,
-                                    target.top(),
-                                    target.bottom(),
-                                    viewport.top(),
-                                    viewport.bottom(),
-                                    timeline.max_offset().height,
-                                );
-                                if next != -old.y {
-                                    timeline.set_offset(point(old.x, -next));
-                                }
-                            }
-                        } else {
-                            window.request_autoscroll(target);
-                        }
-                    }
+                } else {
+                    window.request_autoscroll(target);
                 }
             }
         }

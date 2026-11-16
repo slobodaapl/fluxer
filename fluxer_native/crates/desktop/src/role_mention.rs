@@ -165,18 +165,15 @@ impl Render for RoleMention {
                                 .pt_2()
                                 .text_size(px(12.))
                                 .text_color(rgb(0xb5bac1))
-                                .child(format!(
-                                    "{}",
-                                    if self.known == 0 {
-                                        "Member count unavailable".to_owned()
-                                    } else {
-                                        format!(
-                                            "At least {} {}",
-                                            self.known,
-                                            if self.known == 1 { "member" } else { "members" }
-                                        )
-                                    }
-                                )),
+                                .child(if self.known == 0 {
+                                    "Member count unavailable".to_owned()
+                                } else {
+                                    format!(
+                                        "At least {} {}",
+                                        self.known,
+                                        if self.known == 1 { "member" } else { "members" }
+                                    )
+                                }),
                         ),
                 ),
         )
