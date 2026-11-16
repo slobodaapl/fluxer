@@ -113,10 +113,10 @@ pub(super) fn runs(
                 run.color = rgb(0xb1acbd).into();
             }
             if let Some(kind) = document.blocks.iter().find_map(|block| {
-                if block.range.start == span.range.start {
-                    if let MessageBlockKind::Alert { kind } = block.kind {
-                        return Some(kind);
-                    }
+                if block.range.start == span.range.start
+                    && let MessageBlockKind::Alert { kind } = block.kind
+                {
+                    return Some(kind);
                 }
                 None
             }) {
@@ -403,150 +403,149 @@ pub(super) fn layout(
         if let Some(block) = document.blocks.iter().find(|block| {
             block.range.start == paragraph.start
                 && matches!(block.kind, MessageBlockKind::Table { .. })
-        }) {
-            if let MessageBlockKind::Table { rows, alignments } = &block.kind {
-                let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-                if columns > 0 {
-                    let available = width.unwrap_or(px(480.));
-                    let atomic: Vec<_> = tokens
+        }) && let MessageBlockKind::Table { rows, alignments } = &block.kind
+        {
+            let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+            if columns > 0 {
+                let available = width.unwrap_or(px(480.));
+                let atomic: Vec<_> = tokens
+                    .iter()
+                    .filter(|token| {
+                        token.source.start >= block.range.start
+                            && token.source.end <= block.range.end
+                    })
+                    .map(|token| {
+                        let token_runs = clip(runs, &token.source);
+                        let local =
+                            composer_tokens::clip(std::slice::from_ref(token), &token.source);
+                        let width = inline_emoji::shape_message_line(
+                            &document.text[token.source.clone()],
+                            font_size,
+                            &token_runs,
+                            &local,
+                            window,
+                        )
+                        .width;
+                        (token.source.clone(), width)
+                    })
+                    .collect();
+                let column_widths = table_column_widths(rows, columns, available, &atomic);
+                let mut table_width = px(0.);
+                let column_offsets: Vec<_> = column_widths
+                    .iter()
+                    .map(|width| {
+                        let x = table_width;
+                        table_width += *width;
+                        x
+                    })
+                    .collect();
+                let offset = table_scrolls
+                    .get(&block.range.start)
+                    .copied()
+                    .unwrap_or(px(0.))
+                    .clamp(px(0.), (table_width - available).max(px(0.)));
+                let top = y;
+                for (row_index, row) in rows.iter().enumerate() {
+                    let mut column_lines = Vec::new();
+                    let cell_line_height = row
                         .iter()
-                        .filter(|token| {
-                            token.source.start >= block.range.start
-                                && token.source.end <= block.range.end
-                        })
-                        .map(|token| {
-                            let token_runs = clip(runs, &token.source);
-                            let local =
-                                composer_tokens::clip(std::slice::from_ref(token), &token.source);
-                            let width = inline_emoji::shape_message_line(
-                                &document.text[token.source.clone()],
+                        .filter_map(|cell| inline_emoji_height(document, cell, font_size))
+                        .fold(line_height, Pixels::max);
+                    let mut row_height = cell_line_height;
+                    for (column, cell) in row.iter().enumerate() {
+                        let cell_width = column_widths[column];
+                        let text = &document.text[cell.clone()];
+                        let cell_runs = clip(runs, cell);
+                        let cell_tokens = composer_tokens::clip(&tokens, cell);
+                        let breaks = inline_emoji::wrap_message_breaks(
+                            text,
+                            font_size,
+                            &cell_runs,
+                            Some((cell_width - px(24.)).max(px(1.))),
+                            &cell_tokens,
+                            window,
+                        );
+                        let mut shaped = Vec::new();
+                        for range in visual_ranges(cell.clone(), &breaks) {
+                            let shape = inline_emoji::shape_message_line(
+                                &document.text[range.clone()],
                                 font_size,
-                                &token_runs,
-                                &local,
-                                window,
-                            )
-                            .width;
-                            (token.source.clone(), width)
-                        })
-                        .collect();
-                    let column_widths = table_column_widths(rows, columns, available, &atomic);
-                    let mut table_width = px(0.);
-                    let column_offsets: Vec<_> = column_widths
-                        .iter()
-                        .map(|width| {
-                            let x = table_width;
-                            table_width += *width;
-                            x
-                        })
-                        .collect();
-                    let offset = table_scrolls
-                        .get(&block.range.start)
-                        .copied()
-                        .unwrap_or(px(0.))
-                        .clamp(px(0.), (table_width - available).max(px(0.)));
-                    let top = y;
-                    for (row_index, row) in rows.iter().enumerate() {
-                        let mut column_lines = Vec::new();
-                        let cell_line_height = row
-                            .iter()
-                            .filter_map(|cell| inline_emoji_height(document, cell, font_size))
-                            .fold(line_height, Pixels::max);
-                        let mut row_height = cell_line_height;
-                        for (column, cell) in row.iter().enumerate() {
-                            let cell_width = column_widths[column];
-                            let text = &document.text[cell.clone()];
-                            let cell_runs = clip(runs, cell);
-                            let cell_tokens = composer_tokens::clip(&tokens, cell);
-                            let breaks = inline_emoji::wrap_message_breaks(
-                                text,
-                                font_size,
-                                &cell_runs,
-                                Some((cell_width - px(24.)).max(px(1.))),
-                                &cell_tokens,
+                                &clip(runs, &range),
+                                &composer_tokens::clip(&tokens, &range),
                                 window,
                             );
-                            let mut shaped = Vec::new();
-                            for range in visual_ranges(cell.clone(), &breaks) {
-                                let shape = inline_emoji::shape_message_line(
-                                    &document.text[range.clone()],
-                                    font_size,
-                                    &clip(runs, &range),
-                                    &composer_tokens::clip(&tokens, &range),
-                                    window,
-                                );
-                                shaped.push((range, shape));
-                            }
-                            row_height = row_height.max(cell_line_height * shaped.len());
-                            column_lines.push((column, shaped));
+                            shaped.push((range, shape));
                         }
-                        row_height += px(12.);
-                        for column in 0..columns {
-                            table_cells.push(TableCell {
-                                range: row.get(column).cloned(),
-                                x: column_offsets[column] - offset,
-                                y,
-                                width: column_widths[column],
-                                height: row_height,
-                                header: row_index == 0,
-                                row: row_index,
+                        row_height = row_height.max(cell_line_height * shaped.len());
+                        column_lines.push((column, shaped));
+                    }
+                    row_height += px(12.);
+                    for column in 0..columns {
+                        table_cells.push(TableCell {
+                            range: row.get(column).cloned(),
+                            x: column_offsets[column] - offset,
+                            y,
+                            width: column_widths[column],
+                            height: row_height,
+                            header: row_index == 0,
+                            row: row_index,
+                        });
+                    }
+                    for (column, shaped) in column_lines {
+                        for (line_index, (range, shape)) in shaped.into_iter().enumerate() {
+                            let left = column_offsets[column] - offset;
+                            let cell_width = column_widths[column];
+                            let inner = (cell_width - px(24.)).max(px(1.));
+                            let alignment = alignments
+                                .get(column)
+                                .copied()
+                                .unwrap_or(fluxer_markdown_parser::ast::TableAlignment::None);
+                            let shift = match alignment {
+                                fluxer_markdown_parser::ast::TableAlignment::Center => {
+                                    ((inner - shape.width) / 2.).max(px(0.))
+                                }
+                                fluxer_markdown_parser::ast::TableAlignment::Right => {
+                                    (inner - shape.width).max(px(0.))
+                                }
+                                _ => px(0.),
+                            };
+                            lines.push(VisualLine {
+                                range,
+                                layout: shape,
+                                indent: left + px(12.) + shift,
+                                y: y + px(6.) + cell_line_height * line_index,
+                                height: cell_line_height,
+                                cell_right: Some(left + cell_width - px(12.)),
                             });
                         }
-                        for (column, shaped) in column_lines {
-                            for (line_index, (range, shape)) in shaped.into_iter().enumerate() {
-                                let left = column_offsets[column] - offset;
-                                let cell_width = column_widths[column];
-                                let inner = (cell_width - px(24.)).max(px(1.));
-                                let alignment = alignments
-                                    .get(column)
-                                    .copied()
-                                    .unwrap_or(fluxer_markdown_parser::ast::TableAlignment::None);
-                                let shift = match alignment {
-                                    fluxer_markdown_parser::ast::TableAlignment::Center => {
-                                        ((inner - shape.width) / 2.).max(px(0.))
-                                    }
-                                    fluxer_markdown_parser::ast::TableAlignment::Right => {
-                                        (inner - shape.width).max(px(0.))
-                                    }
-                                    _ => px(0.),
-                                };
-                                lines.push(VisualLine {
-                                    range,
-                                    layout: shape,
-                                    indent: left + px(12.) + shift,
-                                    y: y + px(6.) + cell_line_height * line_index,
-                                    height: cell_line_height,
-                                    cell_right: Some(left + cell_width - px(12.)),
-                                });
-                            }
-                        }
-                        y += row_height;
                     }
-                    if table_width > available {
-                        y += px(8.);
-                    }
-                    table_regions.push(TableRegion {
-                        start: block.range.start,
-                        y: top,
-                        height: y - top,
-                        width: table_width,
-                        viewport: available,
-                        offset,
-                    });
-                    table_end = block.range.end;
-                    continue;
+                    y += row_height;
                 }
+                if table_width > available {
+                    y += px(8.);
+                }
+                table_regions.push(TableRegion {
+                    start: block.range.start,
+                    y: top,
+                    height: y - top,
+                    width: table_width,
+                    viewport: available,
+                    offset,
+                });
+                table_end = block.range.end;
+                continue;
             }
         }
         for block in &document.blocks {
-            if block.range.start == paragraph.start {
-                if let MessageBlockKind::Code { language } = &block.kind {
-                    code_headers.push(CodeHeader {
-                        range: block.range.clone(),
-                        language: language.clone(),
-                        y,
-                    });
-                    y += line_height;
-                }
+            if block.range.start == paragraph.start
+                && let MessageBlockKind::Code { language } = &block.kind
+            {
+                code_headers.push(CodeHeader {
+                    range: block.range.clone(),
+                    language: language.clone(),
+                    y,
+                });
+                y += line_height;
             }
         }
         let indent = paragraph_indent(document, &paragraph);
@@ -616,10 +615,11 @@ pub(super) fn layout(
             )
         };
         let marker = document.blocks.iter().find_map(|block| {
-            if let MessageBlockKind::ListItem { marker } = &block.kind {
-                if marker.start == paragraph.start && marker.end <= paragraph.end {
-                    return Some(marker);
-                }
+            if let MessageBlockKind::ListItem { marker } = &block.kind
+                && marker.start == paragraph.start
+                && marker.end <= paragraph.end
+            {
+                return Some(marker);
             }
             None
         });
@@ -640,8 +640,10 @@ pub(super) fn layout(
             .copied()
             .find(|index| *index > 0 && *index < paragraph.len());
         let mut rows = Vec::new();
-        if hanging > px(0.) && first_break.is_some() {
-            let split = paragraph.start + first_break.unwrap();
+        if hanging > px(0.)
+            && let Some(first_break) = first_break
+        {
+            let split = paragraph.start + first_break;
             let remainder = split..paragraph.end;
             let rest_text = &document.text[remainder.clone()];
             let rest_width = width.map(|width| (width - indent - hanging).max(px(1.)));
@@ -749,17 +751,33 @@ pub(super) fn code_for_copy<'a>(
     document.text.get(range.clone())
 }
 
+/// Shared geometry and selection state for the elements painted over a message.
+pub(super) struct MessagePaintContext<'a> {
+    pub document: &'a MessageDocument,
+    pub revealed: &'a BTreeSet<u32>,
+    pub layout: &'a DocumentLayout,
+    pub bounds: Bounds<Pixels>,
+    pub scroll: Point<Pixels>,
+}
+pub(super) struct EmojiImageOptions<'a> {
+    pub cache: &'a Entity<EmojiCache>,
+    pub reduced_motion: bool,
+    pub hovered: bool,
+}
 pub(super) fn code_controls(
-    document: &MessageDocument,
-    revealed: &BTreeSet<u32>,
-    layout: &DocumentLayout,
-    bounds: Bounds<Pixels>,
-    scroll: Point<Pixels>,
+    context: MessagePaintContext<'_>,
     owner: Entity<TextInput>,
     copied: Option<&Range<usize>>,
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
+    let MessagePaintContext {
+        document,
+        revealed,
+        layout,
+        bounds,
+        scroll,
+    } = context;
     let mut controls = Vec::new();
     for (index, header) in layout.code_headers.iter().enumerate() {
         let Some(_) = code_for_copy(document, &header.range, revealed) else {
@@ -971,17 +989,23 @@ impl EmojiCache {
     }
 }
 pub(super) fn emoji_images(
-    cache: &Entity<EmojiCache>,
-    reduced_motion: bool,
-    hovered: bool,
-    document: &MessageDocument,
-    revealed: &BTreeSet<u32>,
-    layout: &DocumentLayout,
-    bounds: Bounds<Pixels>,
-    scroll: Point<Pixels>,
+    context: MessagePaintContext<'_>,
+    options: EmojiImageOptions<'_>,
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
+    let MessagePaintContext {
+        document,
+        revealed,
+        layout,
+        bounds,
+        scroll,
+    } = context;
+    let EmojiImageOptions {
+        cache,
+        reduced_motion,
+        hovered,
+    } = options;
     if !valid(document) {
         return Vec::new();
     }
@@ -1187,7 +1211,7 @@ mod tests {
             .find(|block| matches!(block.kind, MessageBlockKind::Code { .. }))
             .unwrap();
         assert_eq!(
-            code_for_copy(&doc, &block.range, &BTreeSet::new()).as_deref(),
+            code_for_copy(&doc, &block.range, &BTreeSet::new()),
             Some("let 雪 = \"✨\";\n")
         );
         let mut concealed = doc.clone();

@@ -2345,14 +2345,18 @@ impl Element for TextElement {
             .as_ref()
             .map(|document| {
                 message_text::emoji_images(
-                    &emoji_cache,
-                    emoji_reduced_motion,
-                    emoji_hovered,
-                    document,
-                    &revealed,
-                    &layout,
-                    bounds,
-                    scroll,
+                    message_text::MessagePaintContext {
+                        document,
+                        revealed: &revealed,
+                        layout: &layout,
+                        bounds,
+                        scroll,
+                    },
+                    message_text::EmojiImageOptions {
+                        cache: &emoji_cache,
+                        reduced_motion: emoji_reduced_motion,
+                        hovered: emoji_hovered,
+                    },
                     window,
                     cx,
                 )
@@ -2373,11 +2377,13 @@ impl Element for TextElement {
             .as_ref()
             .map(|doc| {
                 message_text::code_controls(
-                    doc,
-                    &revealed,
-                    &layout,
-                    bounds,
-                    scroll,
+                    message_text::MessagePaintContext {
+                        document: doc,
+                        revealed: &revealed,
+                        layout: &layout,
+                        bounds,
+                        scroll,
+                    },
                     self.input.clone(),
                     copied_code.as_ref(),
                     window,

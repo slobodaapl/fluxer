@@ -253,13 +253,13 @@ fn highlighted(
         return Vec::new();
     }
     let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
-    if let Ok(mut entries) = cache.lock() {
-        if let Some(index) = entries.iter().position(|(l, s, _)| l == lang && s == code) {
-            let entry = entries.remove(index).unwrap();
-            let result = entry.2.clone();
-            entries.push_back(entry);
-            return result;
-        }
+    if let Ok(mut entries) = cache.lock()
+        && let Some(index) = entries.iter().position(|(l, s, _)| l == lang && s == code)
+    {
+        let entry = entries.remove(index).unwrap();
+        let result = entry.2.clone();
+        entries.push_back(entry);
+        return result;
     }
     let Ok(spans) = highlighter.highlight_spans(lang, code) else {
         return Vec::new();
@@ -288,15 +288,16 @@ fn highlighted(
     if CACHE_EPOCH.load(Ordering::Acquire) != epoch {
         return Vec::new();
     }
-    if code.len() <= 16 * 1024 && result.len() * std::mem::size_of::<Token>() <= 32 * 1024 {
-        if let Ok(mut entries) = cache.lock() {
-            if CACHE_EPOCH.load(Ordering::Acquire) != epoch {
-                return Vec::new();
-            }
-            entries.push_back((lang.to_owned(), code.to_owned(), result.clone()));
-            while entries.len() > 128 {
-                entries.pop_front();
-            }
+    if code.len() <= 16 * 1024
+        && result.len() * std::mem::size_of::<Token>() <= 32 * 1024
+        && let Ok(mut entries) = cache.lock()
+    {
+        if CACHE_EPOCH.load(Ordering::Acquire) != epoch {
+            return Vec::new();
+        }
+        entries.push_back((lang.to_owned(), code.to_owned(), result.clone()));
+        while entries.len() > 128 {
+            entries.pop_front();
         }
     }
     result
@@ -433,7 +434,7 @@ mod tests {
         }
         // A recycled input cancels its waiting job before the parser is free.
         drop(tickets[4].take());
-        assert!(matches!(receivers[4].as_mut().unwrap().try_recv(), Err(_)));
+        assert!(receivers[4].as_mut().unwrap().try_recv().is_err());
         assert!(matches!(
             receivers[0].as_mut().unwrap().try_recv(),
             Ok(None)
