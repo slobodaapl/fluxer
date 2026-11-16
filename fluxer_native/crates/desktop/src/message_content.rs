@@ -128,7 +128,7 @@ impl Fluxer {
                 } else if let message_markup::MessageTarget::Role(id) = event.target {
                     this.open_role_mention(id, channel, event.anchor, window, cx);
                 } else {
-                    this.activate_message_target(&event.target, window, cx);
+                    this.activate_message_target_at(&event.target, event.anchor, window, cx);
                 }
             },
         )
@@ -227,6 +227,30 @@ impl Fluxer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn mention_metadata_follows_retained_chat_and_search_documents() {
+        let mut content = MessageContent::default();
+        let user = fluxer_core::User {
+            id: Snowflake(3),
+            username: "known".into(),
+            ..Default::default()
+        };
+        content.update_mentions(Snowflake(1), Snowflake(2), &[user.clone()]);
+        content.update_mentions(Snowflake(4), Snowflake(5), &[user]);
+        content.retain_documents(&BTreeSet::from([(Snowflake(4), Snowflake(5))]));
+        assert!(
+            content
+                .mentioned_user(Snowflake(1), Snowflake(2), Snowflake(3))
+                .is_none()
+        );
+        assert!(
+            content
+                .mentioned_user(Snowflake(4), Snowflake(5), Snowflake(3))
+                .is_some()
+        );
+        content.retain_documents(&BTreeSet::new());
+        assert!(content.mention_users.is_empty());
+    }
     #[::core::prelude::v1::test]
     fn updated_message_replaces_mention_snapshot_without_replacing_input() {
         let mut content = MessageContent::default();

@@ -209,6 +209,18 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.activate_message_target_at(target, None, window, cx);
+    }
+    pub(super) fn activate_message_target_at(
+        &mut self,
+        target: &MessageTarget,
+        anchor: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = anchor
+            .map(|bounds| point(bounds.right(), bounds.top()))
+            .unwrap_or_else(|| window.mouse_position());
         match target {
             MessageTarget::Author { channel, message } => {
                 if let Some(message) = self
@@ -224,14 +236,7 @@ impl Fluxer {
                         .get(channel)
                         .and_then(|channel| channel.guild_id);
                     let webhook = crate::profile_triggers::message_is_webhook(&message);
-                    self.open_user_profile(
-                        message.author,
-                        guild,
-                        webhook,
-                        window.mouse_position(),
-                        window,
-                        cx,
-                    );
+                    self.open_user_profile(message.author, guild, webhook, anchor, window, cx);
                 }
             }
             MessageTarget::User(id) => {
@@ -241,7 +246,7 @@ impl Fluxer {
                     .selected_channel
                     .and_then(|id| self.state.channels.get(&id))
                     .and_then(|channel| channel.guild_id);
-                self.open_user_profile(user, guild, false, window.mouse_position(), window, cx);
+                self.open_user_profile(user, guild, false, anchor, window, cx);
             }
             MessageTarget::Role(_) => {}
             MessageTarget::Channel(channel) => {
