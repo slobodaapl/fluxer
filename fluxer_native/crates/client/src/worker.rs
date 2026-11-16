@@ -357,6 +357,7 @@ impl Worker {
         ));
         self.emit(Event::SessionContext {
             instance: saved.instance.api.to_string(),
+            account_id: Some(saved.user_id),
             selected_guild: saved.selected_guild,
         });
         if !saved.valid {
@@ -2092,6 +2093,7 @@ impl Worker {
         ));
         self.emit(Event::SessionContext {
             instance: client.instance().api.to_string(),
+            account_id: self.state.current_user.as_ref().map(|user| user.id),
             selected_guild: self.selected_guild,
         });
         self.snapshot();
@@ -2762,20 +2764,8 @@ impl Worker {
                             });
                         }
                     }
-                    if matches!(
-                        name.as_str(),
-                        "READY"
-                            | "USER_SETTINGS_UPDATE"
-                            | "USER_UPDATE"
-                            | "GUILD_UPDATE"
-                            | "GUILD_MEMBER_UPDATE"
-                            | "GUILD_ROLE_UPDATE"
-                            | "GUILD_ROLE_UPDATE_BULK"
-                            | "CHANNEL_UPDATE"
-                            | "CHANNEL_UPDATE_BULK"
-                    ) {
-                        self.refresh_attachment_policies();
-                    }
+                    // Publish the identity boundary before account-scoped presentation
+                    // events (including attachment policies), and retain ordinary READY.
                     if name == "READY" {
                         self.state.voice = previous_voice;
                         if self
@@ -2792,8 +2782,25 @@ impl Worker {
                                 .as_ref()
                                 .map(|client| client.instance().api.to_string())
                                 .unwrap_or_default(),
+                            account_id: self.state.current_user.as_ref().map(|user| user.id),
                             selected_guild: self.selected_guild,
                         });
+                    }
+                    if matches!(
+                        name.as_str(),
+                        "READY"
+                            | "USER_SETTINGS_UPDATE"
+                            | "USER_UPDATE"
+                            | "GUILD_UPDATE"
+                            | "GUILD_MEMBER_UPDATE"
+                            | "GUILD_ROLE_UPDATE"
+                            | "GUILD_ROLE_UPDATE_BULK"
+                            | "CHANNEL_UPDATE"
+                            | "CHANNEL_UPDATE_BULK"
+                    ) {
+                        self.refresh_attachment_policies();
+                    }
+                    if name == "READY" {
                         if let Some(channel) = self.restore_channel.take()
                             && self
                                 .state

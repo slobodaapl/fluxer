@@ -11,6 +11,7 @@ mod composer_slowmode;
 mod concealed_image;
 mod context_actions;
 mod context_menu;
+mod conversation_scope;
 mod controls;
 mod desktop_notifications;
 mod diagnostics;
@@ -327,6 +328,7 @@ struct Fluxer {
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
     composer: Entity<TextInput>,
+    conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
     quick_switcher: quick_switcher::QuickSwitcher,
@@ -489,6 +491,7 @@ impl Fluxer {
             media_endpoint: None,
             replies: BTreeMap::new(),
             outbox: outbox_view::OutboxUi::default(),
+            conversation_scope: conversation_scope::ConversationScope::default(),
             attachments: AttachmentUi::new(),
             emoji_target: None,
             emoji_search: cx.new(|cx| {
@@ -694,7 +697,8 @@ impl Fluxer {
             this.refresh_composer_completion(cx);
             this.schedule_composer_member_query(cx);
             let content = this.composer.read(cx).content.to_string();
-            if this.state.selected_channel.is_some() && this.editing.is_none() {
+            if !this.conversation_scope.is_user_edit(&content) { return; }
+            if this.state.current_user.is_some() && this.state.selected_channel.is_some() && this.editing.is_none() {
                 this.command(Command::SetDraft(content), cx);
             }
             if !this.demo
@@ -910,8 +914,9 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
+                    let (scope_changed, restore_composer) = self.conversation_scope.state(self.state.current_user.as_ref().map(|user| user.id));
+                    if scope_changed { self.reset_conversation_surfaces(cx); }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
-                        self.reset_conversation_surfaces(cx);
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.inbox_ui.reset();
                     }
@@ -994,7 +999,7 @@ impl Fluxer {
                     } else if self.selected_guild.is_none() && !self.session_context_loaded {
                         self.selected_guild = self.state.guilds.keys().next().copied();
                     }
-                    if old != self.state.selected_channel {
+                    if old != self.state.selected_channel || restore_composer {
                         self.reset_text_context_menus(cx);
                         self.playback.reset(cx);
                         self.revealed_media.clear();
@@ -1004,6 +1009,7 @@ impl Fluxer {
                             .and_then(|id| self.state.drafts.get(&id))
                             .cloned()
                             .unwrap_or_default();
+                        self.conversation_scope.synchronize(&draft);
                         self.composer.update(cx, |input, cx| input.set(draft, cx));
                         self.editing = None;
                         self.edit_draft = None;
@@ -1063,10 +1069,11 @@ impl Fluxer {
                 }
                 Event::SessionContext {
                     instance,
+                    account_id,
                     selected_guild,
                 } => {
                     self.begin_notification_session();
-                    self.reset_conversation_surfaces(cx);
+                    if self.conversation_scope.context(&instance, account_id) { self.reset_conversation_surfaces(cx); }
                     self.instance
                         .update(cx, |input, cx| input.set(instance, cx));
                     self.selected_guild = selected_guild;

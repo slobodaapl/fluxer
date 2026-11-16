@@ -475,6 +475,7 @@ pub enum Event {
     SessionRestoreFailed,
     SessionContext {
         instance: String,
+        account_id: Option<Snowflake>,
         selected_guild: Option<Snowflake>,
     },
     State(Box<ClientState>),
