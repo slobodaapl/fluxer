@@ -628,3 +628,44 @@ async fn concurrent_demo_sends_reserve_distinct_confirmed_message_ids() {
     assert_eq!(confirmed.len(), 2);
     assert_ne!(confirmed[0].id, confirmed[1].id);
 }
+
+#[tokio::test]
+async fn ready_identity_precedes_account_presentation_and_reconnect_keeps_drafts() {
+    let (mut worker, events) = demo();
+    worker.attachments.channels.insert(100.into(), Vec::new());
+    for session in ["first", "reconnected"] {
+        worker.gateway(GatewayEvent::Dispatch {
+            name: "READY".into(), sequence: Some(1),
+            data: json!({"session_id":session,"user":{"id":"7","username":"fixture"},
+                "guilds":[{"id":"10","name":"Fixture","owner_id":"7","channels":[{"id":"100","name":"text","type":0}]}]}),
+        }).await.unwrap();
+        let delivered: Vec<_> = events.try_iter().collect();
+        let context = delivered.iter().position(|event| matches!(event, Event::SessionContext { account_id: Some(id), selected_guild: Some(guild), .. } if *id == Snowflake(7) && *guild == Snowflake(10))).expect("authoritative identity");
+        let presentation = delivered
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    Event::Attachments { .. } | Event::AttachmentLimits { .. }
+                )
+            })
+            .expect("attachment presentation");
+        let snapshot = delivered
+            .iter()
+            .position(|event| matches!(event, Event::State(_)))
+            .expect("state snapshot");
+        assert!(context < presentation && context < snapshot);
+        if session == "first" {
+            worker.state.selected_channel = Some(100.into());
+            worker
+                .state
+                .drafts
+                .insert(100.into(), "keep across READY".into());
+        } else {
+            assert_eq!(
+                worker.state.drafts.get(&Snowflake(100)).map(String::as_str),
+                Some("keep across READY")
+            );
+        }
+    }
+}
