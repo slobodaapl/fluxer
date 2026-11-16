@@ -67,6 +67,16 @@ pub(super) fn target_at(
         })
         .cloned()
 }
+fn alert_color(kind: fluxer_markdown_parser::ast::AlertType) -> u32 {
+    use fluxer_markdown_parser::ast::AlertType;
+    match kind {
+        AlertType::Note => 0x5b9cf6,
+        AlertType::Tip => 0x55b985,
+        AlertType::Important => 0xad81ef,
+        AlertType::Warning => 0xe5b658,
+        AlertType::Caution => 0xe26767,
+    }
+}
 pub(super) fn runs(
     document: &MessageDocument,
     base: &TextRun,
@@ -101,6 +111,16 @@ pub(super) fn runs(
             }
             if span.style.subtext || span.style.quote_depth > 0 {
                 run.color = rgb(0xb1acbd).into();
+            }
+            if let Some(kind) = document.blocks.iter().find_map(|block| {
+                if block.range.start == span.range.start {
+                    if let MessageBlockKind::Alert { kind } = block.kind {
+                        return Some(kind);
+                    }
+                }
+                None
+            }) {
+                run.color = rgb(alert_color(kind)).into();
             }
             if let Some(target) = &span.target {
                 run.color = match target {
@@ -632,17 +652,9 @@ pub(super) fn backgrounds(
                         rgb(0x25222b),
                     )),
                     MessageBlockKind::Alert { kind } => {
-                        use fluxer_markdown_parser::ast::AlertType;
-                        let color = match kind {
-                            AlertType::Note => 0x5b9cf6,
-                            AlertType::Tip => 0x55b985,
-                            AlertType::Important => 0xad81ef,
-                            AlertType::Warning => 0xe5b658,
-                            AlertType::Caution => 0xe26767,
-                        };
                         quads.push(fill(
                             Bounds::new(point(bounds.left(), y), size(px(4.), line.height)),
-                            rgb(color),
+                            rgb(alert_color(kind)),
                         ));
                     }
                     MessageBlockKind::Quote { depth } => {
@@ -775,6 +787,23 @@ mod tests {
             underline: None,
             strikethrough: None,
         }
+    }
+
+    #[test]
+    fn alert_title_uses_its_rule_color() {
+        let doc = document("> [!WARNING]\n> Check this");
+        let alert = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, MessageBlockKind::Alert { .. }))
+            .unwrap();
+        let styled = runs(&doc, &base(), &BTreeSet::new());
+        let title = clip(
+            &styled,
+            &(alert.range.start..alert.range.start + "Warning".len()),
+        );
+        assert!(title.iter().all(|run| run.color
+            == rgb(alert_color(fluxer_markdown_parser::ast::AlertType::Warning)).into()));
     }
 
     #[test]
