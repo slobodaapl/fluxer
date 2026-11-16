@@ -80,7 +80,7 @@ impl Render for RoleMention {
                         .occlude()
                         .w(px(width))
                         .max_h(px(height))
-                        .overflow_hidden()
+                        .overflow_y_scroll()
                         .rounded_lg()
                         .border_1()
                         .border_color(rgb(0x4c4458))

@@ -11,12 +11,38 @@ use crate::{
 pub(super) struct MessageContent {
     pub cache: MessageCache,
     replies: BTreeMap<(Snowflake, Snowflake), Entity<TextInput>>,
+    mention_users: BTreeMap<(Snowflake, Snowflake), Vec<fluxer_core::User>>,
 }
 impl MessageContent {
+    fn update_mentions(
+        &mut self,
+        channel: Snowflake,
+        message: Snowflake,
+        users: &[fluxer_core::User],
+    ) {
+        let key = (channel, message);
+        if users.is_empty() {
+            self.mention_users.remove(&key);
+        } else {
+            self.mention_users.insert(key, users.to_vec());
+        }
+    }
+    fn mentioned_user(
+        &self,
+        channel: Snowflake,
+        message: Snowflake,
+        id: Snowflake,
+    ) -> Option<fluxer_core::User> {
+        self.mention_users
+            .get(&(channel, message))
+            .and_then(|users| users.iter().find(|user| user.id == id))
+            .cloned()
+    }
     pub fn reset(&mut self) {
         self.cache.clear();
         chat_helpers::clear_preview_cache();
         self.replies.clear();
+        self.mention_users.clear();
     }
     pub fn retain_replies(&mut self, channel: Option<Snowflake>, visible: &BTreeSet<Snowflake>) {
         self.replies
@@ -29,6 +55,8 @@ impl Fluxer {
         message: &Message,
         context: MessageContext,
     ) -> Arc<MessageDocument> {
+        self.message_content
+            .update_mentions(message.channel_id, message.id, &message.mentions);
         let mut rendering = message.clone();
         rendering.content = chat_helpers::display_text(message);
         self.message_content.cache.get(
@@ -46,7 +74,7 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
         let channel = message.channel_id;
-        let mentioned_users = message.mentions.clone();
+        let message_id = message.id;
         let input = cx.new(|cx| TextInput::read_only_document(document, cx));
         cx.subscribe_in(
             &input,
@@ -63,7 +91,7 @@ impl Fluxer {
                         .users
                         .get(&id)
                         .cloned()
-                        .or_else(|| mentioned_users.iter().find(|user| user.id == id).cloned())
+                        .or_else(|| this.message_content.mentioned_user(channel, message_id, id))
                         .or_else(|| {
                             this.state
                                 .messages
@@ -186,5 +214,36 @@ impl Fluxer {
                 .child(div().flex_1().min_w_0().child(input))
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[::core::prelude::v1::test]
+    fn updated_message_replaces_mention_snapshot_without_replacing_input() {
+        let mut content = MessageContent::default();
+        let user = fluxer_core::User {
+            id: Snowflake(3),
+            username: "old".into(),
+            ..Default::default()
+        };
+        content.update_mentions(Snowflake(1), Snowflake(2), &[user.clone()]);
+        let mut updated = user;
+        updated.username = "new".into();
+        content.update_mentions(Snowflake(1), Snowflake(2), &[updated]);
+        assert_eq!(
+            content
+                .mentioned_user(Snowflake(1), Snowflake(2), Snowflake(3))
+                .unwrap()
+                .username,
+            "new"
+        );
+        content.update_mentions(Snowflake(1), Snowflake(2), &[]);
+        assert!(
+            content
+                .mentioned_user(Snowflake(1), Snowflake(2), Snowflake(3))
+                .is_none()
+        );
     }
 }
