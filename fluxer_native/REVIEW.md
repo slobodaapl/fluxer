@@ -491,3 +491,44 @@ keeps names at intrinsic text width. Existing whole-row right-click voice menus
 are independent. The final pointer check records image/name versus adjacent-gap
 activation in `hitbox-check.json`; broader real-account pointer acceptance remains
 pending.
+
+## Chat rendering push — 2026-11-16
+
+Terra/Sol worktrees and root integration are merged into `yolo/gpui`. The delivery
+and evidence are recorded in [CHAT_PARITY_2026_11_16.md](CHAT_PARITY_2026_11_16.md)
+and `target/qa/chat-parity-2026-11-16/`. The integrated audit, formatting, strict
+Clippy and workspace gate pass **674 tests, zero failures, 14 ignored**. The local
+gate includes the preserved uncommitted audio/DSP work; that work was not committed
+as part of the chat push.
+
+Owned GUI checks cover heading/list geometry, aligned/wrapping/scrolling tables,
+exact Unicode code Copy and feedback, outside thumb release, jumbo thresholds,
+visible animation versus disabled autoplay, French/24-hour timestamps, late-token
+tooltips, and Tab-driven vertical/horizontal reveal followed by first-Enter role/
+user popup activation. A redraw failure found during this check was corrected and
+retested in the actual Wayland window. READY identity/draft preservation has a
+real-worker regression; no production account settings/messages/calls were mutated.
+
+Pending manual acceptance:
+
+- Read real conversations with headings, nested lists, long highlighted code,
+  blank/wrapped table cells, spoilers, links and localized timestamps. Try drag
+  selection/copy across these at the available font sizes, including CJK/Unicode.
+- Check code Copy with keyboard-only navigation, Shift-Tab and focus return;
+  mention popovers near window edges and in search/reply previews; Escape over
+  stacked overlays; IME and accessibility behavior.
+- Check real animated community emoji, disabled animation/reduced motion, scrolling
+  away/back and CDN-only mixed-skin-tone art. The offline demo has no static-CDN
+  endpoint for art absent from bundled sprite sheets.
+- Leave relative timestamps visible, hidden and minimized for extended periods;
+  verify freshness on return and that idle/offscreen views do not redraw forever.
+  Linux ICU localization is exercised; other-platform locale fallback needs work.
+- Reconnect with a draft, reply, search and staged attachment open; switch accounts
+  or instances and verify private UI isolation plus the correct account's draft.
+  Automated lifecycle coverage does not replace real-server acceptance.
+
+Remaining scope includes alert icons/localization, full rich profile biography/
+modal and complete rendering/accessibility parity. Role cards show partial cached
+membership honestly and are a native extension, not a new server API assumption.
+Review the Arborium notice/packaging gap before distribution. Aggregate media budget
+#2 and multi-stream manual acceptance remain deferred as requested.

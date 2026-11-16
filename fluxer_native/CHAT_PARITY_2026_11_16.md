@@ -1,118 +1,91 @@
-# Chat parity push — paused 2026-11-16
+# Chat parity push — integrated 2026-11-16
 
-Work is paused at the user's explicit request. Do not resume implementation,
-build, deployment or agents without a later resume request. Source branch is
-`yolo/gpui`; source HEAD before this record is `69d4ad671`.
+The user resumed the paused push. All delivered Terra/Sol lanes and the subsequent
+integration fixes are merged into `yolo/gpui`. This is an integrated chat-rendering
+increment; the overall native migration and live/manual acceptance remain open.
+The independent audio/DSP working-tree changes were preserved and remain unstaged.
 
-## Current delivery state
+## Delivered behavior
 
-The main branch integrates measured heading/list/block geometry, real table
-layout and scrolling, pinned Arborium 2.18.2 highlighting with a bounded FIFO
-worker/cache epoch, language and code Copy controls, user/role mention activation,
-full glyph-bound popup placement, bounded mention metadata, shared overlay
-geometry/focus helpers, emoji sizing/animation, localized timestamp tokens, and
-initial inline keyboard target traversal. These are in-progress integrations,
-not a completed or accepted feature push.
+- Source-backed heading sizing and spacing, nested list markers with hanging
+  continuation lines, and variable-height selection/layout. The shared Fluxer
+  parser supports heading levels 1–4; five/six hashes remain literal.
+- Real aligned table cells with wrapping, measured timestamp column minimums,
+  horizontal scrolling/thumbs, cell-first padded/empty-area hit testing, and
+  outside-release drag cleanup. Long timestamp labels wrap atomically in prose
+  and widen their table column instead of painting over neighbors.
+- Arborium 2.18.2 native syntax highlighting, matching the checked-in web client,
+  language headers, exact code Copy and two-second Copied feedback. Unicode emoji
+  inside code stay literal. Highlight work uses one FIFO worker, bounded admission,
+  bounded cache, stale-input cancellation and account-boundary cache invalidation.
+- User mentions open the existing scoped profile card. Resolved role mentions
+  open a small native card with role color/name and an honest partial member count.
+  The latter is a native extension: the existing Fluxer role mention is inert.
+  Unknown mentions and mentions inside code/concealed spoilers remain inert.
+- Full glyph bounds anchor mention/profile cards; shared overlay geometry/focus
+  helpers improve edge placement and Escape behavior. Tab/Shift-Tab traverse inline
+  targets; keyboard focus reveals offscreen targets vertically and inside wide
+  tables before Enter can activate them. A GUI-discovered redraw bug was fixed
+  with explicit follow-up frames for table and timeline scroll changes.
+- Source top-level jumbo eligibility (1–30 emoji), 48px jumbo versus inline sizing,
+  static/animated custom emoji and motion settings. Large Unicode art now selects
+  the 64px sheet based on its rendered pixel footprint even on a 1× display.
+- All nine timestamp styles use account locale/time format; visible relative
+  timestamps share a bounded one-shot clock. Widget limits apply after visibility,
+  preserving timers/tooltips for tokens beyond the first 128 source tokens.
+- Repeated READY events preserve drafts and conversation UI. Actual account or
+  instance changes clear private UI/cache state and reload authoritative drafts,
+  including when both accounts have the same numeric channel ID. Programmatic
+  composer updates do not write an empty draft into the new account.
 
-The installed live application is still **29a36327b-local**, the earlier expansion
-build, running under GDB/Vulkan validation. It was left untouched. The owned
-`--demo` QA application was closed. Agents are interrupted/completed and no Cargo
-process remains running. Do not install/relaunch this source before resolving
-the known integration bugs and completing validation.
+## Validation
 
-## Integrated commits
+The final integrated `scripts/verify.sh` passes the parity audit, formatting,
+strict workspace Clippy and **674 tests: 0 failures, 14 opt-in ignored**. This gate
+includes the preexisting local DSP changes as well as the committed chat push.
+The real worker regression checks READY identity ordering and reconnect draft
+preservation. Final evidence is in `target/qa/chat-parity-2026-11-16/`, including
+`integrated-verify.log`, `ready-reconnect-regression.log`, `results.json` and PNGs.
 
-- Rich foundation `4e859c1d3` → `a300d037c`; phase 2 `4f43de519` →
-  `82561745a`; alert/heading corrections → `bf41bb65d`, `9cd15166d`.
-- Mention lane `9aa8ee6fc`, `2e51ed38c` → `26548d2f0`, `116a064cd`;
-  root bounds/lifetime integration `ff4a87616`, `80db96efb`, `d00d86c9d`.
-- Overlay helpers `d795abb7c`; private context reset `dc79171e0`, `70365d0ab`
-  (the latter context behavior needs correction, below).
-- Emoji/time feature `b1d177aaf` → `73f393974`, manually merged with real
-  table tokens, cell line heights, code controls and heading baselines.
-- Highlight FIFO `d82efed96` → `a286a0e0b`.
-- Root inline target keyboard navigation `69d4ad671`.
+Owned Wayland demo checks verified heading/list layout, table cell separation and
+long-date columns, exact Unicode code clipboard bytes/trailing newline and Copied
+reset, horizontal thumb release outside the message, animated WebP changing frames,
+paused emoji and scroll return, 30/31 jumbo thresholds, French/24-hour labels,
+a tooltip on timestamp row 250, and keyboard reveal/first-Enter activation of an
+otherwise offscreen eighth-column role and the following user profile at 880×720.
+No live messages, account-setting mutations, call joins or capture were performed.
 
-## Unmerged work and stopped agents
+The installed application is being updated after the final gate. Its actual build
+and launch evidence are recorded in `results.json` and the live debugger directory
+pointed to by `/tmp/fluxer-live-debug-dir`; check those rather than assuming an older
+open window contains these changes.
 
-Worktrees are under `target/worktrees/`; actual HEADs, dirty paths and patch
-snapshots are saved in `target/qa/chat-parity-2026-11-16/paused-worktrees.json` and
-`*-paused.patch`.
+## Review queue and limits
 
-- Terra `/root/chat3_rich_blocks`, `chat3-rich-blocks`, `chat3/rich-blocks`:
-  **`0e7921886` remains unmerged**, fixing blank/padded table-cell hit testing
-  with per-cell byte ranges. Later uncommitted work may contain scrollbar
-  outside-release fixes, two-second Copied feedback and list hanging indents;
-  inspect the saved tree/diff before resuming. Agent interrupted.
-- Sol `/root/chat3_emoji_time`, `chat3-emoji-time`, `chat3/emoji-time`:
-  **`1d612466b` remains unmerged**, keeping Unicode literal in inline/fenced
-  code. Merge the new `inline_emoji_height` helper into real table rows and
-  preserve heading `font_size * 1.2` baseline. Agent complete.
-- Terra `/root/chat3_mentions` delivered mentions and reviews, then was working
-  in **`chat3-focus`, `chat3/focus`**, based on `69d4ad671`, on offscreen keyboard
-  focus scrolling. Agent interrupted; inspect dirty changes before continuing.
+See the chat-push entry in [REVIEW.md](REVIEW.md). Real Fluxer messages, animated
+community emoji/CDN-only Unicode art, subjective spacing, extensive selection and
+keyboard combinations, font-size settings, IME/accessibility, real account-switch
+and reconnect behavior, and prolonged hidden-window timestamp behavior still need
+manual acceptance. The offline fixture has no static-CDN endpoint, so a known
+mixed-skin-tone emoji absent from bundled sheets is blank there; this fixture does
+not establish live CDN-art acceptance. Linux ICU localization is exercised;
+other-platform fallback behavior remains a portability gap.
 
-## Known blockers — first work on resume
+Alert icons/localization, rich profile biography rendering, the full profile modal,
+and complete markdown/accessibility parity remain migration work. Attribution and
+the release-packaging gap for Arborium's language grammars are documented in
+[THIRD_PARTY.md](THIRD_PARTY.md); this is not a distributable-release sign-off.
+The aggregate media resource budget (#2) and multi-stream acceptance stay deferred.
 
-1. **Repeated READY/context reset regression:** worker emits SessionContext on
-   every READY (`client/src/worker.rs` around 2789). Root currently calls
-   `reset_conversation_surfaces` unconditionally there, closing search/profiles,
-   dropping reply/forward/outbox/media UI on reconnect. Gate resets on an actual
-   account/instance boundary; preserve same-context reconnect work. The planned
-   context identity correction was analysis only, not implemented.
-2. **Account-scoped private state:** direct A→B with the same numeric channel ID
-   still can retain search query, composer draft/edit state, pending messages and
-   staged attachments. Clear/reload these on a confirmed boundary even if channel
-   ID is unchanged. Draft restoration must use the new account's authoritative
-   state, and must avoid the composer observer sending an empty SetDraft into the
-   new worker before that state arrives. Do not blanket-clear on every READY.
-3. **Offscreen keyboard focus:** Tab can select a target outside the clip and
-   Enter can fall back to the mouse position. `chat3-focus` was addressing this.
-   Search's GPUI List consumes `window.request_autoscroll` during prepaint;
-   the timeline's ScrollHandle Div does not. Reveal the actual target vertically
-   and horizontally within a scrolled table, only on keyboard intent.
-4. Merge code Unicode and table hit-test fixes listed above. The table blank-cell
-   case can otherwise select the neighboring column in asymmetric wrapped rows.
-5. **Timestamp limits and clipping:** timestamp widgets cap `.take(128)` before
-   visibility, so later visible relative timestamps have no timer/tooltip. Apply
-   cap after clipping. Atomic long date labels can exceed narrow cell widths and
-   paint/hit-test into neighboring columns; choose suitable intrinsic column
-   widths or clip the cell consistently, including tooltip/hit boxes.
-6. **Scrollbar release:** releasing table drag outside the message may leave
-   table_drag active. Clear it on outside release or when no left button is down.
-   Rich agent may have an unfinished fix in its dirty tree.
-7. Finish/check Copied feedback (source uses two seconds), hanging list markers
-   on wrapped rows, and remaining alert/heading presentation. Explicitly document
-   residual scope (e.g. alert localization/icons) rather than claiming parity.
+## Worktree/preservation record
 
-## Validation so far
+The original pause snapshots, untracked-file archive, retained integration stash
+IDs and worktree patches remain in the QA directory. Delivered table/code/focus/
+timestamp follow-ups formerly listed as unmerged are now integrated. Subsequent
+Clippy, redraw and attribution agent work is also merged. Agent worktrees remain
+available for inspection; no worktrees or saved WIP were removed.
 
-The prior installed expansion had a full 638-pass/14-ignored gate. **That is not
-validation of this push.** Agent lanes report focused message/Arborium/queue
-checks and an isolated 280-pass/1-ignored desktop emoji gate. Root overlay
-geometry test passed. Root integration builds through `qa-build4` succeeded, but
-latest keyboard helper/test edits and pending fixes have no final combined gate.
-
-Owned pointer GUI checks passed resolved user/role activation, exact adjacent-gap
-behavior, inert unknown/code mentions, Escape and initial popup placement. Full
-merged emoji/timestamp, table/clipboard/scroll/keyboard and narrow-window checks
-remain. Captures/logs: `target/qa/chat-parity-2026-11-16/` and
-`/tmp/fluxer-chat3-*.log`. Existing QA helpers are `/tmp/fluxer-push-ui/qa.py` and
-`resume_qa.py`, exact title `Fluxer · Native · push-qa`.
-
-## Build and preservation rules
-
-All Cargo operations use `/tmp/fluxer-push-cargo` with an explicit worktree
-`--manifest-path .../fluxer_native/Cargo.toml --locked`; it serializes the shared
-**disk-backed** `/tmp/fluxer-gpui-target`. Do not cargo clean. Rich lane downloaded
-and pinned Arborium 2.18.2 grammar dependencies; keep their attribution/declared
-licenses in release review. Source highlighting matches the checked-in Fluxer
-version and uses native captures rather than an HTML parser.
-
-Root's original uncommitted audio/DSP work remains present and unstaged. Do not
-commit or discard it. Preexisting patches, file hashes, untracked tar and retained
-integration stash IDs are in `target/qa/chat-parity-2026-11-16/`. Cargo.lock now
-contains committed Arborium dependencies plus the original uncommitted DSP graph.
-Selective staging is required for main.rs and Cargo.lock. No real-account
-messages/settings/call joins/capture were used for this push's checks. The media
-resource budget (#2) and multi-stream acceptance remain deferred by the user.
+All Cargo operations use the serialized `/tmp/fluxer-push-cargo` or equivalent
+build lock and the disk-backed `/tmp/fluxer-gpui-target`. Do not cargo clean or
+stage unrelated audio/DSP changes. `Cargo.lock` contains committed Arborium
+changes plus the original uncommitted DSP dependency graph.
