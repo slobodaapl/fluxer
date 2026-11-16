@@ -11,8 +11,8 @@ mod composer_slowmode;
 mod concealed_image;
 mod context_actions;
 mod context_menu;
-mod conversation_scope;
 mod controls;
+mod conversation_scope;
 mod desktop_notifications;
 mod diagnostics;
 mod dropdown;
@@ -697,8 +697,13 @@ impl Fluxer {
             this.refresh_composer_completion(cx);
             this.schedule_composer_member_query(cx);
             let content = this.composer.read(cx).content.to_string();
-            if !this.conversation_scope.is_user_edit(&content) { return; }
-            if this.state.current_user.is_some() && this.state.selected_channel.is_some() && this.editing.is_none() {
+            if !this.conversation_scope.is_user_edit(&content) {
+                return;
+            }
+            if this.state.current_user.is_some()
+                && this.state.selected_channel.is_some()
+                && this.editing.is_none()
+            {
                 this.command(Command::SetDraft(content), cx);
             }
             if !this.demo
@@ -914,8 +919,12 @@ impl Fluxer {
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
-                    let (scope_changed, restore_composer) = self.conversation_scope.state(self.state.current_user.as_ref().map(|user| user.id));
-                    if scope_changed { self.reset_conversation_surfaces(cx); }
+                    let (scope_changed, restore_composer) = self
+                        .conversation_scope
+                        .state(self.state.current_user.as_ref().map(|user| user.id));
+                    if scope_changed {
+                        self.reset_conversation_surfaces(cx);
+                    }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.inbox_ui.reset();
@@ -1073,7 +1082,9 @@ impl Fluxer {
                     selected_guild,
                 } => {
                     self.begin_notification_session();
-                    if self.conversation_scope.context(&instance, account_id) { self.reset_conversation_surfaces(cx); }
+                    if self.conversation_scope.context(&instance, account_id) {
+                        self.reset_conversation_surfaces(cx);
+                    }
                     self.instance
                         .update(cx, |input, cx| input.set(instance, cx));
                     self.selected_guild = selected_guild;
@@ -2526,7 +2537,8 @@ impl Fluxer {
 impl Render for Fluxer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = std::time::Instant::now();
-        self.role_mention.update(cx, |popup, cx| popup.reconcile(&self.state, window, cx));
+        self.role_mention
+            .update(cx, |popup, cx| popup.reconcile(&self.state, window, cx));
         let output = self
             .output_picker
             .read(cx)
