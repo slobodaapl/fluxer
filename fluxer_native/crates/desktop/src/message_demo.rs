@@ -8,9 +8,12 @@ impl Fluxer {
         if self.message_demo_started
             || !self.demo
             || self.state.current_user.is_none()
-            || !(std::env::args()
-                .any(|arg| matches!(arg.as_str(), "--demo-messages" | "--demo-mentions"))
-                || crate::emoji_time_demo::enabled())
+            || !(std::env::args().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--demo-messages" | "--demo-mentions" | "--demo-rich-blocks"
+                )
+            }) || crate::emoji_time_demo::enabled())
         {
             return;
         }
@@ -163,6 +166,24 @@ impl Fluxer {
                 });
             if !member.roles.contains(&Snowflake(555)) {
                 member.roles.push(Snowflake(555));
+            }
+        }
+        if std::env::args().any(|arg| arg == "--demo-rich-blocks") {
+            fixture.clear();
+            let now = chrono::Utc::now().timestamp();
+            let samples = vec![
+                "# Heading one\nA regular paragraph.\n## Heading two\n### Heading three\n#### Heading four\n##### Heading five\n###### Heading six".to_owned(),
+                "- A long list entry that must wrap under its text, keeping the marker outside the continuation. Unicode café 日本語 stays selectable and follows the same layout at larger text sizes.\n  - A nested entry with a long description and **formatted text** that should keep a hanging indent after wrapping at narrow widths.\n\n1. A numbered entry with enough words to wrap when the window is narrow and preserve both marker selection and indentation.\n   1. Nested numbered entry\n   2. Second nested numbered entry".into(),
+                "```rust\nfn main() {\n    let 雪 = \"✨\"; // literal Unicode inside code\n    println!(\"{}\", 雪);\n}\n```\n\nInline `let s = \"✨\";` remains literal; body emoji ✨ uses Fluxer art.".into(),
+                "| Left | Center | Right |\n| :--- | :---: | ---: |\n| A wrapped cell with enough words to occupy several lines at a narrow width | short | 123 |\n| <@101> and [a link](https://example.invalid/table) | café 日本語 🙂 | 456 |\n| empty neighbor | | 789 |".into(),
+                format!("| A | B | Time | D | E | F |\n| --- | --- | --- | --- | --- | --- |\n| before | short | prefix <t:{now}:F> suffix | 😀 | wide content | after |\n| more words in an ordinary wrapping cell | b | <t:{now}:R> | d | e | f |"),
+                "> [!NOTE]\n> A helpful note.\n\n> [!TIP]\n> A small tip.\n\n> [!IMPORTANT]\n> An important detail.\n\n> [!WARNING]\n> A warning.\n\n> [!CAUTION]\n> A caution.".into(),
+            ];
+            for (index, content) in samples.into_iter().enumerate() {
+                let id = Snowflake(22_000 + index as u64);
+                let mut message = Message::text(id, channel, alex.clone(), content);
+                message.timestamp = (base + DateDuration::seconds(index as i64 * 480)).to_rfc3339();
+                fixture.insert(id, message);
             }
         }
         self.state.messages.insert(channel, fixture);
