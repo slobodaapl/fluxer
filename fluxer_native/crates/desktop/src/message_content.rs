@@ -245,7 +245,7 @@ mod tests {
             username: "known".into(),
             ..Default::default()
         };
-        content.update_mentions(Snowflake(1), Snowflake(2), &[user.clone()]);
+        content.update_mentions(Snowflake(1), Snowflake(2), std::slice::from_ref(&user));
         content.update_mentions(Snowflake(4), Snowflake(5), &[user]);
         content.retain_documents(&BTreeSet::from([(Snowflake(4), Snowflake(5))]));
         assert!(
@@ -269,7 +269,7 @@ mod tests {
             username: "old".into(),
             ..Default::default()
         };
-        content.update_mentions(Snowflake(1), Snowflake(2), &[user.clone()]);
+        content.update_mentions(Snowflake(1), Snowflake(2), std::slice::from_ref(&user));
         let mut updated = user;
         updated.username = "new".into();
         content.update_mentions(Snowflake(1), Snowflake(2), &[updated]);
