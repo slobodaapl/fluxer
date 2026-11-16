@@ -358,6 +358,28 @@ fn hanging_rows(
     );
     rows
 }
+const TABLE_CELL_PADDING: f32 = 24.;
+/// Atomic display labels cannot wrap at source-byte boundaries. Give their
+/// column enough intrinsic width and let the table's existing scroller expose
+/// the complete label instead of painting it across the neighboring cell.
+fn table_column_widths(
+    rows: &[Vec<Range<usize>>],
+    columns: usize,
+    available: Pixels,
+    atomic: &[(Range<usize>, Pixels)],
+) -> Vec<Pixels> {
+    let mut widths = vec![(available / columns.max(1) as f32).max(px(80.)); columns];
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            for (range, width) in atomic {
+                if range.start >= cell.start && range.end <= cell.end {
+                    widths[column] = widths[column].max(*width + px(TABLE_CELL_PADDING));
+                }
+            }
+        }
+    }
+    widths
+}
 pub(super) fn layout(
     document: &MessageDocument,
     runs: &[TextRun],
@@ -386,8 +408,37 @@ pub(super) fn layout(
                 let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
                 if columns > 0 {
                     let available = width.unwrap_or(px(480.));
-                    let cell_width = (available / columns as f32).max(px(80.));
-                    let table_width = cell_width * columns;
+                    let atomic: Vec<_> = tokens
+                        .iter()
+                        .filter(|token| {
+                            token.source.start >= block.range.start
+                                && token.source.end <= block.range.end
+                        })
+                        .map(|token| {
+                            let token_runs = clip(runs, &token.source);
+                            let local =
+                                composer_tokens::clip(std::slice::from_ref(token), &token.source);
+                            let width = inline_emoji::shape_message_line(
+                                &document.text[token.source.clone()],
+                                font_size,
+                                &token_runs,
+                                &local,
+                                window,
+                            )
+                            .width;
+                            (token.source.clone(), width)
+                        })
+                        .collect();
+                    let column_widths = table_column_widths(rows, columns, available, &atomic);
+                    let mut table_width = px(0.);
+                    let column_offsets: Vec<_> = column_widths
+                        .iter()
+                        .map(|width| {
+                            let x = table_width;
+                            table_width += *width;
+                            x
+                        })
+                        .collect();
                     let offset = table_scrolls
                         .get(&block.range.start)
                         .copied()
@@ -402,6 +453,7 @@ pub(super) fn layout(
                             .fold(line_height, Pixels::max);
                         let mut row_height = cell_line_height;
                         for (column, cell) in row.iter().enumerate() {
+                            let cell_width = column_widths[column];
                             let text = &document.text[cell.clone()];
                             let cell_runs = clip(runs, cell);
                             let cell_tokens = composer_tokens::clip(&tokens, cell);
@@ -431,9 +483,9 @@ pub(super) fn layout(
                         for column in 0..columns {
                             table_cells.push(TableCell {
                                 range: row.get(column).cloned(),
-                                x: cell_width * column - offset,
+                                x: column_offsets[column] - offset,
                                 y,
-                                width: cell_width,
+                                width: column_widths[column],
                                 height: row_height,
                                 header: row_index == 0,
                                 row: row_index,
@@ -441,7 +493,8 @@ pub(super) fn layout(
                         }
                         for (column, shaped) in column_lines {
                             for (line_index, (range, shape)) in shaped.into_iter().enumerate() {
-                                let left = cell_width * column - offset;
+                                let left = column_offsets[column] - offset;
+                                let cell_width = column_widths[column];
                                 let inner = (cell_width - px(24.)).max(px(1.));
                                 let alignment = alignments
                                     .get(column)
@@ -1146,6 +1199,99 @@ mod tests {
     }
 
     #[test]
+    fn narrow_table_reserves_intrinsic_timestamp_width_in_its_own_column() {
+        let doc = document(
+            "first | date | code\n--- | --- | ---\né | updated <t:1700000000:F> local | `✨`",
+        );
+        let (rows, columns) = doc
+            .blocks
+            .iter()
+            .find_map(|block| {
+                if let MessageBlockKind::Table { rows, .. } = &block.kind {
+                    Some((rows, rows.iter().map(Vec::len).max().unwrap()))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        let timestamp = &doc.timestamps[0];
+        let tokens = display_tokens(&doc, 0);
+        let label = &tokens
+            .iter()
+            .find(|token| token.source == timestamp.range)
+            .unwrap()
+            .label;
+        assert!(!label.contains("<t:"));
+        assert_eq!(
+            doc.copy_range(timestamp.range.clone(), &BTreeSet::new()),
+            *label
+        );
+        // The real layout passes the shaped atomic label width here. A narrow
+        // viewport must grow just its column and expose it via table scrolling.
+        let measured = px(310.);
+        let widths = table_column_widths(
+            rows,
+            columns,
+            px(240.),
+            &[(timestamp.range.clone(), measured)],
+        );
+        assert_eq!(
+            widths,
+            vec![px(80.), measured + px(TABLE_CELL_PADDING), px(80.)]
+        );
+        assert!(widths.iter().copied().fold(px(0.), |a, b| a + b) > px(240.));
+        let timestamp_left = widths[0] + px(12.);
+        let next_column = widths[0] + widths[1];
+        assert_eq!(timestamp_left + measured + px(12.), next_column);
+        assert!(inline_emoji_height(&doc, &rows[1][2], px(16.)).is_none());
+        assert!(
+            doc.copy_range(0..doc.text.len(), &BTreeSet::new())
+                .contains('✨')
+        );
+    }
+    #[test]
+    fn timestamp_widget_limit_counts_visible_tokens_after_later_scroll_positions() {
+        let source = (0..260)
+            .map(|index| {
+                let token = format!("<t:{}:R>", 1_700_000_000 + index);
+                if index == 241 {
+                    format!("||{token}||")
+                } else {
+                    token
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let doc = document(&source);
+        assert_eq!(doc.timestamps.len(), 260);
+        let rect = |timestamp: &crate::message_timestamp::Timestamp| {
+            if hidden_at(&doc, &BTreeSet::new(), timestamp.range.start).is_some() {
+                return None;
+            }
+            let row = (timestamp.seconds - 1_700_000_000) as f32;
+            Some(Bounds::new(
+                point(px(0.), px(row * 20.)),
+                size(px(120.), px(20.)),
+            ))
+        };
+        let later = Bounds::new(point(px(0.), px(240. * 20.)), size(px(200.), px(100.)));
+        let visible: Vec<_> = visible_timestamps(&doc.timestamps, later, rect)
+            .map(|(timestamp, _)| timestamp.seconds - 1_700_000_000)
+            .collect();
+        assert_eq!(visible, vec![240, 242, 243, 244]);
+        let all = Bounds::new(point(px(0.), px(0.)), size(px(200.), px(10_000.)));
+        assert_eq!(
+            visible_timestamps(&doc.timestamps, all, rect).count(),
+            MAX_VISIBLE_TIMESTAMPS
+        );
+        let offscreen = Bounds::new(point(px(0.), px(20_000.)), size(px(200.), px(100.)));
+        assert_eq!(
+            visible_timestamps(&doc.timestamps, offscreen, rect).count(),
+            0
+        );
+        assert_eq!(doc.source, source);
+    }
+    #[test]
     fn code_unicode_remains_literal_while_table_and_body_keep_bundled_art_dimensions() {
         let source = "Inline `let s=\"✨\";` and ✨\n\n```rust\nlet s=\"✨\";\n```\n\nemoji | text\n--- | ---\n✨ | ordinary";
         let doc = document(source);
@@ -1395,6 +1541,22 @@ fn refresh_relative(window: &Window, cx: &mut App) {
     .detach();
 }
 
+const MAX_VISIBLE_TIMESTAMPS: usize = 128;
+fn visible_timestamps<'a>(
+    timestamps: &'a [crate::message_timestamp::Timestamp],
+    mask: Bounds<Pixels>,
+    mut rect: impl FnMut(&crate::message_timestamp::Timestamp) -> Option<Bounds<Pixels>> + 'a,
+) -> impl Iterator<Item = (&'a crate::message_timestamp::Timestamp, Bounds<Pixels>)> + 'a {
+    timestamps
+        .iter()
+        .filter_map(move |timestamp| {
+            let bounds = rect(timestamp)?;
+            let visible = bounds.intersect(&mask);
+            (visible.size.width > px(0.) && visible.size.height > px(0.))
+                .then_some((timestamp, bounds))
+        })
+        .take(MAX_VISIBLE_TIMESTAMPS)
+}
 pub(super) fn timestamp_widgets(
     document: &MessageDocument,
     revealed: &BTreeSet<u32>,
@@ -1408,17 +1570,14 @@ pub(super) fn timestamp_widgets(
         .intersect(&window.content_mask().bounds)
         .intersect(&Bounds::new(point(px(0.), px(0.)), window.viewport_size()));
     let mut widgets = Vec::new();
-    for timestamp in document.timestamps.iter().take(128) {
+    let visible = visible_timestamps(&document.timestamps, mask, |timestamp| {
         if hidden_at(document, revealed, timestamp.range.start).is_some() {
-            continue;
+            return None;
         }
-        let Some(line) = layout
+        let line = layout
             .lines
             .iter()
-            .find(|line| line.range.contains(&timestamp.range.start))
-        else {
-            continue;
-        };
+            .find(|line| line.range.contains(&timestamp.range.start))?;
         let x = line.indent
             + line
                 .layout
@@ -1434,10 +1593,9 @@ pub(super) fn timestamp_widgets(
             ),
             size((end - x).max(px(1.)), line.height),
         );
-        let visible = rect.intersect(&mask);
-        if visible.size.width <= px(0.) || visible.size.height <= px(0.) {
-            continue;
-        }
+        Some(rect)
+    });
+    for (timestamp, rect) in visible {
         if timestamp.style == fluxer_markdown_parser::ast::TimestampStyle::RelativeTime {
             refresh_relative(window, cx);
         }

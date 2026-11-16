@@ -16,7 +16,7 @@ pub(super) fn populate(view: &mut Fluxer, channel: Snowflake, author: &User) -> 
         return None;
     }
     let now = chrono::Utc::now().timestamp();
-    let rows = vec![
+    let mut rows = vec![
         "👋🏽 🙂 👨‍👩‍👧‍👦 🇺🇸 🫱🏻‍🫲🏼".to_owned(),
         "<a:rainbow:900001> <:still:900002>".into(),
         "Inline café 日本語 👋🏽 <a:rainbow:900001> and ||<a:rainbow:900001> concealed||".into(),
@@ -30,7 +30,18 @@ pub(super) fn populate(view: &mut Fluxer, channel: Snowflake, author: &User) -> 
         ),
         format!("Concealed timestamp ||<t:{now}:R>|| · invalid <t:99999999999999999999:F>"),
         "Reply/profile inline fixtures remain small 🙂 <a:rainbow:900001>".into(),
+        format!(
+            "a | full date | c | d | e | f\n--- | --- | --- | --- | --- | ---\n✨ | <t:{now}:F> | `✨` | ordinary | text | end"
+        ),
     ];
+    if std::env::args().any(|arg| arg == "--demo-many-timestamps") {
+        rows.push(
+            (0..260)
+                .map(|index| format!("row {index}: <t:{}:R>", now - index))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
     let mut messages = BTreeMap::new();
     for (index, content) in rows.into_iter().enumerate() {
         let id = Snowflake(70_000 + index as u64);

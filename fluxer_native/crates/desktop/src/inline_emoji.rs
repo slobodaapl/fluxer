@@ -93,6 +93,77 @@ impl Projection {
             replacements,
         }
     }
+    /// Wrap measured graphemes, grouping every replacement label as one source
+    /// unit. Unlike collapsing already-computed text wraps, this reflows the
+    /// suffix after a label moved to the next row. Advances come from the same
+    /// shaped runs used for painting, including bold/mono and CJK glyphs.
+    fn atomic_wrap_breaks(
+        &self,
+        width: Pixels,
+        mut x_for_index: impl FnMut(usize) -> Pixels,
+    ) -> Vec<usize> {
+        struct Unit {
+            source: usize,
+            left: Pixels,
+            right: Pixels,
+            ch: char,
+            atomic: bool,
+        }
+        let mut units = Vec::new();
+        let mut cursor = 0;
+        let mut replacements = self.replacements.iter().peekable();
+        while cursor < self.text.len() {
+            let atomic = replacements
+                .peek()
+                .is_some_and(|replacement| replacement.display.start == cursor);
+            let end = if atomic {
+                replacements.next().unwrap().display.end
+            } else {
+                cursor + self.text[cursor..].graphemes(true).next().unwrap().len()
+            };
+            units.push(Unit {
+                source: self.source_index(cursor),
+                left: x_for_index(cursor),
+                right: x_for_index(end),
+                ch: self.text[cursor..].chars().next().unwrap(),
+                atomic,
+            });
+            cursor = end;
+        }
+        // Same word/CJK candidate policy as GPUI's LineLayout wrapper; atomic
+        // widgets additionally permit a break on either side of the widget.
+        let mut breaks = Vec::new();
+        let mut first_non_space = false;
+        let mut last_candidate = None;
+        let mut last_boundary = 0;
+        let mut last_x = px(0.);
+        let mut previous = '\0';
+        let mut previous_atomic = false;
+        for (index, unit) in units.iter().enumerate() {
+            let space = unit.ch == ' ' && !unit.atomic;
+            if first_non_space
+                && !space
+                && (unit.atomic || previous_atomic || !wrap_word_char(unit.ch) || previous == ' ')
+            {
+                last_candidate = Some(index);
+            }
+            if !space {
+                first_non_space = true;
+            }
+            if unit.right - last_x > width && index > last_boundary {
+                let boundary = last_candidate
+                    .take()
+                    .filter(|candidate| *candidate > last_boundary)
+                    .unwrap_or(index);
+                breaks.push(units[boundary].source);
+                last_boundary = boundary;
+                last_x = units[boundary].left;
+            }
+            previous = unit.ch;
+            previous_atomic = unit.atomic;
+        }
+        breaks
+    }
     fn source_index(&self, index: usize) -> usize {
         let mut source_end = 0;
         let mut display_end = 0;
@@ -142,6 +213,11 @@ impl Projection {
         }
         display_end + index.saturating_sub(source_end)
     }
+}
+
+fn wrap_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(ch,'\u{00c0}'..='\u{024f}'|'\u{0400}'..='\u{04ff}'|'-'|'_'|'.'|'\''|'$'|'%'|'@'|'#'|'^'|'~'|','|'='|':'|'⋯')
 }
 
 #[derive(Clone)]
@@ -252,6 +328,18 @@ fn wrap_with_mode(
     window: &mut Window,
 ) -> Vec<usize> {
     let projection = Projection::with_tokens_mode(text, runs, tokens, styled);
+    if !styled && !projection.replacements.is_empty() {
+        let Some(width) = width else {
+            return vec![];
+        };
+        let shaped = window.text_system().shape_line(
+            projection.text.clone(),
+            font_size,
+            &projection.runs,
+            None,
+        );
+        return projection.atomic_wrap_breaks(width, |index| shaped.x_for_index(index));
+    }
     window
         .text_system()
         .shape_text(
@@ -406,6 +494,68 @@ mod tests {
                 .runs
                 .iter()
                 .all(|run| run.color.a == 0. && run.background_color == base.background_color)
+        );
+    }
+    #[test]
+    fn measured_atomic_wrap_reflows_prefix_and_suffix_without_splitting_labels() {
+        let text = "éx <t:1700000000:F> local 中文e\u{301}";
+        let start = text.find("<t:").unwrap();
+        let end = text.find('>').unwrap() + 1;
+        let projection = Projection::with_tokens_mode(
+            text,
+            &[],
+            &[composer_tokens::Token {
+                source: start..end,
+                label: "Tuesday, November 14, 2023 10:13 PM".into(),
+            }],
+            false,
+        );
+        // Simulate unequal shaped glyph advances, including CJK and a combining
+        // grapheme. Production obtains these positions from the styled ShapedLine.
+        let mut positions = std::collections::BTreeMap::new();
+        let mut advance = px(0.);
+        for (index, grapheme) in projection.text.grapheme_indices(true) {
+            positions.insert(index, advance);
+            advance += px(match grapheme {
+                "中" | "文" => 13.,
+                "é" => 8.,
+                "e\u{301}" => 7.,
+                _ => 6.,
+            });
+        }
+        positions.insert(projection.text.len(), advance);
+        let replacement = &projection.replacements[0];
+        let width = positions[&replacement.display.end] - positions[&replacement.display.start];
+        let breaks = projection.atomic_wrap_breaks(width, |index| positions[&index]);
+        assert_eq!(breaks, vec![start, end]);
+        let rows = visual_ranges(0..text.len(), &breaks);
+        assert_eq!(&text[rows[0].clone()], "éx ");
+        assert_eq!(&text[rows[1].clone()], "<t:1700000000:F>");
+        assert_eq!(&text[rows[2].clone()], " local 中文e\u{301}");
+        assert!(breaks.iter().all(|index| text.is_char_boundary(*index)));
+        assert!(breaks.iter().all(|index| !(*index > start && *index < end)));
+        for row in rows {
+            let from = projection.display_index(row.start);
+            let to = projection.display_index(row.end);
+            assert!(positions[&to] - positions[&from] <= width);
+        }
+    }
+    #[test]
+    fn measured_atomic_wrap_keeps_cjk_and_combining_source_boundaries() {
+        let text = "中文e\u{301}";
+        let projection = Projection::with_tokens_mode(text, &[], &[], false);
+        let positions = std::collections::BTreeMap::from([
+            (0, px(0.)),
+            (3, px(13.)),
+            (6, px(26.)),
+            (text.len(), px(33.)),
+        ]);
+        let breaks = projection.atomic_wrap_breaks(px(15.), |index| positions[&index]);
+        assert_eq!(breaks, vec![3, 6]);
+        assert_eq!(&text[breaks[1]..], "e\u{301}");
+        assert_eq!(
+            projection.source_index(projection.display_index(text.len())),
+            text.len()
         );
     }
     #[test]

@@ -46,6 +46,18 @@ Root owns GUI validation and integrated binary build. Check multiple animated fr
 
 Follow-up validation: all 38 `input::` tests passed through the locked offline worktree manifest (`/tmp/chat3-code-unicode-input-tests.log`). Regression tests inspect actual inline/fenced AST code spans beside ordinary body/table emoji, exact 16px→24px ordinary emoji height contribution, absent code height contribution/tokens, literal message projection, composer fallback, explicit message token round-trips, and unchanged source/copy.
 
+## Timestamp viewport and narrow-table follow-up
+
+The widget limit is applied after concealment and clipped viewport filtering, so later relative timestamps still receive tooltip and clock handling when a message contains more than 128 timestamps. A 260-token AST regression scrolls to rows 240–244, excludes a concealed row, verifies the visible budget, and checks that fully offscreen content schedules no widget work.
+
+Table columns now reserve the actual shaped width of the widest atomic display token plus normal cell padding. Columns have individual widths and cumulative positions; only the affected column grows, and the existing horizontal scrollbar reveals full localized dates. Ordinary cell text keeps wrapping. Timestamp-bearing cells do not reserve their whole paragraph width.
+
+Message wrapping now reflows complete source-atomic timestamp/emoji units using actual styled ShapedLine advances. It uses the checked-in GPUI word/CJK candidate policy and grapheme boundaries, so prefix/suffix text wraps around full labels without splitting UTF-8 source ranges or assuming uniform glyph widths. Composer wrapping and messages without replacements keep their existing wrapper. Tests cover a date between prefix/suffix text, unequal advances, CJK and combining graphemes, per-column intrinsic sizing, literal inline code, and formatted selection copy.
+
+Follow-up validation: full offline desktop gate passed **299 tests, 1 ignored** through the serialized wrapper and locked isolated manifest (`/tmp/chat3-timestamp-viewport-all-tests.log`). Focused atomic reflow tests passed 2/2, and timestamp tests (including the later-than-128 viewport scenario and narrow-column sizing) passed 6/6.
+
+The explicit demo adds a narrow six-column date table. Add `--demo-many-timestamps` to `--demo --demo-emoji-time` for a 260-row message that can be scrolled beyond the old absolute-token limit. GUI validation belongs to the root integration; this task claims test validation only.
+
 ## Limits
 
 System ICU/CLDR versions can differ in punctuation from the web runtime's ICU version. Without system ICU (and on non-Linux targets), formatting falls back to local ISO-style English; full locale parity is provided on this Linux target. Browser-locale AUTO override is a web local accessibility setting; native AUTO uses account locale. Existing profile bio rendering loops spans outside TextInput and does not render its custom emoji placeholders; converting that separate widget is outside the main chat/reply/search scope. Existing unsupported table/alert markers are owned by the rich-blocks integration.
