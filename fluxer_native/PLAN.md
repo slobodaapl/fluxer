@@ -96,6 +96,14 @@ voice activity and push-to-talk, sensitivity, echo cancellation, noise suppressi
 automatic gain control, microphone test/meter, and clear device errors. Do not
 enable microphone capture just by opening the app or viewing settings.
 
+- [ ] TODO (deferred): Port Streamr speaker isolation to GPUI. Reuse the existing
+  native service and bounded PCM protocol; package/validate its model assets,
+  implement account-scoped speaker enrollment and sample deletion, and handle
+  service startup, errors, cancellation, and teardown during backend changes,
+  mute/deafen, disconnect, and account changes. Verify real-time processing and
+  enrollment privacy before exposing Streamr in the backend selector. Deferred
+  at the user's request while DeepFilterNet support is implemented.
+
 Share a user-selected display/window via OS consent; publish and receive screen
 video with aspect-correct GPUI presentation; stop on request or source removal;
 pick resolution, frame rate, codec/quality within instance/account limits. Include

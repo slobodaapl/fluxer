@@ -149,6 +149,39 @@ fn save_at(path: &Path, key: &str, prefs: &AudioPreferences) -> Result<(), Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluxer_media::NoiseSuppressionBackend;
+    #[test]
+    fn noise_backend_migrates_old_preferences_and_round_trips_per_account() {
+        let enabled: AudioPreferences =
+            serde_json::from_str(r#"{"dsp":{"noise_suppression":true}}"#).unwrap();
+        assert_eq!(
+            enabled.dsp.effective_noise_suppression_backend(),
+            NoiseSuppressionBackend::Standard
+        );
+        let disabled: AudioPreferences =
+            serde_json::from_str(r#"{"dsp":{"noise_suppression":false}}"#).unwrap();
+        assert_eq!(
+            disabled.dsp.effective_noise_suppression_backend(),
+            NoiseSuppressionBackend::None
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("noise.json");
+        for backend in NoiseSuppressionBackend::ALL {
+            let mut prefs = AudioPreferences::default();
+            prefs.dsp.noise_suppression_backend = backend;
+            prefs.dsp.noise_suppression = backend != NoiseSuppressionBackend::None;
+            save_at(&path, backend.id(), &prefs).unwrap();
+        }
+        let saved = read(&path).unwrap();
+        for backend in NoiseSuppressionBackend::ALL {
+            assert_eq!(
+                saved[backend.id()]
+                    .dsp
+                    .effective_noise_suppression_backend(),
+                backend
+            );
+        }
+    }
     #[test]
     fn playback_preferences_are_sanitized_and_old_records_get_defaults() {
         let old: AudioPreferences = serde_json::from_str("{}").unwrap();

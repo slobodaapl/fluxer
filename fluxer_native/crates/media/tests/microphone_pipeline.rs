@@ -236,6 +236,7 @@ async fn microphone_pipeline() -> TestResult {
         echo_cancellation: false,
         noise_suppression: false,
         auto_gain_control: false,
+        ..AudioSettings::default()
     })?;
     media.configure_mixer(mixer(1., InputMode::OpenMic))?;
     media.configure_microphone_publish(Some(64_000.), false)?;

@@ -10,6 +10,8 @@ pub use file_playback::{
 };
 mod microphone;
 mod microphone_device;
+mod noise_suppression;
+pub use noise_suppression::NoiseSuppressionBackend;
 mod pipewire_runtime;
 mod playback;
 mod publish;
@@ -84,6 +86,7 @@ pub struct DeviceSelection {
 pub struct AudioSettings {
     pub echo_cancellation: bool,
     pub noise_suppression: bool,
+    pub noise_suppression_backend: NoiseSuppressionBackend,
     pub auto_gain_control: bool,
 }
 impl Default for AudioSettings {
@@ -91,7 +94,20 @@ impl Default for AudioSettings {
         Self {
             echo_cancellation: true,
             noise_suppression: true,
+            noise_suppression_backend: NoiseSuppressionBackend::Standard,
             auto_gain_control: true,
+        }
+    }
+}
+
+impl AudioSettings {
+    /// Old preferences only had an on/off flag. Keep honoring that flag while
+    /// defaulting their backend to WebRTC during deserialization.
+    pub fn effective_noise_suppression_backend(&self) -> NoiseSuppressionBackend {
+        if self.noise_suppression {
+            self.noise_suppression_backend
+        } else {
+            NoiseSuppressionBackend::None
         }
     }
 }
@@ -109,6 +125,12 @@ pub struct VideoFrame {
 
 #[derive(Clone, Debug)]
 pub enum MediaEvent {
+    NoiseSuppressionStatus {
+        requested: NoiseSuppressionBackend,
+        effective: NoiseSuppressionBackend,
+        initializing: bool,
+        error: Option<String>,
+    },
     Connected,
     Disconnected,
     /// The room ended because of a transport failure rather than removal.

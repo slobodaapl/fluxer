@@ -556,14 +556,17 @@ impl Fluxer {
                 .child(self.audio_controls(cx))
                 .child(audio_section("Microphone processing").children([
                     ("aec","Echo cancellation","Reduce echo from sound playing through your speakers.",self.dsp.echo_cancellation),
-                    ("ns","Noise suppression","Reduce steady background noise from your microphone.",self.dsp.noise_suppression),
                     ("agc","Automatic gain control","Keep your microphone at a consistent listening level.",self.dsp.auto_gain_control),
                 ].into_iter().map(|(id,label,description,enabled)|{
                     audio_setting_row(label,description).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{
-                        match id{"aec"=>this.dsp.echo_cancellation= !this.dsp.echo_cancellation,"ns"=>this.dsp.noise_suppression= !this.dsp.noise_suppression,_=>this.dsp.auto_gain_control= !this.dsp.auto_gain_control}
+                        match id{"aec"=>this.dsp.echo_cancellation= !this.dsp.echo_cancellation,_=>this.dsp.auto_gain_control= !this.dsp.auto_gain_control}
                         this.command(Command::SetDsp(this.dsp.clone()),cx);
                     })))
-                })))
+                }))
+                    .child(self.suppression_picker.clone())
+                    .child(audio_description(self.dsp.effective_noise_suppression_backend().description()))
+                    .when_some(self.suppression_status.clone(), |view, status| view.child(audio_description(status)))
+                )
                 .child(audio_description("Sliders: arrow keys fine-tune; Home and End set the limits."))
 )
             .into_any_element()

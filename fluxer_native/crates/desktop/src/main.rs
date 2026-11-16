@@ -95,8 +95,8 @@ use fluxer_core::{
 };
 use fluxer_media::{
     AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
-    ParticipantAudioSettings, ScreenShareOptions, ScreenSource, ScreenSourceKind,
-    SharedAudioSelection, SharedAudioSettings,
+    NoiseSuppressionBackend, ParticipantAudioSettings, ScreenShareOptions, ScreenSource,
+    ScreenSourceKind, SharedAudioSelection, SharedAudioSettings,
 };
 use gpui::{prelude::*, *};
 use image_viewer::ImageViewer;
@@ -386,6 +386,8 @@ struct Fluxer {
     input_picker: Entity<Dropdown>,
     output_picker: Entity<Dropdown>,
     mode_picker: Entity<Dropdown>,
+    suppression_picker: Entity<Dropdown>,
+    suppression_status: Option<String>,
     fps_picker: Entity<Dropdown>,
     resolution_picker: Entity<Dropdown>,
     screen_picker: Entity<Dropdown>,
@@ -533,6 +535,14 @@ impl Fluxer {
             audio_device_status: String::new(),
             input_picker: picker("Input device", &[], Some("input:default"), window, cx),
             output_picker: picker("Output device", &[], Some("output:default"), window, cx),
+            suppression_picker: picker(
+                "Noise suppression",
+                &NoiseSuppressionBackend::ALL.map(|backend| (backend.id(), backend.label())),
+                Some("standard"),
+                window,
+                cx,
+            ),
+            suppression_status: None,
             mode_picker: picker(
                 "Input mode",
                 &[
@@ -645,6 +655,18 @@ impl Fluxer {
             this.command(Command::SetMixer(this.mixer.clone()), cx);
         })
         .detach();
+        cx.subscribe(
+            &view.suppression_picker,
+            |this, _, selected: &Selected, cx| {
+                if let Some(backend) = NoiseSuppressionBackend::from_id(&selected.0) {
+                    this.dsp.noise_suppression_backend = backend;
+                    this.dsp.noise_suppression = backend != NoiseSuppressionBackend::None;
+                    this.suppression_status = None;
+                    this.command(Command::SetDsp(this.dsp.clone()), cx);
+                }
+            },
+        )
+        .detach();
         cx.subscribe(&view.fps_picker, |this, _, selected: &Selected, cx| {
             if let Ok(fps) = selected.0.parse() {
                 this.share_fps = fps;
@@ -724,6 +746,7 @@ impl Fluxer {
                     &this.input_picker,
                     &this.output_picker,
                     &this.mode_picker,
+                    &this.suppression_picker,
                     &this.fps_picker,
                     &this.resolution_picker,
                     &this.screen_picker,
@@ -1237,6 +1260,11 @@ impl Fluxer {
                         })
                         .collect();
                     self.dsp = dsp;
+                    self.suppression_status = None;
+                    self.suppression_picker.update(cx, |picker, cx| {
+                        picker
+                            .set_selected(self.dsp.effective_noise_suppression_backend().id(), cx);
+                    });
                     self.mixer = mixer;
                     let mode = match self.mixer.input_mode {
                         InputMode::OpenMic => "open",
@@ -1566,6 +1594,30 @@ impl Fluxer {
                         self.active_speakers = identities.into_iter().collect()
                     }
                     MediaEvent::AudioLevels { input, output } => self.levels = (input, output),
+                    MediaEvent::NoiseSuppressionStatus {
+                        requested,
+                        effective,
+                        initializing,
+                        error,
+                    } => {
+                        if requested == self.dsp.effective_noise_suppression_backend() {
+                            self.suppression_status = if initializing {
+                                Some(format!(
+                                    "Preparing {}; using {} until it is ready.",
+                                    requested.label(),
+                                    effective.label()
+                                ))
+                            } else {
+                                error.map(|error| {
+                                    format!(
+                                        "{} unavailable; using {}. {error}",
+                                        requested.label(),
+                                        effective.label()
+                                    )
+                                })
+                            };
+                        }
+                    }
                     MediaEvent::Error(error) if !self.viewer.fail_pending(error.clone()) => {
                         self.error = Some(error);
                     }

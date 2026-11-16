@@ -41,11 +41,20 @@ settings should also point to a disk-backed directory.
 
 Linux needs a working X11 or Wayland session, Vulkan-capable GPU/driver,
 fontconfig/freetype, xkbcommon (including X11 support), ALSA, PipeWire, GLib,
-OpenSSL, and development headers. Build tooling includes Rust, pkg-config,
+OpenSSL, and development headers. Build tooling includes Rust 1.97 or later (for
+the embedded Wasmtime runtime), pkg-config,
 CMake, and Clang 21 or later for the current LiveKit WebRTC artifact. The first
 build downloads GPUI/Rust dependencies and LiveKit's native WebRTC library.
 The client uses the OS portal for Wayland screen selection. Application/system
 audio capture currently uses the existing Linux PipeWire engine.
+
+Voice & audio settings offer Off, WebRTC, noise gate, Speex, RNNoise, GTCRN, and
+DeepFilterNet3 noise suppression. The models are bundled and run locally; selection applies to
+the microphone test and calls and is saved per account. DFN initializes in the
+background while WebRTC keeps the microphone running. The first build fetches a
+hash-verified 8 MB DFN model when its Git LFS archive is not hydrated; offline
+builders can set `FLUXER_DEEP_FILTER_MODEL` to that archive. Streamr speaker
+isolation is deferred in [PLAN.md](PLAN.md).
 
 Chat shows discovered-instance avatars, inline image attachments, embed cards,
 and forwarded snapshots. Audio/video attachments have native playback controls and an in-app full view. Message bodies

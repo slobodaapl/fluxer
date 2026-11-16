@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Physical PCM -> WebRTC APM -> application gain/gate -> published native source.
+//! Physical PCM -> WebRTC APM -> selected suppressor -> gain/gate -> publication.
 //!
 //! A Device audio track cannot be tapped: WebRTC pc/local_audio_source.h's
 //! LocalAudioSource::AddSink is explicitly a no-op. NativeAudioStream on that
 //! track therefore never produces PCM. Use physical capture, then the SDK's
 //! standalone APM, rather than silently publishing an empty derived source.
 use crate::{
-    AudioSettings, MediaEvent, Result,
+    AudioSettings, MediaEvent, NoiseSuppressionBackend, Result,
     audio::{AudioMixSettings, InputProcessor, PlaybackMixer},
+    noise_suppression::{Preparation, SuppressionWorker},
 };
 use livekit::prelude::*;
 use livekit::webrtc::{
@@ -106,6 +107,11 @@ fn process(
         let mut resampler = AudioResampler::default();
         let mut apm: Option<AudioProcessingModule> = None;
         let mut previous = None;
+        let mut suppression_worker = None;
+        let mut preparation: Option<Preparation> = None;
+        let mut selected_backend = None;
+        let mut failed_backend = None;
+        let mut previous_backend_report = None;
         let mut pending = Vec::new();
         let mut format = (0, 0);
         let mut frames = 0_u32;
@@ -154,10 +160,64 @@ fn process(
                     ),
                     Err(_) => return,
                 };
+                let requested = dsp.effective_noise_suppression_backend();
+                let mut backend_error = None;
+                if selected_backend != Some(requested) {
+                    suppression_worker = None;
+                    preparation = None;
+                    failed_backend = None;
+                    selected_backend = Some(requested);
+                    previous_backend_report = None;
+                    if requested.uses_worker() {
+                        match SuppressionWorker::preparing(requested, channels) {
+                            Ok((worker, ready)) => {
+                                suppression_worker = Some(worker);
+                                preparation = Some(ready);
+                                let _ = events.try_send(MediaEvent::NoiseSuppressionStatus {
+                                    requested,
+                                    effective: NoiseSuppressionBackend::Standard,
+                                    initializing: true,
+                                    error: None,
+                                });
+                            }
+                            Err(error) => backend_error = Some(error),
+                        }
+                    }
+                }
+                let ready = preparation
+                    .as_mut()
+                    .and_then(|ready| match ready.try_recv() {
+                        Ok(result) => Some(result),
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => None,
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(Err(
+                            "Noise suppression worker stopped during initialization".into(),
+                        )),
+                    });
+                if let Some(result) = ready {
+                    preparation = None;
+                    if let Err(error) = result {
+                        backend_error = Some(error);
+                    }
+                }
+                if let Some(error) = backend_error {
+                    failed_backend = Some(requested);
+                    suppression_worker = None;
+                    let _ = events.try_send(MediaEvent::NoiseSuppressionStatus {
+                        requested,
+                        effective: NoiseSuppressionBackend::Standard,
+                        initializing: false,
+                        error: Some(error),
+                    });
+                }
+                let backend = if failed_backend == Some(requested) || preparation.is_some() {
+                    NoiseSuppressionBackend::Standard
+                } else {
+                    requested
+                };
                 let key = (
                     dsp.echo_cancellation,
                     dsp.auto_gain_control,
-                    dsp.noise_suppression,
+                    backend == NoiseSuppressionBackend::Standard,
                 );
                 if previous != Some(key) {
                     apm = Some(AudioProcessingModule::new(key.0, key.1, false, key.2));
@@ -196,6 +256,47 @@ fn process(
                         "Microphone audio processing failed: {error}"
                     )));
                     return;
+                }
+                if backend.uses_worker() {
+                    let result = async {
+                        if suppression_worker.is_none() {
+                            suppression_worker =
+                                Some(SuppressionWorker::new().map_err(|e| e.to_string())?);
+                        }
+                        suppression_worker
+                            .as_ref()
+                            .unwrap()
+                            .process(backend, channels, data.clone())
+                            .await
+                    }
+                    .await;
+                    match result {
+                        Ok(processed) => {
+                            data = processed;
+                            if failed_backend.is_none() {
+                                // Send only on initialization, not for every PCM block.
+                                if previous_backend_report != Some(backend) {
+                                    let _ = events.try_send(MediaEvent::NoiseSuppressionStatus {
+                                        requested,
+                                        effective: backend,
+                                        initializing: false,
+                                        error: None,
+                                    });
+                                    previous_backend_report = Some(backend);
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            failed_backend = Some(requested);
+                            suppression_worker = None;
+                            let _ = events.try_send(MediaEvent::NoiseSuppressionStatus {
+                                requested,
+                                effective: NoiseSuppressionBackend::Standard,
+                                initializing: false,
+                                error: Some(error),
+                            });
+                        }
+                    }
                 }
                 let peak = processor.process(
                     &mut data,
@@ -252,6 +353,7 @@ mod tests {
                 echo_cancellation: false,
                 noise_suppression: false,
                 auto_gain_control: false,
+                ..AudioSettings::default()
             },
             ..Default::default()
         }))
@@ -261,6 +363,149 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+    }
+    #[tokio::test]
+    async fn switching_off_during_dfn_preparation_keeps_publishing_without_stale_audio() {
+        let (input, rx) = mpsc::channel(8);
+        let (events, mut status) = mpsc::channel(32);
+        let controls = controls();
+        {
+            let mut c = controls.lock().unwrap();
+            c.processing.noise_suppression = true;
+            c.processing.noise_suppression_backend = NoiseSuppressionBackend::DeepFilter;
+        }
+        let (task, track) = process(
+            rx,
+            controls.clone(),
+            Arc::new(Mutex::new(PlaybackMixer::new())),
+            events,
+            1,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut output = NativeAudioStream::new(track.rtc_track(), 48_000, 1);
+        input
+            .send(Pcm {
+                data: vec![500; 480],
+                sample_rate: 48_000,
+                channels: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(next(&mut output).await.samples_per_channel, 480);
+        assert!(matches!(
+            status.recv().await.unwrap(),
+            MediaEvent::NoiseSuppressionStatus {
+                requested: NoiseSuppressionBackend::DeepFilter,
+                effective: NoiseSuppressionBackend::Standard,
+                initializing: true,
+                error: None,
+            }
+        ));
+        controls.lock().unwrap().processing.noise_suppression = false;
+        input
+            .send(Pcm {
+                data: vec![16_384; 480],
+                sample_rate: 48_000,
+                channels: 1,
+            })
+            .await
+            .unwrap();
+        let pcm = next(&mut output).await;
+        assert!(
+            pcm.data
+                .iter()
+                .all(|sample| (16_383..=16_384).contains(sample)),
+            "Off must take effect while preparation is outstanding and discard old model audio"
+        );
+        task.abort();
+        output.close();
+    }
+
+    #[tokio::test]
+    async fn selectable_backends_process_published_pcm_and_switch_without_rejoining() {
+        let (input, rx) = mpsc::channel(8);
+        let (events, mut status) = mpsc::channel(32);
+        let controls = controls();
+        let (task, track) = process(
+            rx,
+            controls.clone(),
+            Arc::new(Mutex::new(PlaybackMixer::new())),
+            events,
+            1,
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut output = NativeAudioStream::new(track.rtc_track(), 48_000, 1);
+        for backend in [
+            NoiseSuppressionBackend::Gate,
+            NoiseSuppressionBackend::Rnnoise,
+            NoiseSuppressionBackend::Speex,
+            NoiseSuppressionBackend::Gtcrn,
+            NoiseSuppressionBackend::DeepFilter,
+            NoiseSuppressionBackend::None,
+        ] {
+            {
+                let mut c = controls.lock().unwrap();
+                c.processing.noise_suppression = backend != NoiseSuppressionBackend::None;
+                c.processing.noise_suppression_backend = backend;
+            }
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            let pcm = loop {
+                input
+                    .send(Pcm {
+                        data: vec![50; 480],
+                        sample_rate: 48_000,
+                        channels: 1,
+                    })
+                    .await
+                    .unwrap();
+                // Even cold DFN initialization must keep publishing audio.
+                let pcm = tokio::time::timeout(std::time::Duration::from_secs(5), output.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut ready = !backend.uses_worker();
+                while let Ok(event) = status.try_recv() {
+                    if let MediaEvent::NoiseSuppressionStatus {
+                        requested,
+                        effective,
+                        initializing,
+                        error,
+                    } = event
+                    {
+                        assert_eq!(requested, backend);
+                        assert!(error.is_none(), "{error:?}");
+                        if initializing {
+                            assert_eq!(effective, NoiseSuppressionBackend::Standard);
+                        } else {
+                            assert_eq!(effective, backend);
+                            ready = true;
+                        }
+                    }
+                }
+                if ready {
+                    break pcm;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{} never became ready",
+                    backend.label()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            };
+            assert_eq!(pcm.samples_per_channel, 480);
+            if backend == NoiseSuppressionBackend::None {
+                assert!(
+                    pcm.data.iter().all(|&s| (49..=50).contains(&s)),
+                    "Off must bypass the previous backend and its buffered audio"
+                );
+            } else if backend == NoiseSuppressionBackend::Gate
+                || backend == NoiseSuppressionBackend::Gtcrn
+            {
+                assert!(pcm.data.iter().all(|&s| s == 0));
+            }
+        }
+        task.abort();
+        output.close();
     }
     #[tokio::test]
     async fn physical_pcm_pipeline_changes_published_gain_and_ptt_without_device_track() {

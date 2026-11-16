@@ -14,7 +14,7 @@ Audio controls process actual samples:
   policy; explicit choices target the exact source node. Other platforms use
   CPAL input capture. Input handles live on a dedicated owner thread.
 - A bounded PCM queue feeds WebRTC's SDK `AudioResampler` and standalone
-  `AudioProcessingModule` in exact 10 ms blocks. AEC/noise suppression/AGC run
+  `AudioProcessingModule` in exact 10 ms blocks. AEC/AGC and selected noise suppression run
   before application input gain (0–200%), RMS voice activation/release, and
   push-to-talk. Processed frames feed the published `NativeAudioSource`; the
   local meter reports post-gain peak before the activation gate.
@@ -36,6 +36,28 @@ Audio controls process actual samples:
   resample and convert to f32/i16/u16; mono is downmixed and extra surround
   channels remain silent. The standalone microphone
   APM receives the post-gain/mute mixer as its echo-cancellation reference.
+- Noise suppression is selectable: Off, WebRTC, noise gate, Speex, RNNoise,
+  GTCRN, or DeepFilterNet3. The model backends embed the same WASM binaries as the
+  existing client and run locally through Wasmtime on a dedicated worker, with independent
+  state for each microphone channel. WebRTC suppression runs only when WebRTC
+  is selected; AEC/AGC remain independent. GTCRN's 768-sample frames are buffered
+  across 480-sample capture blocks with a fixed 16 ms adapter delay. Switching
+  backends discards buffered audio and recurrent state without republishing.
+  Model errors fall back to WebRTC and report the reason in voice settings.
+  Existing saved suppression flags retain their WebRTC/off behavior; the chosen
+  backend is saved per account. Asset provenance and licenses live in
+  [assets/noise/NOTICE.md](assets/noise/NOTICE.md).
+- DeepFilterNet3 uses the existing patched `df_bg.wasm` and the exact hash-pinned
+  model archive. It matches the web client's 60 Hz high-pass, x10/x0.1 gain,
+  30 dB attenuation limit, and eight silence warm-up frames. Its 480-sample model
+  frames match capture directly. Initialization runs on the suppression worker
+  while WebRTC continues publishing; settings show preparation/fallback status.
+  Compiled DFN code is cached by Wasmtime across launches. Switching away during
+  preparation applies immediately, without sending microphone samples to DFN.
+  The build uses the existing model file when hydrated by Git LFS; otherwise it
+  fetches and verifies an 8 MB copy into Cargo's build output for embedding.
+  Offline packagers can provide `FLUXER_DEEP_FILTER_MODEL=/absolute/path/to/DeepFilterNet3_onnx.tar.gz`.
+  No model download or network access is needed during calls.
 - Input selection releases old capture before opening its replacement. A stale
   explicit identifier fails instead of silently choosing another source. Output
   selection validates the current identifier, releases and joins the old output,
@@ -53,8 +75,10 @@ because key-up may not arrive.
 
 Known limits: the AEC reference is the 48 kHz stereo mixer before final hardware
 resampling/mono downmix; physical DAC/acoustic delay is not measured. Real
-headset/speaker echo behavior needs hardware testing. Advanced existing Fluxer
-speaker isolation/effects and global OS push-to-talk hooks are not ported.
+headset/speaker echo behavior needs hardware testing. Streamr
+speaker enrollment/isolation, other effects, and global OS push-to-talk hooks
+are not ported. Streamr is deferred in [PLAN.md](../../PLAN.md) and needs its separate
+service, model assets, and enrollment UI.
 Hot-unplug errors require refreshing/selecting another device; automatic
 preferred-device fallback is pending. CPAL identifiers on other platforms contain
 index/name and are not stable persistence keys. Linux PipeWire choices use exact

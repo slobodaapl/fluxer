@@ -83,6 +83,19 @@ and the published native track. Explicit test stop and disconnect wait for devic
 release; mute/deafen release input capture. See the media README for hardware
 validation commands and remaining DSP limits.
 
+Voice settings now select Off, WebRTC, noise gate, Speex, RNNoise, GTCRN, or
+DeepFilterNet3. The model backends embed the existing client's WASM binaries and
+process microphone PCM on a dedicated worker. WebRTC suppression is disabled while a
+separate backend is selected; AEC and AGC remain independent. Preferences migrate
+the old on/off flag and save backend selection per account. Synthetic tests cover
+noise reduction, stereo separation, 10 ms output cadence, state reset, and live
+backend switching through the published SDK track. DFN also embeds the hash-pinned
+model archive, matches the web client's high-pass/gain/30 dB attenuation settings,
+and warms up on the worker while WebRTC keeps publishing. Wasmtime caches compiled
+DFN code across launches. Invalid models and sustained allocation behavior have
+synthetic coverage. Streamr's speaker enrollment/isolation is deferred in PLAN.md;
+listening/hardware acceptance is also outstanding.
+
 The pinned WebRTC archive also exports weak PipeWire forwarding symbols. Native
 media initializes its documented library loader before calling pipewire-rs;
 otherwise the linker resolves `pw_init` to an uninitialized forwarding pointer.

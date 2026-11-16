@@ -12,6 +12,10 @@ thiserror.workspace = true
 serde.workspace = true
 fluxer-system-audio = { path = "../system-audio" }
 cpal = "0.16"
+wasmtime = { version = "50.0.1", default-features = false, features = ["cache", "cranelift", "gc-drc", "runtime", "std", "parallel-compilation"] }
+getrandom = "0.4"
 
 [build-dependencies]
 cc = "=1.11.1"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
+sha2 = "0.10"
