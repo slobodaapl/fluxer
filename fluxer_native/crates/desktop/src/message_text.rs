@@ -384,6 +384,7 @@ pub(super) fn layout(
                         row_height += px(12.);
                         for column in 0..columns {
                             table_cells.push(TableCell {
+                                range: row.get(column).cloned(),
                                 x: cell_width * column - offset,
                                 y,
                                 width: cell_width,

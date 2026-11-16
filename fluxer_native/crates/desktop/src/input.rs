@@ -1642,6 +1642,7 @@ struct VisualLine {
 }
 #[derive(Clone)]
 struct TableCell {
+    range: Option<Range<usize>>,
     x: Pixels,
     y: Pixels,
     width: Pixels,
@@ -1673,6 +1674,45 @@ struct DocumentLayout {
     content_height: Pixels,
     line_height: Pixels,
 }
+/// A table row may be taller than an individual cell's wrapped content. Use
+/// the cell rectangle before comparing line positions, including its padding.
+fn table_line_for_position<'a>(
+    cells: &[TableCell],
+    lines: impl Iterator<Item = (usize, &'a Range<usize>, Pixels, Pixels)>,
+    position: Point<Pixels>,
+) -> Option<usize> {
+    let cell = cells.iter().find(|cell| {
+        position.x >= cell.x
+            && position.x < cell.x + cell.width
+            && position.y >= cell.y
+            && position.y < cell.y + cell.height
+    })?;
+    let range = cell.range.as_ref()?;
+    let mut best: Option<(usize, bool, Pixels)> = None;
+    for (index, line, y, height) in lines {
+        if line.start < range.start || line.end > range.end {
+            continue;
+        }
+        let inside = position.y >= y && position.y < y + height;
+        let distance = if position.y < y {
+            y - position.y
+        } else if position.y >= y + height {
+            position.y - (y + height)
+        } else {
+            px(0.)
+        };
+        if best
+            .as_ref()
+            .is_none_or(|(_, previous_inside, previous_distance)| {
+                (inside && !previous_inside)
+                    || (inside == *previous_inside && distance < *previous_distance)
+            })
+        {
+            best = Some((index, inside, distance));
+        }
+    }
+    best.map(|(index, _, _)| index)
+}
 impl DocumentLayout {
     fn height(&self) -> Pixels {
         self.lines
@@ -1692,6 +1732,16 @@ impl DocumentLayout {
             .unwrap_or_else(|| self.lines.len().saturating_sub(1))
     }
     fn row_for_position(&self, position: Point<Pixels>) -> usize {
+        if let Some(row) = table_line_for_position(
+            &self.table_cells,
+            self.lines
+                .iter()
+                .enumerate()
+                .map(|(index, line)| (index, &line.range, line.y, line.height)),
+            position,
+        ) {
+            return row;
+        }
         let mut best = None;
         for (index, line) in self.lines.iter().enumerate() {
             if position.y < line.y || position.y >= line.y + line.height {
@@ -2758,6 +2808,65 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn table_hit_testing_keeps_blank_padding_in_the_clicked_scrolled_cell() {
+        use super::{TableCell, table_line_for_position};
+        use gpui::{point, px};
+        let cells = vec![
+            TableCell {
+                range: Some(0..12),
+                x: px(-40.),
+                y: px(10.),
+                width: px(100.),
+                height: px(72.),
+                header: false,
+                row: 1,
+            },
+            TableCell {
+                range: Some(13..17),
+                x: px(60.),
+                y: px(10.),
+                width: px(100.),
+                height: px(72.),
+                header: false,
+                row: 1,
+            },
+            TableCell {
+                range: Some(18..18),
+                x: px(160.),
+                y: px(10.),
+                width: px(100.),
+                height: px(72.),
+                header: false,
+                row: 1,
+            },
+        ];
+        let lines = [
+            (0..4, px(16.), px(20.)),
+            (4..8, px(36.), px(20.)),
+            (8..12, px(56.), px(20.)),
+            (13..17, px(16.), px(20.)),
+            (18..18, px(16.), px(20.)),
+        ];
+        let hit = |x, y| {
+            table_line_for_position(
+                &cells,
+                lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (range, y, height))| (i, range, *y, *height)),
+                point(px(x), px(y)),
+            )
+        };
+        assert_eq!(hit(90., 65.), Some(3)); // blank lower right -> right cell
+        assert_eq!(hit(90., 11.), Some(3)); // top padding -> right cell
+        assert_eq!(hit(30., 41.), Some(1)); // scrolled left cell, second line
+        assert_eq!(hit(30., 56.), Some(2)); // exact wrap boundary -> downstream
+        assert_eq!(hit(59., 65.), Some(2));
+        assert_eq!(hit(60., 65.), Some(3)); // column boundary belongs right
+        assert_eq!(hit(180., 65.), Some(4)); // empty cell retains its own caret
     }
     #[test]
     fn text_context_menu_disables_selection_actions_and_tracks_undo_redo() {
