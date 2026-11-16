@@ -17,6 +17,11 @@ mod inline_emoji;
 #[path = "message_text.rs"]
 mod message_text;
 
+/// Clear retained syntax source when the active account changes.
+pub(crate) fn clear_code_highlight_cache() {
+    code_highlight::clear_cache();
+}
+
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, ElementId, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
@@ -300,6 +305,7 @@ pub struct TextInput {
     message_document: Option<Arc<MessageDocument>>,
     highlighted: Vec<code_highlight::Token>,
     highlight_generation: u64,
+    highlight_ticket: Option<code_highlight::Ticket>,
     table_scrolls: BTreeMap<usize, Pixels>,
     table_drag: Option<usize>,
     emoji_cache: Entity<message_text::EmojiCache>,
@@ -354,6 +360,7 @@ impl TextInput {
             message_document: None,
             highlighted: Vec::new(),
             highlight_generation: 0,
+            highlight_ticket: None,
             table_scrolls: BTreeMap::new(),
             table_drag: None,
             emoji_cache: message_text::EmojiCache::new(cx),
