@@ -80,6 +80,11 @@ impl super::Fluxer {
     /// A new account/instance can reuse numeric IDs. Drop private projected
     /// documents and callback scopes on the context boundary itself.
     pub(super) fn reset_conversation_surfaces(&mut self, cx: &mut gpui::Context<Self>) {
+        crate::input::clear_code_highlight_cache();
+        self.reset_context_menu(cx);
+        self.media_ui.reset();
+        self.context.user_audio.clear();
+        self.context.connection_audio.clear();
         self.replies.clear();
         self.outbox.reset();
         self.message_text.clear();
