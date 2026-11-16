@@ -31,6 +31,36 @@ use gpui::{
 };
 use unicode_segmentation::*;
 
+#[derive(Default)]
+struct CopyFeedback {
+    range: Option<Range<usize>>,
+    generation: u64,
+}
+impl CopyFeedback {
+    fn begin(&mut self, range: Range<usize>) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.range = Some(range);
+        self.generation
+    }
+    fn clear_if_current(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.range.is_none() {
+            return false;
+        }
+        self.range = None;
+        true
+    }
+    fn reset(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.range = None;
+    }
+}
+fn table_drag_is_active(drag: &mut Option<usize>, pressed: Option<MouseButton>) -> bool {
+    if pressed != Some(MouseButton::Left) {
+        *drag = None;
+    }
+    drag.is_some()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EditSnapshot {
     text: SharedString,
@@ -306,6 +336,7 @@ pub struct TextInput {
     highlighted: Vec<code_highlight::Token>,
     highlight_generation: u64,
     highlight_ticket: Option<code_highlight::Ticket>,
+    copy_feedback: CopyFeedback,
     table_scrolls: BTreeMap<usize, Pixels>,
     table_drag: Option<usize>,
     emoji_cache: Entity<message_text::EmojiCache>,
@@ -362,6 +393,7 @@ impl TextInput {
             highlighted: Vec::new(),
             highlight_generation: 0,
             highlight_ticket: None,
+            copy_feedback: CopyFeedback::default(),
             table_scrolls: BTreeMap::new(),
             table_drag: None,
             emoji_cache: message_text::EmojiCache::new(cx),
@@ -482,6 +514,7 @@ impl TextInput {
             .clone()
             .tab_stop(!inline_targets(&document, &self.revealed_spoilers).is_empty());
         self.emoji_cache = message_text::EmojiCache::new(cx);
+        self.copy_feedback.reset();
         self.message_document = Some(document.clone());
         code_highlight::schedule(self, document, cx);
         self.inline_press = None;
@@ -584,6 +617,29 @@ impl TextInput {
                     });
             cx.emit(MessageActivated { target, anchor });
         }
+    }
+
+    fn copy_code(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let Some(document) = self.message_document.as_ref() else {
+            return;
+        };
+        let Some(code) = message_text::code_for_copy(document, &range, &self.revealed_spoilers)
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(code.to_owned()));
+        let generation = self.copy_feedback.begin(range);
+        cx.notify();
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            executor.timer(std::time::Duration::from_secs(2)).await;
+            let _ = entity.update(cx, |input, cx| {
+                if input.copy_feedback.clear_if_current(generation) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub fn set_composer_labels(
@@ -1183,6 +1239,9 @@ impl TextInput {
     }
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.table_drag.is_some() {
+            if !table_drag_is_active(&mut self.table_drag, event.pressed_button) {
+                return;
+            }
             self.drag_table_scroll(event.position, cx);
             cx.stop_propagation();
             return;
@@ -2127,6 +2186,7 @@ impl Element for TextElement {
         });
         let document = input.message_document.clone();
         let revealed = input.revealed_spoilers.clone();
+        let copied_code = input.copy_feedback.range.clone();
         let backgrounds = document
             .as_ref()
             .map(|document| message_text::backgrounds(document, &layout, bounds, scroll))
@@ -2173,7 +2233,8 @@ impl Element for TextElement {
                     &layout,
                     bounds,
                     scroll,
-                    self.input.entity_id().as_u64(),
+                    self.input.clone(),
+                    copied_code.as_ref(),
                     window,
                     cx,
                 )
@@ -2220,6 +2281,16 @@ impl Element for TextElement {
                 && (input.read(cx).is_selecting || input.read(cx).table_drag.is_some())
             {
                 input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
+            }
+        });
+        let input = self.input.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Capture
+                && event.button == MouseButton::Left
+                && !bounds.contains(&event.position)
+                && (input.read(cx).is_selecting || input.read(cx).table_drag.is_some())
+            {
+                input.update(cx, |input, cx| input.on_mouse_up(event, window, cx));
             }
         });
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -2810,6 +2881,34 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn copy_feedback_refreshes_timer_and_ignores_stale_document_callbacks() {
+        let mut feedback = super::CopyFeedback::default();
+        let first = feedback.begin(5..11);
+        let second = feedback.begin(5..11);
+        assert!(!feedback.clear_if_current(first));
+        assert_eq!(feedback.range, Some(5..11));
+        assert!(feedback.clear_if_current(second));
+        let previous = feedback.begin(0..4);
+        feedback.reset();
+        feedback.begin(8..12);
+        assert!(!feedback.clear_if_current(previous));
+        assert_eq!(feedback.range, Some(8..12));
+    }
+    #[test]
+    fn scrollbar_drag_stops_as_soon_as_left_button_is_released() {
+        let mut drag = Some(7);
+        assert!(super::table_drag_is_active(
+            &mut drag,
+            Some(gpui::MouseButton::Left)
+        ));
+        assert!(!super::table_drag_is_active(&mut drag, None));
+        assert_eq!(drag, None);
+        assert!(!super::table_drag_is_active(
+            &mut drag,
+            Some(gpui::MouseButton::Left)
+        ));
+    }
     #[test]
     fn table_hit_testing_keeps_blank_padding_in_the_clicked_scrolled_cell() {
         use super::{TableCell, table_line_for_position};

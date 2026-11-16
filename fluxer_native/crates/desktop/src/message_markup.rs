@@ -100,6 +100,9 @@ pub enum MessageBlockKind {
         ordered: bool,
         depth: u8,
     },
+    ListItem {
+        marker: Range<usize>,
+    },
     Table {
         rows: Vec<Vec<Range<usize>>>,
         alignments: Vec<fluxer_markdown_parser::ast::TableAlignment>,
@@ -152,6 +155,9 @@ impl MessageDocument {
         doc.jumbo_emojis = false;
         for block in &mut doc.blocks {
             block.range = block.range.start + offset..block.range.end + offset;
+            if let MessageBlockKind::ListItem { marker } = &mut block.kind {
+                *marker = marker.start + offset..marker.end + offset;
+            }
             if let MessageBlockKind::Table { rows, .. } = &mut block.kind {
                 for cell in rows.iter_mut().flatten() {
                     *cell = cell.start + offset..cell.end + offset;
@@ -602,8 +608,16 @@ impl Projector<'_> {
                         }
                         .into()
                     };
+                    let item_start = self.doc.text.len();
                     self.doc.push(&marker, run, None);
+                    let marker_range = item_start..self.doc.text.len();
                     self.nodes(&item.children, &nested);
+                    self.doc.blocks.push(MessageBlock {
+                        range: item_start..self.doc.text.len(),
+                        kind: MessageBlockKind::ListItem {
+                            marker: marker_range,
+                        },
+                    });
                 }
                 block = Some(MessageBlockKind::List {
                     ordered: *ordered,
@@ -1103,6 +1117,39 @@ mod tests {
         assert_eq!(compact.source, source);
     }
 
+    #[test]
+    fn list_markers_keep_byte_ranges_and_shift_with_compact_author() {
+        let doc = render("3. outer 😄\n   1. inner");
+        let markers: Vec<_> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| {
+                if let MessageBlockKind::ListItem { marker } = &b.kind {
+                    Some(marker.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            markers
+                .iter()
+                .any(|range| &doc.text[range.clone()] == "3. ")
+        );
+        assert!(
+            markers
+                .iter()
+                .any(|range| &doc.text[range.clone()] == "a. ")
+        );
+        let mut msg = message(&doc.source);
+        msg.author.username = "É".into();
+        let compact = doc.with_author(&msg);
+        let offset = compact.text.len() - doc.text.len();
+        for range in markers {
+            assert!(compact.blocks.iter().any(|b| matches!(&b.kind, MessageBlockKind::ListItem { marker } if *marker == ((range.start + offset)..(range.end + offset)))));
+        }
+        assert_eq!(compact.source, doc.source);
+    }
     #[test]
     fn nested_ordered_markers_follow_css_and_continue_first_ordinal() {
         assert_eq!(ordered_marker(1, 1), "1");

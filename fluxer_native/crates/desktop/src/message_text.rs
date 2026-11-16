@@ -343,6 +343,21 @@ fn display_tokens(document: &MessageDocument, current: i64) -> Vec<composer_toke
     tokens.sort_by_key(|token| token.source.start);
     tokens
 }
+fn hanging_rows(
+    paragraph: Range<usize>,
+    split: usize,
+    breaks: &[usize],
+    indent: Pixels,
+    hanging: Pixels,
+) -> Vec<(Range<usize>, Pixels)> {
+    let mut rows = vec![(paragraph.start..split, indent)];
+    rows.extend(
+        visual_ranges(split..paragraph.end, breaks)
+            .into_iter()
+            .map(|range| (range, indent + hanging)),
+    );
+    rows
+}
 pub(super) fn layout(
     document: &MessageDocument,
     runs: &[TextRun],
@@ -547,7 +562,53 @@ pub(super) fn layout(
                 window,
             )
         };
-        for range in visual_ranges(paragraph.clone(), &breaks) {
+        let marker = document.blocks.iter().find_map(|block| {
+            if let MessageBlockKind::ListItem { marker } = &block.kind {
+                if marker.start == paragraph.start && marker.end <= paragraph.end {
+                    return Some(marker);
+                }
+            }
+            None
+        });
+        let hanging = marker
+            .map(|marker| {
+                inline_emoji::shape_message_line(
+                    &document.text[marker.clone()],
+                    row_font_size,
+                    &clip(runs, marker),
+                    &composer_tokens::clip(&tokens, marker),
+                    window,
+                )
+                .width
+            })
+            .unwrap_or(px(0.));
+        let first_break = breaks
+            .iter()
+            .copied()
+            .find(|index| *index > 0 && *index < paragraph.len());
+        let mut rows = Vec::new();
+        if hanging > px(0.) && first_break.is_some() {
+            let split = paragraph.start + first_break.unwrap();
+            let remainder = split..paragraph.end;
+            let rest_text = &document.text[remainder.clone()];
+            let rest_width = width.map(|width| (width - indent - hanging).max(px(1.)));
+            let rest_breaks = inline_emoji::wrap_message_breaks(
+                rest_text,
+                row_font_size,
+                &clip(runs, &remainder),
+                rest_width,
+                &composer_tokens::clip(&tokens, &remainder),
+                window,
+            );
+            rows = hanging_rows(paragraph.clone(), split, &rest_breaks, indent, hanging);
+        } else {
+            rows.extend(
+                visual_ranges(paragraph.clone(), &breaks)
+                    .into_iter()
+                    .map(|range| (range, indent)),
+            );
+        }
+        for (range, row_indent) in rows {
             let text: SharedString = document.text[range.clone()].to_owned().into();
             let clipped_runs = clip(runs, &range);
             let clipped_tokens = composer_tokens::clip(&tokens, &range);
@@ -572,7 +633,7 @@ pub(super) fn layout(
             lines.push(VisualLine {
                 range,
                 layout,
-                indent,
+                indent: row_indent,
                 y,
                 height: row_height,
                 cell_right: None,
@@ -618,11 +679,11 @@ pub(super) fn code_headers(
         .collect()
 }
 
-fn code_for_copy(
-    document: &MessageDocument,
+pub(super) fn code_for_copy<'a>(
+    document: &'a MessageDocument,
     range: &Range<usize>,
     revealed: &BTreeSet<u32>,
-) -> Option<String> {
+) -> Option<&'a str> {
     if !valid(document)
         || document.spans.iter().any(|span| {
             span.range.start < range.end
@@ -632,7 +693,7 @@ fn code_for_copy(
     {
         return None;
     }
-    document.text.get(range.clone()).map(str::to_owned)
+    document.text.get(range.clone())
 }
 
 pub(super) fn code_controls(
@@ -641,13 +702,14 @@ pub(super) fn code_controls(
     layout: &DocumentLayout,
     bounds: Bounds<Pixels>,
     scroll: Point<Pixels>,
-    owner: u64,
+    owner: Entity<TextInput>,
+    copied: Option<&Range<usize>>,
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
     let mut controls = Vec::new();
     for (index, header) in layout.code_headers.iter().enumerate() {
-        let Some(code) = code_for_copy(document, &header.range, revealed) else {
+        let Some(_) = code_for_copy(document, &header.range, revealed) else {
             continue;
         };
         let y = bounds.top() + header.y - scroll.y;
@@ -662,9 +724,14 @@ pub(super) fn code_controls(
             .take(40)
             .collect();
         let width = bounds.size.width;
-        let keyboard_code = code.clone();
+        let click_owner = owner.clone();
+        let click_range = header.range.clone();
+        let feedback = copied == Some(&header.range);
         let mut element = div()
-            .id(SharedString::from(format!("code-header-{owner}-{index}")))
+            .id(SharedString::from(format!(
+                "code-header-{}-{index}",
+                owner.entity_id().as_u64()
+            )))
             .w(width)
             .h(layout.line_height)
             .px_2()
@@ -685,17 +752,19 @@ pub(super) fn code_controls(
                     .focus(|style| style.bg(rgb(0x514a5d)).text_color(rgb(0xffffff)))
                     .on_key_down(move |event, _, cx| {
                         if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.write_to_clipboard(ClipboardItem::new_string(keyboard_code.clone()));
+                            // GPUI dispatches the click on key-up; block parent
+                            // shortcuts here without writing the clipboard twice.
                             cx.stop_propagation();
                         }
                     })
                     .text_color(rgb(0xc8c2d4))
                     .hover(|style| style.text_color(rgb(0xffffff)))
                     .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(code.clone()));
+                        click_owner
+                            .update(cx, |input, cx| input.copy_code(click_range.clone(), cx));
                         cx.stop_propagation();
                     })
-                    .child("Copy"),
+                    .child(if feedback { "✓ Copied" } else { "Copy" }),
             )
             .into_any_element();
         element.layout_as_root(
@@ -977,6 +1046,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hanging_rows_preserve_unicode_byte_ranges_and_marker_indent() {
+        let text = "• 雪 one two three";
+        let split = text.find("two").unwrap();
+        let end = text.find("three").unwrap();
+        let rows = hanging_rows(0..text.len(), split, &[end - split], px(16.), px(12.));
+        assert_eq!(
+            rows.iter()
+                .map(|(r, _)| &text[r.clone()])
+                .collect::<String>(),
+            text
+        );
+        assert_eq!(rows[0].1, px(16.));
+        assert!(rows[1..].iter().all(|(_, indent)| *indent == px(28.)));
+        assert!(
+            rows.iter()
+                .all(|(r, _)| text.is_char_boundary(r.start) && text.is_char_boundary(r.end))
+        );
+    }
     #[test]
     fn first_heading_ignores_only_the_compact_author_prefix() {
         let doc = document("**prior** text\n# heading");
