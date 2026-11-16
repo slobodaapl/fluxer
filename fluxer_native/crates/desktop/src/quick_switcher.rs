@@ -50,6 +50,17 @@ impl QuickSwitcher {
             query: String::new(),
         }
     }
+    pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
+        self.open = false;
+        self.previous = None;
+        self.results.clear();
+        self.history.clear();
+        self.selected = 0;
+        self.armed = None;
+        self.query.clear();
+        self.input
+            .update(cx, |input, cx| input.set(String::new(), cx));
+    }
     pub fn visit(&mut self, id: Snowflake) {
         self.history.retain(|old| *old != id);
         self.history.push_front(id);

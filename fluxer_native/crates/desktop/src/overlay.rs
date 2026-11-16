@@ -76,6 +76,28 @@ pub(super) fn cycle_focus(window: &mut Window, handles: &[FocusHandle], backward
     handles[next].focus(window);
 }
 
+impl super::Fluxer {
+    /// A new account/instance can reuse numeric IDs. Drop private projected
+    /// documents and callback scopes on the context boundary itself.
+    pub(super) fn reset_conversation_surfaces(&mut self, cx: &mut gpui::Context<Self>) {
+        self.replies.clear();
+        self.outbox.reset();
+        self.message_text.clear();
+        self.clear_browser();
+        self.message_actions.reset();
+        self.message_content.reset();
+        self.message_links.clear_prompt();
+        self.image_viewer.reset();
+        self.playback.reset(cx);
+        self.revealed_media.clear();
+        self.forwarding = None;
+        self.emoji_target = None;
+        self.quick_switcher.reset(cx);
+        self.profile_ui.reset(cx);
+        self.role_mention.update(cx, |popup, cx| popup.reset(cx));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

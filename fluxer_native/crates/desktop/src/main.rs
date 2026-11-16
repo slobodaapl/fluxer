@@ -908,6 +908,7 @@ impl Fluxer {
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     self.state = *state;
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.reset_conversation_surfaces(cx);
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.inbox_ui.reset();
                     }
@@ -1062,6 +1063,7 @@ impl Fluxer {
                     selected_guild,
                 } => {
                     self.begin_notification_session();
+                    self.reset_conversation_surfaces(cx);
                     self.instance
                         .update(cx, |input, cx| input.set(instance, cx));
                     self.selected_guild = selected_guild;
