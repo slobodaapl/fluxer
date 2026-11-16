@@ -391,15 +391,19 @@ pub(super) fn images(
             }) {
                 continue;
             }
-            let Some(source) =
-                crate::emoji_sprites::image_source(grapheme, window.scale_factor() > 1., cx)
-            else {
-                continue;
-            };
             let x = line.indent + line.layout.x_for_index(local);
             let width = (line.layout.x_for_index(local + grapheme.len())
                 - line.layout.x_for_index(local))
             .max(px(1.));
+            // Pick the source sheet for the rendered pixel footprint, so
+            // 48px jumbo emoji use 64px art even on a 1x display.
+            let Some(source) = crate::emoji_sprites::image_source(
+                grapheme,
+                width * window.scale_factor() > px(32.),
+                cx,
+            ) else {
+                continue;
+            };
             let height = width;
             let origin = point(bounds.left() + x - scroll.x, y + px(1.));
             if !Bounds::new(origin, size(width, height)).intersects(&bounds) {
