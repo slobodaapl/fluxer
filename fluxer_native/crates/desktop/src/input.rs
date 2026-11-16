@@ -313,6 +313,7 @@ pub struct TextInput {
     emoji_hovered: bool,
     revealed_spoilers: BTreeSet<u32>,
     inline_press: Option<(Point<Pixels>, usize, bool)>,
+    inline_focus: Option<Range<usize>>,
     hover_interactive: bool,
     focus_handle: FocusHandle,
     pub content: SharedString,
@@ -368,6 +369,7 @@ impl TextInput {
             emoji_hovered: false,
             revealed_spoilers: BTreeSet::new(),
             inline_press: None,
+            inline_focus: None,
             hover_interactive: false,
             focus_handle: cx.focus_handle().tab_stop(true),
             content: "".into(),
@@ -406,11 +408,39 @@ impl TextInput {
 
     pub fn read_only_document(
         document: impl Into<Arc<MessageDocument>>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let document = document.into();
         let mut input = Self::read_only(&document.text, cx);
+        input.focus_handle = input
+            .focus_handle
+            .clone()
+            .tab_stop(!inline_targets(&document, &input.revealed_spoilers).is_empty());
         input.message_document = Some(document.clone());
+        let focus = input.focus_handle.clone();
+        cx.defer_in(window, move |_, window, cx| {
+            cx.on_focus(&focus, window, |this, window, cx| {
+                if this.inline_focus.is_some() {
+                    return;
+                }
+                let Some(document) = this.message_document.as_ref() else {
+                    return;
+                };
+                let targets = inline_targets(document, &this.revealed_spoilers);
+                let target = if window.modifiers().shift {
+                    targets.last()
+                } else {
+                    targets.first()
+                };
+                if let Some(range) = target {
+                    let range = range.clone();
+                    this.move_to(range.start, cx);
+                    this.inline_focus = Some(range);
+                }
+            })
+            .detach();
+        });
         code_highlight::schedule(&mut input, document, cx);
         input
     }
@@ -446,6 +476,11 @@ impl TextInput {
             self.selection_reversed = false;
             self.selection_origin = None;
         }
+        self.inline_focus = None;
+        self.focus_handle = self
+            .focus_handle
+            .clone()
+            .tab_stop(!inline_targets(&document, &self.revealed_spoilers).is_empty());
         self.emoji_cache = message_text::EmojiCache::new(cx);
         self.message_document = Some(document.clone());
         code_highlight::schedule(self, document, cx);
@@ -453,6 +488,46 @@ impl TextInput {
         self.hover_interactive = false;
         self.last_layout = None;
         cx.notify();
+    }
+    fn inline_tab(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key != "tab"
+            || event.keystroke.modifiers.control
+            || event.keystroke.modifiers.alt
+            || event.keystroke.modifiers.platform
+        {
+            return;
+        }
+        let Some(document) = self.message_document.as_ref() else {
+            return;
+        };
+        let targets = inline_targets(document, &self.revealed_spoilers);
+        let next = if let Some(current) = &self.inline_focus {
+            if event.keystroke.modifiers.shift {
+                targets
+                    .iter()
+                    .rev()
+                    .find(|target| target.end <= current.start)
+            } else {
+                targets.iter().find(|target| target.start >= current.end)
+            }
+        } else if event.keystroke.modifiers.shift {
+            targets
+                .iter()
+                .rev()
+                .find(|target| target.start <= self.cursor_offset())
+        } else {
+            targets
+                .iter()
+                .find(|target| target.start >= self.cursor_offset())
+        };
+        if let Some(target) = next {
+            let target = target.clone();
+            self.move_to(target.start, cx);
+            self.inline_focus = Some(target);
+            cx.stop_propagation();
+        } else {
+            self.inline_focus = None;
+        }
     }
     fn activate_inline(&mut self, _: &ActivateInline, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
@@ -465,11 +540,15 @@ impl TextInput {
         };
         if let Some(id) = message_text::hidden_at(document, &self.revealed_spoilers, index) {
             self.revealed_spoilers.insert(id);
+            self.inline_focus = None;
             self.last_layout = None;
             cx.notify();
             return;
         }
         if let Some(target) = message_text::target_at(document, &self.revealed_spoilers, index) {
+            self.inline_focus = inline_targets(document, &self.revealed_spoilers)
+                .into_iter()
+                .find(|range| range.contains(&index));
             let anchor =
                 self.last_bounds
                     .zip(self.last_layout.as_ref())
@@ -1199,6 +1278,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.inline_focus = None;
         let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
         self.selected_range = offset..offset;
@@ -1254,6 +1334,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.inline_focus = None;
         let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
         if self.selection_reversed {
@@ -1499,6 +1580,53 @@ impl EntityInputHandler for TextInput {
         self.last_layout.as_ref()?;
         Some(self.offset_to_utf16(self.index_for_mouse_position(position)))
     }
+}
+
+fn inline_targets(document: &MessageDocument, revealed: &BTreeSet<u32>) -> Vec<Range<usize>> {
+    #[derive(PartialEq)]
+    enum Key {
+        Spoiler(u32),
+        Target(MessageTarget),
+    }
+    if !message_text::valid(document) {
+        return Vec::new();
+    }
+    let mut ranges: Vec<(Key, Range<usize>)> = Vec::new();
+    for span in &document.spans {
+        if span.range.is_empty() {
+            continue;
+        }
+        let key = if let Some(id) = span.spoilers.iter().find(|id| !revealed.contains(id)) {
+            Some(Key::Spoiler(*id))
+        } else if !span.style.code {
+            span.target
+                .clone()
+                .filter(|target| {
+                    matches!(
+                        target,
+                        MessageTarget::Link(_)
+                            | MessageTarget::Channel(_)
+                            | MessageTarget::User(_)
+                            | MessageTarget::Role(_)
+                            | MessageTarget::Author { .. }
+                    )
+                })
+                .map(Key::Target)
+        } else {
+            None
+        };
+        if let Some(key) = key {
+            if let Some((previous, range)) = ranges.last_mut()
+                && *previous == key
+                && range.end == span.range.start
+            {
+                range.end = span.range.end;
+            } else {
+                ranges.push((key, span.range.clone()));
+            }
+        }
+    }
+    ranges.into_iter().map(|(_, range)| range).collect()
 }
 
 /// Source byte ranges deliberately exclude hard newlines. A soft wrap shares
@@ -1894,9 +2022,17 @@ impl Element for TextElement {
             .y
             .clamp(px(0.), (layout.height() - bounds.size.height).max(px(0.)));
         let mut selections = Vec::new();
-        if !input.selected_range.is_empty() {
+        let focused_inline = input
+            .inline_focus
+            .as_ref()
+            .filter(|_| input.focus_handle.is_focused(window));
+        let selection = if !input.selected_range.is_empty() {
+            Some(&input.selected_range)
+        } else {
+            focused_inline
+        };
+        if let Some(range) = selection {
             for line in &layout.lines {
-                let range = &input.selected_range;
                 if range.start <= line.range.end && range.end > line.range.start {
                     let from = range
                         .start
@@ -2299,6 +2435,7 @@ impl Render for TextInput {
             } else {
                 CursorStyle::IBeam
             })
+            .on_key_down(cx.listener(Self::inline_tab))
             .on_action(cx.listener(Self::activate_inline))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
@@ -2899,5 +3036,43 @@ mod tests {
         history.record(before.clone(), after.clone(), EditKind::Atomic);
         assert_eq!(history.undo(after), Some(before));
         assert_eq!(after_text, "雪  suffix");
+    }
+}
+
+#[cfg(test)]
+mod inline_navigation_tests {
+    use super::*;
+    #[test]
+    fn keyboard_targets_coalesce_styles_skip_code_and_preserve_spoiler_activation() {
+        let message = fluxer_core::Message::text(
+            100.into(),
+            10.into(),
+            fluxer_core::User::default(),
+            "[first **bold**](https://example.test) `https://not-link.test` ||[hidden](https://hidden.test)|| [雪](https://snow.test)",
+        );
+        let doc = crate::message_markup::document(
+            &message,
+            &fluxer_core::ClientState::default(),
+            None,
+            crate::message_markup::MessageContext::Standard,
+        );
+        let hidden = BTreeSet::new();
+        let targets = inline_targets(&doc, &hidden);
+        assert_eq!(
+            targets
+                .iter()
+                .map(|range| &doc.text[range.clone()])
+                .collect::<Vec<_>>(),
+            ["first bold", "hidden", "雪"]
+        );
+        let concealed = targets[1].start;
+        assert!(message_text::target_at(&doc, &hidden, concealed).is_none());
+        let id = message_text::hidden_at(&doc, &hidden, concealed).unwrap();
+        let revealed = BTreeSet::from([id]);
+        assert!(matches!(
+            message_text::target_at(&doc, &revealed, concealed),
+            Some(MessageTarget::Link(_))
+        ));
+        assert_eq!(inline_targets(&doc, &revealed), targets);
     }
 }

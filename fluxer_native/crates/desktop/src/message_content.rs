@@ -80,7 +80,7 @@ impl Fluxer {
         let channel = message.channel_id;
         let message_id = message.id;
         let input = cx.new(|cx| {
-            let mut input = TextInput::read_only_document(document, cx);
+            let mut input = TextInput::read_only_document(document, window, cx);
             input.set_emoji_reduced_motion(self.interface.reduced_motion());
             input
         });
