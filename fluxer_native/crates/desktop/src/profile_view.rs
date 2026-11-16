@@ -75,6 +75,7 @@ pub(super) struct ProfilePopup {
     copied: bool,
     presenting_loading: bool,
     full: bool,
+    trigger_bounds: Option<Bounds<Pixels>>,
     bio_links: Vec<String>,
     confirm_blocked_dm: bool,
     confirm_block: bool,
@@ -95,6 +96,7 @@ impl ProfilePopup {
             copied: false,
             presenting_loading: false,
             full: false,
+            trigger_bounds: None,
             bio_links: Vec::new(),
             confirm_blocked_dm: false,
             confirm_block: false,
@@ -114,6 +116,7 @@ impl ProfilePopup {
         }
         self.open = Some(config);
         self.full = false;
+        self.trigger_bounds = None;
         self.bio_links.clear();
         self.snapshot = None;
         self.presenting_loading = true;
@@ -127,6 +130,9 @@ impl ProfilePopup {
         self.relationship_status = None;
         window.focus(&self.focus);
         cx.notify();
+    }
+    pub fn set_trigger_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
+        self.trigger_bounds = bounds;
     }
     pub fn apply_relationship_status(
         &mut self,
@@ -488,7 +494,22 @@ impl ProfilePopup {
         let Some(open) = &self.open else {
             return div().into_any_element();
         };
-        let (origin, width, height) = placement(open.anchor, window.viewport_size());
+        let (origin, width, height) = if let Some(trigger) = self.trigger_bounds {
+            let fitted = crate::overlay::popover_bounds(
+                trigger,
+                window.viewport_size(),
+                size(px(300.), px(520.)),
+                px(8.),
+                px(12.),
+            );
+            (
+                fitted.origin,
+                f32::from(fitted.size.width),
+                f32::from(fitted.size.height),
+            )
+        } else {
+            placement(open.anchor, window.viewport_size())
+        };
         if self.full {
             let viewport = window.viewport_size();
             let fitted =

@@ -13,6 +13,25 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_user_profile_at(
+            user,
+            guild,
+            webhook,
+            Bounds::new(anchor, size(px(0.), px(0.))),
+            window,
+            cx,
+        );
+    }
+    pub(super) fn open_user_profile_at(
+        &mut self,
+        user: User,
+        guild: Option<Snowflake>,
+        webhook: bool,
+        trigger: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let anchor = point(trigger.right(), trigger.top());
         if self.state.current_user.is_none()
             || self.session_restoring
             || self.image_viewer.is_open()
@@ -91,9 +110,10 @@ impl Fluxer {
                 .get(&user_id)
                 .is_some_and(|relationship| relationship.is_blocked()),
         };
-        self.profile_ui
-            .popup
-            .update(cx, |popup, cx| popup.open(open, window, cx));
+        self.profile_ui.popup.update(cx, |popup, cx| {
+            popup.open(open, window, cx);
+            popup.set_trigger_bounds(Some(trigger));
+        });
         if !webhook {
             self.command(
                 Command::LoadUserProfile {

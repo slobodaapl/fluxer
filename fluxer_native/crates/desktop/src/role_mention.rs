@@ -7,7 +7,7 @@ pub(super) struct RoleMention {
     role: Option<Role>,
     known: usize,
     guild: Option<Snowflake>,
-    anchor: Point<Pixels>,
+    anchor: Bounds<Pixels>,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
 }
@@ -17,7 +17,7 @@ impl RoleMention {
             role: None,
             known: 0,
             guild: None,
-            anchor: point(px(0.), px(0.)),
+            anchor: Bounds::default(),
             focus: cx.focus_handle(),
             previous_focus: None,
         }
@@ -30,7 +30,7 @@ impl RoleMention {
         role: Role,
         guild: Snowflake,
         known: usize,
-        anchor: Point<Pixels>,
+        anchor: Bounds<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -89,7 +89,7 @@ impl Render for RoleMention {
         };
         let viewport = window.viewport_size();
         let fitted = crate::overlay::popover_bounds(
-            Bounds::new(self.anchor, size(px(0.), px(0.))),
+            self.anchor,
             viewport,
             size(px(260.), px(150.)),
             px(8.),
@@ -170,7 +170,11 @@ impl Render for RoleMention {
                                     if self.known == 0 {
                                         "Member count unavailable".to_owned()
                                     } else {
-                                        format!("At least {} members", self.known)
+                                        format!(
+                                            "At least {} {}",
+                                            self.known,
+                                            if self.known == 1 { "member" } else { "members" }
+                                        )
                                     }
                                 )),
                         ),
@@ -219,8 +223,7 @@ impl Fluxer {
                 guild,
                 known,
                 anchor
-                    .map(|bounds| point(bounds.right(), bounds.top()))
-                    .unwrap_or_else(|| window.mouse_position()),
+                    .unwrap_or_else(|| Bounds::new(window.mouse_position(), size(px(0.), px(0.)))),
                 window,
                 cx,
             )

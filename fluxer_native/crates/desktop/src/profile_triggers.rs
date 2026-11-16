@@ -46,28 +46,14 @@ pub(super) fn trigger(
         .on_click(cx.listener(move |this, _, window, cx| {
             cx.stop_propagation();
             let b = click_bounds.get();
-            this.open_user_profile(
-                click_user.clone(),
-                guild,
-                webhook,
-                point(b.right() + px(8.), b.top()),
-                window,
-                cx,
-            );
+            this.open_user_profile_at(click_user.clone(), guild, webhook, b, window, cx);
         }))
         .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 cx.stop_propagation();
                 if !event.is_held {
                     let b = bounds.get();
-                    this.open_user_profile(
-                        user.clone(),
-                        guild,
-                        webhook,
-                        point(b.right() + px(8.), b.top()),
-                        window,
-                        cx,
-                    );
+                    this.open_user_profile_at(user.clone(), guild, webhook, b, window, cx);
                 }
             }
         }))

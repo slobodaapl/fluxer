@@ -113,14 +113,13 @@ impl Fluxer {
                                 .cloned()
                         });
                     if let Some(user) = user {
-                        this.open_user_profile(
+                        this.open_user_profile_at(
                             user,
                             guild,
                             false,
-                            event
-                                .anchor
-                                .map(|bounds| point(bounds.right(), bounds.top()))
-                                .unwrap_or_else(|| window.mouse_position()),
+                            event.anchor.unwrap_or_else(|| {
+                                Bounds::new(window.mouse_position(), size(px(0.), px(0.)))
+                            }),
                             window,
                             cx,
                         );
