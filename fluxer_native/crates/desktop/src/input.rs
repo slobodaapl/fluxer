@@ -322,6 +322,8 @@ pub struct TextInput {
 impl gpui::EventEmitter<ImagePasted> for TextInput {}
 pub struct MessageActivated {
     pub target: MessageTarget,
+    /// Visible glyph bounds in window coordinates, for pointer and keyboard activation.
+    pub anchor: Option<Bounds<Pixels>>,
 }
 impl gpui::EventEmitter<MessageActivated> for TextInput {}
 
@@ -433,7 +435,35 @@ impl TextInput {
             return;
         }
         if let Some(target) = message_text::target_at(document, &self.revealed_spoilers, index) {
-            cx.emit(MessageActivated { target });
+            let anchor =
+                self.last_bounds
+                    .zip(self.last_layout.as_ref())
+                    .and_then(|(bounds, layout)| {
+                        let span = document.spans.iter().find(|span| {
+                            span.range.contains(&index) && span.target.as_ref() == Some(&target)
+                        })?;
+                        layout.lines.iter().find_map(|line| {
+                            let start = line.range.start.max(span.range.start);
+                            let end = line.range.end.min(span.range.end);
+                            if start >= end {
+                                return None;
+                            }
+                            let left = bounds.left()
+                                + line.indent
+                                + line.layout.x_for_index(start - line.range.start)
+                                - self.scroll_x;
+                            let right = bounds.left()
+                                + line.indent
+                                + line.layout.x_for_index(end - line.range.start)
+                                - self.scroll_x;
+                            let rect = Bounds::new(
+                                point(left, bounds.top() + line.y - self.scroll_y),
+                                size((right - left).max(px(1.)), line.height),
+                            );
+                            rect.intersects(&bounds).then_some(rect)
+                        })
+                    });
+            cx.emit(MessageActivated { target, anchor });
         }
     }
 
@@ -1084,8 +1114,7 @@ impl TextInput {
         if local.y < px(0.) || local.y >= layout.height() {
             return None;
         }
-        let row =
-            ((local.y / layout.line_height) as usize).min(layout.lines.len().saturating_sub(1));
+        let row = layout.row_for_y(local.y);
         let line = &layout.lines[row];
         if local.x < line.indent || local.x > line.indent + line.layout.width {
             return None;
@@ -1351,6 +1380,8 @@ struct VisualLine {
     range: Range<usize>,
     layout: inline_emoji::EmojiLine,
     indent: Pixels,
+    y: Pixels,
+    height: Pixels,
 }
 #[derive(Clone)]
 struct DocumentLayout {
@@ -1359,7 +1390,15 @@ struct DocumentLayout {
 }
 impl DocumentLayout {
     fn height(&self) -> Pixels {
-        self.line_height * self.lines.len()
+        self.lines
+            .last()
+            .map_or(px(0.), |line| line.y + line.height)
+    }
+    fn row_for_y(&self, y: Pixels) -> usize {
+        self.lines
+            .iter()
+            .position(|line| y < line.y + line.height)
+            .unwrap_or_else(|| self.lines.len().saturating_sub(1))
     }
     fn row_for_index(&self, index: usize) -> usize {
         row_for_index(
@@ -1379,7 +1418,7 @@ impl DocumentLayout {
                 + line
                     .layout
                     .x_for_index(index.saturating_sub(line.range.start).min(line.range.len())),
-            self.line_height * row,
+            line.y,
         )
     }
     fn index_for_position(&self, position: Point<Pixels>) -> usize {
@@ -1389,8 +1428,7 @@ impl DocumentLayout {
         if position.y >= self.height() {
             return self.lines.last().map_or(0, |line| line.range.end);
         }
-        let row = ((position.y.max(px(0.)) / self.line_height) as usize)
-            .min(self.lines.len().saturating_sub(1));
+        let row = self.row_for_y(position.y.max(px(0.)));
         let line = &self.lines[row];
         line.range.start
             + line
@@ -1589,6 +1627,8 @@ impl Element for TextElement {
                         range,
                         layout,
                         indent: px(0.),
+                        y: window.line_height() * lines.len(),
+                        height: window.line_height(),
                     });
                 }
             }
@@ -1610,6 +1650,8 @@ impl Element for TextElement {
                 range,
                 layout,
                 indent: px(0.),
+                y: window.line_height() * lines.len(),
+                height: window.line_height(),
             });
         }
         let layout = DocumentLayout {
@@ -1642,7 +1684,7 @@ impl Element for TextElement {
             .clamp(px(0.), (layout.height() - bounds.size.height).max(px(0.)));
         let mut selections = Vec::new();
         if !input.selected_range.is_empty() {
-            for (row, line) in layout.lines.iter().enumerate() {
+            for line in &layout.lines {
                 let range = &input.selected_range;
                 if range.start <= line.range.end && range.end > line.range.start {
                     let from = range
@@ -1664,9 +1706,9 @@ impl Element for TextElement {
                             Bounds::new(
                                 point(
                                     bounds.left() + x1 - scroll.x,
-                                    bounds.top() + layout.line_height * row - scroll.y,
+                                    bounds.top() + line.y - scroll.y,
                                 ),
-                                size(x2 - x1, layout.line_height),
+                                size(x2 - x1, line.height),
                             ),
                             rgba(0x8873ee60),
                         ));
@@ -1753,16 +1795,14 @@ impl Element for TextElement {
         }
         let input = self.input.read(cx);
         if input.read_only && input.message_document.is_some() {
-            for (row, line) in prepaint.layout.lines.iter().enumerate() {
+            for line in &prepaint.layout.lines {
                 let origin = point(
                     bounds.left() + line.indent - prepaint.scroll.x,
-                    bounds.top() + prepaint.layout.line_height * row - prepaint.scroll.y,
+                    bounds.top() + line.y - prepaint.scroll.y,
                 );
-                if origin.y + prepaint.layout.line_height >= bounds.top()
-                    && origin.y <= bounds.bottom()
-                {
+                if origin.y + line.height >= bounds.top() && origin.y <= bounds.bottom() {
                     line.layout
-                        .paint_background(origin, prepaint.layout.line_height, window, cx)
+                        .paint_background(origin, line.height, window, cx)
                         .expect("paint rich message run backgrounds");
                 }
             }
@@ -1772,15 +1812,14 @@ impl Element for TextElement {
                 window.paint_quad(selection);
             }
         }
-        for (row, line) in prepaint.layout.lines.iter().enumerate() {
+        for line in &prepaint.layout.lines {
             let origin = point(
                 bounds.left() + line.indent - prepaint.scroll.x,
-                bounds.top() + prepaint.layout.line_height * row - prepaint.scroll.y,
+                bounds.top() + line.y - prepaint.scroll.y,
             );
-            if origin.y + prepaint.layout.line_height >= bounds.top() && origin.y <= bounds.bottom()
-            {
+            if origin.y + line.height >= bounds.top() && origin.y <= bounds.bottom() {
                 line.layout
-                    .paint(origin, prepaint.layout.line_height, window, cx)
+                    .paint(origin, line.height, window, cx)
                     .expect("paint native composer");
             }
         }

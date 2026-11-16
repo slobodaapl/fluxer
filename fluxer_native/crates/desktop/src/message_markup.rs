@@ -10,7 +10,7 @@
 //! Markup.module.css (concealed spoilers are not selectable).
 //!
 //! All parser AST variants retain their text. Remaining presentation differences
-//! are reported in `unsupported`: table grids/table-aware clipboard, alert cards,
+//! are reported in `unsupported`: table grids/table-aware clipboard,
 //! live localized timestamps, and command/guild-navigation activation. Unicode
 //! literals use the platform font; preferred-tone shortcode substitution and
 //! emoji-only jumbo sizing are not applied by this projection.
@@ -88,12 +88,23 @@ pub struct MessageSpan {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MessageBlockKind {
-    Code { language: Option<String> },
-    Quote { depth: u8 },
-    Heading { level: u8 },
-    List { ordered: bool },
+    Code {
+        language: Option<String>,
+    },
+    Quote {
+        depth: u8,
+    },
+    Heading {
+        level: u8,
+    },
+    List {
+        ordered: bool,
+        depth: u8,
+    },
     Table,
-    Alert,
+    Alert {
+        kind: fluxer_markdown_parser::ast::AlertType,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageBlock {
@@ -234,6 +245,7 @@ struct Run {
     style: MessageStyle,
     target: Option<MessageTarget>,
     spoilers: Vec<u32>,
+    list_depth: u8,
 }
 struct Resolver<'a> {
     message: &'a Message,
@@ -515,6 +527,7 @@ impl Projector<'_> {
                 kind: EmojiKind::Standard { raw, .. },
             } => self.doc.push(raw, run, None),
             Node::List { ordered, items } => {
+                nested.list_depth = run.list_depth.saturating_add(1);
                 for (index, item) in items.iter().enumerate() {
                     if index > 0 {
                         self.doc.push("\n", run, None);
@@ -522,12 +535,20 @@ impl Projector<'_> {
                     let marker = if *ordered {
                         format!("{}. ", item.ordinal.unwrap_or(index + 1))
                     } else {
-                        "• ".into()
+                        match nested.list_depth {
+                            1 => "• ",
+                            2 => "◦ ",
+                            _ => "▪ ",
+                        }
+                        .into()
                     };
                     self.doc.push(&marker, run, None);
-                    self.nodes(&item.children, run);
+                    self.nodes(&item.children, &nested);
                 }
-                block = Some(MessageBlockKind::List { ordered: *ordered });
+                block = Some(MessageBlockKind::List {
+                    ordered: *ordered,
+                    depth: nested.list_depth,
+                });
             }
             Node::Table { header, rows, .. } => {
                 self.node(header, run);
@@ -554,8 +575,8 @@ impl Projector<'_> {
                 nested.style.bold = true;
                 self.doc.push(&format!("{alert_type:?}\n"), &nested, None);
                 self.nodes(children, run);
-                block = Some(MessageBlockKind::Alert);
-                self.doc.note("Alert card presentation");
+                block = Some(MessageBlockKind::Alert { kind: *alert_type });
+                self.doc.note("Alert icon, localization and card spacing");
             }
             Node::Timestamp { timestamp, style } => {
                 let code = match style {
@@ -886,6 +907,39 @@ mod tests {
             end = span.range.end;
         }
         assert_eq!(end, doc.text.len());
+    }
+    #[test]
+    fn nested_lists_and_alert_keep_ranges_for_compact_author_and_copy() {
+        let source = "- outer 😄\n  - inner ||secret||\n\n> [!NOTE]\n> body";
+        let doc = render(source);
+        partition(&doc);
+        let nested = doc
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, MessageBlockKind::List { depth: 2, .. }))
+            .expect("nested list");
+        assert!(doc.text[nested.range.clone()].contains("inner"));
+        assert!(
+            doc.blocks
+                .iter()
+                .any(|b| matches!(b.kind, MessageBlockKind::Alert { .. }))
+        );
+        assert!(
+            !doc.copy_range(0..doc.text.len(), &BTreeSet::new())
+                .contains("secret")
+        );
+        let mut msg = message(source);
+        msg.author.username = "Aléx".into();
+        let compact = doc.with_author(&msg);
+        partition(&compact);
+        let offset = compact.text.len() - doc.text.len();
+        assert!(
+            compact
+                .blocks
+                .iter()
+                .any(|b| b.range == ((nested.range.start + offset)..(nested.range.end + offset)))
+        );
+        assert_eq!(compact.source, source);
     }
     #[test]
     fn nested_unicode_formats_and_escapes_use_existing_ast() {

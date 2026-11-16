@@ -158,16 +158,23 @@ fn glyph_row(rows: impl IntoIterator<Item = Range<usize>>, index: usize) -> Opti
 fn paragraph_indent(document: &MessageDocument, paragraph: &Range<usize>) -> Pixels {
     let mut quote = 0;
     let mut code = false;
+    let mut list = 0;
+    let mut alert = false;
     for block in &document.blocks {
         if block.range.start <= paragraph.start && block.range.end > paragraph.start {
             match block.kind {
                 MessageBlockKind::Quote { depth } => quote = quote.max(depth.min(4)),
                 MessageBlockKind::Code { .. } => code = true,
+                MessageBlockKind::List { depth, .. } => list = list.max(depth.min(8)),
+                MessageBlockKind::Alert { .. } => alert = true,
                 _ => {}
             }
         }
     }
-    px(quote as f32 * 10. + if code { 8. } else { 0. })
+    px(quote as f32 * 10.
+        + list as f32 * 16.
+        + if code { 8. } else { 0. }
+        + if alert { 16. } else { 0. })
 }
 pub(super) fn layout(
     document: &MessageDocument,
@@ -178,25 +185,52 @@ pub(super) fn layout(
     window: &mut Window,
 ) -> DocumentLayout {
     let mut lines = Vec::new();
+    let mut y = px(0.);
     for paragraph in logical_lines(&document.text) {
         let indent = paragraph_indent(document, &paragraph);
+        let heading = document
+            .blocks
+            .iter()
+            .filter_map(|block| {
+                if block.range.start <= paragraph.start && block.range.end > paragraph.start {
+                    if let MessageBlockKind::Heading { level } = block.kind {
+                        return Some(level);
+                    }
+                }
+                None
+            })
+            .min();
+        let scale = match heading {
+            Some(1) => 1.375,
+            Some(2) => 1.25,
+            Some(3) => 1.125,
+            Some(5) => 0.9375,
+            Some(6) => 0.875,
+            _ => 1.,
+        };
+        let row_font_size = font_size * scale;
+        let row_height = line_height * scale;
         let text: SharedString = document.text[paragraph.clone()].to_owned().into();
         let paragraph_runs = clip(runs, &paragraph);
         let breaks = inline_emoji::wrap_breaks(
             &text,
-            font_size,
+            row_font_size,
             &paragraph_runs,
             width.map(|width| (width - indent).max(px(1.))),
             window,
         );
         for range in visual_ranges(paragraph, &breaks) {
             let text: SharedString = document.text[range.clone()].to_owned().into();
-            let layout = inline_emoji::shape_line(&text, font_size, &clip(runs, &range), window);
+            let layout =
+                inline_emoji::shape_line(&text, row_font_size, &clip(runs, &range), window);
             lines.push(VisualLine {
                 range,
                 layout,
                 indent,
+                y,
+                height: row_height,
             });
+            y += row_height;
         }
     }
     DocumentLayout { lines, line_height }
@@ -208,9 +242,9 @@ pub(super) fn backgrounds(
     scroll: Point<Pixels>,
 ) -> Vec<PaintQuad> {
     let mut quads = Vec::new();
-    for (index, line) in layout.lines.iter().enumerate() {
-        let y = bounds.top() + layout.line_height * index - scroll.y;
-        if y + layout.line_height < bounds.top() || y > bounds.bottom() {
+    for line in &layout.lines {
+        let y = bounds.top() + line.y - scroll.y;
+        if y + line.height < bounds.top() || y > bounds.bottom() {
             continue;
         }
         for block in &document.blocks {
@@ -219,16 +253,30 @@ pub(super) fn backgrounds(
                     MessageBlockKind::Code { .. } => quads.push(fill(
                         Bounds::new(
                             point(bounds.left(), y),
-                            size(bounds.size.width, layout.line_height),
+                            size(bounds.size.width, line.height),
                         ),
                         rgb(0x25222b),
                     )),
+                    MessageBlockKind::Alert { kind } => {
+                        use fluxer_markdown_parser::ast::AlertType;
+                        let color = match kind {
+                            AlertType::Note => 0x5b9cf6,
+                            AlertType::Tip => 0x55b985,
+                            AlertType::Important => 0xad81ef,
+                            AlertType::Warning => 0xe5b658,
+                            AlertType::Caution => 0xe26767,
+                        };
+                        quads.push(fill(
+                            Bounds::new(point(bounds.left(), y), size(px(4.), line.height)),
+                            rgb(color),
+                        ));
+                    }
                     MessageBlockKind::Quote { depth } => {
                         for level in 0..depth.min(4) {
                             quads.push(fill(
                                 Bounds::new(
                                     point(bounds.left() + px(level as f32 * 10.), y),
-                                    size(px(2.), layout.line_height),
+                                    size(px(2.), line.height),
                                 ),
                                 rgb(0x645f70),
                             ));
@@ -286,10 +334,10 @@ pub(super) fn emoji_images(
                 .layout
                 .x_for_index(span.range.end.min(line.range.end) - line.range.start);
         let width = (end_x - x).max(px(1.));
-        let height = (layout.line_height - px(2.)).max(px(1.));
+        let height = (line.height - px(2.)).max(px(1.));
         let origin = point(
             bounds.left() + x - scroll.x,
-            bounds.top() + layout.line_height * row - scroll.y + px(1.),
+            bounds.top() + line.y - scroll.y + px(1.),
         );
         if !Bounds::new(origin, size(width, height)).intersects(&viewport) {
             continue;

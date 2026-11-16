@@ -225,9 +225,9 @@ pub(super) fn images(
     use gpui::{AvailableSpace, ObjectFit, img};
     let (bounds, scroll) = viewport;
     let mut images = Vec::new();
-    for (row, line) in layout.lines.iter().enumerate() {
-        let y = bounds.top() + layout.line_height * row - scroll.y;
-        if y + layout.line_height < bounds.top() || y > bounds.bottom() {
+    for line in &layout.lines {
+        let y = bounds.top() + line.y - scroll.y;
+        if y + line.height < bounds.top() || y > bounds.bottom() {
             continue;
         }
         for (local, grapheme) in text[line.range.clone()].grapheme_indices(true) {
@@ -247,7 +247,7 @@ pub(super) fn images(
             let width = (line.layout.x_for_index(local + grapheme.len())
                 - line.layout.x_for_index(local))
             .max(px(1.));
-            let height = (layout.line_height - px(2.)).max(px(1.));
+            let height = (line.height - px(2.)).max(px(1.));
             let origin = point(bounds.left() + x - scroll.x, y + px(1.));
             if !Bounds::new(origin, size(width, height)).intersects(&bounds) {
                 continue;
