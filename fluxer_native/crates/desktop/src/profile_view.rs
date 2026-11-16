@@ -469,22 +469,17 @@ fn text_override<'a>(global: Option<&'a str>, member: Option<&'a str>) -> &'a st
     member.or(global).unwrap_or("")
 }
 fn placement(anchor: Point<Pixels>, viewport: Size<Pixels>) -> (Point<Pixels>, f32, f32) {
-    let width = 300_f32.min((f32::from(viewport.width) - 16.).max(1.));
-    let height = 520_f32.min((f32::from(viewport.height) - 16.).max(1.));
-    let right = f32::from(anchor.x) + 12.;
-    let x = if right + width + 8. <= f32::from(viewport.width) {
-        right
-    } else {
-        f32::from(anchor.x) - width - 12.
-    };
-    let y = f32::from(anchor.y);
+    let bounds = crate::overlay::popover_bounds(
+        Bounds::new(anchor, size(px(0.), px(0.))),
+        viewport,
+        size(px(300.), px(520.)),
+        px(8.),
+        px(12.),
+    );
     (
-        point(
-            px(x.clamp(8., (f32::from(viewport.width) - width - 8.).max(8.))),
-            px(y.clamp(8., (f32::from(viewport.height) - height - 8.).max(8.))),
-        ),
-        width,
-        height,
+        bounds.origin,
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
     )
 }
 
@@ -496,8 +491,10 @@ impl ProfilePopup {
         let (origin, width, height) = placement(open.anchor, window.viewport_size());
         if self.full {
             let viewport = window.viewport_size();
-            let width = (f32::from(viewport.width) - 32.).clamp(1., 600.);
-            let height = (f32::from(viewport.height) - 32.).max(1.);
+            let fitted =
+                crate::overlay::surface_size(viewport, size(px(600.), viewport.height), px(16.));
+            let width = f32::from(fitted.width);
+            let height = f32::from(fitted.height);
             return deferred(
                 div()
                     .absolute()

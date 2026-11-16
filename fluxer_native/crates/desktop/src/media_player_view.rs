@@ -578,16 +578,11 @@ pub(super) fn render_modal(
                     }
                     "tab" => {
                         cx.stop_propagation();
-                        let current = controls_focus.iter().position(|f| f.is_focused(window));
-                        let index = match (current, event.keystroke.modifiers.shift) {
-                            (Some(i), true) => {
-                                (i + controls_focus.len() - 1) % controls_focus.len()
-                            }
-                            (Some(i), false) => (i + 1) % controls_focus.len(),
-                            (None, true) => controls_focus.len() - 1,
-                            (None, false) => 0,
-                        };
-                        controls_focus[index].focus(window);
+                        crate::overlay::cycle_focus(
+                            window,
+                            &controls_focus,
+                            event.keystroke.modifiers.shift,
+                        );
                     }
                     _ => {}
                 },

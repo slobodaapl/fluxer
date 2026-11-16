@@ -45,6 +45,7 @@ mod message_markup;
 mod native_preferences;
 mod navigation_actions;
 mod outbox_view;
+mod overlay;
 mod pin_system_message;
 mod playable_media;
 mod profile_app;

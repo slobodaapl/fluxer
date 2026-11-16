@@ -433,16 +433,14 @@ impl Fluxer {
                     "tab" => {
                         this.image_viewer.armed = None;
                         let controls = this.image_viewer.controls(this.image_original_available());
-                        let current = controls
-                            .iter()
-                            .position(|(_, focus)| focus.is_focused(window));
-                        let next = match (current, event.keystroke.modifiers.shift) {
-                            (Some(index), true) => (index + controls.len() - 1) % controls.len(),
-                            (Some(index), false) => (index + 1) % controls.len(),
-                            (None, true) => controls.len() - 1,
-                            (None, false) => 0,
-                        };
-                        controls[next].1.focus(window);
+                        crate::overlay::cycle_focus(
+                            window,
+                            &controls
+                                .iter()
+                                .map(|(_, focus)| focus.clone())
+                                .collect::<Vec<_>>(),
+                            event.keystroke.modifiers.shift,
+                        );
                     }
                     "enter" | "space" if !event.keystroke.modifiers.modified() => {
                         if !event.is_held {
