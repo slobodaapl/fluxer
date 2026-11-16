@@ -8,3 +8,5 @@ Launch the offline demo with `--demo --demo-mentions`. The fixture adds populate
 - Check Escape and outside-click dismissal and return to the previous focus. With a caret on a mention, Enter should activate it. Verify placement with pointer and keyboard, at all edges and in narrow windows.
 
 The upstream `MentionRenderer.tsx` opens a user popout for resolved users, but renders role mentions as inert colored spans. The native role card is a requested extension; it reports only the locally cached assignments, never a total roster. The gateway member cache can be partial.
+
+- In the long fixture, Tab and Shift-Tab through the first mention, the role in the last table column, and the final mention. Each must scroll into view; the table should also scroll horizontally. Enter or Space opens the popup beside the visible glyph. Repeat in search results and pins, and verify pointer clicks do not move the scroller.

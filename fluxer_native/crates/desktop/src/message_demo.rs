@@ -142,6 +142,17 @@ impl Fluxer {
                     (base + DateDuration::seconds(90_000 + index as i64)).to_rfc3339();
                 fixture.insert(id, message);
             }
+            let mut long = String::from("Keyboard reveal: <@101> at the beginning.\n\n");
+            for index in 0..32 {
+                long.push_str(&format!(
+                    "Line {index}: scrolling should keep keyboard focus visible.\n"
+                ));
+            }
+            long.push_str("\n```rust\nfn example() { println!(\"code stays inert\"); }\n```\n\n| One | Two | Three | Four | Five | Six |\n| --- | --- | --- | --- | --- | --- |\n| text | text | text | text | text | <@&555> |\n\nAt the end <@101>.");
+            let id = Snowflake(21_010);
+            let mut message = Message::text(id, channel, sam.clone(), &long);
+            message.timestamp = (base + DateDuration::seconds(90_100)).to_rfc3339();
+            fixture.insert(id, message);
             let member = self
                 .state
                 .members

@@ -345,6 +345,10 @@ pub struct TextInput {
     revealed_spoilers: BTreeSet<u32>,
     inline_press: Option<(Point<Pixels>, usize, bool)>,
     inline_focus: Option<Range<usize>>,
+    inline_reveal: bool,
+    inline_pointer_focus: bool,
+    inline_visible_only: bool,
+    inline_timeline: Option<gpui::ScrollHandle>,
     hover_interactive: bool,
     focus_handle: FocusHandle,
     pub content: SharedString,
@@ -402,6 +406,10 @@ impl TextInput {
             revealed_spoilers: BTreeSet::new(),
             inline_press: None,
             inline_focus: None,
+            inline_reveal: false,
+            inline_pointer_focus: false,
+            inline_visible_only: false,
+            inline_timeline: None,
             hover_interactive: false,
             focus_handle: cx.focus_handle().tab_stop(true),
             content: "".into(),
@@ -453,13 +461,13 @@ impl TextInput {
         let focus = input.focus_handle.clone();
         cx.defer_in(window, move |_, window, cx| {
             cx.on_focus(&focus, window, |this, window, cx| {
+                if std::mem::take(&mut this.inline_pointer_focus) {
+                    return;
+                }
                 if this.inline_focus.is_some() {
                     return;
                 }
-                let Some(document) = this.message_document.as_ref() else {
-                    return;
-                };
-                let targets = inline_targets(document, &this.revealed_spoilers);
+                let targets = this.keyboard_inline_targets();
                 let target = if window.modifiers().shift {
                     targets.last()
                 } else {
@@ -469,6 +477,13 @@ impl TextInput {
                     let range = range.clone();
                     this.move_to(range.start, cx);
                     this.inline_focus = Some(range);
+                    this.queue_inline_reveal(cx);
+                } else if this.inline_visible_only {
+                    if window.modifiers().shift {
+                        window.focus_prev();
+                    } else {
+                        window.focus_next();
+                    }
                 }
             })
             .detach();
@@ -530,10 +545,7 @@ impl TextInput {
         {
             return;
         }
-        let Some(document) = self.message_document.as_ref() else {
-            return;
-        };
-        let targets = inline_targets(document, &self.revealed_spoilers);
+        let targets = self.keyboard_inline_targets();
         let next = if let Some(current) = &self.inline_focus {
             if event.keystroke.modifiers.shift {
                 targets
@@ -557,17 +569,59 @@ impl TextInput {
             let target = target.clone();
             self.move_to(target.start, cx);
             self.inline_focus = Some(target);
+            self.queue_inline_reveal(cx);
             cx.stop_propagation();
         } else {
             self.inline_focus = None;
         }
     }
+    pub fn set_inline_visible_only(&mut self) {
+        self.inline_visible_only = true;
+    }
+    fn keyboard_inline_targets(&self) -> Vec<Range<usize>> {
+        let Some(document) = self.message_document.as_ref() else {
+            return Vec::new();
+        };
+        let targets = inline_targets(document, &self.revealed_spoilers);
+        if !self.inline_visible_only {
+            return targets;
+        }
+        let (Some(layout), Some(bounds), Some(visible)) = (
+            &self.last_layout,
+            self.last_bounds,
+            self.last_visible_bounds,
+        ) else {
+            return Vec::new();
+        };
+        targets
+            .into_iter()
+            .filter(|range| {
+                inline_target_line(layout, range).is_some_and(|(line, left, right)| {
+                    let rect = Bounds::new(
+                        point(
+                            bounds.left() + left - self.scroll_x,
+                            bounds.top() + line.y - self.scroll_y,
+                        ),
+                        size((right - left).max(px(1.)), line.height),
+                    );
+                    rect.intersects(&visible)
+                })
+            })
+            .collect()
+    }
+    pub fn set_inline_timeline(&mut self, timeline: Option<gpui::ScrollHandle>) {
+        self.inline_timeline = timeline;
+    }
+    fn queue_inline_reveal(&mut self, cx: &mut Context<Self>) {
+        self.inline_reveal = true;
+        cx.notify();
+    }
     fn activate_inline(&mut self, _: &ActivateInline, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
-            self.activate_inline_at(self.cursor_offset(), cx);
+            self.activate_inline_at(self.cursor_offset(), true, cx);
         }
     }
-    fn activate_inline_at(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn activate_inline_at(&mut self, index: usize, keyboard: bool, cx: &mut Context<Self>) {
         let Some(document) = self.message_document.as_ref() else {
             return;
         };
@@ -615,6 +669,10 @@ impl TextInput {
                                 rect.intersects(&visible).then(|| rect.intersect(&visible))
                             })
                     });
+            if keyboard && anchor.is_none() {
+                self.queue_inline_reveal(cx);
+                return;
+            }
             cx.emit(MessageActivated { target, anchor });
         }
     }
@@ -1156,7 +1214,9 @@ impl TextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.inline_pointer_focus = !self.focus_handle.is_focused(window);
         window.focus(&self.focus_handle);
+        self.inline_reveal = false;
         if let (Some(layout), Some(bounds)) = (&self.last_layout, self.last_bounds) {
             let local_y = event.position.y - bounds.top() + self.scroll_y;
             if let Some(table) = layout.table_regions.iter().find(|table| {
@@ -1211,7 +1271,7 @@ impl TextInput {
             && (event.position.y - origin.y).abs() <= px(3.)
             && self.inline_index_for_mouse_position(event.position) == Some(index)
         {
-            self.activate_inline_at(index, cx);
+            self.activate_inline_at(index, false, cx);
         }
     }
 
@@ -1688,6 +1748,39 @@ fn inline_targets(document: &MessageDocument, revealed: &BTreeSet<u32>) -> Vec<R
     ranges.into_iter().map(|(_, range)| range).collect()
 }
 
+// Positive scroll distance needed to reveal an interval. Larger targets align
+// their leading edge; clamp prevents scrolling past the available content.
+fn reveal_offset(
+    offset: Pixels,
+    start: Pixels,
+    end: Pixels,
+    visible_start: Pixels,
+    visible_end: Pixels,
+    maximum: Pixels,
+) -> Pixels {
+    let delta = if start < visible_start {
+        start - visible_start
+    } else if end > visible_end {
+        (end - visible_end).min(start - visible_start)
+    } else {
+        px(0.)
+    };
+    (offset + delta).clamp(px(0.), maximum.max(px(0.)))
+}
+fn inline_target_line<'a>(
+    layout: &'a DocumentLayout,
+    range: &Range<usize>,
+) -> Option<(&'a VisualLine, Pixels, Pixels)> {
+    let line = layout
+        .lines
+        .iter()
+        .find(|line| line.range.contains(&range.start))?;
+    let end = range.end.min(line.range.end);
+    let left = line.indent + line.layout.x_for_index(range.start - line.range.start);
+    let right = line.indent + line.layout.x_for_index(end - line.range.start);
+    Some((line, left, right.max(left + px(1.))))
+}
+
 /// Source byte ranges deliberately exclude hard newlines. A soft wrap shares
 /// its boundary with the next row; a hard newline leaves a one-byte gap.
 #[derive(Clone)]
@@ -2106,6 +2199,59 @@ impl Element for TextElement {
             content_height,
             line_height: window.line_height(),
         };
+        // Lists consume a prepaint request; the timeline uses a scrolling Div.
+        // Table geometry is updated on the next frame before requesting the
+        // vertical reveal, so nested list retries see the correct target.
+        let revealing = input.inline_reveal && input.focus_handle.is_focused(window);
+        let mut table_adjustment = None;
+        if revealing {
+            if let Some(range) = input.inline_focus.as_ref() {
+                if let Some((line, left, right)) = inline_target_line(&layout, range) {
+                    if let Some(table) = layout
+                        .table_regions
+                        .iter()
+                        .find(|table| line.y >= table.y && line.y < table.y + table.height)
+                    {
+                        let next = reveal_offset(
+                            table.offset,
+                            left,
+                            right,
+                            px(0.),
+                            table.viewport,
+                            (table.width - table.viewport).max(px(0.)),
+                        );
+                        if next != table.offset {
+                            table_adjustment = Some((table.start, next));
+                        }
+                    }
+                    if table_adjustment.is_none() {
+                        let target = Bounds::new(
+                            point(bounds.left() + left, bounds.top() + line.y - input.scroll_y),
+                            size((right - left).max(px(1.)), line.height),
+                        );
+                        if let Some(timeline) = input.inline_timeline.as_ref() {
+                            let viewport = timeline.bounds();
+                            if viewport.size.height > px(0.) {
+                                let old = timeline.offset();
+                                let next = reveal_offset(
+                                    -old.y,
+                                    target.top(),
+                                    target.bottom(),
+                                    viewport.top(),
+                                    viewport.bottom(),
+                                    timeline.max_offset().height,
+                                );
+                                if next != -old.y {
+                                    timeline.set_offset(point(old.x, -next));
+                                }
+                            }
+                        } else {
+                            window.request_autoscroll(target);
+                        }
+                    }
+                }
+            }
+        }
         let position = layout.position_for_index(input.cursor_offset());
         let mut scroll = point(input.scroll_x, input.scroll_y);
         if input.multiline {
@@ -2244,6 +2390,15 @@ impl Element for TextElement {
             emoji_images.extend(message_text::timestamp_widgets(
                 document, &revealed, &layout, bounds, scroll, window, cx,
             ));
+        }
+        if revealing {
+            self.input.update(cx, |input, cx| {
+                if let Some((table, offset)) = table_adjustment {
+                    input.table_scrolls.insert(table, offset);
+                }
+                input.inline_reveal = table_adjustment.is_some();
+                cx.notify();
+            });
         }
         PrepaintState {
             code_controls,
@@ -3250,6 +3405,39 @@ mod tests {
 #[cfg(test)]
 mod inline_navigation_tests {
     use super::*;
+    #[test]
+    fn reveal_offsets_scroll_only_as_needed_and_clamp_to_content() {
+        // Window coordinates in a vertically scrolled timeline.
+        assert_eq!(
+            reveal_offset(px(150.), px(240.), px(260.), px(100.), px(300.), px(500.)),
+            px(150.)
+        );
+        assert_eq!(
+            reveal_offset(px(150.), px(70.), px(90.), px(100.), px(300.), px(500.)),
+            px(120.)
+        );
+        assert_eq!(
+            reveal_offset(px(150.), px(330.), px(350.), px(100.), px(300.), px(500.)),
+            px(200.)
+        );
+        assert_eq!(
+            reveal_offset(px(490.), px(330.), px(350.), px(100.), px(300.), px(500.)),
+            px(500.)
+        );
+        // A far table cell, then a previous cell, in coordinates relative to the viewport.
+        assert_eq!(
+            reveal_offset(px(0.), px(250.), px(290.), px(0.), px(160.), px(240.)),
+            px(130.)
+        );
+        assert_eq!(
+            reveal_offset(px(130.), px(-55.), px(-5.), px(0.), px(160.), px(240.)),
+            px(75.)
+        );
+        assert_eq!(
+            reveal_offset(px(40.), px(10.), px(300.), px(0.), px(160.), px(240.)),
+            px(50.)
+        );
+    }
     #[test]
     fn keyboard_targets_coalesce_styles_skip_code_and_preserve_spoiler_activation() {
         let message = fluxer_core::Message::text(

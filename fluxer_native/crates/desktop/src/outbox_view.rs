@@ -203,7 +203,13 @@ impl Fluxer {
                 } else {
                     let document =
                         self.message_document(&message, message_markup::MessageContext::Standard);
-                    let input = self.message_text_input(document, &message, window, cx);
+                    let input = self.message_text_input(
+                        document,
+                        &message,
+                        Some(self.timeline.clone()),
+                        window,
+                        cx,
+                    );
                     self.outbox.text.insert((channel, id), input.clone());
                     input
                 };

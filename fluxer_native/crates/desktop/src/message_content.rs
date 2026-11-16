@@ -74,6 +74,7 @@ impl Fluxer {
         &self,
         document: Arc<MessageDocument>,
         message: &Message,
+        timeline: Option<ScrollHandle>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
@@ -82,6 +83,7 @@ impl Fluxer {
         let input = cx.new(|cx| {
             let mut input = TextInput::read_only_document(document, window, cx);
             input.set_emoji_reduced_motion(self.interface.reduced_motion());
+            input.set_inline_timeline(timeline);
             input
         });
         cx.subscribe_in(
@@ -191,7 +193,9 @@ impl Fluxer {
             });
             input.clone()
         } else {
-            let input = self.message_text_input(document, &source, window, cx);
+            let input =
+                self.message_text_input(document, &source, Some(self.timeline.clone()), window, cx);
+            input.update(cx, |input, _| input.set_inline_visible_only());
             self.message_content.replies.insert(key, input.clone());
             input
         };

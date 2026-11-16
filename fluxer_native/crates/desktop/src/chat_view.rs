@@ -68,7 +68,13 @@ impl Fluxer {
                     input.update_message_document(document, cx);
                 });
             } else {
-                let input = self.message_text_input(document, message, window, cx);
+                let input = self.message_text_input(
+                    document,
+                    message,
+                    Some(self.timeline.clone()),
+                    window,
+                    cx,
+                );
                 self.message_text.insert(message.id, input);
             }
         }
