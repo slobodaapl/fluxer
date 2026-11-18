@@ -206,6 +206,8 @@ impl Fluxer {
                 .items_center()
                 .gap_1()
                 .min_w_0()
+                .text_size(px(12.))
+                .line_height(px(18.))
                 .h(px(22.))
                 .overflow_hidden()
                 .child(icon(Icon::Reply, 14.))

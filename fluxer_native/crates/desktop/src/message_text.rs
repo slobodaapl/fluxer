@@ -380,6 +380,131 @@ fn table_column_widths(
     }
     widths
 }
+// The web reply preview is a single nowrap line. Substitute ASCII whitespace
+// byte-for-byte so all projected span and hit-test offsets still refer to the
+// original document, then truncate only at grapheme and atomic-token boundaries.
+fn reply_preview_text(source: &str) -> String {
+    source
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+fn reply_preview_boundaries(text: &str, tokens: &[composer_tokens::Token]) -> Vec<usize> {
+    let mut boundaries = Vec::new();
+    let mut token_index = 0;
+    for index in text
+        .grapheme_indices(true)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+    {
+        while token_index < tokens.len() && tokens[token_index].source.end <= index {
+            token_index += 1;
+        }
+        if tokens
+            .get(token_index)
+            .is_none_or(|token| index <= token.source.start || index >= token.source.end)
+        {
+            boundaries.push(index);
+        }
+    }
+    boundaries
+}
+fn reply_preview_fit(
+    boundaries: &[usize],
+    available: Pixels,
+    mut measure: impl FnMut(usize) -> Pixels,
+) -> usize {
+    let mut low = 0;
+    let mut high = boundaries.len();
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if measure(boundaries[middle]) <= available {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    boundaries[low.saturating_sub(1)]
+}
+pub(super) fn reply_preview_layout(
+    document: &MessageDocument,
+    runs: &[TextRun],
+    font_size: Pixels,
+    line_height: Pixels,
+    width: Option<Pixels>,
+    window: &mut Window,
+) -> DocumentLayout {
+    let text = reply_preview_text(&document.text);
+    let tokens = display_tokens(document, crate::message_timestamp::now());
+    let full = inline_emoji::shape_message_line(&text, font_size, runs, &tokens, window);
+    let row_height = inline_emoji_height(document, &(0..document.text.len()), font_size)
+        .unwrap_or(line_height)
+        .max(line_height);
+    let mut ellipsis = None;
+    let mut visible_end = text.len();
+    let mut visible = full;
+    if let Some(width) = width
+        && visible.width > width
+    {
+        let mut ellipsis_run = runs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| window.text_style().to_run(0));
+        ellipsis_run.len = "…".len();
+        let ellipsis_line =
+            inline_emoji::shape_message_line("…", font_size, &[ellipsis_run], &[], window);
+        let available = (width - ellipsis_line.width).max(px(0.));
+        let boundaries = reply_preview_boundaries(&text, &tokens);
+        visible_end = reply_preview_fit(&boundaries, available, |end| {
+            inline_emoji::shape_message_line(
+                &text[..end],
+                font_size,
+                &clip(runs, &(0..end)),
+                &composer_tokens::clip(&tokens, &(0..end)),
+                window,
+            )
+            .width
+        });
+        visible = inline_emoji::shape_message_line(
+            &text[..visible_end],
+            font_size,
+            &clip(runs, &(0..visible_end)),
+            &composer_tokens::clip(&tokens, &(0..visible_end)),
+            window,
+        );
+        ellipsis = Some(VisualLine {
+            range: visible_end..visible_end,
+            layout: ellipsis_line,
+            indent: available,
+            y: px(0.),
+            height: row_height,
+            cell_right: None,
+        });
+    }
+    let line = VisualLine {
+        range: 0..visible_end,
+        layout: visible,
+        indent: px(0.),
+        y: px(0.),
+        height: row_height,
+        cell_right: None,
+    };
+    DocumentLayout {
+        lines: vec![line],
+        ellipsis,
+        code_headers: Vec::new(),
+        table_cells: Vec::new(),
+        table_regions: Vec::new(),
+        content_height: row_height,
+        line_height,
+    }
+}
 pub(super) fn layout(
     document: &MessageDocument,
     runs: &[TextRun],
@@ -701,6 +826,7 @@ pub(super) fn layout(
     }
     DocumentLayout {
         lines,
+        ellipsis: None,
         code_headers,
         table_cells,
         table_regions,
@@ -708,32 +834,6 @@ pub(super) fn layout(
         line_height,
     }
 }
-// Rebuild header geometry from the first code row after the shared layout has
-// been moved into the prepaint state.
-pub(super) fn code_headers(
-    document: &MessageDocument,
-    lines: &[VisualLine],
-    height: Pixels,
-) -> Vec<CodeHeader> {
-    document
-        .blocks
-        .iter()
-        .filter_map(|block| {
-            let MessageBlockKind::Code { language } = &block.kind else {
-                return None;
-            };
-            let line = lines
-                .iter()
-                .find(|line| line.range.start == block.range.start)?;
-            Some(CodeHeader {
-                range: block.range.clone(),
-                language: language.clone(),
-                y: line.y - height,
-            })
-        })
-        .collect()
-}
-
 pub(super) fn code_for_copy<'a>(
     document: &'a MessageDocument,
     range: &Range<usize>,
@@ -1123,6 +1223,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn reply_preview_flattens_lines_without_changing_offsets_or_splitting_tokens() {
+        let source = "First line\n雪 👩🏽‍💻 <t:1700000000:R> end";
+        let text = reply_preview_text(source);
+        assert_eq!(text.len(), source.len());
+        assert_eq!(text, "First line 雪 👩🏽‍💻 <t:1700000000:R> end");
+        let start = source.find("<t:").unwrap();
+        let end = start + "<t:1700000000:R>".len();
+        let tokens = vec![composer_tokens::Token {
+            source: start..end,
+            label: "relative time".into(),
+        }];
+        let boundaries = reply_preview_boundaries(&text, &tokens);
+        assert!(boundaries.contains(&start) && boundaries.contains(&end));
+        assert!(
+            boundaries
+                .iter()
+                .all(|index| *index <= start || *index >= end)
+        );
+        let emoji_start = source.find("👩🏽‍💻").unwrap();
+        let emoji_end = emoji_start + "👩🏽‍💻".len();
+        assert!(boundaries.contains(&emoji_start) && boundaries.contains(&emoji_end));
+        assert!(
+            boundaries
+                .iter()
+                .all(|index| *index <= emoji_start || *index >= emoji_end)
+        );
+        let fit = reply_preview_fit(&boundaries, px(12.), |end| {
+            px(text[..end].graphemes(true).count() as f32)
+        });
+        assert!(text.is_char_boundary(fit));
+        assert!(fit <= start || fit >= end);
+        assert!(text[..fit].graphemes(true).count() <= 12);
+        assert_eq!(logical_lines(source).len(), 2); // normal message geometry stays multiline
+        assert_eq!(source, "First line\n雪 👩🏽‍💻 <t:1700000000:R> end");
+    }
     #[test]
     fn hanging_rows_preserve_unicode_byte_ranges_and_marker_indent() {
         let text = "• 雪 one two three";

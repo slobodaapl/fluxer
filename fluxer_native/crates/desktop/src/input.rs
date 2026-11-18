@@ -1820,6 +1820,7 @@ struct CodeHeader {
 #[derive(Clone)]
 struct DocumentLayout {
     lines: Vec<VisualLine>,
+    ellipsis: Option<VisualLine>,
     code_headers: Vec<CodeHeader>,
     table_cells: Vec<TableCell>,
     table_regions: Vec<TableRegion>,
@@ -2002,6 +2003,7 @@ impl Element for TextElement {
                     &input.highlighted,
                 );
                 let table_scrolls = input.table_scrolls.clone();
+                let inline_preview = input.inline_visible_only;
                 let mut style = Style::default();
                 style.size.width = relative(1.).into();
                 return (
@@ -2010,15 +2012,26 @@ impl Element for TextElement {
                             gpui::AvailableSpace::Definite(width) => Some(width),
                             _ => None,
                         });
-                        let layout = message_text::layout(
-                            &document,
-                            &runs,
-                            font_size,
-                            line_height,
-                            width,
-                            &table_scrolls,
-                            window,
-                        );
+                        let layout = if inline_preview {
+                            message_text::reply_preview_layout(
+                                &document,
+                                &runs,
+                                font_size,
+                                line_height,
+                                width,
+                                window,
+                            )
+                        } else {
+                            message_text::layout(
+                                &document,
+                                &runs,
+                                font_size,
+                                line_height,
+                                width,
+                                &table_scrolls,
+                                window,
+                            )
+                        };
                         let measured_width = layout
                             .lines
                             .iter()
@@ -2110,6 +2123,8 @@ impl Element for TextElement {
             strikethrough: None,
         };
         let mut lines = Vec::new();
+        let mut ellipsis = None;
+        let mut code_headers = Vec::new();
         let mut table_cells = Vec::new();
         let mut table_regions = Vec::new();
         let mut content_height = px(0.);
@@ -2119,15 +2134,29 @@ impl Element for TextElement {
                 message_text::runs(document, &base, &input.revealed_spoilers),
                 &input.highlighted,
             );
-            let document_layout = message_text::layout(
-                document,
-                &runs,
-                font_size,
-                window.line_height(),
-                Some(bounds.size.width.max(px(1.))),
-                &input.table_scrolls,
-                window,
-            );
+            let width = Some(bounds.size.width.max(px(1.)));
+            let document_layout = if input.inline_visible_only {
+                message_text::reply_preview_layout(
+                    document,
+                    &runs,
+                    font_size,
+                    window.line_height(),
+                    width,
+                    window,
+                )
+            } else {
+                message_text::layout(
+                    document,
+                    &runs,
+                    font_size,
+                    window.line_height(),
+                    width,
+                    &input.table_scrolls,
+                    window,
+                )
+            };
+            ellipsis = document_layout.ellipsis;
+            code_headers = document_layout.code_headers;
             lines = document_layout.lines;
             table_cells = document_layout.table_cells;
             table_regions = document_layout.table_regions;
@@ -2186,13 +2215,9 @@ impl Element for TextElement {
                 cell_right: None,
             });
         }
-        let code_headers = if let Some(document) = input.message_document.as_ref() {
-            message_text::code_headers(document, &lines, window.line_height())
-        } else {
-            Vec::new()
-        };
         let layout = DocumentLayout {
             lines,
+            ellipsis,
             code_headers,
             table_cells,
             table_regions,
@@ -2494,6 +2519,15 @@ impl Element for TextElement {
                         .paint(origin, line.height, window, cx)
                         .expect("paint native composer");
                 }
+            }
+            if let Some(line) = &prepaint.layout.ellipsis {
+                let origin = point(
+                    bounds.left() + line.indent - prepaint.scroll.x,
+                    bounds.top() + line.y - prepaint.scroll.y,
+                );
+                line.layout
+                    .paint(origin, line.height, window, cx)
+                    .expect("paint reply preview ellipsis");
             }
             for control in &mut prepaint.code_controls {
                 control.paint(window, cx);
