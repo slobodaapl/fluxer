@@ -953,6 +953,31 @@ delegate_noop!(WaylandClientStatePtr: ignore org_kde_kwin_blur::OrgKdeKwinBlur);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewporter::WpViewporter);
 delegate_noop!(WaylandClientStatePtr: ignore wp_viewport::WpViewport);
 
+pub(super) struct RemapSync {
+    pub surface_id: ObjectId,
+    pub generation: u64,
+}
+impl Dispatch<WlCallback, RemapSync> for WaylandClientStatePtr {
+    fn event(
+        state: &mut Self,
+        _: &WlCallback,
+        event: wl_callback::Event,
+        data: &RemapSync,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            let client = state.get_client();
+            let mut state = client.borrow_mut();
+            let Some(window) = get_window(&mut state, &data.surface_id) else {
+                return;
+            };
+            drop(state);
+            window.remap_after_fence(data.generation);
+        }
+    }
+}
+
 impl Dispatch<WlCallback, ObjectId> for WaylandClientStatePtr {
     fn event(
         state: &mut WaylandClientStatePtr,

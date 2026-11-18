@@ -750,6 +750,17 @@ impl X11Client {
                     window_ref.is_mapped = true;
                 }
                 state.update_refresh_loop(event.window);
+                let window = state
+                    .windows
+                    .get(&event.window)
+                    .map(|window| window.window.clone());
+                drop(state);
+                if let Some(window) = window {
+                    window.refresh(RequestFrameOptions {
+                        require_presentation: true,
+                        ..Default::default()
+                    });
+                }
             }
             Event::VisibilityNotify(event) => {
                 let mut state = self.0.borrow_mut();

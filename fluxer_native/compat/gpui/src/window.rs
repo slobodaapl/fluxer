@@ -4129,6 +4129,18 @@ impl Window {
         self.platform_window.minimize();
     }
 
+    /// Hide this window without destroying its view or controller.
+    /// Returns false if the platform does not support reversible hiding.
+    pub fn hide_window(&self) -> bool {
+        self.platform_window.hide_window()
+    }
+
+    /// Show a window hidden with `hide_window`.
+    /// Returns false if the platform does not support reversible hiding.
+    pub fn show_window(&self) -> bool {
+        self.platform_window.show_window()
+    }
+
     /// Toggle full screen status on the current window at the platform level.
     pub fn toggle_fullscreen(&self) {
         self.platform_window.toggle_fullscreen();

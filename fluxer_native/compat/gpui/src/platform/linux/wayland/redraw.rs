@@ -26,6 +26,18 @@ impl RedrawScheduler {
         }
     }
 
+    /// Cancel in-flight recovery and gate all frame work until a new configure.
+    pub fn suspend(&mut self) {
+        self.configured = false;
+        self.queued = None;
+        self.recovered = false;
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    pub fn can_draw(&self) -> bool {
+        self.configured && !self.closed
+    }
+
     pub fn close(&mut self) {
         self.closed = true;
         self.queued = None;
@@ -161,6 +173,21 @@ mod tests {
         assert_eq!(select_output([("a", 1), ("b", 1)], Some(&"a")), Some("a"));
         assert_eq!(select_output([("a", 1), ("b", 1)], Some(&"b")), Some("b"));
         assert_eq!(select_output([("a", 2), ("b", 1)], Some(&"b")), Some("a"));
+    }
+
+    #[test]
+    fn suspend_invalidates_old_recovery_until_remap_is_configured() {
+        let mut scheduler = RedrawScheduler::default();
+        scheduler.configure();
+        let old = scheduler.request(true).unwrap();
+        scheduler.suspend();
+        assert!(!scheduler.can_draw());
+        assert!(!scheduler.fire(old));
+        assert!(scheduler.request(true).is_none());
+        scheduler.configure();
+        assert!(scheduler.can_draw());
+        assert!(!scheduler.fire(old));
+        assert!(scheduler.request(true).is_some());
     }
 
     #[test]

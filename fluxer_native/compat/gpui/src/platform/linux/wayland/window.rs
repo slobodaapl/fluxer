@@ -86,6 +86,12 @@ struct InProgressConfigure {
 pub struct WaylandWindowState {
     xdg_surface: xdg_surface::XdgSurface,
     acknowledged_first_configure: bool,
+    tray_hidden: bool,
+    remap_generation: u64,
+    remap_waiting_fence: bool,
+    title: String,
+    min_size: Option<Size<Pixels>>,
+    parent: Option<XdgToplevel>,
     frame_callback: Option<ObjectId>,
     redraw: RedrawScheduler,
     pub surface: wl_surface::WlSurface,
@@ -162,6 +168,12 @@ impl WaylandWindowState {
         Ok(Self {
             xdg_surface,
             acknowledged_first_configure: false,
+            tray_hidden: false,
+            remap_generation: 0,
+            remap_waiting_fence: false,
+            title: String::new(),
+            min_size: options.window_min_size,
+            parent: None,
             frame_callback: None,
             redraw: RedrawScheduler::default(),
             surface,
@@ -313,6 +325,9 @@ impl WaylandWindow {
             .as_ref()
             .map(|viewporter| viewporter.get_viewport(&surface, &globals.qh, ()));
 
+        let saved_parent = (params.kind == WindowKind::Floating)
+            .then(|| parent.clone())
+            .flatten();
         let this = Self(WaylandWindowStatePtr {
             state: Rc::new(RefCell::new(WaylandWindowState::new(
                 handle,
@@ -330,6 +345,7 @@ impl WaylandWindow {
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
         });
 
+        this.0.state.borrow_mut().parent = saved_parent;
         // Kick things off
         surface.commit();
 
@@ -356,7 +372,7 @@ impl WaylandWindowStatePtr {
 
     pub fn frame(&self, callback: Option<ObjectId>) {
         let mut state = self.state.borrow_mut();
-        if state.redraw.is_closed() {
+        if !state.redraw.can_draw() {
             return;
         }
         if callback.is_some() && callback != state.frame_callback {
@@ -422,6 +438,43 @@ impl WaylandWindowStatePtr {
             .detach();
     }
 
+    pub(super) fn remap_after_fence(&self, generation: u64) {
+        let mut state = self.state.borrow_mut();
+        if state.tray_hidden
+            || !state.remap_waiting_fence
+            || state.remap_generation != generation
+            || state.redraw.is_closed()
+        {
+            return;
+        }
+        state.remap_waiting_fence = false;
+        // Unmapping resets all xdg_toplevel attributes (xdg-shell protocol).
+        state.toplevel.set_title(state.title.clone());
+        if let Some(app_id) = &state.app_id {
+            state.toplevel.set_app_id(app_id.clone());
+        }
+        if let Some(parent) = &state.parent {
+            state.toplevel.set_parent(Some(parent));
+        }
+        if let Some(size) = state.min_size {
+            state
+                .toplevel
+                .set_min_size(size.width.0 as i32, size.height.0 as i32);
+        }
+        if state.fullscreen {
+            state.toplevel.set_fullscreen(None);
+        } else if state.maximized {
+            state.toplevel.set_maximized();
+        }
+        if let Some(decoration) = &state.decoration {
+            decoration.set_mode(state.decorations.to_xdg());
+        }
+        state.in_progress_configure = None;
+        // A newly unmapped xdg_surface must be committed without a buffer and
+        // configured again before the renderer is allowed to present.
+        state.surface.commit();
+    }
+
     fn output_changed(&self) {
         if let Some(callback) = self.callbacks.borrow_mut().moved.as_mut() {
             callback();
@@ -434,6 +487,13 @@ impl WaylandWindowStatePtr {
             return;
         }
         if let xdg_surface::Event::Configure { serial } = event {
+            {
+                let state = self.state.borrow();
+                if state.tray_hidden || state.remap_waiting_fence {
+                    state.xdg_surface.ack_configure(serial);
+                    return;
+                }
+            }
             {
                 let mut state = self.state.borrow_mut();
                 if let Some(window_controls) = state.in_progress_window_controls.take() {
@@ -1004,12 +1064,18 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn set_title(&mut self, title: &str) {
-        self.borrow().toplevel.set_title(title.to_string());
+        let mut state = self.borrow_mut();
+        state.title = title.to_owned();
+        if !state.tray_hidden {
+            state.toplevel.set_title(title.to_owned());
+        }
     }
 
     fn set_app_id(&mut self, app_id: &str) {
         let mut state = self.borrow_mut();
-        state.toplevel.set_app_id(app_id.to_owned());
+        if !state.tray_hidden {
+            state.toplevel.set_app_id(app_id.to_owned());
+        }
         state.app_id = Some(app_id.to_owned());
     }
 
@@ -1021,6 +1087,56 @@ impl PlatformWindow for WaylandWindow {
 
     fn minimize(&self) {
         self.borrow().toplevel.set_minimized();
+    }
+
+    fn hide_window(&self) -> bool {
+        let mut state = self.borrow_mut();
+        if state.redraw.is_closed() || !state.surface.is_alive() {
+            return false;
+        }
+        if state.tray_hidden {
+            return true;
+        }
+        let configured = state.acknowledged_first_configure;
+        state.tray_hidden = true;
+        state.remap_generation = state.remap_generation.wrapping_add(1);
+        state.remap_waiting_fence = false;
+        state.redraw.suspend();
+        state.frame_callback = None;
+        state.acknowledged_first_configure = false;
+        state.in_progress_configure = None;
+        // Before the initial configure there is no mapped buffer to detach;
+        // attaching even a null buffer would violate xdg-shell ordering.
+        if configured {
+            state.surface.attach(None, 0, 0);
+            state.surface.commit();
+        }
+        true
+    }
+
+    fn show_window(&self) -> bool {
+        let mut state = self.borrow_mut();
+        if state.redraw.is_closed() || !state.surface.is_alive() {
+            return false;
+        }
+        if !state.tray_hidden {
+            return true;
+        }
+        let Some(backend) = state.surface.backend().upgrade() else {
+            return false;
+        };
+        let connection = wayland_client::Connection::from_backend(backend);
+        state.tray_hidden = false;
+        state.remap_waiting_fence = true;
+        state.remap_generation = state.remap_generation.wrapping_add(1);
+        connection.display().sync(
+            &state.globals.qh,
+            super::client::RemapSync {
+                surface_id: state.surface.id(),
+                generation: state.remap_generation,
+            },
+        );
+        true
     }
 
     fn zoom(&self) {
@@ -1096,12 +1212,16 @@ impl PlatformWindow for WaylandWindow {
 
     fn draw(&self, scene: &Scene) {
         let mut state = self.borrow_mut();
-        state.renderer.draw(scene);
+        if state.redraw.can_draw() {
+            state.renderer.draw(scene);
+        }
     }
 
     fn completed_frame(&self) {
         let state = self.borrow();
-        state.surface.commit();
+        if state.redraw.can_draw() {
+            state.surface.commit();
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {

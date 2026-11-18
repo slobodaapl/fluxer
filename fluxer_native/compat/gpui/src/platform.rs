@@ -484,6 +484,14 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn set_title(&mut self, title: &str);
     fn set_background_appearance(&self, background_appearance: WindowBackgroundAppearance);
     fn minimize(&self);
+    /// Hide a window without destroying it. Returns false if unsupported.
+    fn hide_window(&self) -> bool {
+        false
+    }
+    /// Show a previously hidden window. Returns false if unsupported.
+    fn show_window(&self) -> bool {
+        false
+    }
     fn zoom(&self);
     fn toggle_fullscreen(&self);
     fn is_fullscreen(&self) -> bool;

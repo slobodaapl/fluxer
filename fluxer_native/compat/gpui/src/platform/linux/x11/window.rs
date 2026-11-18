@@ -265,6 +265,7 @@ pub struct X11WindowState {
     maximized_vertical: bool,
     maximized_horizontal: bool,
     hidden: bool,
+    tray_hidden: bool,
     active: bool,
     hovered: bool,
     fullscreen: bool,
@@ -682,6 +683,7 @@ impl X11WindowState {
                 maximized_vertical: false,
                 maximized_horizontal: false,
                 hidden: false,
+                tray_hidden: false,
                 appearance,
                 handle,
                 background_appearance: WindowBackgroundAppearance::Opaque,
@@ -987,6 +989,9 @@ impl X11WindowStatePtr {
     }
 
     pub fn refresh(&self, request_frame_options: RequestFrameOptions) {
+        if self.state.borrow().tray_hidden {
+            return;
+        }
         let mut cb = self.callbacks.borrow_mut();
         if let Some(ref mut fun) = cb.request_frame {
             fun(request_frame_options);
@@ -1405,6 +1410,73 @@ impl PlatformWindow for X11Window {
         .log_err();
     }
 
+    fn hide_window(&self) -> bool {
+        let state = self.0.state.borrow();
+        if state.destroyed {
+            return false;
+        }
+        if state.tray_hidden {
+            return true;
+        }
+        let root = state.x_root_window;
+        drop(state);
+        if check_reply(
+            || "X11 unmap for tray failed",
+            self.0.xcb.unmap_window(self.0.x_window),
+        )
+        .is_err()
+        {
+            return false;
+        }
+        // ICCCM withdrawal: notify a reparenting window manager explicitly.
+        let event = xproto::UnmapNotifyEvent {
+            response_type: xproto::UNMAP_NOTIFY_EVENT,
+            sequence: 0,
+            event: root,
+            window: self.0.x_window,
+            from_configure: false,
+        };
+        if check_reply(
+            || "X11 withdraw notification failed",
+            self.0.xcb.send_event(
+                false,
+                root,
+                xproto::EventMask::SUBSTRUCTURE_REDIRECT | xproto::EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            ),
+        )
+        .is_err()
+        {
+            let _ = self.0.xcb.map_window(self.0.x_window);
+            xcb_flush(&self.0.xcb);
+            return false;
+        }
+        self.0.state.borrow_mut().tray_hidden = true;
+        xcb_flush(&self.0.xcb);
+        true
+    }
+    fn show_window(&self) -> bool {
+        let state = self.0.state.borrow();
+        if state.destroyed {
+            return false;
+        }
+        if !state.tray_hidden {
+            return true;
+        }
+        drop(state);
+        if check_reply(
+            || "X11 remap from tray failed",
+            self.0.xcb.map_window(self.0.x_window),
+        )
+        .is_err()
+        {
+            return false;
+        }
+        self.0.state.borrow_mut().tray_hidden = false;
+        xcb_flush(&self.0.xcb);
+        true
+    }
+
     fn zoom(&self) {
         let state = self.0.state.borrow();
         self.set_wm_hints(
@@ -1472,7 +1544,9 @@ impl PlatformWindow for X11Window {
 
     fn draw(&self, scene: &Scene) {
         let mut inner = self.0.state.borrow_mut();
-        inner.renderer.draw(scene);
+        if !inner.tray_hidden {
+            inner.renderer.draw(scene);
+        }
     }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
