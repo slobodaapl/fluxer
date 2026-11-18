@@ -13,7 +13,9 @@ mod context_actions;
 mod context_menu;
 mod controls;
 mod conversation_scope;
+mod desktop_integration;
 mod desktop_notifications;
+mod desktop_tray;
 mod diagnostics;
 mod dropdown;
 mod emoji_picker;
@@ -312,6 +314,7 @@ struct Fluxer {
     focus: FocusHandle,
     _external_control: Option<external_control::ExternalControl>,
     controller: Option<Controller>,
+    desktop: desktop_integration::DesktopState,
     state: ClientState,
     demo: bool,
     message_demo_started: bool,
@@ -444,6 +447,7 @@ impl Fluxer {
         let mut view = Self {
             focus: cx.focus_handle(),
             _external_control: external_control,
+            desktop: desktop_integration::DesktopState::new(demo, window),
             controller,
             state: ClientState::default(),
             demo,
@@ -769,6 +773,11 @@ impl Fluxer {
             view.session_restoring = false;
             view.session_restore_failed = !demo;
         }
+        // Explicit, isolated fixture for startup hiding; never changes a live preference.
+        if demo && std::env::args().any(|arg| arg == "--demo-tray-start-minimized") {
+            view.interface
+                .set_window_behavior(native_preferences::WindowSetting::StartMinimized, true);
+        }
         cx.spawn(async move |entity, cx| {
             let mut cadence = Duration::from_millis(33);
             loop {
@@ -776,6 +785,7 @@ impl Fluxer {
                 match entity.update(cx, |view, cx| {
                     view.poll(cx);
                     view.poll_notifications(cx);
+                    view.poll_desktop(cx);
                     view.tick_slowmode(cx);
                     !view.viewer.desired.is_empty()
                 }) {
@@ -797,6 +807,12 @@ impl Fluxer {
         view.schedule_composer_demo(window, cx);
         view.schedule_quick_switcher_demo(window, cx);
         view.schedule_inbox_demo(window, cx);
+        let entity = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            entity
+                .update(cx, |this, cx| this.request_window_close(window, cx))
+                .unwrap_or(true)
+        });
         view
     }
 
@@ -2783,6 +2799,9 @@ fn main() {
                 || v == "--demo-outbox"
                 || v == "--demo-media"
         });
+    if !demo && desktop_tray::activate_existing() {
+        return;
+    }
     Application::new()
         .with_assets(controls::Assets)
         .with_http_client(rich_message::http_client())

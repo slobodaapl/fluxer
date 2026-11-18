@@ -65,3 +65,12 @@ native tree does not currently establish that its release packaging includes
 this document or the `LICENSES` directory; ensure they accompany the release.
 This is an attribution inventory, not a complete license clearance for the
 entire dependency graph.
+
+## Linux system tray
+
+The native Linux tray uses `ksni` 0.3.7 (https://github.com/iovxw/ksni), distributed
+under the Unlicense. Its original notice is retained in
+[LICENSES/ksni-Unlicense.txt](LICENSES/ksni-Unlicense.txt). The tray reuses Fluxer's
+existing stable icon/template artwork and renders the source-style unread dot.
+The integration uses StatusNotifierItem/dbusmenu and the existing worker actions;
+it does not introduce a client/server protocol.

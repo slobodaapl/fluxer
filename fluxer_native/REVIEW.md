@@ -532,3 +532,15 @@ modal and complete rendering/accessibility parity. Role cards show partial cache
 membership honestly and are a native extension, not a new server API assumption.
 Review the Arborium notice/packaging gap before distribution. Aggregate media budget
 #2 and multi-stream manual acceptance remain deferred as requested.
+
+## Linux tray and desktop integration — 2026-11-18
+
+See [TRAY_2026_11_18.md](TRAY_2026_11_18.md) for behavior and evidence. Review real
+panel icon/unread appearance, close/reopen while a real call/stream is active,
+muting/deafening/disconnecting from the tray, preferred settings after restart,
+launcher reactivation, panel restart and compositor-specific focus/fullscreen.
+X11 hooks need live X11 acceptance; Windows/macOS tray ports remain open.
+
+The reported reply-preview clipping/overlap is fixed and visually checked in the
+Wayland demo. Review long replies with custom emoji/timestamps/code and selection
+at multiple font sizes. Full rich-text acceptance remains separate.

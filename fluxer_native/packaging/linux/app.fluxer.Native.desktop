@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+[Desktop Entry]
+Name=Fluxer Native
+GenericName=Instant Messenger
+Comment=Native Fluxer text, voice and screen sharing
+Exec=fluxer-desktop
+Icon=app.fluxer.Native
+Terminal=false
+Type=Application
+Categories=Network;InstantMessaging;
+StartupWMClass=app.fluxer.Native

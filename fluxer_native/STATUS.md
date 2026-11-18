@@ -7,6 +7,21 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Linux tray and desktop integration — 2026-11-18
+
+Native now has a Linux StatusNotifierItem tray, default close-to-tray behavior,
+saved Desktop settings, tray menu actions and a separate per-user launcher/icon.
+Hiding retains the same GPUI window, controller and call; missing/lost tray hosts
+cannot leave the app hidden without a way back. Launcher re-execution raises the
+existing window. Windows/macOS tray ports and live X11 acceptance remain open.
+The reported multiline reply-preview overlap is also fixed.
+
+The full combined gate passes **681 tests, zero failures, 14 ignored**, formatting,
+strict Clippy and inventory audit. Owned Wayland checks cover close/reopen, menu
+settings/Quit, host loss, rapid hide/show and startup fallback; actual call
+continuity and physical device acceptance remain manual. See
+[TRAY_2026_11_18.md](TRAY_2026_11_18.md) and [REVIEW.md](REVIEW.md).
+
 ## Chat rendering push integrated — 2026-11-16
 
 The Terra/Sol chat worktrees and root fixes are merged into `yolo/gpui`: measured

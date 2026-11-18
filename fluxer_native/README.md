@@ -90,6 +90,23 @@ Chat images open in an in-app viewer. Use Left/Right to browse the message's
 images, and Escape or the backdrop to close. **Open original** is available
 explicitly and follows the normal external-link warning policy.
 
+## Linux desktop launcher and tray
+
+Install Native's launcher and taskbar icon for the current user after building:
+
+```sh
+python3 fluxer_native/scripts/install_desktop_entry.py
+```
+
+The installer points at `target/debug/fluxer-desktop` by default; `--binary` selects
+another installed build. It installs `app.fluxer.Native` alongside classic Fluxer.
+Desktop settings control the system tray icon, close-to-tray, startup hiding and
+colored artwork. Close keeps the existing session/call alive only with a working
+tray host; tray Quit or Ctrl+Q exits. The hidden window restores if the host is
+lost. Reopening the launcher raises the existing native instance. Tray support is
+currently Linux-only; minimize-to-tray is not exposed on Wayland. Details and
+manual acceptance are recorded in [TRAY_2026_11_18.md](TRAY_2026_11_18.md).
+
 ## Screen-share audio
 
 On Linux, the sharing pane enables **Include audio** by default and lets you
