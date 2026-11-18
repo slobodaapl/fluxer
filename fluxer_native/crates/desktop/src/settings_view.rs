@@ -11,6 +11,7 @@ pub(super) enum Section {
     Keybinds,
     Voice,
     Notifications,
+    Desktop,
 }
 
 impl Fluxer {
@@ -52,7 +53,8 @@ impl Fluxer {
             Section::Appearance
             | Section::Accessibility
             | Section::MessagesMedia
-            | Section::Keybinds => self.expanded_settings(cx),
+            | Section::Keybinds
+            | Section::Desktop => self.expanded_settings(cx),
             Section::Notifications => div()
                 .id("notification-settings-body")
                 .flex_1()
@@ -99,6 +101,7 @@ impl Fluxer {
                                 "settings-messages-media",
                                 "Messages & media",
                             ),
+                            (Section::Desktop, "settings-desktop", "Desktop"),
                             (Section::Keybinds, "settings-keybinds", "Keybinds"),
                             (Section::Voice, "settings-voice", "Voice & audio"),
                             (
@@ -295,6 +298,92 @@ A preview of your message text size.",
                 let autoplay = media_animation::gif_autoplay(&self.state.user_settings);
                 body=body.child(settings_heading("Messages & media")).child(muted("Animation preferences · saved to your account"))
                     .child(setting_row("Automatically play GIFs", "Play animated images without hovering. Reduced motion takes priority on this device.",toggle("settings-gif-autoplay",autoplay,"Automatically play GIFs").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::GifAutoplay(!autoplay),cx);}}))));
+            }
+            Section::Desktop => {
+                use crate::native_preferences::WindowSetting;
+                let behavior = self.interface.window_behavior();
+                let linux = cfg!(target_os = "linux");
+                body = body
+                    .child(settings_heading("Desktop"))
+                    .child(muted("Window preferences · saved on this device"))
+                    .child(
+                        div()
+                            .mt_2()
+                            .p_3()
+                            .rounded_md()
+                            .bg(rgb(0x25222e))
+                            .text_size(px(13.))
+                            .text_color(rgb(MUTED))
+                            .child(self.desktop_tray_status()),
+                    );
+                if !linux {
+                    body = body.child(muted(
+                        "System tray integration is currently available on Linux.",
+                    ));
+                }
+                for (setting, id, title, description, value, available) in [
+                    (
+                        WindowSetting::ShowTrayIcon,
+                        "settings-show-tray",
+                        "Show system tray icon",
+                        "Keep an icon in the system tray to reopen Fluxer.",
+                        behavior.show_tray_icon,
+                        linux,
+                    ),
+                    (
+                        WindowSetting::CloseToTray,
+                        "settings-close-to-tray",
+                        "Close to tray",
+                        "When the tray is available, closing the window keeps Fluxer running. Ctrl+Q or Quit exits the app.",
+                        behavior.close_to_tray,
+                        linux && behavior.show_tray_icon,
+                    ),
+                    (
+                        WindowSetting::StartMinimized,
+                        "settings-start-minimized",
+                        "Start minimized",
+                        "Start in the system tray when a tray host is available.",
+                        behavior.start_minimized,
+                        linux && behavior.show_tray_icon,
+                    ),
+                    (
+                        WindowSetting::ColoredTrayIcon,
+                        "settings-colored-tray",
+                        "Use colored tray icon",
+                        "Use Fluxer’s colors instead of a monochrome tray icon.",
+                        behavior.colored_tray_icon,
+                        linux && behavior.show_tray_icon,
+                    ),
+                ] {
+                    let control = toggle(id, value, title)
+                        .when(!available, |view| {
+                            view.opacity(0.45)
+                                .tab_stop(false)
+                                .cursor(CursorStyle::Arrow)
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if available {
+                                this.interface.set_window_behavior(setting, !value);
+                                cx.notify();
+                            }
+                        }))
+                        .on_key_down(cx.listener(move |this, event, _, cx| {
+                            if available
+                                && !event.is_held
+                                && matches!(event.keystroke.key.as_str(), "enter" | "space")
+                            {
+                                this.interface.set_window_behavior(setting, !value);
+                                cx.notify();
+                                cx.stop_propagation();
+                            }
+                        }));
+                    body = body.child(setting_row(title, description, control));
+                }
+                if linux && !behavior.show_tray_icon {
+                    body = body.child(muted(
+                        "Enable the tray icon to change the other window preferences.",
+                    ));
+                }
             }
             Section::Keybinds => {
                 body = body.child(settings_heading("Keybinds")).child(muted(

@@ -31,16 +31,45 @@ impl Shortcut {
         }
     }
 }
+/// Device-local window defaults mirror DesktopConfig.ts. These preferences
+/// describe requested behavior; tray availability is resolved by the desktop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct WindowBehavior {
+    pub show_tray_icon: bool,
+    pub close_to_tray: bool,
+    pub start_minimized: bool,
+    pub colored_tray_icon: bool,
+}
+impl Default for WindowBehavior {
+    fn default() -> Self {
+        Self {
+            show_tray_icon: true,
+            close_to_tray: true,
+            start_minimized: false,
+            colored_tray_icon: false,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum WindowSetting {
+    ShowTrayIcon,
+    CloseToTray,
+    StartMinimized,
+    ColoredTrayIcon,
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     reduced_motion: bool,
     shortcuts: [String; 5],
+    window_behavior: WindowBehavior,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             reduced_motion: false,
+            window_behavior: WindowBehavior::default(),
             shortcuts: ["ctrl-k", "ctrl-f", "ctrl-,", "ctrl-shift-m", "ctrl-shift-d"]
                 .map(str::to_owned),
         }
@@ -156,6 +185,19 @@ impl NativePreferences {
             server_error: None,
             font_draft: None,
         }
+    }
+    pub fn window_behavior(&self) -> WindowBehavior {
+        self.preferences.window_behavior
+    }
+    pub fn set_window_behavior(&mut self, setting: WindowSetting, value: bool) {
+        let mut next = self.preferences.clone();
+        match setting {
+            WindowSetting::ShowTrayIcon => next.window_behavior.show_tray_icon = value,
+            WindowSetting::CloseToTray => next.window_behavior.close_to_tray = value,
+            WindowSetting::StartMinimized => next.window_behavior.start_minimized = value,
+            WindowSetting::ColoredTrayIcon => next.window_behavior.colored_tray_icon = value,
+        }
+        self.persist(next);
     }
     pub fn reduced_motion(&self) -> bool {
         self.preferences.reduced_motion
@@ -323,7 +365,10 @@ impl Fluxer {
 }
 #[cfg(test)]
 mod tests {
-    use super::{NativePreferences, Preferences, Shortcut, keystroke, valid, validate};
+    use super::{
+        NativePreferences, Preferences, Shortcut, WindowBehavior, WindowSetting, keystroke, valid,
+        validate,
+    };
     use gpui::Keystroke;
     #[test]
     fn shortcut_conflicts_and_reserved_keys_are_rejected() {
@@ -403,6 +448,84 @@ mod tests {
         assert_eq!(
             p.action(&Keystroke::parse("ctrl-shift-m").unwrap()),
             Some(Shortcut::Mute)
+        );
+    }
+    #[test]
+    fn legacy_preferences_and_partial_window_settings_use_source_defaults() {
+        let shortcuts = Preferences::default().shortcuts;
+        let legacy = serde_json::json!({"reduced_motion":true,"shortcuts":shortcuts});
+        let old: Preferences = serde_json::from_value(legacy).unwrap();
+        assert!(old.reduced_motion);
+        assert_eq!(old.shortcuts, shortcuts);
+        assert_eq!(
+            old.window_behavior,
+            WindowBehavior {
+                show_tray_icon: true,
+                close_to_tray: true,
+                start_minimized: false,
+                colored_tray_icon: false
+            }
+        );
+        let partial: Preferences =
+            serde_json::from_value(serde_json::json!({"window_behavior":{"close_to_tray":false}}))
+                .unwrap();
+        assert_eq!(
+            partial.window_behavior,
+            WindowBehavior {
+                close_to_tray: false,
+                ..WindowBehavior::default()
+            }
+        );
+    }
+    #[test]
+    fn window_settings_save_without_resetting_motion_shortcuts_or_other_window_flags() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("interface.json");
+        let mut p = NativePreferences::new(true);
+        p.path = Some(path.clone());
+        p.toggle_motion();
+        p.assign(Shortcut::Search, "ctrl-shift-s".into());
+        p.set_window_behavior(WindowSetting::ShowTrayIcon, false);
+        p.set_window_behavior(WindowSetting::CloseToTray, false);
+        p.set_window_behavior(WindowSetting::StartMinimized, true);
+        p.set_window_behavior(WindowSetting::ColoredTrayIcon, true);
+        let saved: Preferences = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            saved.window_behavior,
+            WindowBehavior {
+                show_tray_icon: false,
+                close_to_tray: false,
+                start_minimized: true,
+                colored_tray_icon: true
+            }
+        );
+        assert_eq!(p.window_behavior(), saved.window_behavior);
+        assert!(saved.reduced_motion);
+        assert_eq!(saved.shortcuts[Shortcut::Search.index()], "ctrl-shift-s");
+        p.reset();
+        assert_eq!(p.window_behavior(), saved.window_behavior);
+        assert!(p.reduced_motion());
+    }
+    #[test]
+    fn failed_window_setting_save_keeps_every_previous_preference() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("interface.json");
+        let mut p = NativePreferences::new(true);
+        p.path = Some(path.clone());
+        p.toggle_motion();
+        p.assign(Shortcut::Search, "ctrl-shift-s".into());
+        p.set_window_behavior(WindowSetting::ColoredTrayIcon, true);
+        let before = p.window_behavior();
+        let bytes = std::fs::read(&path).unwrap();
+        p.path = Some(path.join("cannot-write-through-file"));
+        p.set_window_behavior(WindowSetting::CloseToTray, false);
+        assert_eq!(p.window_behavior(), before);
+        assert!(p.reduced_motion());
+        assert_eq!(p.binding(Shortcut::Search), "ctrl-shift-s");
+        assert!(p.error.is_some());
+        assert_eq!(
+            std::fs::read(root.path().join("interface.json")).unwrap(),
+            bytes
         );
     }
     #[test]
