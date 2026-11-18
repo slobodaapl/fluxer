@@ -1055,6 +1055,18 @@ impl PlatformWindow for WaylandWindow {
         }
     }
 
+    fn activate_with_token(&self, token: &str) -> bool {
+        let state = self.borrow();
+        if token.is_empty() || !state.surface.is_alive() {
+            return false;
+        }
+        let Some(activation) = &state.globals.activation else {
+            return false;
+        };
+        activation.activate(token.to_owned(), &state.surface);
+        true
+    }
+
     fn is_active(&self) -> bool {
         self.borrow().active
     }

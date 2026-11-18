@@ -479,6 +479,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         answers: &[PromptButton],
     ) -> Option<oneshot::Receiver<usize>>;
     fn activate(&self);
+    /// Request activation using a token supplied by the initiating desktop action.
+    fn activate_with_token(&self, _token: &str) -> bool {
+        false
+    }
     fn is_active(&self) -> bool;
     fn is_hovered(&self) -> bool;
     fn set_title(&mut self, title: &str);

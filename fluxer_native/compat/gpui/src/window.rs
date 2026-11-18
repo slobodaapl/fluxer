@@ -4124,6 +4124,12 @@ impl Window {
         self.platform_window.activate();
     }
 
+    /// Request activation using a token from the initiating desktop action.
+    /// Returns false when token activation is unavailable.
+    pub fn activate_window_with_token(&self, token: &str) -> bool {
+        self.platform_window.activate_with_token(token)
+    }
+
     /// Minimize the current window at the platform level.
     pub fn minimize_window(&self) {
         self.platform_window.minimize();
