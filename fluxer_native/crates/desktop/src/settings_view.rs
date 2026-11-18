@@ -367,16 +367,16 @@ A preview of your message text size.",
                                 cx.notify();
                             }
                         }))
-                        .on_key_down(cx.listener(move |this, event, _, cx| {
+                        .on_key_down(move |event, _, cx| {
                             if available
-                                && !event.is_held
                                 && matches!(event.keystroke.key.as_str(), "enter" | "space")
                             {
-                                this.interface.set_window_behavior(setting, !value);
-                                cx.notify();
+                                // GPUI synthesizes on_click on key-up. Only
+                                // block parent shortcuts here; mutate once in
+                                // the click handler for mouse and keyboard.
                                 cx.stop_propagation();
                             }
-                        }));
+                        });
                     body = body.child(setting_row(title, description, control));
                 }
                 if linux && !behavior.show_tray_icon {
