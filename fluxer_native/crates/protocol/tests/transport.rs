@@ -559,3 +559,25 @@ async fn one_to_one_dm_uses_recipient_id_request_shape() {
     let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body, json!({"recipient_id":"42"}));
 }
+
+#[tokio::test]
+async fn group_dm_uses_recipients_request_shape() {
+    let (origin, mut requests) = http_server(vec![response(
+        "200 OK",
+        json!({"id":"91","type":3,"recipients":[]}),
+    )])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("secret").unwrap());
+    client
+        .create_group_dm(&["42".into(), "43".into()])
+        .await
+        .unwrap();
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with("POST /api/v1/users/@me/channels "));
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body, json!({"recipients":["42","43"]}));
+}

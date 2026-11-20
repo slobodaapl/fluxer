@@ -1227,6 +1227,13 @@ impl Worker {
                     });
                 }
             }
+            Command::CreateGroupDm { recipients } => {
+                if let Err(message) = self.create_group_dm(recipients).await {
+                    self.emit(Event::Status(format!(
+                        "Couldn't create group DM: {message}"
+                    )));
+                }
+            }
             Command::LoadUserProfile {
                 user_id,
                 guild_id,
@@ -2304,6 +2311,49 @@ impl Worker {
         self.emit(Event::Status("Opening direct message…".into()));
         Ok(())
     }
+    async fn create_group_dm(&mut self, recipients: Vec<Snowflake>) -> Result<()> {
+        self.cancel_open_dm();
+        if self.demo {
+            return Err("Unavailable in demo mode".into());
+        }
+        let current = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let mut unique = std::collections::BTreeSet::new();
+        for id in recipients {
+            if id == current
+                || !self
+                    .state
+                    .relationships
+                    .get(&id)
+                    .is_some_and(|r| r.kind == 1)
+                || !unique.insert(id)
+            {
+                return Err("Select distinct friends to create a group DM".into());
+            }
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        let recipients: Vec<String> = unique.into_iter().map(|id| id.to_string()).collect();
+        let generation = self.dm_generation;
+        let tx = self.dm_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(15),
+                client.create_group_dm(&recipients),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(error),
+                Err(_) => Err("Creating the group DM timed out".into()),
+            };
+            let _ = tx.send(DmEvent {
+                user_id: 0.into(),
+                generation,
+                result,
+            });
+        });
+        self.dm_job = Some(DmJob { generation, task });
+        self.emit(Event::Status("Creating group DM…".into()));
+        Ok(())
+    }
     async fn finish_open_dm(&mut self, event: DmEvent) -> Result<()> {
         if self
             .dm_job
@@ -2316,7 +2366,12 @@ impl Worker {
         let result: Result<()> = async {
             let channel: fluxer_core::Channel =
                 self.state.decode_api(event.result?).map_err(error)?;
-            if channel.kind != fluxer_core::ChannelType::Dm || channel.guild_id.is_some() {
+            let expected = if event.user_id == 0.into() {
+                fluxer_core::ChannelType::GroupDm
+            } else {
+                fluxer_core::ChannelType::Dm
+            };
+            if channel.kind != expected || channel.guild_id.is_some() {
                 return Err("Server returned an invalid direct message channel".into());
             }
             let id = channel.id;
@@ -2328,10 +2383,22 @@ impl Worker {
             Ok(()) => crate::DirectMessageStatus::Complete,
             Err(message) => crate::DirectMessageStatus::Failed(message),
         };
-        self.emit(Event::DirectMessageOpen {
-            user_id: event.user_id,
-            status,
-        });
+        if event.user_id == 0.into() {
+            match status {
+                crate::DirectMessageStatus::Complete => {
+                    self.emit(Event::Status("Group DM created".into()))
+                }
+                crate::DirectMessageStatus::Failed(message) => self.emit(Event::Status(format!(
+                    "Couldn't create group DM: {message}"
+                ))),
+                _ => {}
+            }
+        } else {
+            self.emit(Event::DirectMessageOpen {
+                user_id: event.user_id,
+                status,
+            });
+        }
         Ok(())
     }
 

@@ -14,6 +14,8 @@ enum Filter {
 }
 pub(super) struct FriendsUi {
     filter: Filter,
+    group_selecting: bool,
+    group_recipients: std::collections::BTreeSet<Snowflake>,
     pub status: BTreeMap<Snowflake, RelationshipMutationStatus>,
     pub dm_status: BTreeMap<Snowflake, DirectMessageStatus>,
     pub confirm: Option<(Snowflake, RelationshipAction, String)>,
@@ -26,6 +28,8 @@ impl FriendsUi {
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
         Self {
             filter: Filter::Online,
+            group_selecting: false,
+            group_recipients: std::collections::BTreeSet::new(),
             status: BTreeMap::new(),
             dm_status: BTreeMap::new(),
             confirm: None,
@@ -312,6 +316,21 @@ impl Fluxer {
                     )),
                 );
             }
+            if relationship.kind == 1 && self.friends_ui.group_selecting {
+                let selected = self.friends_ui.group_recipients.contains(&id);
+                actions = actions.child(
+                    quiet_button(
+                        ("group-select", id.0),
+                        if selected { "Selected" } else { "Add to group" },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.friends_ui.group_recipients.remove(&id) {
+                            this.friends_ui.group_recipients.insert(id);
+                        }
+                        cx.notify();
+                    })),
+                );
+            }
             if relationship.kind == 3 && !pending && !self.demo {
                 actions = actions.child(quiet_button(("friend-accept", id.0), "Accept").on_click(
                     cx.listener({
@@ -423,6 +442,45 @@ impl Fluxer {
                     .border_b_1()
                     .border_color(rgb(PANEL))
                     .child(div().font_weight(FontWeight::BOLD).child("Friends"))
+                    .when(!self.demo, |row| {
+                        row.child(
+                            quiet_button(
+                                "group-dm-toggle",
+                                if self.friends_ui.group_selecting {
+                                    "Cancel group"
+                                } else {
+                                    "New group DM"
+                                },
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.friends_ui.group_selecting = !this.friends_ui.group_selecting;
+                                this.friends_ui.group_recipients.clear();
+                                if this.friends_ui.group_selecting {
+                                    this.friends_ui.filter = Filter::All;
+                                }
+                                cx.notify();
+                            })),
+                        )
+                    })
+                    .when(self.friends_ui.group_selecting, |row| {
+                        row.child(
+                            quiet_button(
+                                "group-dm-create",
+                                format!(
+                                    "Create group ({})",
+                                    self.friends_ui.group_recipients.len()
+                                ),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let recipients =
+                                    this.friends_ui.group_recipients.iter().copied().collect();
+                                this.command(Command::CreateGroupDm { recipients }, cx);
+                                this.friends_ui.group_selecting = false;
+                                this.friends_ui.group_recipients.clear();
+                                cx.notify();
+                            })),
+                        )
+                    })
                     .children(
                         [
                             (Filter::Online, "Online"),

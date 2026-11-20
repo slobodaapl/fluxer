@@ -175,6 +175,9 @@ pub enum Command {
     OpenDm {
         user_id: Snowflake,
     },
+    CreateGroupDm {
+        recipients: Vec<Snowflake>,
+    },
     LoadUserProfile {
         user_id: Snowflake,
         guild_id: Option<Snowflake>,

@@ -719,6 +719,14 @@ impl Client {
         )
         .await
     }
+    pub async fn create_group_dm(&self, recipients: &[String]) -> Result<Value> {
+        self.request(
+            Method::POST,
+            "/users/@me/channels",
+            Some(&json!({"recipients": recipients})),
+        )
+        .await
+    }
     pub async fn relationships(&self) -> Result<Value> {
         self.request(Method::GET, "/users/@me/relationships", None)
             .await
