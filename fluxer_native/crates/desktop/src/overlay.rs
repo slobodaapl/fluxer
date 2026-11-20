@@ -92,6 +92,8 @@ impl super::Fluxer {
         self.friends_ui = super::friends_view::FriendsUi::new(cx);
         self.clear_session_revocation(cx);
         self.connections_request = None;
+        self.connections_error = None;
+        self.connection_unlink = None;
         self.connections = None;
         self.account_sessions_request = None;
         self.account_sessions = None;

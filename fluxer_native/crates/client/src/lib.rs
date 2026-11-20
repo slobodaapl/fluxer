@@ -191,6 +191,7 @@ pub enum Command {
     FetchConnections {
         request_id: u64,
         update: Option<(String, String, i64)>,
+        delete: Option<(String, String)>,
     },
     FetchCommerce {
         request_id: u64,

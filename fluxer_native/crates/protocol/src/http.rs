@@ -1152,6 +1152,11 @@ impl Client {
         .await
     }
 
+    pub async fn delete_connection(&self, kind: &str, id: &str) -> Result<Value> {
+        let path = format!("/users/@me/connections/{}/{}", segment(kind), segment(id));
+        self.request(Method::DELETE, &path, None).await
+    }
+
     pub async fn auth_sessions(&self) -> Result<Value> {
         self.request(Method::GET, "/auth/sessions", None).await
     }

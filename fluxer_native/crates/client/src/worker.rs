@@ -1413,7 +1413,11 @@ impl Worker {
                     .map_err(error)?;
                 self.snapshot();
             }
-            Command::FetchConnections { request_id, update } => {
+            Command::FetchConnections {
+                request_id,
+                update,
+                delete,
+            } => {
                 let client = self.client()?;
                 let events = self.events.clone();
                 if let Some(task) = self.connections_task.take() {
@@ -1425,6 +1429,9 @@ impl Worker {
                             client
                                 .update_connection_visibility(&kind, &id, flags)
                                 .await?;
+                        }
+                        if let Some((kind, id)) = delete {
+                            client.delete_connection(&kind, &id).await?;
                         }
                         client.connections().await
                     };

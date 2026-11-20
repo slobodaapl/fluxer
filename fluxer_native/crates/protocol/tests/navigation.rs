@@ -629,3 +629,31 @@ async fn member_overwrite_create_and_delete_use_target_route() {
     );
     assert!(request.body.is_empty());
 }
+
+#[tokio::test]
+async fn unlink_connection_uses_authenticated_delete_and_can_refresh() {
+    let remaining = json!([]);
+    let mut server = Server::new(vec![Reply::empty(), Reply::json(200, remaining.clone())]).await;
+    let client = client(&server.origin);
+    client
+        .delete_connection("domain", "example.org")
+        .await
+        .unwrap();
+    assert_eq!(client.connections().await.unwrap(), remaining);
+    let delete = server.next().await;
+    assert_eq!(
+        delete.line,
+        "DELETE /api/v1/users/@me/connections/domain/example%2Eorg HTTP/1.1"
+    );
+    assert_eq!(
+        delete.headers.get("authorization").unwrap(),
+        "synthetic-session"
+    );
+    assert!(delete.body.is_empty());
+    let refresh = server.next().await;
+    assert_eq!(refresh.line, "GET /api/v1/users/@me/connections HTTP/1.1");
+    assert_eq!(
+        refresh.headers.get("authorization").unwrap(),
+        "synthetic-session"
+    );
+}

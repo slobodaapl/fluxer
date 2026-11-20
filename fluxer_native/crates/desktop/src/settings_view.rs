@@ -193,6 +193,9 @@ impl Fluxer {
             self.clear_session_revocation(cx);
         }
         self.commerce.clear();
+        if section != Section::Connections {
+            self.connection_unlink = None;
+        }
         self.settings_section = section;
         self.pane = Pane::Settings;
         if section == Section::Connections && !self.demo {
@@ -288,7 +291,16 @@ impl Fluxer {
     fn fetch_connections(&mut self, update: Option<(String, String, i64)>, cx: &mut Context<Self>) {
         let request_id = fluxer_client::next_pending_message_id();
         self.connections_request = Some(request_id);
-        self.command(Command::FetchConnections { request_id, update }, cx);
+        self.connection_unlink = None;
+        self.connections_error = None;
+        self.command(
+            Command::FetchConnections {
+                request_id,
+                update,
+                delete: None,
+            },
+            cx,
+        );
     }
 
     fn connections_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -362,12 +374,72 @@ impl Fluxer {
                             row = row.child(muted(title));
                         }
                     }
+                    if !kind.is_empty() && !id.is_empty() {
+                        let selected = self
+                            .connection_unlink
+                            .as_ref()
+                            .is_some_and(|(k, i, _)| k == &kind && i == &id);
+                        if selected {
+                            row = row
+                                .child(muted(format!("Unlink {} from your profile?", name)))
+                                .child(
+                                    quiet_button(
+                                        ("connection-unlink-confirm", index),
+                                        "Confirm unlink",
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            if let Some((kind, id, _)) =
+                                                this.connection_unlink.take()
+                                            {
+                                                let request_id =
+                                                    fluxer_client::next_pending_message_id();
+                                                this.connections_request = Some(request_id);
+                                                this.connections_error = None;
+                                                this.command(
+                                                    Command::FetchConnections {
+                                                        request_id,
+                                                        update: None,
+                                                        delete: Some((kind, id)),
+                                                    },
+                                                    cx,
+                                                );
+                                                cx.notify();
+                                            }
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    quiet_button(("connection-unlink-cancel", index), "Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.connection_unlink = None;
+                                            cx.notify();
+                                        })),
+                                );
+                        } else {
+                            let kind = kind.clone();
+                            let id = id.clone();
+                            let name = name.to_owned();
+                            row = row.child(
+                                quiet_button(("connection-unlink", index), "Unlink").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.connection_unlink =
+                                            Some((kind.clone(), id.clone(), name.clone()));
+                                        cx.notify();
+                                    }),
+                                ),
+                            );
+                        }
+                    }
                     body = body.child(row);
                 }
             } else {
                 body = body.child(muted("Could not read linked accounts."));
             }
         } else if let Some(Err(error)) = &self.connections {
+            body = body.child(muted(error.clone()));
+        }
+        if let Some(error) = &self.connections_error {
             body = body.child(muted(error.clone()));
         }
         if !self.demo && self.connections_request.is_none() {
@@ -551,6 +623,7 @@ impl Fluxer {
         self.interface.recording = None;
         self.clear_session_revocation(cx);
         self.commerce.clear();
+        self.connection_unlink = None;
         self.pane = self.settings_return;
         if self.pane == Pane::Chat {
             self.composer.focus_handle(cx).focus(window);

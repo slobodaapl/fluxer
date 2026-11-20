@@ -366,6 +366,8 @@ struct Fluxer {
     pane: Pane,
     settings_section: settings_view::Section,
     connections_request: Option<u64>,
+    connections_error: Option<String>,
+    connection_unlink: Option<(String, String, String)>,
     connections: Option<Result<serde_json::Value, String>>,
     commerce: commerce_view::CommerceSettings,
     account_sessions_request: Option<u64>,
@@ -552,6 +554,8 @@ impl Fluxer {
             pane: Pane::Chat,
             settings_section: settings_view::Section::Voice,
             connections_request: None,
+            connections_error: None,
+            connection_unlink: None,
             connections: None,
             commerce: commerce_view::CommerceSettings::default(),
             account_sessions_request: None,
@@ -1089,7 +1093,15 @@ impl Fluxer {
                 Event::Connections { request_id, result } => {
                     if self.connections_request == Some(request_id) {
                         self.connections_request = None;
-                        self.connections = Some(result);
+                        match result {
+                            Ok(value) => {
+                                self.connections = Some(Ok(value));
+                                self.connections_error = None;
+                            }
+                            Err(error) => {
+                                self.connections_error = Some(error);
+                            }
+                        }
                     }
                 }
                 Event::Commerce { request_id, result } => self.commerce.finish(request_id, result),
