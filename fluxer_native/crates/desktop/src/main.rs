@@ -348,6 +348,8 @@ struct Fluxer {
     settings_section: settings_view::Section,
     account_sessions_request: Option<u64>,
     account_sessions: Option<Result<serde_json::Value, String>>,
+    session_revocation: Option<settings_view::SessionRevocation>,
+    session_revocation_secret: Entity<TextInput>,
     interface: native_preferences::NativePreferences,
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
@@ -517,6 +519,12 @@ impl Fluxer {
             settings_section: settings_view::Section::Voice,
             account_sessions_request: None,
             account_sessions: None,
+            session_revocation: None,
+            session_revocation_secret: cx.new(|cx| {
+                let mut input = TextInput::new("Verification", cx);
+                input.secret = true;
+                input
+            }),
             interface: native_preferences::NativePreferences::new(demo),
             settings_return: Pane::Chat,
             selected_guild: None,
@@ -1017,6 +1025,9 @@ impl Fluxer {
                         self.account_sessions_request = None;
                         self.account_sessions = Some(result);
                     }
+                }
+                Event::AccountSessionRevocation { request_id, result } => {
+                    self.handle_session_revocation_result(request_id, result, cx);
                 }
                 Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,

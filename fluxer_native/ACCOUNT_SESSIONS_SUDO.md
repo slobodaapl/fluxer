@@ -1,34 +1,22 @@
-# Device revocation prerequisite
+# Device revocation
 
-Device revocation remains unavailable in Native. The protocol crate can parse a
-`SUDO_MODE_REQUIRED` challenge, but does not yet retain response headers, prompt
-for proofs, retry the request, or handle reauthentication. Parsing a challenge
-is not authorization.
+Native supports revoking one non-current device from Devices. The user confirms
+before the first POST, since accounts without verifiable credentials or with a
+recent SSO sign-in can pass sudo without a challenge. The worker binds the target
+to the account and instance and rechecks the device list before each POST.
 
-Classic fetches `GET /auth/sessions` and sends `POST /auth/sessions/logout` with
-`session_id_hashes` (at most 100). The IDs are base64url session hashes from the
-list, and the server revokes the selected sessions for the authenticated user.
-Classic skips an empty selection. The current session can be selected, so a
-future implementation must handle its loss and clear local authentication.
+On an exact `SUDO_MODE_REQUIRED` response, Native supports password when
+advertised without MFA, and TOTP or backup codes using `mfa_method: totp`.
+WebAuthn, email codes, and SSO reauthentication are not implemented and fail
+closed. Proofs are entered in a masked input, cleared on submission or close,
+and not logged. A definite verification rejection can be retried; transport
+failures and timeouts require the user to check the device list before trying
+again. The list refreshes after confirmed success. Closing an in-flight request
+cannot guarantee that the server did not process it.
 
-The server runs sudo middleware before logout. A valid
-`X-Fluxer-Sudo-Mode-JWT` is scoped to the user, not the individual session;
-MFA and email-code verification can return a token in the same header, valid
-for five minutes. Password verification returns no token. A request without a
-proof can succeed for accounts with no verifiable credentials, including a
-recent SSO sign-in in the server's ten-minute window. Thus an initial logout
-request is itself potentially destructive, not a harmless challenge probe.
-
-On 403 `SUDO_MODE_REQUIRED`, the top-level `has_mfa` and `methods` describe the
-available proofs. Password is only accepted when usable MFA is absent; backup
-codes use `mfa_method: totp` and `mfa_code`. WebAuthn and email codes need their
-own challenge or ticket flow; SSO can require signing in again. Future work must
-keep the selection and authenticated account/instance bound to the pending
-operation, handle password and all advertised methods, protect proof and token
-secrets, capture and scope returned headers, and avoid automatic retries after
-ambiguous transport failures. It must also handle verification failures and
-refresh the list only after a confirmed success. The parser intentionally does
-not initiate any of these actions.
+The direct logout request carries the proof, so Native does not persist or reuse
+the sudo token that MFA may return. Current-device and bulk revocation remain
+unavailable in this flow.
 
 Source: `fluxer_api/src/api/auth/AuthController.ts`, `AuthSession.ts`,
 `services/SudoVerificationService.ts`, `services/SudoMethods.ts`,

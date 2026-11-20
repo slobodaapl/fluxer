@@ -89,6 +89,7 @@ impl super::Fluxer {
         self.gif_picker.reset();
         self.sticker_picker_open = false;
         self.friends_ui = super::friends_view::FriendsUi::new(cx);
+        self.clear_session_revocation(cx);
         self.account_sessions_request = None;
         self.account_sessions = None;
         self.forum = None;

@@ -730,3 +730,32 @@ async fn reject_incoming_call_sends_classic_empty_object() {
         json!({})
     );
 }
+
+#[tokio::test]
+async fn session_revocation_password_is_sent_only_in_confirmed_request() {
+    use fluxer_protocol::{SessionRevocationOutcome, SessionRevocationProof};
+    let (origin, mut requests) = http_server(vec![
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("synthetic-token").unwrap());
+    assert_eq!(
+        client
+            .revoke_auth_session(
+                "synthetic_hash",
+                Some(SessionRevocationProof::Password("synthetic-password"))
+            )
+            .await
+            .unwrap(),
+        SessionRevocationOutcome::Revoked
+    );
+    let request = requests.recv().await.unwrap();
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body["session_id_hashes"], json!(["synthetic_hash"]));
+    assert_eq!(body["password"], "synthetic-password");
+    assert!(body.get("mfa_method").is_none());
+}

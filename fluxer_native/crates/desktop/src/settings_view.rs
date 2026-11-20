@@ -18,6 +18,16 @@ pub(super) enum Section {
     Desktop,
 }
 
+pub(super) struct SessionRevocation {
+    target: String,
+    title: String,
+    account: Snowflake,
+    instance: String,
+    request: Option<u64>,
+    challenge: Option<fluxer_client::SudoChallenge>,
+    error: Option<String>,
+}
+
 pub(super) struct ProfileEdit {
     name: Entity<TextInput>,
     bio: Entity<TextInput>,
@@ -174,6 +184,10 @@ impl Fluxer {
             }
             self.profile_edit.feedback = None;
         }
+        if self.settings_section == Section::AccountSessions && section != Section::AccountSessions
+        {
+            self.clear_session_revocation(cx);
+        }
         self.settings_section = section;
         self.pane = Pane::Settings;
         if section == Section::AccountSessions && !self.demo {
@@ -187,6 +201,77 @@ impl Fluxer {
         }
         self.focus.focus(window);
         cx.notify();
+    }
+
+    pub(super) fn clear_session_revocation(&mut self, cx: &mut Context<Self>) {
+        if self.session_revocation.take().is_some() {
+            self.command(Command::CancelAccountSessionRevocation, cx);
+        }
+        self.session_revocation_secret
+            .update(cx, |input, cx| input.set(String::new(), cx));
+    }
+
+    pub(super) fn handle_session_revocation_result(
+        &mut self,
+        request_id: u64,
+        result: Result<fluxer_protocol::SessionRevocationOutcome, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pending) = self.session_revocation.as_mut() else {
+            return;
+        };
+        if pending.request != Some(request_id) {
+            return;
+        }
+        pending.request = None;
+        match result {
+            Ok(fluxer_protocol::SessionRevocationOutcome::Revoked) => {
+                self.session_revocation = None;
+                let request_id = fluxer_client::next_pending_message_id();
+                self.account_sessions_request = Some(request_id);
+                self.command(Command::FetchAccountSessions { request_id }, cx);
+            }
+            Ok(fluxer_protocol::SessionRevocationOutcome::Challenge(challenge)) => {
+                pending.challenge = Some(challenge)
+            }
+            Err(error) => pending.error = Some(error),
+        }
+    }
+
+    fn submit_session_revocation(&mut self, proof: Option<bool>, cx: &mut Context<Self>) {
+        let Some(pending) = self.session_revocation.as_mut() else {
+            return;
+        };
+        if pending.request.is_some()
+            || pending
+                .error
+                .as_deref()
+                .is_some_and(|e| e != "Verification failed. Try again.")
+        {
+            return;
+        }
+        pending.error = None;
+        let proof = proof.map(|totp| {
+            (
+                totp,
+                self.session_revocation_secret.read(cx).content.to_string(),
+            )
+        });
+        if proof.as_ref().is_some_and(|(_, value)| value.is_empty()) {
+            return;
+        }
+        self.session_revocation_secret
+            .update(cx, |input, cx| input.set(String::new(), cx));
+        let request_id = fluxer_client::next_pending_message_id();
+        pending.request = Some(request_id);
+        let command = Command::RevokeAccountSession {
+            request_id,
+            account_id: pending.account,
+            instance: pending.instance.clone(),
+            session_id_hash: pending.target.clone(),
+            proof,
+        };
+        self.command(command, cx);
     }
 
     fn account_sessions_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -211,7 +296,7 @@ impl Fluxer {
                 if sessions.is_empty() {
                     body = body.child(muted("No active sessions found."));
                 }
-                for session in sessions {
+                for (index, session) in sessions.iter().enumerate() {
                     let info = &session["client_info"];
                     let title = info["os"]
                         .as_str()
@@ -227,20 +312,53 @@ impl Fluxer {
                     .flatten()
                     .collect::<Vec<_>>()
                     .join(" · ");
-                    body = body.child(
-                        div()
-                            .p_4()
-                            .bg(rgb(0x25222e))
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(format!(
-                                "{}{}",
-                                title,
-                                if current { " (This device)" } else { "" }
-                            ))
-                            .child(muted(details)),
-                    );
+                    let mut row = div()
+                        .p_4()
+                        .bg(rgb(0x25222e))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(format!(
+                            "{}{}",
+                            title,
+                            if current { " (This device)" } else { "" }
+                        ))
+                        .child(muted(details.clone()));
+                    if !current
+                        && session["current"].as_bool() == Some(false)
+                        && self.session_revocation.is_none()
+                    {
+                        if let (Some(hash), Some(account)) = (
+                            session["id_hash"].as_str(),
+                            self.state.current_user.as_ref(),
+                        ) {
+                            let target = hash.to_owned();
+                            let label = if details.is_empty() {
+                                title.to_owned()
+                            } else {
+                                format!("{title} · {details}")
+                            };
+                            let account = account.id;
+                            let instance = self.instance.read(cx).content.to_string();
+                            row = row.child(
+                                quiet_button(("revoke-device", index), "Sign out device").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.session_revocation = Some(SessionRevocation {
+                                            target: target.clone(),
+                                            title: label.clone(),
+                                            account,
+                                            instance: instance.clone(),
+                                            request: None,
+                                            challenge: None,
+                                            error: None,
+                                        });
+                                        cx.notify();
+                                    }),
+                                ),
+                            );
+                        }
+                    }
+                    body = body.child(row);
                 }
             } else {
                 body = body.child(muted("Could not read the device list."));
@@ -248,12 +366,69 @@ impl Fluxer {
         } else {
             body = body.child(muted("Could not load devices."));
         }
-        body.child(
-            quiet_button("refresh-account-sessions", "Refresh").on_click(cx.listener(
-                |this, _, window, cx| this.open_settings(Section::AccountSessions, window, cx),
-            )),
-        )
-        .into_any_element()
+        if let Some(pending) = &self.session_revocation {
+            let mut dialog = div()
+                .p_4()
+                .bg(rgb(0x35303e))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(format!("Sign out {}?", pending.title));
+            if pending.request.is_some() {
+                dialog = dialog.child(muted("Signing out device…"));
+            } else if pending
+                .error
+                .as_deref()
+                .is_some_and(|e| e != "Verification failed. Try again.")
+            {
+                dialog = dialog.child(muted(pending.error.clone().unwrap()));
+            } else if let Some(challenge) = &pending.challenge {
+                if let Some(error) = &pending.error {
+                    dialog = dialog.child(muted(error.clone()));
+                }
+                let totp = challenge.methods.totp || challenge.methods.backup_codes;
+                let password = challenge.methods.password && !challenge.has_mfa;
+                if totp || password {
+                    dialog = dialog
+                        .child(muted(if totp {
+                            "Enter an authenticator or backup code."
+                        } else {
+                            "Enter your password."
+                        }))
+                        .child(self.session_revocation_secret.clone())
+                        .child(
+                            quiet_button("submit-revoke-proof", "Verify and sign out").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.submit_session_revocation(Some(totp), cx)
+                                }),
+                            ),
+                        );
+                } else {
+                    dialog = dialog.child(muted("This verification method is not supported in Native. Use another client to sign out this device."));
+                }
+            } else {
+                dialog = dialog
+                    .child(muted("This immediately signs the selected device out."))
+                    .child(
+                        quiet_button("confirm-revoke-device", "Sign out device").on_click(
+                            cx.listener(|this, _, _, cx| this.submit_session_revocation(None, cx)),
+                        ),
+                    );
+            }
+            dialog = dialog.child(
+                quiet_button("cancel-revoke-device", "Close")
+                    .on_click(cx.listener(|this, _, _, cx| this.clear_session_revocation(cx))),
+            );
+            body = body.child(dialog);
+        }
+        if self.session_revocation.is_none() {
+            body = body.child(
+                quiet_button("refresh-account-sessions", "Refresh").on_click(cx.listener(
+                    |this, _, window, cx| this.open_settings(Section::AccountSessions, window, cx),
+                )),
+            );
+        }
+        body.into_any_element()
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -262,6 +437,7 @@ impl Fluxer {
             self.clear_banner_editor(cx);
         }
         self.interface.recording = None;
+        self.clear_session_revocation(cx);
         self.pane = self.settings_return;
         if self.pane == Pane::Chat {
             self.composer.focus_handle(cx).focus(window);

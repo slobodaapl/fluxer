@@ -13,7 +13,7 @@ pub use navigation::{
 };
 
 pub use fluxer_core::{ClientState, Snowflake};
-pub use fluxer_protocol::{GifFeed, GifResults, GifShare};
+pub use fluxer_protocol::{GifFeed, GifResults, GifShare, SudoChallenge};
 
 /// A locally accepted message, retained until the server confirms it or the
 /// user removes it. IDs are scoped to the current client session.
@@ -158,6 +158,14 @@ pub enum Command {
     FetchAccountSessions {
         request_id: u64,
     },
+    RevokeAccountSession {
+        request_id: u64,
+        account_id: Snowflake,
+        instance: String,
+        session_id_hash: String,
+        proof: Option<(bool, String)>,
+    },
+    CancelAccountSessionRevocation,
     ControlCall {
         account_id: Snowflake,
         generation: u64,
@@ -601,6 +609,10 @@ pub enum Event {
     AccountSessions {
         request_id: u64,
         result: Result<serde_json::Value, String>,
+    },
+    AccountSessionRevocation {
+        request_id: u64,
+        result: Result<fluxer_protocol::SessionRevocationOutcome, String>,
     },
     /// The previous screen capture stopped and needs an explicit new share.
     ShareReshareRequired,

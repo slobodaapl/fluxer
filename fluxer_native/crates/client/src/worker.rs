@@ -1323,6 +1323,65 @@ impl Worker {
                     let _ = events.send(Event::AccountSessions { request_id, result });
                 }));
             }
+            Command::RevokeAccountSession {
+                request_id,
+                account_id,
+                instance,
+                session_id_hash,
+                proof,
+            } => {
+                let client = self.client()?;
+                if self.state.current_user.as_ref().map(|user| user.id) != Some(account_id)
+                    || client.instance().api.as_str() != instance
+                {
+                    self.emit(Event::AccountSessionRevocation {
+                        request_id,
+                        result: Err("Account changed; reopen Devices".into()),
+                    });
+                    return Ok(());
+                }
+                if let Some(task) = self.account_sessions_task.take() {
+                    task.abort();
+                }
+                let events = self.events.clone();
+                self.account_sessions_task = Some(tokio::spawn(async move {
+                    let proof_ref = proof.as_ref().map(|(totp, value)| {
+                        if *totp {
+                            fluxer_protocol::SessionRevocationProof::Totp(value.as_str())
+                        } else {
+                            fluxer_protocol::SessionRevocationProof::Password(value.as_str())
+                        }
+                    });
+                    let operation = async {
+                        let sessions = client.auth_sessions().await.map_err(|_| {
+                            "Could not verify the selected device. Refresh the list.".to_string()
+                        })?;
+                        let valid = is_non_current_session(&sessions, &session_id_hash);
+                        if !valid {
+                            return Err("The selected device is unavailable or is this device. Refresh the list.".to_string());
+                        }
+                        client.revoke_auth_session(&session_id_hash, proof_ref).await
+                            .map_err(|error| match error {
+                                fluxer_protocol::Error::Api { status: 400, .. } if proof.is_some() => "Verification failed. Try again.".to_string(),
+                                _ => "Could not revoke the device. Check the device list before trying again.".to_string(),
+                            })
+                    };
+                    let result =
+                        match tokio::time::timeout(Duration::from_secs(15), operation).await {
+                            Ok(result) => result,
+                            Err(_) => Err(
+                                "The request timed out. Check the device list before trying again."
+                                    .into(),
+                            ),
+                        };
+                    let _ = events.send(Event::AccountSessionRevocation { request_id, result });
+                }));
+            }
+            Command::CancelAccountSessionRevocation => {
+                if let Some(task) = self.account_sessions_task.take() {
+                    task.abort();
+                }
+            }
             Command::SetLocale(locale) => {
                 if locale.is_empty() || locale.bytes().any(|byte| byte < 32 || byte == 127) {
                     return Err("Invalid client locale".into());
@@ -5297,4 +5356,17 @@ async fn recovery_result(
         Some(task) => task.await,
         None => std::future::pending().await,
     }
+}
+
+fn is_non_current_session(sessions: &serde_json::Value, target: &str) -> bool {
+    let Some(items) = sessions.as_array() else {
+        return false;
+    };
+    let mut matches = items
+        .iter()
+        .filter(|item| item["id_hash"].as_str() == Some(target));
+    matches
+        .next()
+        .is_some_and(|item| item["current"].as_bool() == Some(false))
+        && matches.next().is_none()
 }

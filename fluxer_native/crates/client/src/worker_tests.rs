@@ -4105,3 +4105,20 @@ async fn camera_capture_requires_frame_and_current_generation() {
     assert!(!worker.state.voice.camera);
     assert!(worker.media.is_none());
 }
+
+#[test]
+fn revoke_only_accepts_one_explicit_non_current_session() {
+    use serde_json::json;
+    assert!(super::is_non_current_session(
+        &json!([{"id_hash":"target","current":false}]),
+        "target"
+    ));
+    for input in [
+        json!([]),
+        json!([{"id_hash":"target","current":true}]),
+        json!([{"id_hash":"target"}]),
+        json!([{"id_hash":"target","current":false},{"id_hash":"target","current":true}]),
+    ] {
+        assert!(!super::is_non_current_session(&input, "target"));
+    }
+}
