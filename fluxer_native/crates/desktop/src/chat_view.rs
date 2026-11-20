@@ -126,7 +126,10 @@ impl Fluxer {
             .and_then(|channel| channel.parent_id)
             .and_then(|id| self.state.channels.get(&id));
         let thread_parent = thread_parent
-            .filter(|parent| parent.kind.standalone_thread_type().is_some())
+            .filter(|parent| {
+                parent.kind.standalone_thread_type().is_some()
+                    || matches!(parent.kind, ChannelType::Forum | ChannelType::Media)
+            })
             .map(|parent| (parent.id, parent.name.clone()));
         let archived = channel.is_some_and(|channel| channel.thread_archived());
         let can_create_thread = selected

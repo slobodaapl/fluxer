@@ -1436,3 +1436,13 @@ async fn mentions_pages_fence_generations_preserve_reads_and_keep_data_on_error(
             .loading
     );
 }
+
+#[test]
+fn forum_gateway_patches_preserve_nested_fields() {
+    let mut post = json!({"id":"42", "thread_metadata":{"archived":false,"locked":false}});
+    merge_forum_patch(&mut post, &json!({"thread_metadata":{"archived":true}}));
+    assert_eq!(
+        post["thread_metadata"],
+        json!({"archived":true,"locked":false})
+    );
+}

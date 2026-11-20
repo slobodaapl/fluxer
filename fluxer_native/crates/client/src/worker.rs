@@ -3203,6 +3203,9 @@ impl Worker {
                             });
                     let previous_voice = self.state.voice.clone();
                     let previous_presence = self.presence_payload();
+                    if matches!(name.as_str(), "THREAD_UPDATE" | "THREAD_DELETE") {
+                        self.navigation_forum_thread_event(&name, &data);
+                    }
                     let outcome = self
                         .state
                         .apply_gateway(&name, data.clone())

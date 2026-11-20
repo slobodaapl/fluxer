@@ -9,6 +9,17 @@ use fluxer_core::Channel;
 use fluxer_protocol::SearchResponse;
 
 const HISTORY_LIMIT: u8 = 50;
+fn merge_forum_patch(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(target), Value::Object(patch)) => {
+            for (key, value) in patch {
+                merge_forum_patch(target.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (target, patch) => *target = patch.clone(),
+    }
+}
+
 struct Task(JoinHandle<()>);
 impl Drop for Task {
     fn drop(&mut self) {
@@ -116,7 +127,7 @@ struct MentionsJob {
     task: Option<Task>,
 }
 pub(super) struct NavigationState {
-    forum: Option<(u64, Task)>,
+    forum: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
     mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
@@ -205,8 +216,33 @@ impl Worker {
                 result,
             });
         });
-        self.navigation.forum = Some((token, Task(task)));
+        self.navigation.forum = Some((token, Task(task), BTreeMap::new()));
         Ok(())
+    }
+
+    /// Preserve gateway changes that race a forum search, including updates to
+    /// posts that have not yet been installed in the channel cache.
+    pub(super) fn navigation_forum_thread_event(&mut self, name: &str, data: &Value) {
+        let Some((_, _, changes)) = self.navigation.forum.as_mut() else {
+            return;
+        };
+        let Some(id) = data
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse().ok())
+        else {
+            return;
+        };
+        if name == "THREAD_DELETE" {
+            changes.insert(id, None);
+        } else if name == "THREAD_UPDATE" {
+            let entry = changes
+                .entry(id)
+                .or_insert_with(|| Some(Value::Object(Default::default())));
+            if let Some(existing) = entry.as_mut() {
+                merge_forum_patch(existing, data);
+            }
+        }
     }
 
     pub(super) fn navigation_mention_message(&mut self, message: &Message) {
@@ -1582,12 +1618,12 @@ impl Worker {
                         .navigation
                         .forum
                         .as_ref()
-                        .is_some_and(|(current, _)| *current == token)
+                        .is_some_and(|(current, _, _)| *current == token)
                     || self.state.selected_channel != Some(channel)
                 {
                     return;
                 }
-                self.navigation.forum = None;
+                let (_, _, changes) = self.navigation.forum.take().unwrap();
                 let mut posts = Vec::new();
                 let mut has_more = false;
                 let mut failure = None;
@@ -1611,8 +1647,25 @@ impl Worker {
                             .unwrap_or_default();
                         if let Some(threads) = body.get("threads").and_then(Value::as_array) {
                             for value in threads {
+                                let mut value = value.clone();
+                                let id = value
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .and_then(|id| id.parse::<Snowflake>().ok());
+                                if let Some(change) = id.and_then(|id| changes.get(&id)) {
+                                    let Some(patch) = change else {
+                                        continue;
+                                    };
+                                    if let Some(current) =
+                                        id.and_then(|id| self.state.channels.get(&id))
+                                    {
+                                        value = serde_json::to_value(current).unwrap_or(value);
+                                    } else {
+                                        merge_forum_patch(&mut value, patch);
+                                    }
+                                }
                                 if let Ok(post) =
-                                    serde_json::from_value::<fluxer_core::Channel>(value.clone())
+                                    serde_json::from_value::<fluxer_core::Channel>(value)
                                 {
                                     if post.parent_id != Some(channel) {
                                         continue;
