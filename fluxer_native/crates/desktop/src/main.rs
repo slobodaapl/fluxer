@@ -1076,6 +1076,7 @@ impl Fluxer {
                     });
                 }
                 Event::DisplaySettingsMutation(status) => {
+                    self.apply_message_link_trust_status(&status, cx);
                     self.interface.server_pending =
                         matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
                     self.interface.server_error = match status {

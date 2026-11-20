@@ -17,6 +17,7 @@ pub enum DisplaySetting {
     DefaultGuildsRestricted(bool),
     BotDefaultGuildsRestricted(bool),
     FriendSource { flag: u64, enabled: bool },
+    AddTrustedDomain(String),
     TrustedDomains(Vec<String>),
 }
 fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
@@ -309,6 +310,39 @@ pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Resu
         DisplaySetting::Compact(v) => json!({"message_display_compact":v}),
         DisplaySetting::GifAutoplay(v) => json!({"gif_auto_play":v}),
         DisplaySetting::AnimateEmoji(v) => json!({"animate_emoji":v}),
+        DisplaySetting::AddTrustedDomain(host) => {
+            if host.contains(['*', '/', '?', '#', '@', '\\'])
+                || host
+                    .chars()
+                    .any(|character| character.is_control() || character.is_whitespace())
+            {
+                return Err("Invalid trusted domain".into());
+            }
+            let host = url::Host::parse(&host)
+                .map_err(|_| "Invalid trusted domain")?
+                .to_string();
+            let values = settings
+                .get("trusted_domains")
+                .and_then(Value::as_array)
+                .ok_or("Trusted domains are still loading")?;
+            let mut domains = values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or("Invalid trusted domains")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if domains
+                .iter()
+                .any(|domain| domain == "*" || domain == &host)
+            {
+                return Ok(json!({}));
+            }
+            domains.push(host);
+            return display_settings_patch(settings, DisplaySetting::TrustedDomains(domains));
+        }
         DisplaySetting::TrustedDomains(domains) => {
             if domains.len() > 1000
                 || domains
@@ -525,5 +559,35 @@ mod tests {
             display_settings_patch(&Value::Null, DisplaySetting::GifAutoplay(false)).unwrap(),
             json!({"gif_auto_play":false})
         );
+    }
+
+    #[test]
+    fn trusted_domain_append_uses_current_account_settings() {
+        let add = |host: &str| DisplaySetting::AddTrustedDomain(host.into());
+        let settings = json!({"trusted_domains":["other.example"],"gif_auto_play":true});
+        assert_eq!(
+            display_settings_patch(&settings, add("EXAMPLE.org")).unwrap(),
+            json!({"trusted_domains":["other.example","example.org"]})
+        );
+        assert_eq!(
+            display_settings_patch(&settings, add("other.example")).unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            display_settings_patch(&json!({"trusted_domains":["*"]}), add("example.org")).unwrap(),
+            json!({})
+        );
+        assert!(display_settings_patch(&Value::Null, add("example.org")).is_err());
+        for invalid in [
+            "*.example.org",
+            "example.org/path",
+            "attacker@example.org",
+            "example.org:80",
+        ] {
+            assert!(
+                display_settings_patch(&settings, add(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
     }
 }

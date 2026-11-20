@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! TrustedDomain.ts, DeepLinkUtils.ts and ExternalLinkWarningModal.tsx policy.
-//! Trust is read from authoritative settings; this UI does not invent a trust
-//! settings write or an "always trust" checkbox without its transport.
+//! External links use authoritative account trust, with an opt-in host action.
 use super::*;
 use crate::{
     controls::quiet_button,
@@ -38,6 +37,10 @@ pub(super) struct MessageLinks {
     focus: FocusHandle,
     cancel: FocusHandle,
     visit: FocusHandle,
+    trust: FocusHandle,
+    trust_selected: bool,
+    trust_pending: Option<AnyWindowHandle>,
+    trust_error: Option<SharedString>,
     previous_focus: Option<FocusHandle>,
     keys: ConfirmationKeys,
     policy: InstanceLinkPolicy,
@@ -50,6 +53,10 @@ impl MessageLinks {
             focus: cx.focus_handle(),
             cancel: cx.focus_handle().tab_stop(true),
             visit: cx.focus_handle().tab_stop(true),
+            trust: cx.focus_handle().tab_stop(true),
+            trust_selected: false,
+            trust_pending: None,
+            trust_error: None,
             previous_focus: None,
             keys: ConfirmationKeys::default(),
             policy: InstanceLinkPolicy::default(),
@@ -73,6 +80,9 @@ impl MessageLinks {
         self.destination = None;
         self.text = None;
         self.previous_focus = None;
+        self.trust_selected = false;
+        self.trust_pending = None;
+        self.trust_error = None;
         self.keys.clear();
     }
     pub fn reset(&mut self) {
@@ -182,23 +192,118 @@ struct InternalRoute {
 }
 
 impl Fluxer {
+    fn can_trust_message_link(&self) -> bool {
+        self.state.current_user.is_some()
+            && self
+                .state
+                .user_settings
+                .get("trusted_domains")
+                .and_then(|value| value.as_array())
+                .is_some_and(|domains| {
+                    domains.len() < 1000 && domains.iter().all(|d| d.is_string())
+                })
+    }
+
     pub(super) fn dismiss_message_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.message_links.reset_input_context_menu(cx);
-        self.message_links.destination = None;
-        self.message_links.text = None;
-        self.message_links.keys.clear();
         if let Some(previous) = self.message_links.previous_focus.take() {
             previous.focus(window);
         }
+        self.message_links.clear_prompt();
         cx.notify();
     }
+
+    pub(super) fn apply_message_link_trust_status(
+        &mut self,
+        status: &fluxer_client::RelationshipMutationStatus,
+        cx: &mut Context<Self>,
+    ) {
+        use fluxer_client::RelationshipMutationStatus;
+        if matches!(status, RelationshipMutationStatus::Pending) {
+            return;
+        }
+        let Some(handle) = self.message_links.trust_pending.take() else {
+            return;
+        };
+        if let RelationshipMutationStatus::Failed(error) = status {
+            self.message_links.trust_error = Some(error.clone().into());
+            return;
+        }
+        let saved_host = self
+            .message_links
+            .destination
+            .as_ref()
+            .and_then(Url::host_str)
+            .is_some_and(|host| {
+                self.state
+                    .user_settings
+                    .get("trusted_domains")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|domains| {
+                        domains.iter().any(|domain| {
+                            domain
+                                .as_str()
+                                .is_some_and(|value| value == "*" || value == host)
+                        })
+                    })
+            });
+        if !saved_host {
+            self.message_links.trust_error = Some("The domain was not saved.".into());
+            return;
+        }
+        let url = self.message_links.destination.take();
+        let previous = self.message_links.previous_focus.take();
+        self.message_links.clear_prompt();
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| {
+                if let Some(previous) = previous {
+                    previous.focus(window);
+                }
+                if let Some(url) = url {
+                    cx.open_url(url.as_str());
+                }
+            });
+        });
+    }
+
     fn visit_message_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.message_links.trust_pending.is_some() {
+            return;
+        }
         if let Some(url) = self
             .message_links
             .destination
             .as_ref()
             .and_then(|url| safe_url(url.as_str()))
         {
+            if self.message_links.trust_selected {
+                if !self.can_trust_message_link() || self.interface.server_pending {
+                    self.message_links.trust_error =
+                        Some("Wait for account settings to finish updating.".into());
+                    cx.notify();
+                    return;
+                }
+                let Some(controller) = &self.controller else {
+                    self.message_links.trust_error =
+                        Some("The native client worker is unavailable.".into());
+                    cx.notify();
+                    return;
+                };
+                let setting = fluxer_core::DisplaySetting::AddTrustedDomain(
+                    url.host_str().unwrap_or_default().to_owned(),
+                );
+                match controller.send(Command::UpdateDisplaySetting(setting)) {
+                    Ok(()) => {
+                        self.message_links.trust_pending = Some(window.window_handle());
+                        self.message_links.trust_error = None;
+                        self.interface.server_pending = true;
+                        self.interface.server_error = None;
+                    }
+                    Err(error) => self.message_links.trust_error = Some(error.into()),
+                }
+                cx.notify();
+                return;
+            }
             cx.open_url(url.as_str());
         }
         self.dismiss_message_link(window, cx);
@@ -308,6 +413,7 @@ impl Fluxer {
                     cx.open_url(url.as_str());
                     return;
                 }
+                self.message_links.clear_prompt();
                 self.message_links.previous_focus = window.focused(cx);
                 self.message_links.text = Some(cx.new(|cx| TextInput::read_only(url.as_str(), cx)));
                 self.message_links.destination = Some(url);
@@ -392,6 +498,9 @@ impl Fluxer {
                                 if let Some(text) = &this.message_links.text {
                                     handles.push(text.focus_handle(cx));
                                 }
+                                if this.can_trust_message_link() {
+                                    handles.push(this.message_links.trust.clone());
+                                }
                                 handles.extend([
                                     this.message_links.cancel.clone(),
                                     this.message_links.visit.clone(),
@@ -403,7 +512,16 @@ impl Fluxer {
                                 );
                             }
                             "enter" | "space" if !event.keystroke.modifiers.modified() => {
-                                let choice = if this.message_links.visit.is_focused(window) {
+                                let choice = if this.message_links.trust.is_focused(window) {
+                                    if !event.is_held && this.message_links.trust_pending.is_none()
+                                    {
+                                        this.message_links.trust_selected =
+                                            !this.message_links.trust_selected;
+                                        this.message_links.trust_error = None;
+                                        cx.notify();
+                                    }
+                                    None
+                                } else if this.message_links.visit.is_focused(window) {
                                     Some(ConfirmationChoice::Confirm)
                                 } else if this.message_links.cancel.is_focused(window) {
                                     Some(ConfirmationChoice::Cancel)
@@ -479,6 +597,35 @@ impl Fluxer {
                                 .child(text.clone()),
                         )
                     })
+                    .when(self.can_trust_message_link(), |view| {
+                        let checked = self.message_links.trust_selected;
+                        view.child(
+                            div().mt_2().child(
+                                quiet_button(
+                                    "trust-external-message-link",
+                                    format!(
+                                        "{} Always trust {}",
+                                        if checked { "☑" } else { "☐" },
+                                        url.host_str().unwrap_or_default(),
+                                    ),
+                                )
+                                .track_focus(&self.message_links.trust)
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        if this.message_links.trust_pending.is_none() {
+                                            this.message_links.trust_selected =
+                                                !this.message_links.trust_selected;
+                                            this.message_links.trust_error = None;
+                                            cx.notify();
+                                        }
+                                    },
+                                )),
+                            ),
+                        )
+                    })
+                    .when_some(self.message_links.trust_error.clone(), |view, error| {
+                        view.child(div().mt_2().text_sm().text_color(rgb(MUTED)).child(error))
+                    })
                     .child(
                         div()
                             .mt_5()
@@ -493,13 +640,20 @@ impl Fluxer {
                                     })),
                             )
                             .child(
-                                quiet_button("visit-external-message-link", "Visit site")
-                                    .track_focus(&self.message_links.visit)
-                                    .bg(rgb(0x6f56d7))
-                                    .text_color(rgb(TEXT))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.visit_message_link(window, cx)
-                                    })),
+                                quiet_button(
+                                    "visit-external-message-link",
+                                    if self.message_links.trust_pending.is_some() {
+                                        "Saving…"
+                                    } else {
+                                        "Visit site"
+                                    },
+                                )
+                                .track_focus(&self.message_links.visit)
+                                .bg(rgb(0x6f56d7))
+                                .text_color(rgb(TEXT))
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| this.visit_message_link(window, cx),
+                                )),
                             ),
                     ),
             )

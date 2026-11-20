@@ -1342,7 +1342,7 @@ A preview of your message text size.",
             }
             Section::TrustedDomains => {
                 body = body.child(settings_heading("Trusted domains")).child(muted(
-                    "Saved to your account. Remove domains you no longer trust.",
+                    "Save a domain from an external link warning. Remove it here to show warnings again.",
                 ));
                 match self
                     .state

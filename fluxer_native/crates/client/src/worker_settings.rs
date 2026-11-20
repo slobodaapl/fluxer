@@ -37,16 +37,24 @@ impl DisplaySettingsState {
 impl Worker {
     pub(super) fn clear_display_settings(&mut self) {
         self.display_settings.next = self.display_settings.next.wrapping_add(1);
-        self.display_settings.job = None;
-        self.emit(Event::DisplaySettingsMutation(
-            RelationshipMutationStatus::Complete,
-        ));
+        let status = if self.display_settings.job.take().is_some() {
+            RelationshipMutationStatus::Failed("The account changed while saving settings".into())
+        } else {
+            RelationshipMutationStatus::Complete
+        };
+        self.emit(Event::DisplaySettingsMutation(status));
     }
     pub(super) async fn set_display_setting(
         &mut self,
         setting: fluxer_core::DisplaySetting,
     ) -> Result<()> {
         let patch = fluxer_core::display_settings_patch(&self.state.user_settings, setting)?;
+        if patch.as_object().is_some_and(serde_json::Map::is_empty) {
+            self.emit(Event::DisplaySettingsMutation(
+                RelationshipMutationStatus::Complete,
+            ));
+            return Ok(());
+        }
         self.update_display_settings_settings(patch).await
     }
     async fn update_display_settings_settings(&mut self, patch: Value) -> Result<()> {
