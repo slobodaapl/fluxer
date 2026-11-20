@@ -179,6 +179,8 @@ impl Worker {
         channel: Snowflake,
         creation_order: bool,
         offset: usize,
+        tags: Vec<String>,
+        match_all: bool,
     ) -> Result<()> {
         let target = self.state.channels.get(&channel).ok_or("Unknown forum")?;
         if !matches!(target.kind, ChannelType::Forum | ChannelType::Media) {
@@ -211,6 +213,8 @@ impl Worker {
                             "last_message_time"
                         },
                         offset,
+                        &tags,
+                        match_all,
                     )
                     .await
                     .map_err(error),

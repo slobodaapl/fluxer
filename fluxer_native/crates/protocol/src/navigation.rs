@@ -34,9 +34,25 @@ fn api_client() -> Result<reqwest::Client> {
 }
 impl Client {
     /// ForumController search returns posts and optional first-message previews.
-    pub async fn forum_posts(&self, channel: &str, sort_by: &str, offset: usize) -> Result<Value> {
+    pub async fn forum_posts(
+        &self,
+        channel: &str,
+        sort_by: &str,
+        offset: usize,
+        tags: &[String],
+        match_all: bool,
+    ) -> Result<Value> {
         let path = {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
+            for tag in tags {
+                query.append_pair("tag", tag);
+            }
+            if tags.len() > 1 {
+                query.append_pair(
+                    "tag_setting",
+                    if match_all { "match_all" } else { "match_some" },
+                );
+            }
             query
                 .append_pair("sort_by", sort_by)
                 .append_pair("sort_order", "desc")

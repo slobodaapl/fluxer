@@ -304,6 +304,8 @@ pub enum Command {
         channel_id: Snowflake,
         creation_order: bool,
         offset: usize,
+        tags: Vec<String>,
+        match_all: bool,
     },
     FetchMentions {
         before: Option<Snowflake>,

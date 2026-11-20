@@ -985,6 +985,22 @@ impl Fluxer {
                 channel_id,
                 creation_order: self.forum_creation_order,
                 offset,
+                tags: self.forum_filter_tags.clone(),
+                match_all: self.forum_match_all,
+            },
+            cx,
+        );
+    }
+
+    fn reload_forum(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        self.forum = None;
+        self.command(
+            Command::LoadForum {
+                channel_id,
+                creation_order: self.forum_creation_order,
+                offset: 0,
+                tags: self.forum_filter_tags.clone(),
+                match_all: self.forum_match_all,
             },
             cx,
         );
@@ -1086,6 +1102,66 @@ impl Fluxer {
         } else {
             list = list.child(div().child("Loading posts…"));
         }
+        let mut filters = div().p_2().flex().flex_wrap().gap_2();
+        if let Some(tags) = self
+            .state
+            .channels
+            .get(&channel_id)
+            .and_then(|channel| channel.extra.get("available_tags"))
+            .and_then(serde_json::Value::as_array)
+        {
+            for (index, tag) in tags.iter().enumerate() {
+                let Some(id) = tag.get("id").and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                let id = id.to_owned();
+                let name = tag
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Tag");
+                let label = format!(
+                    "{} {}",
+                    if self.forum_filter_tags.contains(&id) {
+                        "☑"
+                    } else {
+                        "☐"
+                    },
+                    name
+                );
+                filters = filters.child(quiet_button(("forum-filter-tag", index), label).on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        if this.forum_filter_tags.contains(&id) {
+                            this.forum_filter_tags.retain(|tag| tag != &id);
+                        } else {
+                            this.forum_filter_tags.push(id.clone());
+                        }
+                        this.reload_forum(channel_id, cx);
+                    }),
+                ));
+            }
+            if !tags.is_empty() {
+                filters = filters.child(
+                    quiet_button(
+                        "forum-filter-mode",
+                        if self.forum_match_all {
+                            "Match all tags"
+                        } else {
+                            "Match any tag"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.forum_match_all = !this.forum_match_all;
+                        this.reload_forum(channel_id, cx);
+                    })),
+                );
+                filters = filters.child(quiet_button("forum-filter-reset", "Clear tags").on_click(
+                    cx.listener(move |this, _, _, cx| {
+                        this.forum_filter_tags.clear();
+                        this.reload_forum(channel_id, cx);
+                    }),
+                ));
+            }
+        }
         div()
             .flex_1()
             .min_w_0()
@@ -1093,6 +1169,7 @@ impl Fluxer {
             .flex()
             .flex_col()
             .child(div().p_4().child(format!("# {title}")))
+            .child(filters)
             .child(
                 div().p_2().child(
                     quiet_button(
@@ -1111,6 +1188,8 @@ impl Fluxer {
                                 channel_id,
                                 creation_order: this.forum_creation_order,
                                 offset: 0,
+                                tags: this.forum_filter_tags.clone(),
+                                match_all: this.forum_match_all,
                             },
                             cx,
                         );

@@ -333,6 +333,8 @@ struct Fluxer {
     state: ClientState,
     forum: Option<ForumResults>,
     forum_creation_order: bool,
+    forum_filter_tags: Vec<String>,
+    forum_match_all: bool,
     demo: bool,
     message_demo_started: bool,
     image_demo_started: bool,
@@ -489,6 +491,8 @@ impl Fluxer {
             state: ClientState::default(),
             forum: None,
             forum_creation_order: false,
+            forum_filter_tags: Vec::new(),
+            forum_match_all: false,
             demo,
             message_demo_started: false,
             image_demo_started: false,
@@ -1157,6 +1161,14 @@ impl Fluxer {
                     }
                     if old != self.state.selected_channel {
                         self.forum = None;
+                        self.forum_filter_tags.clear();
+                        self.forum_match_all = self
+                            .state
+                            .selected_channel
+                            .and_then(|id| self.state.channels.get(&id))
+                            .and_then(|channel| channel.extra.get("default_tag_setting"))
+                            .and_then(serde_json::Value::as_str)
+                            == Some("match_all");
                         if let Some(channel_id) = self.state.selected_channel.filter(|id| {
                             self.state.channels.get(id).is_some_and(|c| {
                                 matches!(c.kind, ChannelType::Forum | ChannelType::Media)
@@ -1167,6 +1179,8 @@ impl Fluxer {
                                     channel_id,
                                     creation_order: self.forum_creation_order,
                                     offset: 0,
+                                    tags: self.forum_filter_tags.clone(),
+                                    match_all: self.forum_match_all,
                                 },
                                 cx,
                             );

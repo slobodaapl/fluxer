@@ -1566,7 +1566,9 @@ impl Worker {
                 channel_id,
                 creation_order,
                 offset,
-            } => self.load_forum(channel_id, creation_order, offset)?,
+                tags,
+                match_all,
+            } => self.load_forum(channel_id, creation_order, offset, tags, match_all)?,
             Command::SearchMessages {
                 channel_id,
                 query,

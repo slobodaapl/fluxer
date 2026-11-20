@@ -95,6 +95,8 @@ impl super::Fluxer {
         self.creating_thread = None;
         self.managing_thread = None;
         self.forum_tags.clear();
+        self.forum_filter_tags.clear();
+        self.forum_match_all = false;
         self.channel_form = None;
         for field in [&self.thread_name, &self.forum_body, &self.channel_name] {
             field.update(cx, |input, cx| input.set(String::new(), cx));
