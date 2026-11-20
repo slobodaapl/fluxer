@@ -48,7 +48,12 @@ pub fn devices() -> Result<Vec<CameraDevice>> {
             if !video_name(&name) {
                 continue;
             }
-            let label = std::fs::read_to_string(entry.path().join("name"))
+            let label = std::fs::File::open(entry.path().join("name"))
+                .and_then(|file| {
+                    let mut label = String::new();
+                    file.take(1024).read_to_string(&mut label)?;
+                    Ok(label)
+                })
                 .unwrap_or_else(|_| name.clone())
                 .trim()
                 .chars()
@@ -192,7 +197,9 @@ fn start_process(
                     buffer,
                 });
                 if !received.swap(true, Ordering::AcqRel) {
-                    let _ = tx.try_send(MediaEvent::CameraStarted(generation));
+                    if tx.try_send(MediaEvent::CameraStarted(generation)).is_err() {
+                        break;
+                    }
                 }
             }
             let was_stopped = capture.stopped.swap(true, Ordering::AcqRel);
@@ -201,14 +208,17 @@ fn start_process(
                 let _ = child.wait();
             }
             if !was_stopped && !call_stopped.load(Ordering::Acquire) {
+                let _ = tx.blocking_send(MediaEvent::CameraStopped(generation));
                 let _ = tx.try_send(MediaEvent::Error(
                     "Camera capture ended or permission was denied".into(),
                 ));
-                let _ = tx.try_send(MediaEvent::CameraStopped(generation));
             }
         })
         .map_err(|e| {
             handle.stop();
+            if let Ok(mut child) = handle.child.lock() {
+                let _ = child.wait();
+            }
             MediaError::Camera(e.to_string())
         })?;
     Ok(Session { handle, frame })

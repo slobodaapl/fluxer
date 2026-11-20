@@ -107,7 +107,12 @@ lost. Reopening the launcher raises the existing native instance. Tray support i
 currently Linux-only; minimize-to-tray is not exposed on Wayland. Details and
 manual acceptance are recorded in [TRAY_2026_11_18.md](TRAY_2026_11_18.md).
 
-## Screen-share audio
+## Camera and screen-share audio
+
+Linux camera publishing requires the `ffmpeg` executable with V4L2 support. The
+camera is opened only after selecting a device and starting video; stopping video
+or leaving the call terminates the capture process. If ffmpeg is unavailable or
+the camera cannot be opened, video does not start.
 
 On Linux, the sharing pane enables **Include audio** by default and lets you
 choose system audio or one playback application before opening the system
@@ -233,7 +238,7 @@ layout review. These rows do not perform uploads or send account messages.
 Native file playback on Linux uses FFmpeg libraries (libavformat, libavcodec,
 libavutil, libswscale and libswresample) discovered through pkg-config at build
 time, plus the existing PipeWire output engine. Install their development headers
-to enable the backend. The regular application does not launch ffmpeg processes.
+to enable the backend. Camera capture uses a separate ffmpeg process as described above.
 Other platforms and missing-library builds show an unavailable-player error and
 retain Open original. Audio and video start on Play; MP4-backed GIFV loops muted
 when visible and allowed by GIF autoplay. Player volume/mute, seeking and full
