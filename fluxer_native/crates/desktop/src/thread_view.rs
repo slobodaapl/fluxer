@@ -70,6 +70,116 @@ impl Fluxer {
             .collect()
     }
 
+    pub(super) fn load_archived_threads(
+        &mut self,
+        channel: Snowflake,
+        before: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.selected_channel != Some(channel) {
+            return;
+        }
+        if before.is_none() {
+            self.archived_threads = Some(ArchivedThreadResults {
+                channel,
+                threads: Vec::new(),
+                next: None,
+                has_more: false,
+                loading: true,
+                error: None,
+            });
+        } else if let Some(results) = self
+            .archived_threads
+            .as_mut()
+            .filter(|r| r.channel == channel && !r.loading)
+        {
+            results.loading = true;
+        } else {
+            return;
+        }
+        let result = self
+            .controller
+            .as_ref()
+            .ok_or_else(|| "The native client worker is unavailable".to_owned())
+            .and_then(|controller| {
+                controller.send(Command::LoadArchivedThreads {
+                    channel_id: channel,
+                    before,
+                })
+            });
+        if let Err(error) = result {
+            if let Some(results) = self.archived_threads.as_mut() {
+                results.loading = false;
+                results.error = Some(error);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(super) fn render_archived_threads(
+        &self,
+        channel: Snowflake,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(results) = self
+            .archived_threads
+            .as_ref()
+            .filter(|r| r.channel == channel)
+        else {
+            return div().into_any_element();
+        };
+        let mut panel = div()
+            .id("archived-thread-list")
+            .px_5()
+            .py_2()
+            .max_h(px(240.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Archived threads"),
+            );
+        for id in &results.threads {
+            let id = *id;
+            if let Some(thread) = self.state.channels.get(&id).filter(|t| t.thread_archived()) {
+                panel = panel.child(
+                    quiet_button(("archived-thread", id.0), thread.name.clone())
+                        .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx))),
+                );
+            }
+        }
+        if results.loading {
+            panel = panel.child("Loading archived threads…");
+        } else if let Some(error) = &results.error {
+            panel = panel.child(error.clone());
+        } else if results.threads.is_empty() {
+            panel = panel.child("No archived threads");
+        }
+        if !results.loading
+            && results.has_more
+            && let Some(next) = results.next.clone()
+        {
+            panel = panel.child(quiet_button("more-archived-threads", "Load more").on_click(
+                cx.listener(move |this, _, _, cx| {
+                    this.load_archived_threads(channel, Some(next.clone()), cx)
+                }),
+            ));
+        }
+        panel
+            .child(
+                quiet_button("close-archived-threads", "Close").on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.archived_threads = None;
+                        cx.notify();
+                    },
+                )),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn set_thread_membership(
         &mut self,
         channel_id: Snowflake,

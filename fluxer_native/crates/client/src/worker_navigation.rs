@@ -60,6 +60,13 @@ pub(super) enum HistoryRequest {
     After(Snowflake),
 }
 pub(super) enum NavigationEvent {
+    ArchivedThreads {
+        epoch: u64,
+        token: u64,
+        channel: Snowflake,
+        before: Option<String>,
+        result: Result<Value>,
+    },
     Forum {
         epoch: u64,
         token: u64,
@@ -129,6 +136,7 @@ struct MentionsJob {
 }
 pub(super) struct NavigationState {
     forum: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
+    archived_threads: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
     mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
@@ -150,6 +158,7 @@ impl NavigationState {
         let (tx, rx) = async_mpsc::unbounded_channel();
         Self {
             forum: None,
+            archived_threads: None,
             mentions: None,
             epoch: 1,
             next: 0,
@@ -174,6 +183,44 @@ impl NavigationState {
 }
 
 impl Worker {
+    pub(super) fn load_archived_threads(
+        &mut self,
+        channel: Snowflake,
+        before: Option<String>,
+    ) -> Result<()> {
+        let parent = self.state.channels.get(&channel).ok_or("Unknown channel")?;
+        let guild = parent.guild_id.ok_or("Unknown community")?;
+        let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
+        if parent.kind.standalone_thread_type().is_none()
+            || !self.state.thread_guilds.contains(&guild)
+            || !self
+                .state
+                .permissions_for(channel, user.id)
+                .contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY)
+        {
+            return Err("You cannot view archived threads in this channel".into());
+        }
+        let client = self.client()?;
+        let epoch = self.navigation.epoch;
+        let token = self.navigation.token();
+        let tx = self.navigation.tx.clone();
+        let task = tokio::spawn(async move {
+            let result = client
+                .archived_public_threads(&channel.to_string(), before.as_deref())
+                .await
+                .map_err(error);
+            let _ = tx.send(NavigationEvent::ArchivedThreads {
+                epoch,
+                token,
+                channel,
+                before,
+                result,
+            });
+        });
+        self.navigation.archived_threads = Some((token, Task(task), BTreeMap::new()));
+        Ok(())
+    }
+
     pub(super) fn load_forum(
         &mut self,
         channel: Snowflake,
@@ -293,9 +340,6 @@ impl Worker {
     /// Preserve gateway changes that race a forum search, including updates to
     /// posts that have not yet been installed in the channel cache.
     pub(super) fn navigation_forum_thread_event(&mut self, name: &str, data: &Value) {
-        let Some((_, _, changes)) = self.navigation.forum.as_mut() else {
-            return;
-        };
         let Some(id) = data
             .get("id")
             .and_then(Value::as_str)
@@ -303,14 +347,21 @@ impl Worker {
         else {
             return;
         };
-        if name == "THREAD_DELETE" {
-            changes.insert(id, None);
-        } else if name == "THREAD_UPDATE" {
-            let entry = changes
-                .entry(id)
-                .or_insert_with(|| Some(Value::Object(Default::default())));
-            if let Some(existing) = entry.as_mut() {
-                merge_forum_patch(existing, data);
+        for (_, _, changes) in self
+            .navigation
+            .forum
+            .iter_mut()
+            .chain(self.navigation.archived_threads.iter_mut())
+        {
+            if name == "THREAD_DELETE" {
+                changes.insert(id, None);
+            } else if name == "THREAD_UPDATE" {
+                let entry = changes
+                    .entry(id)
+                    .or_insert_with(|| Some(Value::Object(Default::default())));
+                if let Some(existing) = entry.as_mut() {
+                    merge_forum_patch(existing, data);
+                }
             }
         }
     }
@@ -482,6 +533,7 @@ impl Worker {
     }
     pub(super) fn clear_navigation(&mut self) {
         self.navigation.forum = None;
+        self.navigation.archived_threads = None;
         self.navigation.epoch = self.navigation.epoch.wrapping_add(1);
         self.navigation.searches.clear();
         self.navigation.mentions = None;
@@ -1709,6 +1761,109 @@ impl Worker {
     }
     pub(super) fn navigation_event(&mut self, event: NavigationEvent) {
         match event {
+            NavigationEvent::ArchivedThreads {
+                epoch,
+                token,
+                channel,
+                before,
+                result,
+            } => {
+                if epoch != self.navigation.epoch
+                    || self.state.selected_channel != Some(channel)
+                    || !self
+                        .navigation
+                        .archived_threads
+                        .as_ref()
+                        .is_some_and(|(current, _, _)| *current == token)
+                {
+                    return;
+                }
+                let (_, _, changes) = self.navigation.archived_threads.take().unwrap();
+                let Some(guild) = self
+                    .state
+                    .channels
+                    .get(&channel)
+                    .and_then(|parent| parent.guild_id)
+                else {
+                    return;
+                };
+                let mut threads = Vec::new();
+                let mut next = None;
+                let mut has_more = false;
+                let mut failure = None;
+                match result {
+                    Ok(body) => {
+                        has_more = body
+                            .get("has_more")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        if let Some(items) = body.get("threads").and_then(Value::as_array) {
+                            for item in items {
+                                let mut value = item.clone();
+                                let id = value
+                                    .get("id")
+                                    .and_then(Value::as_str)
+                                    .and_then(|s| s.parse::<Snowflake>().ok());
+                                if let Some(change) = id.and_then(|id| changes.get(&id)) {
+                                    let Some(patch) = change else {
+                                        continue;
+                                    };
+                                    if let Some(current) =
+                                        id.and_then(|id| self.state.channels.get(&id))
+                                    {
+                                        value = serde_json::to_value(current).unwrap_or(value);
+                                    } else {
+                                        merge_forum_patch(&mut value, patch);
+                                    }
+                                }
+                                if !id.is_some_and(|id| changes.contains_key(&id))
+                                    && let Some(member) = body
+                                        .get("members")
+                                        .and_then(Value::as_array)
+                                        .and_then(|members| {
+                                            members.iter().find(|m| m.get("id") == value.get("id"))
+                                        })
+                                {
+                                    value["member"] = member.clone();
+                                }
+                                if let Ok(thread) = serde_json::from_value::<Channel>(value) {
+                                    if thread.parent_id != Some(channel)
+                                        || thread.guild_id != Some(guild)
+                                        || !matches!(
+                                            thread.kind,
+                                            ChannelType::PublicThread
+                                                | ChannelType::AnnouncementThread
+                                        )
+                                    {
+                                        continue;
+                                    }
+                                    next = thread
+                                        .extra
+                                        .get("thread_metadata")
+                                        .and_then(|m| m.get("archive_timestamp"))
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned);
+                                    let id = thread.id;
+                                    self.state.channels.insert(id, thread);
+                                    threads.push(id);
+                                }
+                            }
+                        } else {
+                            failure = Some("Invalid archived thread response".into());
+                        }
+                    }
+                    Err(error) => failure = Some(error),
+                }
+                self.snapshot();
+                self.emit(Event::ArchivedThreads {
+                    channel_id: channel,
+                    before,
+                    threads,
+                    next,
+                    has_more,
+                    error: failure,
+                });
+            }
             NavigationEvent::Forum {
                 epoch,
                 token,

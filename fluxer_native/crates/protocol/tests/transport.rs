@@ -759,3 +759,35 @@ async fn session_revocation_password_is_sent_only_in_confirmed_request() {
     assert_eq!(body["password"], "synthetic-password");
     assert!(body.get("mfa_method").is_none());
 }
+
+#[tokio::test]
+async fn archived_public_threads_use_timestamp_cursor() {
+    let (origin, mut requests) = http_server(vec![
+        response(
+            "200 OK",
+            json!({"threads":[],"members":[],"has_more":false}),
+        ),
+        response(
+            "200 OK",
+            json!({"threads":[],"members":[],"has_more":false}),
+        ),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap();
+    client.archived_public_threads("42", None).await.unwrap();
+    client
+        .archived_public_threads("42", Some("2026-01-02T03:04:05+00:00"))
+        .await
+        .unwrap();
+    assert!(
+        requests
+            .recv()
+            .await
+            .unwrap()
+            .starts_with("GET /api/v1/channels/42/threads/archived/public HTTP/1.1")
+    );
+    assert!(requests.recv().await.unwrap().starts_with("GET /api/v1/channels/42/threads/archived/public?before=2026-01-02T03%3A04%3A05%2B00%3A00 HTTP/1.1"));
+}

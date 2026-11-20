@@ -317,6 +317,15 @@ enum EmojiTarget {
     Reaction(Snowflake),
 }
 
+struct ArchivedThreadResults {
+    channel: Snowflake,
+    threads: Vec<Snowflake>,
+    next: Option<String>,
+    has_more: bool,
+    loading: bool,
+    error: Option<String>,
+}
+
 struct ForumResults {
     posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
     has_more: bool,
@@ -332,6 +341,7 @@ struct Fluxer {
     desktop: desktop_integration::DesktopState,
     state: ClientState,
     forum: Option<ForumResults>,
+    archived_threads: Option<ArchivedThreadResults>,
     forum_creation_order: bool,
     forum_filter_tags: Vec<String>,
     forum_match_all: bool,
@@ -503,6 +513,7 @@ impl Fluxer {
             controller,
             state: ClientState::default(),
             forum: None,
+            archived_threads: None,
             forum_creation_order: false,
             forum_filter_tags: Vec::new(),
             forum_match_all: false,
@@ -1816,6 +1827,36 @@ impl Fluxer {
                     message_id,
                     error,
                 } => self.on_message_ack(channel_id, message_id, error),
+                Event::ArchivedThreads {
+                    channel_id,
+                    before,
+                    threads,
+                    next,
+                    has_more,
+                    error,
+                } => {
+                    if let Some(results) = self
+                        .archived_threads
+                        .as_mut()
+                        .filter(|r| r.channel == channel_id)
+                    {
+                        results.loading = false;
+                        if error.is_none() {
+                            if before.is_none() {
+                                results.threads.clear();
+                            }
+                            for id in threads {
+                                if !results.threads.contains(&id) {
+                                    results.threads.push(id);
+                                }
+                            }
+                            results.next = next;
+                            results.has_more = has_more;
+                        }
+                        results.error = error;
+                        cx.notify();
+                    }
+                }
                 Event::Forum {
                     channel_id,
                     posts,

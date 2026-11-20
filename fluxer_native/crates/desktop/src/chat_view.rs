@@ -190,6 +190,19 @@ impl Fluxer {
             })
             .map(|channel| channel.id)
             .filter(|_| self.managing_thread.is_none());
+        let can_browse_archived = channel
+            .filter(|channel| !self.demo && channel.kind.standalone_thread_type().is_some())
+            .and_then(|channel| self.state.current_user.as_ref().map(|user| (channel, user)))
+            .filter(|(channel, user)| {
+                channel
+                    .guild_id
+                    .is_some_and(|guild| self.state.thread_guilds.contains(&guild))
+                    && self.state.permissions_for(channel.id, user.id).contains(
+                        fluxer_core::Permissions::VIEW_CHANNEL
+                            | fluxer_core::Permissions::READ_MESSAGE_HISTORY,
+                    )
+            })
+            .map(|(channel, _)| channel.id);
         let can_create_thread = selected
             .filter(|parent| !self.demo && self.state.public_thread_type(*parent).is_some());
         let messages = self.visible_messages();
@@ -324,6 +337,11 @@ impl Fluxer {
                                 .child(quiet_button("lock-thread", if locked { "Unlock thread" } else { "Lock thread" })
                                     .on_click(cx.listener(move |this, _, _, cx| this.manage_thread(thread, if archived { Some(false) } else { None }, Some(!locked), cx))))
                             )
+                            .when_some(can_browse_archived, |view, parent| view.child(
+                                quiet_button("browse-archived-threads", "Archived threads").on_click(
+                                    cx.listener(move |this, _, _, cx| this.load_archived_threads(parent, None, cx)),
+                                ),
+                            ))
                             .when_some(can_create_thread, |view, parent| view.child(
                                 quiet_button("new-thread", "New thread").on_click(
                                     cx.listener(move |this, _, window, cx| this.open_thread_form(parent, window, cx)),
@@ -355,6 +373,7 @@ impl Fluxer {
                             ),
                     ),
             )
+            .when_some(can_browse_archived, |view, parent| view.child(self.render_archived_threads(parent, cx)))
             .when(self.thread_form.is_some() && self.thread_form == can_create_thread, |view| {
                 view.child(self.render_thread_form(cx))
             })

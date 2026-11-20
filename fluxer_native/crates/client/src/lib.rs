@@ -339,6 +339,10 @@ pub enum Command {
         content: String,
         tags: Vec<String>,
     },
+    LoadArchivedThreads {
+        channel_id: Snowflake,
+        before: Option<String>,
+    },
     LoadForum {
         channel_id: Snowflake,
         creation_order: bool,
@@ -669,6 +673,14 @@ pub enum Event {
     MessageAckResult {
         channel_id: Snowflake,
         message_id: Snowflake,
+        error: Option<String>,
+    },
+    ArchivedThreads {
+        channel_id: Snowflake,
+        before: Option<String>,
+        threads: Vec<Snowflake>,
+        next: Option<String>,
+        has_more: bool,
         error: Option<String>,
     },
     Forum {

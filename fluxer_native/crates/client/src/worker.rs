@@ -1680,6 +1680,18 @@ impl Worker {
                     });
                 }
             }
+            Command::LoadArchivedThreads { channel_id, before } => {
+                if let Err(error) = self.load_archived_threads(channel_id, before.clone()) {
+                    self.emit(Event::ArchivedThreads {
+                        channel_id,
+                        before,
+                        threads: Vec::new(),
+                        next: None,
+                        has_more: false,
+                        error: Some(error),
+                    });
+                }
+            }
             Command::LoadForum {
                 channel_id,
                 creation_order,

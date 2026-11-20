@@ -748,6 +748,23 @@ impl Client {
         .await
     }
 
+    /// List archived public threads, optionally before an archive timestamp.
+    pub async fn archived_public_threads(
+        &self,
+        channel: &str,
+        before: Option<&str>,
+    ) -> Result<Value> {
+        let mut path = format!("/channels/{}/threads/archived/public", segment(channel));
+        if let Some(before) = before {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("before", before)
+                .finish();
+            path.push('?');
+            path.push_str(&query);
+        }
+        self.request(Method::GET, &path, None).await
+    }
+
     /// Join or leave the current user's thread membership.
     pub async fn set_thread_membership(&self, channel: &str, join: bool) -> Result<Value> {
         self.request(
