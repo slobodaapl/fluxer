@@ -984,6 +984,7 @@ impl Worker {
             self.state.channels.insert(channel, target);
         }
         self.require_history(channel)?;
+        self.cancel_open_dm();
         self.navigation_context(channel);
         self.state.selected_channel = Some(channel);
         self.selected_guild = self.state.channels[&channel].guild_id;

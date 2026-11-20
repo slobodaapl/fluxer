@@ -2408,6 +2408,66 @@ async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
 }
 
 #[tokio::test]
+async fn pending_group_creation_cannot_override_message_jump_or_reset() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        assert_eq!(
+            serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+            json!({"recipients":[]})
+        );
+        let _ = accepted_tx.send(());
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.state.selected_channel = Some(11.into());
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    timeout(Duration::from_secs(1), worker.create_group_dm(vec![]))
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(2), accepted_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let old = worker.dm_generation;
+    worker.demo = true;
+    worker.jump_to_message(12.into(), 123.into()).await.unwrap();
+    worker
+        .finish_open_dm(DmEvent {
+            user_id: 0.into(),
+            generation: old,
+            result: Ok(json!({"id":"999","type":3,"recipients":[]})),
+        })
+        .await
+        .unwrap();
+    assert_eq!(worker.state.selected_channel, Some(12.into()));
+    assert!(!worker.state.channels.contains_key(&999.into()));
+    worker.reset().await;
+    worker
+        .finish_open_dm(DmEvent {
+            user_id: 0.into(),
+            generation: old,
+            result: Ok(json!({"id":"999","type":3,"recipients":[]})),
+        })
+        .await
+        .unwrap();
+    assert!(worker.state.current_user.is_none());
+    assert!(worker.state.channels.is_empty());
+    server.abort();
+}
+
+#[tokio::test]
 async fn notification_events_only_follow_new_live_message_dispatches() {
     let (mut worker, events) = worker();
     worker.state = ClientState::demo();
