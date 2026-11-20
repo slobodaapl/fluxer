@@ -1441,6 +1441,7 @@ impl Worker {
                 force,
             } => self.load_user_profile(user_id, guild_id, force),
             Command::CreateCommunity { name } => self.create_community(name),
+            Command::RenameCommunity { guild_id, name } => self.rename_community(guild_id, name),
             Command::LeaveCommunity {
                 guild_id,
                 delete_messages,

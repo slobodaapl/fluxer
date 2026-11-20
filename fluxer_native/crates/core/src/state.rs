@@ -228,6 +228,24 @@ impl ClientState {
         read.last_pin_timestamp = candidate;
         true
     }
+    pub fn guild_permissions_for(&self, guild_id: Snowflake, user_id: Snowflake) -> Permissions {
+        let Some(guild) = self
+            .guilds
+            .get(&guild_id)
+            .filter(|guild| !guild.unavailable)
+        else {
+            return Permissions::NONE;
+        };
+        if guild.owner_id == user_id {
+            return Permissions::ALL;
+        }
+        self.members
+            .get(&(guild_id, user_id))
+            .map_or(Permissions::NONE, |member| {
+                resolve_permissions(guild, member, &[])
+            })
+    }
+
     pub fn permissions_for(&self, channel_id: Snowflake, user_id: Snowflake) -> Permissions {
         let Some(channel) = self.channels.get(&channel_id) else {
             return Permissions::NONE;

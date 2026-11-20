@@ -5,6 +5,7 @@ use fluxer_protocol::Method;
 #[derive(Clone, Copy)]
 enum Operation {
     Create,
+    Rename,
     Leave(Snowflake),
 }
 struct Job {
@@ -68,6 +69,28 @@ impl Worker {
             Some(json!({"name": name})),
         );
     }
+    pub(super) fn rename_community(&mut self, guild_id: Snowflake, name: String) {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 100 {
+            return self.community_error("Community name must be 1–100 characters");
+        }
+        if self.demo {
+            return self.community_error("Community settings are unavailable in the offline demo");
+        }
+        if !self.state.current_user.as_ref().is_some_and(|user| {
+            self.state
+                .guild_permissions_for(guild_id, user.id)
+                .contains(fluxer_core::Permissions::MANAGE_GUILD)
+        }) {
+            return self.community_error("You need Manage Community permission to change the name");
+        }
+        self.start_community(
+            Operation::Rename,
+            Method::PATCH,
+            format!("/guilds/{guild_id}"),
+            Some(json!({"name": name})),
+        );
+    }
     pub(super) fn leave_community(&mut self, guild_id: Snowflake, delete_messages: bool) {
         if self.demo {
             return self.community_error("Leaving communities is unavailable in the offline demo");
@@ -123,7 +146,7 @@ impl Worker {
                     )
                     .map(Some)
                     .map_err(error),
-                    Operation::Leave(_) => Ok(None),
+                    Operation::Rename | Operation::Leave(_) => Ok(None),
                 }),
                 Err(_) => Err("Community update timed out".into()),
             };

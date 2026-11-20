@@ -4,7 +4,13 @@ use super::*;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Dialog {
     Create,
+    Overview(Snowflake),
     Leave(Snowflake),
+}
+impl Dialog {
+    pub(super) fn edits_name(self) -> bool {
+        matches!(self, Self::Create | Self::Overview(_))
+    }
 }
 pub(super) struct CommunityUi {
     pub dialog: Option<Dialog>,
@@ -42,6 +48,13 @@ impl CommunityUi {
         self.armed = false;
         self.error = None;
     }
+    pub fn open_overview(&mut self, id: Snowflake, name: String, cx: &mut Context<Fluxer>) {
+        self.name.update(cx, |input, cx| input.set(name, cx));
+        self.dialog = Some(Dialog::Overview(id));
+        self.selected = 0;
+        self.armed = false;
+        self.error = None;
+    }
     pub fn open_leave(&mut self, id: Snowflake) {
         self.dialog = Some(Dialog::Leave(id));
         self.selected = 0;
@@ -68,6 +81,10 @@ impl Fluxer {
             Some(Dialog::Create) => Command::CreateCommunity {
                 name: self.community_ui.name.read(cx).content.to_string(),
             },
+            Some(Dialog::Overview(guild_id)) => Command::RenameCommunity {
+                guild_id,
+                name: self.community_ui.name.read(cx).content.to_string(),
+            },
             Some(Dialog::Leave(guild_id)) => Command::LeaveCommunity {
                 guild_id,
                 delete_messages: self.community_ui.delete_messages,
@@ -89,9 +106,7 @@ impl Fluxer {
         let Some(dialog) = self.community_ui.dialog else {
             return;
         };
-        if matches!(dialog, Dialog::Create)
-            && self.community_ui.name.focus_handle(cx).is_focused(window)
-        {
+        if dialog.edits_name() && self.community_ui.name.focus_handle(cx).is_focused(window) {
             self.community_ui.selected = 0;
         }
         match event.keystroke.key.as_str() {
@@ -103,7 +118,7 @@ impl Fluxer {
                     (self.community_ui.selected + 1) % 3
                 };
                 self.community_ui.armed = false;
-                if matches!(dialog, Dialog::Create) && self.community_ui.selected == 0 {
+                if dialog.edits_name() && self.community_ui.selected == 0 {
                     window.focus(&self.community_ui.name.focus_handle(cx));
                 } else {
                     window.focus(&self.community_ui.focus);
@@ -111,7 +126,7 @@ impl Fluxer {
                 cx.notify();
             }
             "enter" | "space" if !event.is_held && !event.keystroke.modifiers.modified() => {
-                if matches!(dialog, Dialog::Create)
+                if dialog.edits_name()
                     && self.community_ui.selected == 0
                     && (event.keystroke.key == "space"
                         || self.community_ui.name.read(cx).is_composing())
@@ -139,8 +154,8 @@ impl Fluxer {
         let armed = std::mem::take(&mut self.community_ui.armed);
         if armed && !event.keystroke.modifiers.modified() && !self.community_ui.pending {
             match (dialog, self.community_ui.selected) {
-                (Dialog::Create, 0 | 2) | (Dialog::Leave(_), 2) => self.submit_community(cx),
-                (Dialog::Create, 1) | (Dialog::Leave(_), 0) => {
+                (_, 2) | (Dialog::Create | Dialog::Overview(_), 0) => self.submit_community(cx),
+                (Dialog::Create | Dialog::Overview(_), 1) | (Dialog::Leave(_), 0) => {
                     self.close_community_dialog(window, cx)
                 }
                 (Dialog::Leave(_), 1) => {
@@ -156,24 +171,30 @@ impl Fluxer {
         let Some(dialog) = &self.community_ui.dialog else {
             return div().into_any_element();
         };
-        let create = matches!(dialog, Dialog::Create);
-        let title = if create {
-            "Create a community"
-        } else {
-            "Leave community"
+        let edits_name = dialog.edits_name();
+        let (title, submit) = match dialog {
+            Dialog::Create => ("Create a community", "Create"),
+            Dialog::Overview(_) => ("Community Overview", "Save changes"),
+            Dialog::Leave(_) => ("Leave community", "Leave community"),
         };
         let pending = self.community_ui.pending;
         div().absolute().inset_0().bg(rgba(0x00000099)).occlude().flex().items_center().justify_center().child(
             div().id("community-dialog").track_focus(&self.community_ui.focus).w(px(420.)).p_5().rounded_lg().bg(rgb(PANEL)).shadow_lg().flex().flex_col().gap_4()
                 .child(div().text_size(px(20.)).font_weight(FontWeight::BOLD).child(title))
-                .when(create, |v| v.child("Give your community a name.").child(self.community_ui.name.clone()))
-                .when(!create, |v| v.child("Leave this community? You won't see its messages anymore.").child(
+                .when(edits_name, |v| {
+                    let label = match dialog {
+                        Dialog::Create => "Give your community a name.",
+                        _ => "Community name",
+                    };
+                    v.child(label).child(self.community_ui.name.clone())
+                })
+                .when(!edits_name, |v| v.child("Leave this community? You won't see its messages anymore.").child(
                     controls::quiet_button("delete-community-messages", if self.community_ui.delete_messages { "☑ Delete my messages" } else { "☐ Delete my messages" }).bg(rgb(if self.community_ui.selected == 1 { 0x535064 } else { 0x2b2d31 })).on_click(cx.listener(|this, _, _, cx| { this.community_ui.delete_messages = !this.community_ui.delete_messages; cx.notify(); }))
                 ).child(muted("Wipe every message you've sent here on the way out. Can't be undone.")))
                 .when_some(self.community_ui.error.clone(), |v, error| v.child(div().text_color(rgb(0xe15059)).child(error)))
                 .child(div().flex().justify_end().gap_2()
-                    .child(controls::quiet_button("community-cancel", "Cancel").bg(rgb(if self.community_ui.selected == if create { 1 } else { 0 } { 0x535064 } else { 0x2b2d31 })).on_click(cx.listener(|this, _, window, cx| { if !this.community_ui.pending { this.close_community_dialog(window, cx); } })))
-                    .child(controls::quiet_button("community-submit", if pending { "Please wait…" } else if create { "Create" } else { "Leave community" }).bg(rgb(if self.community_ui.selected == 2 { 0x535064 } else if create { ACCENT } else { 0xc43b45 })).on_click(cx.listener(|this, _, _, cx| this.submit_community(cx)))))
+                    .child(controls::quiet_button("community-cancel", "Cancel").bg(rgb(if self.community_ui.selected == if edits_name { 1 } else { 0 } { 0x535064 } else { 0x2b2d31 })).on_click(cx.listener(|this, _, window, cx| { if !this.community_ui.pending { this.close_community_dialog(window, cx); } })))
+                    .child(controls::quiet_button("community-submit", if pending { "Please wait…" } else { submit }).bg(rgb(if self.community_ui.selected == 2 { 0x535064 } else if edits_name { ACCENT } else { 0xc43b45 })).on_click(cx.listener(|this, _, _, cx| this.submit_community(cx)))))
         ).into_any_element()
     }
 }

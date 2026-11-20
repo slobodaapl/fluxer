@@ -250,6 +250,10 @@ pub enum Command {
     CreateCommunity {
         name: String,
     },
+    RenameCommunity {
+        guild_id: Snowflake,
+        name: String,
+    },
     LeaveCommunity {
         guild_id: Snowflake,
         delete_messages: bool,

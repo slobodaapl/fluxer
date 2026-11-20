@@ -1876,10 +1876,11 @@ impl Fluxer {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         if self.community_ui.dialog.is_some() {
-            if matches!(
-                self.community_ui.dialog,
-                Some(community_view::Dialog::Create)
-            ) && self.community_ui.name.focus_handle(cx).is_focused(window)
+            if self
+                .community_ui
+                .dialog
+                .is_some_and(community_view::Dialog::edits_name)
+                && self.community_ui.name.focus_handle(cx).is_focused(window)
                 && !self.community_ui.name.read(cx).is_composing()
             {
                 self.community_ui.selected = 0;

@@ -230,6 +230,13 @@ impl Fluxer {
                         .contains(fluxer_core::Permissions::MANAGE_CHANNELS)
                 })
     }
+    fn can_edit_community_overview(&self, id: Snowflake) -> bool {
+        self.state.current_user.as_ref().is_some_and(|user| {
+            self.state
+                .guild_permissions_for(id, user.id)
+                .contains(fluxer_core::Permissions::MANAGE_GUILD)
+        })
+    }
     pub(super) fn install_context_voice_fixture(&mut self) {
         if !self.demo_stream || std::env::var_os("FLUXER_CONTEXT_DEMO_TARGET").is_none() {
             return;
@@ -657,6 +664,13 @@ impl Fluxer {
                     Item::Header(name),
                     action("community-open", "Open community", Icon::Home),
                 ]);
+                if self.can_edit_community_overview(*id) {
+                    items.push(action(
+                        "community-overview",
+                        "Community Overview",
+                        Icon::Settings,
+                    ));
+                }
                 if self.can_manage_guild_channels(*id) {
                     items.push(action(
                         "community-create-text",
@@ -1109,6 +1123,20 @@ impl Fluxer {
             }
             (Target::Community(guild), "copy-community") => {
                 cx.write_to_clipboard(ClipboardItem::new_string(guild.to_string()))
+            }
+            (Target::Community(guild), "community-overview") => {
+                if self.community_ui.pending || !self.can_edit_community_overview(*guild) {
+                    return;
+                }
+                let Some(community) = self.state.guilds.get(guild) else {
+                    return;
+                };
+                self.community_ui.window = Some(window.window_handle());
+                self.community_ui.previous_focus = window.focused(cx);
+                self.community_ui
+                    .open_overview(*guild, community.name.clone(), cx);
+                window.focus(&self.community_ui.name.focus_handle(cx));
+                cx.notify();
             }
             (Target::Community(guild), "community-leave") => {
                 if self.community_ui.pending {
