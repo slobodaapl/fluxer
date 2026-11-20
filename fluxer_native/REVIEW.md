@@ -20,6 +20,14 @@ LiveKit probes use generated signals. The isolated Wayland smoke covers offline
 chat, media, streams, forum filters, keyboard operation and call decline. Review
 captures are under `target/qa/parity21-mock-ui/`.
 
+The final tagged build passed all five Wayland scenarios. The packaged audio
+runner passed loopback, microphone, output routing, screen watch and shared
+audio in a private graph with no hardware cards. A separate synthetic LiveKit
+fixture verified camera and screen independence. An encrypted D-Bus Secret
+Service CRUD fixture passed using a private in-memory collection. The private
+file-backed collection returned Unavailable, so cold vault persistence remains
+a live acceptance item. Logs are in `target/qa/parity-2026-11-19-wave3/`.
+
 Camera SDK publication still awaits network work on the voice worker. Test
 responsiveness if publication stalls before capture starts. A ring request
 that completes server-side after the client's timeout, and shutdown during
