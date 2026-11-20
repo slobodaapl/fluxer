@@ -81,6 +81,23 @@ impl super::Fluxer {
     /// documents and callback scopes on the context boundary itself.
     pub(super) fn reset_conversation_surfaces(&mut self, cx: &mut gpui::Context<Self>) {
         self.conversation_scope.synchronize("");
+        self.community_ui.reset(cx);
+        self.invite_ui.reset(cx);
+        self.profile_edit.reset(cx);
+        self.gif_picker.reset();
+        self.sticker_picker_open = false;
+        self.friends_ui = super::friends_view::FriendsUi::new(cx);
+        self.account_sessions_request = None;
+        self.account_sessions = None;
+        self.forum = None;
+        self.thread_form = None;
+        self.creating_thread = None;
+        self.managing_thread = None;
+        self.forum_tags.clear();
+        self.channel_form = None;
+        for field in [&self.thread_name, &self.forum_body, &self.channel_name] {
+            field.update(cx, |input, cx| input.set(String::new(), cx));
+        }
         self.composer
             .update(cx, |input, cx| input.set(String::new(), cx));
         self.search

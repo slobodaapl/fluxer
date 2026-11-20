@@ -41,6 +41,19 @@ impl CommunityUi {
             armed: false,
         }
     }
+    pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
+        self.dialog = None;
+        self.pending_dialog = None;
+        self.pending = false;
+        self.delete_messages = false;
+        self.error = None;
+        self.armed = false;
+        self.selected = 0;
+        self.window = None;
+        self.previous_focus = None;
+        self.name
+            .update(cx, |input, cx| input.set(String::new(), cx));
+    }
     pub fn open_create(&mut self, cx: &mut Context<Fluxer>) {
         self.name.update(cx, |name, cx| name.set(String::new(), cx));
         self.dialog = Some(Dialog::Create);

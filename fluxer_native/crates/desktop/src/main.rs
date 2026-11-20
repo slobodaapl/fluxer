@@ -1099,14 +1099,7 @@ impl Fluxer {
                         self.reset_conversation_surfaces(cx);
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
-                        self.account_sessions_request = None;
-                        self.account_sessions = None;
                         self.slowmode = composer_slowmode::Slowmode::default();
-                        self.thread_form = None;
-                        self.creating_thread = None;
-                        self.managing_thread = None;
-                        self.thread_name
-                            .update(cx, |input, cx| input.set(String::new(), cx));
                         self.inbox_ui.reset();
                     }
                     self.refresh_composer_completion(cx);
@@ -2362,11 +2355,7 @@ impl Fluxer {
 
     fn logout(&mut self, cx: &mut Context<Self>) {
         self.command(Command::Logout, cx);
-        self.community_ui.dialog = None;
-        self.community_ui.pending = false;
-        self.community_ui.pending_dialog = None;
-        self.community_ui.window = None;
-        self.community_ui.previous_focus = None;
+        self.community_ui.reset(cx);
         self.invite_ui.reset(cx);
         self.selected_guild = None;
         self.session_context_loaded = false;

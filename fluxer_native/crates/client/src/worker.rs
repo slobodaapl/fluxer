@@ -1328,7 +1328,7 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
-            Command::CancelOwnProfile => self.clear_own_profile(),
+            Command::CancelOwnAvatar => self.cancel_own_avatar(),
             Command::UpdateOwnAvatar { png } => {
                 if let Err(message) = self.update_own_avatar(png) {
                     self.emit(Event::OwnAvatarMutation(

@@ -33,6 +33,19 @@ pub(super) struct ProfileEdit {
     pub feedback: Option<String>,
 }
 impl ProfileEdit {
+    pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
+        for field in [&self.name, &self.bio, &self.pronouns] {
+            field.update(cx, |input, cx| input.set(String::new(), cx));
+        }
+        self.avatar_generation = self.avatar_generation.wrapping_add(1);
+        self.avatar_loading = false;
+        self.avatar = None;
+        self.cropped = None;
+        self.avatar_pending = false;
+        self.avatar_feedback = None;
+        self.pending = false;
+        self.feedback = None;
+    }
     pub fn avatar_status(&mut self, status: fluxer_client::RelationshipMutationStatus) {
         use fluxer_client::RelationshipMutationStatus as Status;
         self.avatar_pending = matches!(status, Status::Pending);
@@ -220,7 +233,7 @@ impl Fluxer {
         self.profile_edit.cropped = None;
         self.profile_edit.avatar_feedback = None;
         if self.profile_edit.avatar_pending {
-            self.command(Command::CancelOwnProfile, cx);
+            self.command(Command::CancelOwnAvatar, cx);
         }
     }
     fn pick_avatar(&mut self, cx: &mut Context<Self>) {
@@ -391,7 +404,7 @@ impl Fluxer {
         if self.profile_edit.avatar_pending {
             body = body.child(
                 quiet_button("avatar-cancel", "Cancel avatar save").on_click(
-                    cx.listener(|this, _, _, cx| this.command(Command::CancelOwnProfile, cx)),
+                    cx.listener(|this, _, _, cx| this.command(Command::CancelOwnAvatar, cx)),
                 ),
             );
         }

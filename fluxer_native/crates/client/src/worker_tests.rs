@@ -2385,6 +2385,7 @@ async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
         .unwrap();
     worker
         .finish_open_dm(DmEvent {
+            group_add: false,
             user_id: 42.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
@@ -2396,6 +2397,7 @@ async fn pending_dm_is_cancelled_by_navigation_and_account_reset() {
     worker.reset().await;
     worker
         .finish_open_dm(DmEvent {
+            group_add: false,
             user_id: 42.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":1,"recipients":[{"id":"42","username":"Alice"}]})),
@@ -2445,6 +2447,7 @@ async fn pending_group_creation_cannot_override_message_jump_or_reset() {
     worker.jump_to_message(12.into(), 123.into()).await.unwrap();
     worker
         .finish_open_dm(DmEvent {
+            group_add: false,
             user_id: 0.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":3,"recipients":[]})),
@@ -2456,6 +2459,7 @@ async fn pending_group_creation_cannot_override_message_jump_or_reset() {
     worker.reset().await;
     worker
         .finish_open_dm(DmEvent {
+            group_add: false,
             user_id: 0.into(),
             generation: old,
             result: Ok(json!({"id":"999","type":3,"recipients":[]})),

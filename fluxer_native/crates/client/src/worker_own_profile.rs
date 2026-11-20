@@ -48,6 +48,11 @@ impl Worker {
             self.own_profile_status(job.avatar, Status::Failed("Profile save cancelled".into()));
         }
     }
+    pub(super) fn cancel_own_avatar(&mut self) {
+        if self.own_profile.job.as_ref().is_some_and(|job| job.avatar) {
+            self.clear_own_profile();
+        }
+    }
     pub(super) fn update_own_profile(
         &mut self,
         name: String,

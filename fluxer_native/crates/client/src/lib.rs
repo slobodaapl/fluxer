@@ -169,7 +169,7 @@ pub enum Command {
     UpdateOwnAvatar {
         png: Option<Vec<u8>>,
     },
-    CancelOwnProfile,
+    CancelOwnAvatar,
     UpdateOwnProfile {
         global_name: String,
         bio: String,
