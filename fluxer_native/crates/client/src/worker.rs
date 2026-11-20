@@ -618,6 +618,7 @@ impl Worker {
                 People(Option<people_flow::PeopleEvent>),
                 Invite(Option<invite_flow::InviteEvent>),
                 InviteTimeout,
+                Kick(Option<people_flow::KickEvent>),
                 Dm(Option<DmEvent>),
                 ThreadCreated(Result<Value>),
                 DevicePoll,
@@ -665,6 +666,7 @@ impl Worker {
                 event=self.people.rx.recv()=>Incoming::People(event),
                 event=self.invites.rx.recv()=>Incoming::Invite(event),
                 _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
+                event=self.people.kick_rx.recv()=>Incoming::Kick(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
@@ -720,6 +722,11 @@ impl Worker {
                     self.invite_timeout();
                     Ok(())
                 }
+                Incoming::Kick(Some(event)) => {
+                    self.kick_event(event);
+                    Ok(())
+                }
+                Incoming::Kick(None) => Ok(()),
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
                 Incoming::ThreadCreated(result) => {
@@ -1321,6 +1328,11 @@ impl Worker {
                         user_id,
                         status: crate::RelationshipMutationStatus::Failed(message),
                     });
+                }
+            }
+            Command::KickMember { guild_id, user_id } => {
+                if let Err(message) = self.kick_member(guild_id, user_id) {
+                    self.emit(Event::Error(message));
                 }
             }
             Command::SetMemberList { channel_id, start } => {

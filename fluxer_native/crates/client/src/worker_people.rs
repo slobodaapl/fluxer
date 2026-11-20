@@ -12,6 +12,13 @@ impl Drop for Job {
         self.task.abort();
     }
 }
+pub(super) struct KickEvent {
+    guild: Snowflake,
+    user: Snowflake,
+    generation: u64,
+    result: Result<()>,
+}
+
 pub(super) struct PeopleEvent {
     role: Option<(Snowflake, Snowflake, bool)>,
     user: Snowflake,
@@ -24,11 +31,18 @@ pub(super) struct PeopleState {
     role_jobs: BTreeMap<(Snowflake, Snowflake), Job>,
     tx: async_mpsc::UnboundedSender<PeopleEvent>,
     pub rx: async_mpsc::UnboundedReceiver<PeopleEvent>,
+    kicks: BTreeMap<(Snowflake, Snowflake), Job>,
+    kick_tx: async_mpsc::UnboundedSender<KickEvent>,
+    pub kick_rx: async_mpsc::UnboundedReceiver<KickEvent>,
 }
 impl PeopleState {
     pub fn new() -> Self {
         let (tx, rx) = async_mpsc::unbounded_channel();
+        let (kick_tx, kick_rx) = async_mpsc::unbounded_channel();
         Self {
+            kicks: BTreeMap::new(),
+            kick_tx,
+            kick_rx,
             next: 0,
             jobs: BTreeMap::new(),
             role_jobs: BTreeMap::new(),
@@ -42,6 +56,75 @@ impl Worker {
         self.people.next = self.people.next.wrapping_add(1);
         self.people.jobs.clear();
         self.people.role_jobs.clear();
+        self.people.kicks.clear();
+    }
+    pub(super) fn kick_member(&mut self, guild: Snowflake, user: Snowflake) -> Result<()> {
+        let actor = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let guild_data = self
+            .state
+            .guilds
+            .get(&guild)
+            .ok_or("Community no longer available")?;
+        let actor_member = self
+            .state
+            .members
+            .get(&(guild, actor))
+            .ok_or("Your member information is unavailable")?;
+        let target = self
+            .state
+            .members
+            .get(&(guild, user))
+            .ok_or("Member no longer available")?;
+        if !fluxer_core::moderation_capabilities(guild_data, actor_member, target).kick {
+            return Err("You cannot kick this member".into());
+        }
+        if self.people.kicks.contains_key(&(guild, user)) {
+            return Err("A kick is already pending".into());
+        }
+        if self.demo {
+            return Err("Kicks are disabled in the offline demo".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        self.people.next = self.people.next.wrapping_add(1);
+        let generation = self.people.next;
+        let tx = self.people.kick_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(15),
+                client.kick_member(&guild.to_string(), &user.to_string()),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(error),
+                Err(_) => Err("Kick timed out".into()),
+            };
+            let _ = tx.send(KickEvent {
+                guild,
+                user,
+                generation,
+                result,
+            });
+        });
+        self.people
+            .kicks
+            .insert((guild, user), Job { generation, task });
+        self.emit(Event::Status("Kicking member…".into()));
+        Ok(())
+    }
+    pub(super) fn kick_event(&mut self, event: KickEvent) {
+        if self
+            .people
+            .kicks
+            .get(&(event.guild, event.user))
+            .is_none_or(|job| job.generation != event.generation)
+        {
+            return;
+        }
+        self.people.kicks.remove(&(event.guild, event.user));
+        match event.result {
+            Ok(()) => self.emit(Event::Status("Member kicked".into())),
+            Err(message) => self.emit(Event::Error(format!("Could not kick member: {message}"))),
+        }
     }
     pub(super) fn change_relationship(
         &mut self,

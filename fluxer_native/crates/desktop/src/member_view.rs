@@ -303,45 +303,49 @@ impl Fluxer {
         );
         let status_art =
             crate::emoji_sprites::unicode_text(&custom, 11., window.scale_factor() > 1., cx);
-        div()
-            .id(SharedString::from(format!("member-row-{index}-{id}")))
-            .h(px(44.))
-            .px_2()
-            .rounded_md()
-            .hover(|s| s.bg(rgb(0x393b42)))
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div().relative().size(px(32.)).child(avatar_target).child(
+        crate::context_actions::trigger(
+            div()
+                .id(SharedString::from(format!("member-row-{index}-{id}")))
+                .h(px(44.))
+                .px_2()
+                .rounded_md()
+                .hover(|s| s.bg(rgb(0x393b42)))
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div().relative().size(px(32.)).child(avatar_target).child(
+                        div()
+                            .id(SharedString::from(format!("member-status-{index}-{id}")))
+                            .absolute()
+                            .right_0()
+                            .bottom_0()
+                            .size(px(10.))
+                            .rounded_full()
+                            .bg(rgb(color))
+                            .on_click(|_, _, cx| cx.stop_propagation()),
+                    ),
+                )
+                .child(
                     div()
-                        .id(SharedString::from(format!("member-status-{index}-{id}")))
-                        .absolute()
-                        .right_0()
-                        .bottom_0()
-                        .size(px(10.))
-                        .rounded_full()
-                        .bg(rgb(color))
-                        .on_click(|_, _, cx| cx.stop_propagation()),
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .child(name_target)
+                        .when(!custom.is_empty(), |v| {
+                            v.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(rgb(0x949ba4))
+                                    .child(status_art),
+                            )
+                        }),
                 ),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .child(name_target)
-                    .when(!custom.is_empty(), |v| {
-                        v.child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(rgb(0x949ba4))
-                                .child(status_art),
-                        )
-                    }),
-            )
-            .into_any_element()
+            crate::context_actions::Target::Member { guild, user: id },
+            cx,
+        )
+        .into_any_element()
     }
 }
 
@@ -366,5 +370,137 @@ mod tests {
         assert_eq!(requested_window(65, 95..110), None);
         assert_eq!(requested_window(65, 5..20), Some(0));
         assert_eq!(requested_window(0, 100_000..100_001), Some(99_901));
+    }
+}
+
+impl Fluxer {
+    pub(super) fn can_kick_member(&self, guild: Snowflake, user: Snowflake) -> bool {
+        if self.demo {
+            return false;
+        }
+        self.state
+            .current_user
+            .as_ref()
+            .and_then(|current| {
+                Some(
+                    fluxer_core::moderation_capabilities(
+                        self.state.guilds.get(&guild)?,
+                        self.state.members.get(&(guild, current.id))?,
+                        self.state.members.get(&(guild, user))?,
+                    )
+                    .kick,
+                )
+            })
+            .unwrap_or(false)
+    }
+    fn close_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context.kick_confirm = None;
+        self.context.kick_armed = false;
+        if let Some(focus) = self.context.kick_previous.take() {
+            window.focus(&focus);
+        }
+        cx.notify();
+    }
+    fn accept_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((guild_id, user_id, _)) = self.context.kick_confirm.clone() {
+            self.close_kick_confirmation(window, cx);
+            if self.can_kick_member(guild_id, user_id) {
+                self.command(Command::KickMember { guild_id, user_id }, cx);
+            } else {
+                self.error = Some("You can no longer kick this member".into());
+            }
+        }
+    }
+    pub(super) fn kick_confirmation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((_, _, name)) = &self.context.kick_confirm else {
+            return div().into_any_element();
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x00000099))
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("kick-confirm-dialog")
+                    .track_focus(&self.context.kick_focus)
+                    .w(px(420.))
+                    .p_5()
+                    .rounded_lg()
+                    .bg(rgb(PANEL))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "escape" => this.close_kick_confirmation(window, cx),
+                            "tab" => {
+                                this.context.kick_selected = !this.context.kick_selected;
+                                this.context.kick_armed = false;
+                                cx.notify();
+                            }
+                            "enter" | "space"
+                                if !event.is_held && !event.keystroke.modifiers.modified() =>
+                            {
+                                this.context.kick_armed = true
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            let armed = std::mem::take(&mut this.context.kick_armed);
+                            if armed && !event.keystroke.modifiers.modified() {
+                                if this.context.kick_selected {
+                                    this.accept_kick_confirmation(window, cx)
+                                } else {
+                                    this.close_kick_confirmation(window, cx)
+                                }
+                            }
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Kick member"),
+                    )
+                    .child(format!("Kick {name} from this community?"))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::controls::quiet_button("kick-cancel", "Cancel")
+                                    .bg(rgb(if !self.context.kick_selected {
+                                        0x535064
+                                    } else {
+                                        0x383a40
+                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_kick_confirmation(window, cx)
+                                    })),
+                            )
+                            .child(
+                                crate::controls::quiet_button("kick-confirm", "Kick member")
+                                    .bg(rgb(if self.context.kick_selected {
+                                        0xe15059
+                                    } else {
+                                        0xc43b45
+                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.accept_kick_confirmation(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }

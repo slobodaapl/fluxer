@@ -187,6 +187,10 @@ pub enum Command {
         user_id: Snowflake,
         action: RelationshipAction,
     },
+    KickMember {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    },
     SetMemberList {
         channel_id: Option<Snowflake>,
         start: u32,

@@ -12,6 +12,7 @@ use std::{cell::Cell, rc::Rc};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Target {
     InboxFilters,
+    Member { guild: Snowflake, user: Snowflake },
     Stream(String),
     Media(crate::media_actions::MediaReference),
     User { channel: Snowflake, user: Snowflake },
@@ -38,6 +39,11 @@ impl UserAudioOverride {
 }
 pub(super) struct ContextUi {
     pub menu: Entity<ContextMenu>,
+    pub kick_confirm: Option<(Snowflake, Snowflake, String)>,
+    pub kick_focus: FocusHandle,
+    pub kick_previous: Option<FocusHandle>,
+    pub kick_selected: bool,
+    pub kick_armed: bool,
     pub page: NavigationPage,
     pub anchor: Point<Pixels>,
     target: Option<Target>,
@@ -50,6 +56,11 @@ impl ContextUi {
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
         Self {
             menu: cx.new(ContextMenu::new),
+            kick_confirm: None,
+            kick_focus: cx.focus_handle(),
+            kick_previous: None,
+            kick_selected: false,
+            kick_armed: false,
             page: NavigationPage::Main,
             anchor: Point::default(),
             target: None,
@@ -362,6 +373,10 @@ impl Fluxer {
     fn context_target_valid(&self, target: &Target) -> bool {
         match target {
             Target::InboxFilters => self.inbox_filters_available(),
+            Target::Member { guild, user } => {
+                self.state.members.contains_key(&(*guild, *user))
+                    && self.state.guilds.contains_key(guild)
+            }
             Target::Media(reference) => self.media_descriptor(reference).is_some(),
             Target::Stream(id) => {
                 self.available_streams.contains(id) || self.viewer.desired.contains(id)
@@ -403,6 +418,28 @@ impl Fluxer {
         let mut items = Vec::new();
         match target {
             Target::InboxFilters => return self.inbox_filter_items(),
+            Target::Member { guild, user } => {
+                let name = self
+                    .state
+                    .members
+                    .get(&(*guild, *user))
+                    .map(|m| {
+                        m.nick
+                            .clone()
+                            .unwrap_or_else(|| m.user.display_name().to_owned())
+                    })
+                    .unwrap_or_else(|| user.to_string());
+                items.push(Item::Header(name));
+                if self.can_kick_member(*guild, *user) {
+                    items.push(Item::Action {
+                        id: "kick-member".into(),
+                        label: "Kick member".into(),
+                        icon: None,
+                        enabled: true,
+                        danger: true,
+                    });
+                }
+            }
             Target::Media(reference) => return self.media_context_items(reference),
             Target::Stream(identity) => {
                 items.push(Item::Header(self.stream_name(identity)));
@@ -638,6 +675,7 @@ impl Fluxer {
             && !matches!(&target, Target::Media(_)))
             || self.message_links.is_open()
             || self.search_ui.confirm.is_some()
+            || self.context.kick_confirm.is_some()
             || !self.context_target_valid(&target)
         {
             return;
@@ -832,6 +870,25 @@ impl Fluxer {
             (Target::Stream(_), "stream-tiles") => self.viewer.layout = StreamLayout::Tiled,
             (Target::Stream(_), "fullscreen") => window.toggle_fullscreen(),
             (Target::Stream(_), "stream-chat") => self.viewer.chat_open = !self.viewer.chat_open,
+            (Target::Member { guild, user }, "kick-member") => {
+                if self.can_kick_member(*guild, *user) {
+                    let name = self
+                        .state
+                        .members
+                        .get(&(*guild, *user))
+                        .map(|m| {
+                            m.nick
+                                .clone()
+                                .unwrap_or_else(|| m.user.display_name().to_owned())
+                        })
+                        .unwrap_or_else(|| user.to_string());
+                    self.context.kick_confirm = Some((*guild, *user, name));
+                    self.context.kick_previous = window.focused(cx);
+                    self.context.kick_selected = false;
+                    self.context.kick_armed = false;
+                    window.focus(&self.context.kick_focus);
+                }
+            }
             (Target::User { channel, user }, "view-profile") => {
                 let guild = self
                     .state

@@ -96,6 +96,9 @@ impl super::Fluxer {
         self.attachments.picker_open = false;
         crate::input::clear_code_highlight_cache();
         self.reset_context_menu(cx);
+        self.context.kick_confirm = None;
+        self.context.kick_previous = None;
+        self.context.kick_armed = false;
         self.media_ui.reset();
         self.context.user_audio.clear();
         self.context.connection_audio.clear();
