@@ -1253,11 +1253,31 @@ impl Fluxer {
                     left,
                     error,
                 } => {
+                    let current = self
+                        .community_ui
+                        .pending_dialog
+                        .take()
+                        .is_some_and(|dialog| self.community_ui.dialog == Some(dialog));
                     self.community_ui.pending = false;
                     if let Some(error) = error {
-                        self.community_ui.error = Some(error);
+                        if current {
+                            self.community_ui.error = Some(error);
+                        }
                     } else {
-                        self.community_ui.dialog = None;
+                        if current {
+                            if let (Some(window), Some(previous)) = (
+                                self.community_ui.window.take(),
+                                self.community_ui.previous_focus.take(),
+                            ) {
+                                let dialog_focus = self.community_ui.focus.clone();
+                                let _ = window.update(cx, |_, window, cx| {
+                                    if dialog_focus.contains_focused(window, cx) {
+                                        window.focus(&previous);
+                                    }
+                                });
+                            }
+                            self.community_ui.dialog = None;
+                        }
                         if let Some(id) = created {
                             self.selected_guild = Some(id);
                             self.command(Command::SelectGuild { guild_id: id }, cx);
@@ -1828,6 +1848,18 @@ impl Fluxer {
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.community_ui.dialog.is_some() {
+            if matches!(
+                self.community_ui.dialog,
+                Some(community_view::Dialog::Create)
+            ) && self.community_ui.name.focus_handle(cx).is_focused(window)
+                && !self.community_ui.name.read(cx).is_composing()
+            {
+                self.community_ui.selected = 0;
+                self.community_ui.armed = true;
+            }
+            return;
+        }
         if self.status_ui.is_open() {
             self.arm_status_submit(window, cx);
             return;
@@ -2242,6 +2274,10 @@ impl Fluxer {
                     .size(px(44.))
                     .rounded_full()
                     .on_click(cx.listener(|this, _, window, cx| {
+                        if this.community_ui.pending {
+                            return;
+                        }
+                        this.community_ui.window = Some(window.window_handle());
                         this.community_ui.previous_focus = window.focused(cx);
                         this.community_ui.open_create(cx);
                         this.community_ui
@@ -2260,6 +2296,9 @@ impl Fluxer {
         self.command(Command::Logout, cx);
         self.community_ui.dialog = None;
         self.community_ui.pending = false;
+        self.community_ui.pending_dialog = None;
+        self.community_ui.window = None;
+        self.community_ui.previous_focus = None;
         self.invite_ui.reset(cx);
         self.selected_guild = None;
         self.session_context_loaded = false;
@@ -2938,8 +2977,8 @@ impl Render for Fluxer {
         };
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {if this.invite_ui.open { this.invite_key_down(event, window, cx); return; } this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
-            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| this.status_key_up(event, window, cx)))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {if this.community_ui.dialog.is_some() { this.community_key_down(event, window, cx); return; } if this.invite_ui.open { this.invite_key_down(event, window, cx); return; } this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| { if this.community_ui.dialog.is_some() { this.community_key_up(event, window, cx); } else { this.status_key_up(event, window, cx); } }))
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
             .on_action(cx.listener(|this, _: &PickerUp, window, cx| this.picker_key("up", window, cx)))
