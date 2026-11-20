@@ -11,8 +11,9 @@
       "id": "accessibility",
       "source": "fluxer_app/src/features/accessibility",
       "milestone": "M0",
-      "status": "pending",
-      "acceptance": "Keyboard navigation, focus, screen reader semantics, reduced motion, contrast, scaling, text selection."
+      "status": "partial",
+      "acceptance": "Keyboard navigation, focus, screen reader semantics, reduced motion, contrast, scaling, text selection.",
+      "evidence": "Native keyboard shortcuts and focus handling, selectable chat text, font sizing and a persisted reduced-motion preference. Screen-reader semantics, contrast and end-to-end keyboard review remain open. See REVIEW.md."
     },
     {
       "id": "account_engine",
@@ -49,8 +50,9 @@
       "id": "code_highlighting",
       "source": "fluxer_app/src/features/code_highlighting",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Language-aware code blocks, inline code, copy and supported language coverage."
+      "status": "partial",
+      "acceptance": "Language-aware code blocks, inline code, copy and supported language coverage.",
+      "evidence": "Arborium highlighting with language aliases and plain-text fallback, inline code styling, and exact code-block Copy. See qa/chat3-rich-blocks.md for coverage and remaining GUI checks."
     },
     {
       "id": "connection",
@@ -77,8 +79,9 @@
       "id": "emoji",
       "source": "fluxer_app/src/features/emoji",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Unicode/custom emoji, aliases, animated emoji, skin tone and emoji rendering."
+      "status": "partial",
+      "acceptance": "Unicode/custom emoji, aliases, animated emoji, skin tone and emoji rendering.",
+      "evidence": "Bundled Unicode art with aliases and skin-tone selection, custom emoji, static/animated and jumbo chat rendering, and animation preferences. See CHAT_PARITY_2026_11_16.md for art coverage and live review gaps."
     },
     {
       "id": "experiment",
@@ -130,15 +133,17 @@
       "id": "i18n",
       "source": "fluxer_app/src/features/i18n",
       "milestone": "M5",
-      "status": "pending",
-      "acceptance": "Existing locale catalog coverage, pluralization, formatting, RTL and localized native menus."
+      "status": "partial",
+      "acceptance": "Existing locale catalog coverage, pluralization, formatting, RTL and localized native menus.",
+      "evidence": "Message timestamps and relative time use the account locale and hour-cycle preference through ICU on Linux. Locale catalogs, localized menus, RTL and cross-platform formatting remain open."
     },
     {
       "id": "inbox",
       "source": "fluxer_app/src/features/inbox",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Mentions, unreads, saved/pinned items, navigation and read state synchronization."
+      "status": "partial",
+      "acceptance": "Mentions, unreads, saved/pinned items, navigation and read state synchronization.",
+      "evidence": "Unreads from current read state and server-backed Mentions with filters, pagination, retry and navigation. Saved and pinned items are outside the Inbox UI. Cross-client read-state review remains pending (REVIEW.md PUSH-E)."
     },
     {
       "id": "input",
@@ -160,8 +165,9 @@
       "id": "lexical",
       "source": "fluxer_app/src/features/lexical",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Equivalent rich composer behavior, selections, mention/autocomplete, paste and undo."
+      "status": "partial",
+      "acceptance": "Equivalent rich composer behavior, selections, mention/autocomplete, paste and undo.",
+      "evidence": "Native selection, clipboard and undo/redo with keyboard and pointer completion for user, role, channel and emoji tokens. Real-account suggestions and physical IME acceptance remain open (REVIEW.md PUSH-C, U9 and U11)."
     },
     {
       "id": "member",
@@ -193,14 +199,15 @@
       "milestone": "M0",
       "status": "partial",
       "acceptance": "Routes, back/forward, quick switcher, channel/message jump and deep-link targets.",
-      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
+      "evidence": "Native Quick Switcher, channel/message navigation and Linux desktop links for home, channels, messages and invites. Broader route and navigation acceptance remains open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "notification",
       "source": "fluxer_app/src/features/notification",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Mention/unread/sound policy, channel/guild overrides, desktop notification delivery and navigation."
+      "status": "partial",
+      "acceptance": "Mention/unread/sound policy, channel/guild overrides, desktop notification delivery and navigation.",
+      "evidence": "Linux desktop delivery and click navigation, sounds, read/delete clearing, mute and notification-level overrides, and guild mention suppression. Actual OS and two-client acceptance remain open (REVIEW.md EXP-5 and NOV19B-3)."
     },
     {
       "id": "permissions",
@@ -229,8 +236,9 @@
       "id": "presence",
       "source": "fluxer_app/src/features/presence",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Online/idle/DND/invisible, custom status, presence updates and suppression rules."
+      "status": "partial",
+      "acceptance": "Online/idle/DND/invisible, custom status, presence updates and suppression rules.",
+      "evidence": "Gateway presence display, online/idle/DND/invisible selection, timed resets, custom text and emoji, and system-idle projection. Live timing, idle and cross-client acceptance remain open (REVIEW.md EXP-4)."
     },
     {
       "id": "read_state",
@@ -244,8 +252,9 @@
       "id": "relationship",
       "source": "fluxer_app/src/features/relationship",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Friends, pending requests, add/remove, block/unblock and DM restrictions."
+      "status": "partial",
+      "acceptance": "Friends, pending requests, add/remove, block/unblock and DM restrictions.",
+      "evidence": "Friends tabs, pending request actions, remove/block/unblock, and DM entry points with gateway reconciliation. Populated live states and cross-client DM restriction behavior still require acceptance (REVIEW.md PUSH-D)."
     },
     {
       "id": "search",
@@ -253,14 +262,15 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher.",
-      "evidence": "Server-backed message search, source-executed query/date fixtures, indexing and pagination, detached previews and historical jumps implemented; quick switcher/autocomplete and live acceptance remain open. See STATUS.md and REVIEW.md."
+      "evidence": "Server-backed search with source-query fixtures, pagination, historical jumps, filter suggestions, scoped recent searches and a native Quick Switcher. Full source autocomplete coverage and live acceptance remain open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "slowmode",
       "source": "fluxer_app/src/features/slowmode",
       "milestone": "M1",
-      "status": "pending",
-      "acceptance": "Server-enforced slowmode countdown and permissions-aware send availability."
+      "status": "partial",
+      "acceptance": "Server-enforced slowmode countdown and permissions-aware send availability.",
+      "evidence": "Per-channel countdown and composer send gating use local cooldowns, authoritative server retry timing and bypass permission. Live exemption and rejection behavior still require acceptance (REVIEW.md PUSH-C)."
     },
     {
       "id": "streamer_mode",
@@ -336,7 +346,7 @@
       "milestone": "M5",
       "status": "partial",
       "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications.",
-      "evidence": "Own profile text and static avatar edits, privacy preferences, and a device session list. See STATUS.md and REVIEW.md."
+      "evidence": "Profile modal and own profile text edits, static avatar editing, privacy preferences and a read-only device session list. Session revocation, banners and animated avatar input remain open. See STATUS.md, REVIEW.md and ACCOUNT_SESSIONS_SUDO.md."
     },
     {
       "id": "voice",
