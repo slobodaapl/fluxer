@@ -6,6 +6,7 @@ mod avatar_images;
 mod call_view;
 mod chat_helpers;
 mod chat_view;
+mod community_view;
 mod composer_candidates;
 mod composer_slowmode;
 mod concealed_image;
@@ -331,6 +332,7 @@ struct Fluxer {
     interface: native_preferences::NativePreferences,
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
+    community_ui: community_view::CommunityUi,
     composer: Entity<TextInput>,
     conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
@@ -465,6 +467,7 @@ impl Fluxer {
             interface: native_preferences::NativePreferences::new(demo),
             settings_return: Pane::Chat,
             selected_guild: None,
+            community_ui: community_view::CommunityUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
@@ -1130,6 +1133,26 @@ impl Fluxer {
                     self.selected_guild = selected_guild;
                     self.session_context_loaded = true;
                     self.pane = Pane::Chat;
+                }
+                Event::CommunityMutation {
+                    created,
+                    left,
+                    error,
+                } => {
+                    self.community_ui.pending = false;
+                    if let Some(error) = error {
+                        self.community_ui.error = Some(error);
+                    } else {
+                        self.community_ui.dialog = None;
+                        if let Some(id) = created {
+                            self.selected_guild = Some(id);
+                            self.command(Command::SelectGuild { guild_id: id }, cx);
+                        }
+                        if left == self.selected_guild && left.is_some() {
+                            self.selected_guild = None;
+                            self.pane = Pane::Friends;
+                        }
+                    }
                 }
                 Event::Error(error) => {
                     self.forward_pending = false;
@@ -2079,12 +2102,28 @@ impl Fluxer {
                         context_actions::trigger(view, context_actions::Target::Community(id), cx)
                     })
             }))
+            .child(
+                controls::quiet_button("create-community", "+")
+                    .size(px(44.))
+                    .rounded_full()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.community_ui.open_create(cx);
+                        this.community_ui
+                            .name
+                            .read(cx)
+                            .focus_handle(cx)
+                            .focus(window);
+                        cx.notify();
+                    })),
+            )
             .child(div().flex_1())
             .into_any_element()
     }
 
     fn logout(&mut self, cx: &mut Context<Self>) {
         self.command(Command::Logout, cx);
+        self.community_ui.dialog = None;
+        self.community_ui.pending = false;
         self.selected_guild = None;
         self.session_context_loaded = false;
         self.session_restore_failed = false;
@@ -2761,6 +2800,7 @@ impl Render for Fluxer {
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(content)
+            .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
             .child(self.role_mention.clone())

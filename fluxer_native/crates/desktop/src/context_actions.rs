@@ -542,6 +542,14 @@ impl Fluxer {
                     action("community-open", "Open community", Icon::Home),
                 ]);
                 items.extend(self.navigation_items(target));
+                if self.state.guilds.get(id).is_some_and(|g| {
+                    self.state
+                        .current_user
+                        .as_ref()
+                        .is_some_and(|u| u.id != g.owner_id)
+                }) {
+                    items.push(action("community-leave", "Leave community", Icon::Back));
+                }
                 items.extend([
                     Item::Separator,
                     action("copy-community", "Copy community ID", Icon::Copy),
@@ -867,6 +875,10 @@ impl Fluxer {
             }
             (Target::Community(guild), "copy-community") => {
                 cx.write_to_clipboard(ClipboardItem::new_string(guild.to_string()))
+            }
+            (Target::Community(guild), "community-leave") => {
+                self.community_ui.open_leave(*guild);
+                cx.notify();
             }
             (Target::Community(guild), "community-open") => {
                 self.selected_guild = Some(*guild);

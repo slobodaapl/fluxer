@@ -209,6 +209,13 @@ pub enum Command {
     Demo,
     DemoSearch,
     SetLocale(String),
+    CreateCommunity {
+        name: String,
+    },
+    LeaveCommunity {
+        guild_id: Snowflake,
+        delete_messages: bool,
+    },
     SelectGuild {
         guild_id: Snowflake,
     },
@@ -415,6 +422,11 @@ pub enum DirectMessageStatus {
 }
 
 pub enum Event {
+    CommunityMutation {
+        created: Option<Snowflake>,
+        left: Option<Snowflake>,
+        error: Option<String>,
+    },
     /// The previous screen capture stopped and needs an explicit new share.
     ShareReshareRequired,
     Mentions(MentionsSnapshot),

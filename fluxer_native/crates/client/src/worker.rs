@@ -20,6 +20,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
+#[path = "worker_community.rs"]
+mod community_flow;
 #[path = "worker_settings.rs"]
 mod display_settings_flow;
 #[path = "worker_idle.rs"]
@@ -1239,6 +1241,11 @@ impl Worker {
                 guild_id,
                 force,
             } => self.load_user_profile(user_id, guild_id, force),
+            Command::CreateCommunity { name } => self.create_community(name).await,
+            Command::LeaveCommunity {
+                guild_id,
+                delete_messages,
+            } => self.leave_community(guild_id, delete_messages).await,
             Command::SelectGuild { guild_id } => {
                 self.cancel_open_dm();
                 self.selected_guild = Some(guild_id);
