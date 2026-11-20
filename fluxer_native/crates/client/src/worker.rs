@@ -1615,6 +1615,14 @@ impl Worker {
                 self.set_notifications(guild_id, None, muted, mute_seconds, message_notifications)
                     .await?
             }
+            Command::SetGuildMentionSuppression {
+                guild_id,
+                roles,
+                suppressed,
+            } => {
+                self.set_guild_mention_suppression(guild_id, roles, suppressed)
+                    .await?;
+            }
             Command::SetChannelNotificationSettings {
                 guild_id,
                 channel_id,

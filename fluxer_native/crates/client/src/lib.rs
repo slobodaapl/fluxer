@@ -340,6 +340,11 @@ pub enum Command {
         mute_seconds: Option<u64>,
         message_notifications: Option<u8>,
     },
+    SetGuildMentionSuppression {
+        guild_id: Snowflake,
+        roles: bool,
+        suppressed: bool,
+    },
     SetChannelNotificationSettings {
         guild_id: Option<Snowflake>,
         channel_id: Snowflake,

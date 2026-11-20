@@ -359,6 +359,27 @@ impl Fluxer {
                         selected,
                     ));
                 }
+                if channel.is_none() && guild.is_some() {
+                    items.push(Item::Separator);
+                    for (key, label) in [
+                        ("everyone", "Suppress @everyone and @here"),
+                        ("roles", "Suppress role mentions"),
+                    ] {
+                        let field = format!("suppress_{key}");
+                        let enabled = settings
+                            .extra
+                            .get(&field)
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        items.push(Item::Action {
+                            id: format!("notify-suppress-{key}"),
+                            label: format!("{} {label}", if enabled { "✓" } else { "○" }),
+                            icon: None,
+                            enabled: true,
+                            danger: false,
+                        });
+                    }
+                }
                 if channel.is_some_and(|id| {
                     self.state
                         .channel_notification_settings(guild, id, now)
@@ -409,6 +430,33 @@ impl Fluxer {
         if let Some(page) = page {
             self.open_context_menu_page(target.clone(), self.context.anchor, page, window, cx);
             return true;
+        }
+        if channel.is_none()
+            && let Some(guild_id) = guild
+        {
+            let field = match id.as_str() {
+                "notify-suppress-everyone" => Some(("suppress_everyone", false)),
+                "notify-suppress-roles" => Some(("suppress_roles", true)),
+                _ => None,
+            };
+            if let Some((key, roles)) = field {
+                let suppressed = !self
+                    .state
+                    .guild_notification_settings(Some(guild_id))
+                    .extra
+                    .get(key)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                self.command(
+                    Command::SetGuildMentionSuppression {
+                        guild_id,
+                        roles,
+                        suppressed,
+                    },
+                    cx,
+                );
+                return true;
+            }
         }
         let (muted, seconds, level) = if id == "notify-unmute" {
             (Some(false), None, None)

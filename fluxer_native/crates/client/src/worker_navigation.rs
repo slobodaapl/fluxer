@@ -1198,6 +1198,38 @@ impl Worker {
         self.snapshot();
         Ok(())
     }
+    pub(super) async fn set_guild_mention_suppression(
+        &mut self,
+        guild: Snowflake,
+        roles: bool,
+        suppressed: bool,
+    ) -> Result<()> {
+        if !self.state.guilds.contains_key(&guild) {
+            return Err("Unknown notification community".into());
+        }
+        let key = if roles {
+            "suppress_roles"
+        } else {
+            "suppress_everyone"
+        };
+        let mut body = serde_json::Map::new();
+        body.insert(key.into(), json!(suppressed));
+        if !self.demo {
+            self.client()?
+                .request(
+                    fluxer_protocol::Method::PATCH,
+                    &format!("/users/@me/guilds/{guild}/settings"),
+                    Some(&Value::Object(body)),
+                )
+                .await
+                .map_err(error)?;
+        }
+        let mut settings = self.state.guild_notification_settings(Some(guild));
+        settings.extra.insert(key.into(), json!(suppressed));
+        self.state.user_guild_settings.insert(Some(guild), settings);
+        self.snapshot();
+        Ok(())
+    }
     pub(super) async fn set_notifications(
         &mut self,
         guild: Option<Snowflake>,
