@@ -329,7 +329,7 @@ impl Fluxer {
                                     cx.listener(move |this, _, window, cx| this.open_thread_form(parent, window, cx)),
                                 ),
                             ))
-                            .when(has_guild_members, |view| view.child(
+                            .when(has_guild_members || group_add.is_some(), |view| view.child(
                                 quiet_button("members-toggle", "Members").on_click(cx.listener(|this, _, _, cx| {
                                     this.members_open = !this.members_open;
                                     this.members_request_generation = this.members_request_generation.wrapping_add(1);

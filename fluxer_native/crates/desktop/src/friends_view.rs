@@ -20,6 +20,7 @@ pub(super) struct FriendsUi {
     pub status: BTreeMap<Snowflake, RelationshipMutationStatus>,
     pub dm_status: BTreeMap<Snowflake, DirectMessageStatus>,
     pub confirm: Option<(Snowflake, RelationshipAction, String)>,
+    pub group_confirm: Option<(Snowflake, Snowflake, String, bool, Snowflake)>,
     focus: FocusHandle,
     previous_focus: Option<FocusHandle>,
     selected: bool,
@@ -35,6 +36,7 @@ impl FriendsUi {
             status: BTreeMap::new(),
             dm_status: BTreeMap::new(),
             confirm: None,
+            group_confirm: None,
             focus: cx.focus_handle(),
             previous_focus: None,
             selected: false,
@@ -49,6 +51,25 @@ impl Fluxer {
         self.friends_ui.group_recipients.clear();
         self.friends_ui.filter = Filter::All;
         self.pane = Pane::Friends;
+        cx.notify();
+    }
+    pub(super) fn confirm_group_removal(
+        &mut self,
+        channel: Snowflake,
+        user: Snowflake,
+        name: String,
+        leave: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(actor) = self.state.current_user.as_ref().map(|u| u.id) else {
+            return;
+        };
+        self.friends_ui.group_confirm = Some((channel, user, name, leave, actor));
+        self.friends_ui.previous_focus = window.focused(cx);
+        self.friends_ui.selected = false;
+        self.friends_ui.armed = false;
+        window.focus(&self.friends_ui.focus);
         cx.notify();
     }
     fn relationship_action(
@@ -82,6 +103,7 @@ impl Fluxer {
     }
     fn close_relationship_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.friends_ui.confirm = None;
+        self.friends_ui.group_confirm = None;
         self.friends_ui.armed = false;
         if let Some(focus) = self.friends_ui.previous_focus.take() {
             window.focus(&focus);
@@ -89,7 +111,23 @@ impl Fluxer {
         cx.notify();
     }
     fn accept_relationship_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((user, action, _)) = self.friends_ui.confirm.clone() {
+        if let Some((channel_id, user_id, _, _, actor)) = self.friends_ui.group_confirm.clone() {
+            self.close_relationship_confirmation(window, cx);
+            if self
+                .state
+                .current_user
+                .as_ref()
+                .is_some_and(|u| u.id == actor)
+            {
+                self.command(
+                    Command::RemoveGroupRecipient {
+                        channel_id,
+                        user_id,
+                    },
+                    cx,
+                );
+            }
+        } else if let Some((user, action, _)) = self.friends_ui.confirm.clone() {
             self.close_relationship_confirmation(window, cx);
             self.command(
                 Command::ChangeRelationship {
@@ -101,19 +139,30 @@ impl Fluxer {
         }
     }
     pub(super) fn relationship_confirmation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((_, action, name)) = &self.friends_ui.confirm else {
-            return div().into_any_element();
-        };
-        let (title, description) = match action {
-            RelationshipAction::Block => (
-                "Block user",
-                format!("Block {name}? They will be added to your blocked list."),
-            ),
-            _ => (
-                "Remove relationship",
-                format!("Remove your relationship with {name}?"),
-            ),
-        };
+        let (title, description) =
+            if let Some((_, _, name, leave, _)) = &self.friends_ui.group_confirm {
+                if *leave {
+                    ("Leave group", "Leave this group DM?".to_owned())
+                } else {
+                    (
+                        "Remove member",
+                        format!("Remove {name} from this group DM?"),
+                    )
+                }
+            } else if let Some((_, action, name)) = &self.friends_ui.confirm {
+                match action {
+                    RelationshipAction::Block => (
+                        "Block user",
+                        format!("Block {name}? They will be added to your blocked list."),
+                    ),
+                    _ => (
+                        "Remove relationship",
+                        format!("Remove your relationship with {name}?"),
+                    ),
+                }
+            } else {
+                return div().into_any_element();
+            };
         div()
             .absolute()
             .inset_0()

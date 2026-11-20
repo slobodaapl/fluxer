@@ -4002,3 +4002,17 @@ async fn group_add_survives_navigation_and_rejects_duplicate_job() {
     assert!(worker.group_add_job.is_none());
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn group_removal_checks_owner_and_waits_for_gateway() {
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    let me = worker.state.current_user.as_ref().unwrap().id;
+    worker.state.apply_gateway("CHANNEL_CREATE", json!({"id":"50", "type":3, "owner_id":"999", "recipients":[{"id":"42", "username":"Ada"}]})).unwrap();
+    assert!(worker.remove_group_recipient(50.into(), 42.into()).is_err());
+    assert_eq!(worker.state.channels[&50.into()].recipients.len(), 1);
+    worker.state.channels.get_mut(&50.into()).unwrap().owner_id = Some(me);
+    // Without a session no request is sent and the gateway cache is untouched.
+    assert!(worker.remove_group_recipient(50.into(), 42.into()).is_err());
+    assert_eq!(worker.state.channels[&50.into()].recipients.len(), 1);
+}

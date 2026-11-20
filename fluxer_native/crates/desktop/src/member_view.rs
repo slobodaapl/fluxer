@@ -8,6 +8,75 @@ impl Fluxer {
         let Some(channel) = self.state.selected_channel else {
             return div().into_any_element();
         };
+        if let Some(group) = self
+            .state
+            .channels
+            .get(&channel)
+            .filter(|c| c.kind == fluxer_core::ChannelType::GroupDm)
+        {
+            let me = self.state.current_user.as_ref().map(|u| u.id);
+            let owner = group.owner_id == me && me.is_some();
+            let users = group.recipients.clone();
+            let mut panel = div()
+                .w(px(220.))
+                .h_full()
+                .bg(rgb(0x2b2d31))
+                .flex()
+                .flex_col()
+                .p_3()
+                .child(div().child("Group members"));
+            if let Some(id) = me {
+                if !self.demo {
+                    panel = panel.child(
+                        crate::controls::quiet_button("leave-group", "Leave group").on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                this.confirm_group_removal(
+                                    channel,
+                                    id,
+                                    String::new(),
+                                    true,
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ),
+                    );
+                }
+            }
+            for user in users {
+                let id = user.id;
+                let name = user.username.clone();
+                let label = name.clone();
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(label)
+                        .when(owner && Some(id) != me && !self.demo, |row| {
+                            row.child(
+                                crate::controls::quiet_button(
+                                    ("remove-group-member", id.0),
+                                    "Remove",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.confirm_group_removal(
+                                            channel,
+                                            id,
+                                            name.clone(),
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                        }),
+                );
+            }
+            return panel.into_any_element();
+        }
         let Some(guild) = self.state.channels.get(&channel).and_then(|c| c.guild_id) else {
             return div().into_any_element();
         };

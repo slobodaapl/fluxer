@@ -1484,6 +1484,16 @@ impl Worker {
                     self.emit(Event::Status(format!("Couldn't add friends: {message}")));
                 }
             }
+            Command::RemoveGroupRecipient {
+                channel_id,
+                user_id,
+            } => {
+                if let Err(message) = self.remove_group_recipient(channel_id, user_id) {
+                    self.emit(Event::Status(format!(
+                        "Couldn't remove group member: {message}"
+                    )));
+                }
+            }
             Command::LoadUserProfile {
                 user_id,
                 guild_id,
@@ -2966,6 +2976,62 @@ impl Worker {
         self.emit(Event::Status("Adding friends to group…".into()));
         Ok(())
     }
+    fn remove_group_recipient(&mut self, channel_id: Snowflake, user_id: Snowflake) -> Result<()> {
+        if self.demo {
+            return Err("Unavailable in demo mode".into());
+        }
+        let current = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Group no longer available")?;
+        if channel.kind != fluxer_core::ChannelType::GroupDm || channel.guild_id.is_some() {
+            return Err("Select a group DM".into());
+        }
+        if user_id != current
+            && (channel.owner_id != Some(current)
+                || !channel.recipients.iter().any(|u| u.id == user_id))
+        {
+            return Err("Only the group owner can remove another member".into());
+        }
+        if self.group_add_job.is_some() {
+            return Err("A group membership update is already in progress".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        self.group_add_generation = self.group_add_generation.wrapping_add(1);
+        let generation = self.group_add_generation;
+        let tx = self.dm_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(Duration::from_secs(15), async {
+                if user_id == current {
+                    client
+                        .delete_channel(&channel_id.to_string())
+                        .await
+                        .map(|_| ())
+                } else {
+                    client
+                        .remove_group_recipient(&channel_id.to_string(), &user_id.to_string())
+                        .await
+                }
+            })
+            .await
+            {
+                Ok(Ok(())) => Ok(Value::Null),
+                Ok(Err(e)) => Err(error(e)),
+                Err(_) => Err("timed out".into()),
+            };
+            let _ = tx.send(DmEvent {
+                group_add: true,
+                user_id,
+                generation,
+                result,
+            });
+        });
+        self.group_add_job = Some(DmJob { generation, task });
+        self.emit(Event::Status("Updating group membership…".into()));
+        Ok(())
+    }
     async fn finish_open_dm(&mut self, event: DmEvent) -> Result<()> {
         if event.group_add {
             if self
@@ -2976,10 +3042,14 @@ impl Worker {
                 return Ok(());
             }
             self.group_add_job = None;
-            self.emit(Event::Status(match event.result {
-                Ok(_) => "Friends added to group".into(),
-                Err(message) => format!("Couldn't add some friends: {message}"),
-            }));
+            self.emit(Event::Status(
+                match (event.user_id == 0.into(), event.result) {
+                    (true, Ok(_)) => "Friends added to group".into(),
+                    (true, Err(message)) => format!("Couldn't add some friends: {message}"),
+                    (false, Ok(_)) => "Group membership updated".into(),
+                    (false, Err(message)) => format!("Couldn't update group membership: {message}"),
+                },
+            ));
             return Ok(());
         }
         if self

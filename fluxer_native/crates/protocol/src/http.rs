@@ -933,6 +933,19 @@ impl Client {
         .await?;
         Ok(())
     }
+    pub async fn remove_group_recipient(&self, channel: &str, user: &str) -> Result<()> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/channels/{}/recipients/{}",
+                segment(channel),
+                segment(user)
+            ),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
     pub async fn relationships(&self) -> Result<Value> {
         self.request(Method::GET, "/users/@me/relationships", None)
             .await

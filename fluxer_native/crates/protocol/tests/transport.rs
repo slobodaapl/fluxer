@@ -647,3 +647,19 @@ async fn thread_membership_uses_empty_join_and_leave_requests() {
     assert!(join.ends_with("\r\n\r\n"));
     assert!(leave.ends_with("\r\n\r\n"));
 }
+
+#[tokio::test]
+async fn group_recipient_removal_uses_delete_route() {
+    let (origin, mut requests) = http_server(vec![response("204 No Content", Value::Null)]).await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("secret").unwrap());
+    client.remove_group_recipient("50", "42").await.unwrap();
+    let request = requests.recv().await.unwrap();
+    assert!(
+        request.starts_with("DELETE /api/v1/channels/50/recipients/42 "),
+        "{request}"
+    );
+}

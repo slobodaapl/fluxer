@@ -228,6 +228,10 @@ pub enum Command {
         channel_id: Snowflake,
         recipients: Vec<Snowflake>,
     },
+    RemoveGroupRecipient {
+        channel_id: Snowflake,
+        user_id: Snowflake,
+    },
     LoadUserProfile {
         user_id: Snowflake,
         guild_id: Option<Snowflake>,
