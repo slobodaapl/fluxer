@@ -8,6 +8,7 @@ mod http;
 mod installation;
 mod instance;
 mod invites;
+mod moderation;
 mod navigation;
 
 pub use error::{Error, Result};
