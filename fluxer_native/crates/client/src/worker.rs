@@ -158,6 +158,7 @@ impl VoiceTarget {
             connection_id: self.connection_id.clone(),
             self_mute: state.voice.muted,
             self_deaf: state.voice.deafened,
+            self_video: !leave && state.voice.camera,
             self_stream: state.voice.screen_share,
             viewer_stream_keys: if leave {
                 Vec::new()

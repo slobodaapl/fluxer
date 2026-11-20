@@ -64,6 +64,26 @@ fn voice_update(channel: Option<&str>, connection: &str) -> VoiceServerUpdate {
 }
 
 #[test]
+fn camera_voice_state_is_scoped_to_the_active_connection() {
+    let target = VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: Some("local".into()),
+    };
+    let mut state = ClientState::default();
+    state.voice.join(100.into());
+    assert!(!target.payload(&state, false, &BTreeSet::new()).self_video);
+    state.voice.camera = true;
+    let active = target.payload(&state, false, &BTreeSet::new());
+    assert!(active.self_video);
+    assert_eq!(active.connection_id.as_deref(), Some("local"));
+    assert!(!target.payload(&state, true, &BTreeSet::new()).self_video);
+    state.voice.disconnect();
+    state.voice.join(100.into());
+    assert!(!target.payload(&state, false, &BTreeSet::new()).self_video);
+}
+
+#[test]
 fn discovery_identity_selects_the_login_field_independently_of_input_text() {
     // AccountSignInIdentifier.ts:10-11; AccountIdentityFeatures.ts:13-18.
     let mut instance =
