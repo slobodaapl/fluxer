@@ -1291,6 +1291,101 @@ impl Worker {
             Command::PreviewInvite { request_id, input } => self.preview_invite(request_id, input),
             Command::AcceptInvite { request_id } => self.accept_invite(request_id).await,
             Command::CancelInvite { request_id } => self.cancel_invite(request_id),
+            Command::CreateBasicChannel {
+                guild_id,
+                parent_id,
+                kind,
+                name,
+            } => {
+                let result = async {
+                    if !matches!(kind, 0 | 2 | 4) || name.trim().is_empty() {
+                        return Err("Invalid channel name or type".to_owned());
+                    }
+                    let user = self.state.current_user.as_ref().ok_or("Not signed in")?;
+                    let guild = self
+                        .state
+                        .guilds
+                        .get(&guild_id)
+                        .ok_or("Community unavailable")?;
+                    let allowed = if let Some(parent) = parent_id {
+                        self.state.channels.get(&parent).is_some_and(|c| {
+                            c.guild_id == Some(guild_id) && c.kind == ChannelType::Category
+                        }) && self
+                            .state
+                            .permissions_for(parent, user.id)
+                            .contains(Permissions::MANAGE_CHANNELS)
+                    } else if guild.owner_id == user.id {
+                        true
+                    } else {
+                        self.state
+                            .members
+                            .get(&(guild_id, user.id))
+                            .is_some_and(|m| {
+                                fluxer_core::resolve_permissions(guild, m, &[])
+                                    .contains(Permissions::MANAGE_CHANNELS)
+                            })
+                    };
+                    if !allowed || (kind == 4 && parent_id.is_some()) {
+                        return Err("You cannot manage channels here".to_owned());
+                    }
+                    let client = self.client.as_ref().ok_or("Not connected")?;
+                    let value = client
+                        .create_guild_channel(
+                            &guild_id.to_string(),
+                            name.trim(),
+                            kind,
+                            parent_id.map(|id| id.to_string()).as_deref(),
+                        )
+                        .await
+                        .map_err(error)?;
+                    self.state
+                        .apply_gateway("CHANNEL_CREATE", value)
+                        .map_err(error)?;
+                    self.snapshot();
+                    Ok(())
+                }
+                .await;
+                if let Err(message) = result {
+                    self.emit(Event::Error(message));
+                }
+            }
+            Command::RenameBasicChannel { channel_id, name } => {
+                let result = async {
+                    let user = self.state.current_user.as_ref().ok_or("Not signed in")?;
+                    let channel = self
+                        .state
+                        .channels
+                        .get(&channel_id)
+                        .ok_or("Channel unavailable")?;
+                    if channel.guild_id.is_none()
+                        || !matches!(
+                            channel.kind,
+                            ChannelType::Text | ChannelType::Voice | ChannelType::Category
+                        )
+                        || name.trim().is_empty()
+                        || !self
+                            .state
+                            .permissions_for(channel_id, user.id)
+                            .contains(Permissions::MANAGE_CHANNELS)
+                    {
+                        return Err("You cannot edit this channel".to_owned());
+                    }
+                    let client = self.client.as_ref().ok_or("Not connected")?;
+                    let value = client
+                        .rename_channel(&channel_id.to_string(), name.trim())
+                        .await
+                        .map_err(error)?;
+                    self.state
+                        .apply_gateway("CHANNEL_UPDATE", value)
+                        .map_err(error)?;
+                    self.snapshot();
+                    Ok(())
+                }
+                .await;
+                if let Err(message) = result {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::SelectGuild { guild_id } => {
                 self.cancel_open_dm();
                 self.selected_guild = Some(guild_id);

@@ -334,6 +334,8 @@ struct Fluxer {
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
     community_ui: community_view::CommunityUi,
+    channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
+    channel_name: Entity<TextInput>,
     composer: Entity<TextInput>,
     conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
@@ -452,6 +454,8 @@ impl Fluxer {
             v
         });
         let mut view = Self {
+            channel_form: None,
+            channel_name: cx.new(|cx| TextInput::new("Channel name", cx)),
             focus: cx.focus_handle(),
             _external_control: external_control,
             desktop: desktop_integration::DesktopState::new(demo, window),
@@ -2200,6 +2204,63 @@ impl Fluxer {
                             .font_weight(FontWeight::BOLD)
                             .child(emoji_sprites::unicode_text(&name, 18., false, cx)),
                     ),
+            )
+            .when(
+                self.channel_form
+                    .is_some_and(|form| Some(form.0) == self.selected_guild),
+                |view| {
+                    view.child(
+                        div()
+                            .p_2()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(muted(if self.channel_form.is_some_and(|f| f.3.is_some()) {
+                                "Rename channel"
+                            } else {
+                                "Create channel"
+                            }))
+                            .child(self.channel_name.clone())
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(button("channel-form-save", "Save").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            let name =
+                                                this.channel_name.read(cx).content.to_string();
+                                            if name.trim().is_empty() {
+                                                this.error = Some("Enter a channel name.".into());
+                                                cx.notify();
+                                                return;
+                                            }
+                                            if let Some((guild_id, parent_id, kind, edit)) =
+                                                this.channel_form.take()
+                                            {
+                                                let command = if let Some(channel_id) = edit {
+                                                    Command::RenameBasicChannel { channel_id, name }
+                                                } else {
+                                                    Command::CreateBasicChannel {
+                                                        guild_id,
+                                                        parent_id,
+                                                        kind,
+                                                        name,
+                                                    }
+                                                };
+                                                this.command_if_live(command, cx);
+                                            }
+                                            cx.notify();
+                                        }),
+                                    ))
+                                    .child(button("channel-form-cancel", "Cancel").on_click(
+                                        cx.listener(|this, _, _, cx| {
+                                            this.channel_form = None;
+                                            cx.notify();
+                                        }),
+                                    )),
+                            ),
+                    )
+                },
             )
             .when(self.selected_guild.is_none(), |view| {
                 view.child(

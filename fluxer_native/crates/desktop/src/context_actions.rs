@@ -200,6 +200,23 @@ fn participant_target(
 }
 
 impl Fluxer {
+    fn can_manage_guild_channels(&self, id: Snowflake) -> bool {
+        let Some(user) = self.state.current_user.as_ref() else {
+            return false;
+        };
+        let Some(guild) = self.state.guilds.get(&id) else {
+            return false;
+        };
+        guild.owner_id == user.id
+            || self
+                .state
+                .members
+                .get(&(id, user.id))
+                .is_some_and(|member| {
+                    fluxer_core::resolve_permissions(guild, member, &[])
+                        .contains(fluxer_core::Permissions::MANAGE_CHANNELS)
+                })
+    }
     pub(super) fn install_context_voice_fixture(&mut self) {
         if !self.demo_stream || std::env::var_os("FLUXER_CONTEXT_DEMO_TARGET").is_none() {
             return;
@@ -518,6 +535,31 @@ impl Fluxer {
                             items.push(action("channel-join", "Join voice", Icon::Headphones));
                         }
                     }
+                    if channel.guild_id.is_some()
+                        && matches!(
+                            channel.kind,
+                            ChannelType::Text | ChannelType::Voice | ChannelType::Category
+                        )
+                        && self.state.current_user.as_ref().is_some_and(|u| {
+                            self.state
+                                .permissions_for(*id, u.id)
+                                .contains(fluxer_core::Permissions::MANAGE_CHANNELS)
+                        })
+                    {
+                        items.push(action("channel-edit", "Rename channel", Icon::Settings));
+                        if channel.kind == ChannelType::Category {
+                            items.push(action(
+                                "category-create-text",
+                                "Create text channel",
+                                Icon::Chat,
+                            ));
+                            items.push(action(
+                                "category-create-voice",
+                                "Create voice channel",
+                                Icon::Headphones,
+                            ));
+                        }
+                    }
                     items.extend(self.navigation_items(target));
                     items.push(Item::Separator);
                     if self
@@ -541,6 +583,23 @@ impl Fluxer {
                     Item::Header(name),
                     action("community-open", "Open community", Icon::Home),
                 ]);
+                if self.can_manage_guild_channels(*id) {
+                    items.push(action(
+                        "community-create-text",
+                        "Create text channel",
+                        Icon::Chat,
+                    ));
+                    items.push(action(
+                        "community-create-voice",
+                        "Create voice channel",
+                        Icon::Headphones,
+                    ));
+                    items.push(action(
+                        "community-create-category",
+                        "Create category",
+                        Icon::Settings,
+                    ));
+                }
                 items.extend(self.navigation_items(target));
                 if self.state.guilds.get(id).is_some_and(|g| {
                     self.state
@@ -633,7 +692,7 @@ impl Fluxer {
         });
         cx.notify();
     }
-    fn command_if_live(&mut self, command: Command, cx: &mut Context<Self>) {
+    pub(super) fn command_if_live(&mut self, command: Command, cx: &mut Context<Self>) {
         if !self.demo {
             self.command(command, cx);
         }
@@ -850,6 +909,47 @@ impl Fluxer {
             }
             (Target::SelfVoice(_) | Target::Channel(_), "disconnect") => {
                 self.command_if_live(Command::LeaveVoice, cx)
+            }
+            (Target::Channel(channel), "channel-edit") => {
+                if let Some(c) = self.state.channels.get(channel) {
+                    if let Some(guild) = c.guild_id {
+                        self.channel_name
+                            .update(cx, |input, cx| input.set(c.name.clone(), cx));
+                        self.selected_guild = Some(guild);
+                        self.channel_form = Some((guild, None, c.kind.code(), Some(*channel)));
+                    }
+                }
+            }
+            (Target::Channel(channel), "category-create-text" | "category-create-voice") => {
+                if let Some(guild) = self.state.channels.get(channel).and_then(|c| c.guild_id) {
+                    self.channel_name
+                        .update(cx, |input, cx| input.set(String::new(), cx));
+                    self.selected_guild = Some(guild);
+                    self.channel_form = Some((
+                        guild,
+                        Some(*channel),
+                        if id == "category-create-text" { 0 } else { 2 },
+                        None,
+                    ));
+                }
+            }
+            (
+                Target::Community(guild),
+                "community-create-text" | "community-create-voice" | "community-create-category",
+            ) => {
+                self.channel_name
+                    .update(cx, |input, cx| input.set(String::new(), cx));
+                self.selected_guild = Some(*guild);
+                self.channel_form = Some((
+                    *guild,
+                    None,
+                    match id {
+                        "community-create-text" => 0,
+                        "community-create-voice" => 2,
+                        _ => 4,
+                    },
+                    None,
+                ));
             }
             (Target::Channel(channel), "channel-open") => self.select(*channel, cx),
             (Target::Channel(channel), "channel-join") => {

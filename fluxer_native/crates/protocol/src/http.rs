@@ -594,6 +594,34 @@ impl Client {
         )
         .await
     }
+    /// Create a basic guild channel using the same payload as ChannelCommands.create.
+    pub async fn create_guild_channel(
+        &self,
+        guild: &str,
+        name: &str,
+        kind: u16,
+        parent: Option<&str>,
+    ) -> Result<Value> {
+        let voice = kind == 2;
+        let body = serde_json::json!({"name": name, "type": kind, "parent_id": parent,
+            "url": null, "bitrate": if voice { Some(64000) } else { None },
+            "user_limit": if voice { Some(0) } else { None },
+            "voice_connection_limit": if voice { Some(5) } else { None }});
+        self.request(
+            Method::POST,
+            &format!("/guilds/{}/channels", segment(guild)),
+            Some(&body),
+        )
+        .await
+    }
+    pub async fn rename_channel(&self, channel: &str, name: &str) -> Result<Value> {
+        self.request(
+            Method::PATCH,
+            &format!("/channels/{}", segment(channel)),
+            Some(&serde_json::json!({"name": name})),
+        )
+        .await
+    }
     pub async fn channel(&self, channel: &str) -> Result<Value> {
         self.request(
             Method::GET,

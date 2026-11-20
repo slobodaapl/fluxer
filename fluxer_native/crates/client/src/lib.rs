@@ -231,6 +231,16 @@ pub enum Command {
         guild_id: Snowflake,
         delete_messages: bool,
     },
+    CreateBasicChannel {
+        guild_id: Snowflake,
+        parent_id: Option<Snowflake>,
+        kind: u16,
+        name: String,
+    },
+    RenameBasicChannel {
+        channel_id: Snowflake,
+        name: String,
+    },
     SelectGuild {
         guild_id: Snowflake,
     },
