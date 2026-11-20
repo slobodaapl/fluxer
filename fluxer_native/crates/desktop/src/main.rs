@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
 mod audio_view;
+mod avatar_crop;
 mod avatar_demo;
 mod avatar_images;
 mod call_view;
