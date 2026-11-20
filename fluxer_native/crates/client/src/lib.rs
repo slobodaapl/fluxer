@@ -486,6 +486,7 @@ pub enum DirectMessageStatus {
 pub enum InviteStatus {
     Preview(Box<fluxer_protocol::InvitePreview>),
     Opening,
+    Joined,
     Opened { guild_id: Option<Snowflake> },
     Failed(String),
 }

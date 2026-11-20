@@ -6,7 +6,7 @@ use fluxer_protocol::InvitePreview;
 pub(super) struct InviteEvent {
     request_id: u64,
     code: String,
-    result: fluxer_protocol::Result<InvitePreview>,
+    result: Result<InvitePreview>,
     accepting: bool,
 }
 
@@ -18,6 +18,7 @@ pub(super) struct InviteState {
     preview: Option<(String, InvitePreview)>,
     accepted: Option<InvitePreview>,
     accepting: bool,
+    navigation_superseded: bool,
     pub deadline: Option<tokio::time::Instant>,
 }
 
@@ -32,6 +33,7 @@ impl InviteState {
             preview: None,
             accepted: None,
             accepting: false,
+            navigation_superseded: false,
             deadline: None,
         }
     }
@@ -43,6 +45,7 @@ impl InviteState {
         self.preview = None;
         self.accepted = None;
         self.accepting = false;
+        self.navigation_superseded = false;
         self.deadline = None;
     }
 }
@@ -150,10 +153,19 @@ impl Worker {
         let tx = self.invites.tx.clone();
         let request_id = self.invites.request_id;
         self.invites.task = Some(tokio::spawn(async move {
-            let result = if accepting {
-                client.accept_invite(&code).await
-            } else {
-                client.preview_invite(&code).await
+            let request = async {
+                if accepting {
+                    client.accept_invite(&code).await
+                } else {
+                    client.preview_invite(&code).await
+                }
+            };
+            let result = match tokio::time::timeout(Duration::from_secs(12), request).await {
+                Ok(result) => result.map_err(|error| invite_error(error, accepting)),
+                Err(_) if accepting => Err(
+                    "The request timed out. Check your sidebar to see whether you joined.".into(),
+                ),
+                Err(_) => Err("Invite preview timed out. Try again.".into()),
             };
             let _ = tx.send(InviteEvent {
                 request_id,
@@ -174,14 +186,29 @@ impl Worker {
                 self.invites.preview = Some((event.code, preview.clone()));
                 self.invite_status(InviteStatus::Preview(Box::new(preview)));
             }
-            Err(error) => {
+            Err(message) => {
                 self.clear_invites();
-                self.invite_status(InviteStatus::Failed(invite_error(error, event.accepting)));
+                self.invite_status(InviteStatus::Failed(message));
             }
         }
     }
 
+    pub(super) fn supersede_invite_navigation(&mut self) {
+        if self.invites.accepted.is_some() {
+            self.clear_invites();
+            self.invite_status(InviteStatus::Joined);
+        } else if self.invites.accepting {
+            // Keep the POST alive to report its outcome, then leave selection alone.
+            self.invites.navigation_superseded = true;
+        }
+    }
+
     async fn on_invite_accepted(&mut self, preview: InvitePreview) {
+        if self.invites.navigation_superseded {
+            self.clear_invites();
+            self.invite_status(InviteStatus::Joined);
+            return;
+        }
         self.invites.accepted = Some(preview);
         self.invites.deadline = Some(tokio::time::Instant::now() + Duration::from_secs(12));
         self.invite_status(InviteStatus::Opening);
@@ -304,6 +331,51 @@ mod tests {
                 status: InviteStatus::Opened { guild_id: None },
             }
         )));
+    }
+
+    #[tokio::test]
+    async fn newer_selection_supersedes_invite_navigation_during_accept_or_gateway_wait() {
+        for already_accepted in [false, true] {
+            let (tx, rx) = mpsc::channel();
+            let mut worker = Worker::new(tx, Arc::new(Mutex::new(BTreeMap::new())));
+            worker.demo = true;
+            worker.state = ClientState::demo();
+            worker.invites.accepting = true;
+            let invite: InvitePreview = serde_json::from_value(json!({
+                "code":"Ab-C", "type":1, "member_count":2, "temporary":false,
+                "channel":{"id":"420","type":3}
+            }))
+            .unwrap();
+
+            if already_accepted {
+                worker.on_invite_accepted(invite.clone()).await;
+            }
+            worker
+                .command(Command::SelectGuild {
+                    guild_id: 10.into(),
+                })
+                .await
+                .unwrap();
+            worker
+                .state
+                .apply_gateway("CHANNEL_CREATE", json!({"id":"420","type":3}))
+                .unwrap();
+            if already_accepted {
+                worker.open_accepted_invite().await;
+            } else {
+                worker.on_invite_accepted(invite).await;
+            }
+            assert_ne!(worker.state.selected_channel, Some(420.into()));
+            assert_eq!(worker.selected_guild, Some(10.into()));
+            assert!(worker.invites.deadline.is_none());
+            assert!(rx.try_iter().any(|event| matches!(
+                event,
+                Event::Invite {
+                    status: InviteStatus::Joined,
+                    ..
+                }
+            )));
+        }
     }
 
     #[test]

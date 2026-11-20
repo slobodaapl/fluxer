@@ -1428,6 +1428,7 @@ impl Worker {
                 }
             }
             Command::SelectGuild { guild_id } => {
+                self.supersede_invite_navigation();
                 self.cancel_open_dm();
                 self.selected_guild = Some(guild_id);
                 if !self.demo {
@@ -1437,6 +1438,7 @@ impl Worker {
                 self.snapshot();
             }
             Command::SelectChannel { channel_id } => {
+                self.supersede_invite_navigation();
                 self.cancel_open_dm();
                 self.select_channel(channel_id).await?;
             }

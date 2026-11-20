@@ -153,6 +153,10 @@ impl Fluxer {
             InviteStatus::Preview(preview) => InviteStep::Preview(preview),
             InviteStatus::Opening => InviteStep::Opening,
             InviteStatus::Failed(message) => InviteStep::Error(message),
+            InviteStatus::Joined => {
+                self.status = "Invite accepted".into();
+                self.finish_invite(cx)
+            }
             InviteStatus::Opened { guild_id } => {
                 self.selected_guild = guild_id;
                 self.pane = Pane::Chat;
@@ -161,14 +165,18 @@ impl Fluxer {
                     self.reset_ack_context(channel);
                     self.search_ui.return_to_latest_on_select(channel);
                 }
-                let previous = self.invite_ui.previous.take();
-                self.invite_ui.reset(cx);
-                self.invite_ui.previous = previous;
-                self.invite_ui.restore_focus = true;
-                InviteStep::Input
+                self.finish_invite(cx)
             }
         };
         cx.notify();
+    }
+
+    fn finish_invite(&mut self, cx: &mut Context<Self>) -> InviteStep {
+        let previous = self.invite_ui.previous.take();
+        self.invite_ui.reset(cx);
+        self.invite_ui.previous = previous;
+        self.invite_ui.restore_focus = true;
+        InviteStep::Input
     }
 
     pub(super) fn invite_key_down(
