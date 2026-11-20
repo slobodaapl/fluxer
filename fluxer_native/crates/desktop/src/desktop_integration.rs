@@ -38,6 +38,11 @@ impl Fluxer {
     fn follow_pending_desktop_link(&mut self, cx: &mut Context<Self>) {
         if self.state.current_user.is_some()
             && !self.session_restoring
+            && self
+                .desktop
+                .pending_link
+                .as_ref()
+                .is_some_and(|link| link.ready(self))
             && let Some(link) = self.desktop.pending_link.take()
         {
             link.open(self, cx);

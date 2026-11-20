@@ -51,7 +51,7 @@ const OFFICIAL_INVITE_BASES: &[&str] = &[
     "https://fluxer.gg/invite",
 ];
 
-fn valid_code(code: &str) -> bool {
+pub fn valid_invite_code(code: &str) -> bool {
     (2..=32).contains(&code.len())
         && code
             .bytes()
@@ -59,7 +59,7 @@ fn valid_code(code: &str) -> bool {
 }
 
 fn code_from_link(input: &str, invite_base: &str, self_hosted: bool) -> Option<String> {
-    if valid_code(input) {
+    if valid_invite_code(input) {
         return Some(input.to_owned());
     }
 
@@ -98,7 +98,7 @@ fn code_from_link(input: &str, invite_base: &str, self_hosted: bool) -> Option<S
             };
             let path = route.strip_prefix(base.path().trim_end_matches('/'))?;
             let code = path.strip_prefix('/')?.trim_end_matches('/');
-            valid_code(code).then(|| code.to_owned())
+            valid_invite_code(code).then(|| code.to_owned())
         })
 }
 
@@ -123,7 +123,7 @@ impl Client {
             .await?;
         let code = value["code"]
             .as_str()
-            .filter(|code| valid_code(code))
+            .filter(|code| valid_invite_code(code))
             .ok_or(Error::InvalidInviteResponse)?;
         let base = self.instance().document["endpoints"]["invite"]
             .as_str()
@@ -150,7 +150,7 @@ impl Client {
     }
 
     async fn invite_request(&self, method: Method, code: &str) -> Result<InvitePreview> {
-        if !valid_code(code) {
+        if !valid_invite_code(code) {
             return Err(Error::InvalidEndpoint("invalid invite code".into()));
         }
         let body = (method == Method::POST).then(|| json!({}));

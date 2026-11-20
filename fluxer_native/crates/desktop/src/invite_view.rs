@@ -60,6 +60,32 @@ impl InviteView {
 }
 
 impl Fluxer {
+    pub(super) fn can_open_linked_invite(&self) -> bool {
+        !self.invite_ui.open
+            && self.community_ui.dialog.is_none()
+            && self.context.kick_confirm.is_none()
+            && self.context.channel_delete_confirm.is_none()
+            && !self.status_ui.is_open()
+            && !self.quick_switcher.open
+            && !self.inbox_ui.open
+            && !self.message_actions.is_blocking()
+            && !self.message_links.is_open()
+            && !self.image_viewer.is_open()
+            && !self.playback.modal.is_open()
+    }
+
+    pub(super) fn open_linked_invite(&mut self, code: &str, cx: &mut Context<Self>) {
+        self.selected_guild = None;
+        self.pane = Pane::Friends;
+        self.invite_ui.reset(cx);
+        self.invite_ui.previous = Some(self.focus.clone());
+        self.invite_ui.open = true;
+        self.invite_ui
+            .input
+            .update(cx, |input, cx| input.set(code.to_owned(), cx));
+        self.invite_action(cx);
+    }
+
     pub(super) fn create_community_invite(
         &mut self,
         channel_id: Snowflake,
