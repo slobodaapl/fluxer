@@ -4087,6 +4087,8 @@ async fn incoming_call_accept_requires_our_ring_and_sends_private_voice_join() {
 async fn camera_capture_requires_frame_and_current_generation() {
     let (mut worker, _events, mut gateway) = watch_worker();
     worker.pending_camera = Some(2);
+    worker.camera_event(1, false, false).await.unwrap();
+    assert_eq!(worker.pending_camera, Some(2));
     worker.camera_event(1, true, true).await.unwrap();
     worker.camera_event(2, true, false).await.unwrap();
     assert!(!worker.state.voice.camera);

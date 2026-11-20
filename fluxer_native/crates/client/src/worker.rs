@@ -5165,6 +5165,9 @@ impl Worker {
                 return Err(message);
             }
         } else if self.pending_camera == Some(generation) {
+            if !self.state.voice.camera {
+                self.emit(Event::Error("Camera did not start; check device access".into()));
+            }
             self.stop_camera().await?;
         }
         Ok(())

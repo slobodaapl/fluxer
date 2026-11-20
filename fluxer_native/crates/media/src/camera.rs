@@ -15,13 +15,14 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
 const FRAME_BYTES: usize = WIDTH as usize * HEIGHT as usize * 3 / 2;
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraDevice {
@@ -146,7 +147,14 @@ pub(crate) fn start(
         "rawvideo",
         "pipe:1",
     ]);
-    start_process(command, source, tx, call_stopped, generation)
+    start_process(
+        command,
+        source,
+        tx,
+        call_stopped,
+        generation,
+        FIRST_FRAME_TIMEOUT,
+    )
 }
 
 fn start_process(
@@ -155,6 +163,7 @@ fn start_process(
     tx: mpsc::Sender<MediaEvent>,
     call_stopped: Arc<AtomicBool>,
     generation: u64,
+    first_frame_timeout: Duration,
 ) -> Result<Session> {
     let mut child = command
         .stdin(Stdio::null())
@@ -173,6 +182,10 @@ fn start_process(
     let capture = handle.clone();
     let frame = Arc::new(AtomicBool::new(false));
     let received = frame.clone();
+    let deadline_handle = handle.clone();
+    let deadline_frame = frame.clone();
+    let deadline_tx = tx.clone();
+    let deadline_call_stopped = call_stopped.clone();
     thread::Builder::new()
         .name("fluxer-camera-capture".into())
         .spawn(move || {
@@ -221,6 +234,29 @@ fn start_process(
             }
             MediaError::Camera(e.to_string())
         })?;
+    // Reading stdout can block indefinitely when a device opens but never
+    // produces frames. Kill the process from a separate thread to unblock it.
+    thread::Builder::new()
+        .name("fluxer-camera-deadline".into())
+        .spawn(move || {
+            thread::sleep(first_frame_timeout);
+            if !deadline_frame.load(Ordering::Acquire)
+                && !deadline_call_stopped.load(Ordering::Acquire)
+                && deadline_handle
+                    .stopped
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                if let Ok(mut child) = deadline_handle.child.lock() {
+                    let _ = child.kill();
+                }
+                let _ = deadline_tx.blocking_send(MediaEvent::CameraStopped(generation));
+            }
+        })
+        .map_err(|e| {
+            handle.stop();
+            MediaError::Camera(e.to_string())
+        })?;
     Ok(Session { handle, frame })
 }
 
@@ -259,8 +295,15 @@ mod tests {
         let mut command = Command::new("python3");
         command.args(["-c", &format!("import sys,time; sys.stdout.buffer.write(bytes({FRAME_BYTES})); sys.stdout.buffer.flush(); time.sleep(30)")]);
         let (tx, mut rx) = mpsc::channel(4);
-        let mut session =
-            start_process(command, source(), tx, Arc::new(AtomicBool::new(false)), 42).unwrap();
+        let mut session = start_process(
+            command,
+            source(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            42,
+            FIRST_FRAME_TIMEOUT,
+        )
+        .unwrap();
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
             .await
             .unwrap();
@@ -268,6 +311,27 @@ mod tests {
         assert!(session.has_frame());
         session.stop();
         assert!(!session.has_frame());
+    }
+    #[tokio::test]
+    async fn silent_process_times_out_and_stops_without_a_camera() {
+        let mut command = Command::new("python3");
+        command.args(["-c", "import time; time.sleep(30)"]);
+        let (tx, mut rx) = mpsc::channel(4);
+        let session = start_process(
+            command,
+            source(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            73,
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await
+            .unwrap();
+        assert!(matches!(event, Some(MediaEvent::CameraStopped(73))));
+        assert!(!session.has_frame());
+        assert!(session.handle.stopped.load(Ordering::Acquire));
     }
     #[test]
     fn names_are_bounded_device_nodes() {
