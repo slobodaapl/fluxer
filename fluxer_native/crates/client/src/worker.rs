@@ -169,7 +169,7 @@ impl VoiceTarget {
 struct StickerEvent {
     token: u64,
     channel: Snowflake,
-    result: Result<Message>,
+    result: Result<Box<Message>>,
 }
 
 struct DmEvent {
@@ -752,7 +752,7 @@ impl Worker {
                     if self.sticker_jobs.remove(&event.token).is_some() {
                         match event.result {
                             Ok(message) if message.channel_id == event.channel => {
-                                self.state.insert_message(message);
+                                self.state.insert_message(*message);
                                 self.snapshot();
                             }
                             Ok(_) => self.emit(Event::Error(
@@ -1754,15 +1754,18 @@ impl Worker {
                     let token = self.sticker_token;
                     let tx = self.sticker_tx.clone();
                     let task = tokio::spawn(async move {
-                        let result = match client
-                            .send_message_body(
+                        let result = match tokio::time::timeout(
+                            Duration::from_secs(15),
+                            client.send_message_body(
                                 &channel.to_string(),
                                 json!({"sticker_ids": [sticker_id.to_string()]}),
-                            )
-                            .await
+                            ),
+                        )
+                        .await
                         {
-                            Ok(value) => serde_json::from_value(value).map_err(error),
-                            Err(err) => Err(error(err)),
+                            Ok(Ok(value)) => serde_json::from_value(value).map_err(error),
+                            Ok(Err(err)) => Err(error(err)),
+                            Err(_) => Err("Sticker send timed out".into()),
                         };
                         let _ = tx.send(StickerEvent {
                             token,
