@@ -867,6 +867,39 @@ impl ClientState {
                 let channel: Channel = decode(event, data)?;
                 self.channels.insert(channel.id, channel);
             }
+            "CHANNEL_RECIPIENT_ADD" | "CHANNEL_RECIPIENT_REMOVE" => {
+                #[derive(Deserialize)]
+                struct RecipientEvent {
+                    channel_id: Snowflake,
+                    user: User,
+                }
+                let recipient: RecipientEvent = decode(event, data)?;
+                let Some(channel) =
+                    self.channels
+                        .get_mut(&recipient.channel_id)
+                        .filter(|channel| {
+                            channel.kind == ChannelType::GroupDm && channel.guild_id.is_none()
+                        })
+                else {
+                    return Ok(ApplyOutcome::Ignored);
+                };
+                if event == "CHANNEL_RECIPIENT_ADD" {
+                    if let Some(existing) = channel
+                        .recipients
+                        .iter_mut()
+                        .find(|user| user.id == recipient.user.id)
+                    {
+                        *existing = recipient.user.clone();
+                    } else {
+                        channel.recipients.push(recipient.user.clone());
+                    }
+                    self.cache_user(recipient.user);
+                } else {
+                    channel
+                        .recipients
+                        .retain(|user| user.id != recipient.user.id);
+                }
+            }
             "CHANNEL_UPDATE" | "THREAD_UPDATE" => {
                 let target: Id = decode(event, data.clone())?;
                 let Some(channel) = self.channels.get(&target.id) else {

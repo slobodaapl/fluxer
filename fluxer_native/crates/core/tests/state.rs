@@ -446,3 +446,51 @@ fn thread_list_sync_replaces_only_active_threads_in_scope_and_routes_memberships
     assert!(!state.channels.contains_key(&94.into()));
     assert!(state.selected_channel.is_none());
 }
+
+#[test]
+fn group_recipient_events_update_members_idempotently() {
+    let mut state = ClientState::default();
+    state.apply_gateway("READY", ready()).unwrap();
+    state
+        .apply_gateway(
+            "CHANNEL_CREATE",
+            json!({"id":"41", "type":3, "recipients":[{"id":"101", "username":"Alex"}]}),
+        )
+        .unwrap();
+    // GroupDmOperationsService dispatches {channel_id, user} to existing recipients.
+    let add = json!({"channel_id":"41", "user":{"id":"102", "username":"Sam"}});
+    state
+        .apply_gateway("CHANNEL_RECIPIENT_ADD", add.clone())
+        .unwrap();
+    state
+        .apply_gateway("CHANNEL_RECIPIENT_ADD", add.clone())
+        .unwrap();
+    assert_eq!(state.channels[&41.into()].recipients.len(), 2);
+    assert_eq!(state.channels[&41.into()].display_name(), "Alex, Sam");
+    assert_eq!(state.users[&102.into()].username, "Sam");
+    state
+        .apply_gateway("CHANNEL_RECIPIENT_REMOVE", add.clone())
+        .unwrap();
+    state
+        .apply_gateway("CHANNEL_RECIPIENT_REMOVE", add)
+        .unwrap();
+    assert_eq!(state.channels[&41.into()].display_name(), "Alex");
+    assert_eq!(
+        state
+            .apply_gateway(
+                "CHANNEL_RECIPIENT_ADD",
+                json!({"channel_id":"999", "user":{"id":"102", "username":"Sam"}})
+            )
+            .unwrap(),
+        ApplyOutcome::Ignored
+    );
+    assert_eq!(
+        state
+            .apply_gateway(
+                "CHANNEL_RECIPIENT_ADD",
+                json!({"channel_id":"40", "user":{"id":"102", "username":"Sam"}})
+            )
+            .unwrap(),
+        ApplyOutcome::Ignored
+    );
+}
