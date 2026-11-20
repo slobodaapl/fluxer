@@ -1157,6 +1157,20 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::UpdateOwnProfile {
+                global_name,
+                bio,
+                pronouns,
+            } => {
+                self.emit(Event::OwnProfileMutation(
+                    crate::RelationshipMutationStatus::Pending,
+                ));
+                let result = self.update_own_profile(global_name, bio, pronouns).await;
+                self.emit(Event::OwnProfileMutation(match result {
+                    Ok(()) => crate::RelationshipMutationStatus::Complete,
+                    Err(message) => crate::RelationshipMutationStatus::Failed(message),
+                }));
+            }
             Command::UpdateDisplaySetting(setting) => {
                 if let Err(message) = self.set_display_setting(setting).await {
                     self.emit(Event::DisplaySettingsMutation(
@@ -2071,6 +2085,49 @@ impl Worker {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn update_own_profile(
+        &mut self,
+        global_name: String,
+        bio: String,
+        pronouns: String,
+    ) -> Result<()> {
+        let current = self.state.current_user.clone().ok_or("Sign in first")?;
+        let patch = serde_json::json!({
+            "global_name": if global_name.is_empty() { None } else { Some(global_name) },
+            "bio": if bio.is_empty() { None } else { Some(bio) },
+            "pronouns": if pronouns.is_empty() { None } else { Some(pronouns) },
+        });
+        let response = if self.demo {
+            let mut value = serde_json::to_value(&current).map_err(error)?;
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(patch.as_object().unwrap().clone());
+            value
+        } else {
+            let client = self.client.clone().ok_or("Not signed in")?;
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                client.request(reqwest::Method::PATCH, "/users/@me", Some(&patch)),
+            )
+            .await
+            .map_err(|_| "Profile update timed out".to_owned())?
+            .map_err(error)?
+        };
+        let mut merged = serde_json::to_value(&current).map_err(error)?;
+        let updates = response.as_object().ok_or("Invalid profile response")?;
+        merged.as_object_mut().unwrap().extend(updates.clone());
+        let user: fluxer_core::User = serde_json::from_value(merged).map_err(error)?;
+        if user.id != current.id {
+            return Err("Profile response user does not match account".into());
+        }
+        self.state.users.insert(user.id, user.clone());
+        self.state.current_user = Some(user);
+        self.invalidate_profiles();
+        self.snapshot();
         Ok(())
     }
 

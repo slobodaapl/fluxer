@@ -3698,3 +3698,26 @@ fn guild_sfu_credentials_are_accepted_before_own_voice_state() {
     assert!(update.ice_servers.is_empty());
     assert!(target.accepts(&update));
 }
+
+#[tokio::test]
+async fn own_profile_save_projects_returned_values_and_clears_fields() {
+    let (mut worker, _) = worker();
+    worker.demo = true;
+    worker.state = ClientState::demo();
+    worker
+        .update_own_profile("Ada".into(), "Hello\nworld".into(), "she/her".into())
+        .await
+        .unwrap();
+    let user = worker.state.current_user.as_ref().unwrap();
+    assert_eq!(user.global_name.as_deref(), Some("Ada"));
+    assert_eq!(user.extra.get("bio"), Some(&json!("Hello\nworld")));
+    assert_eq!(worker.state.users.get(&user.id), Some(user));
+    worker
+        .update_own_profile(String::new(), String::new(), String::new())
+        .await
+        .unwrap();
+    let user = worker.state.current_user.as_ref().unwrap();
+    assert_eq!(user.global_name, None);
+    assert_eq!(user.extra.get("bio"), Some(&Value::Null));
+    assert_eq!(user.extra.get("pronouns"), Some(&Value::Null));
+}

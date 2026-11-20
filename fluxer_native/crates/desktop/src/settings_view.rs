@@ -5,6 +5,7 @@ use crate::controls::{Icon, icon_button, quiet_button};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
+    Profile,
     Appearance,
     Privacy,
     Accessibility,
@@ -14,6 +15,29 @@ pub(super) enum Section {
     Voice,
     Notifications,
     Desktop,
+}
+
+pub(super) struct ProfileEdit {
+    name: Entity<TextInput>,
+    bio: Entity<TextInput>,
+    pronouns: Entity<TextInput>,
+    pub pending: bool,
+    pub feedback: Option<String>,
+}
+impl ProfileEdit {
+    pub fn new(cx: &mut Context<Fluxer>) -> Self {
+        Self {
+            name: cx.new(|cx| TextInput::new("Display name", cx)),
+            bio: cx.new(|cx| {
+                let mut input = TextInput::new("About me", cx);
+                input.multiline = true;
+                input
+            }),
+            pronouns: cx.new(|cx| TextInput::new("Pronouns", cx)),
+            pending: false,
+            feedback: None,
+        }
+    }
 }
 
 impl Fluxer {
@@ -28,6 +52,36 @@ impl Fluxer {
         self.interface.recording = None;
         if self.pane != Pane::Settings {
             self.settings_return = self.pane;
+        }
+        if section == Section::Profile
+            && (self.pane != Pane::Settings || self.settings_section != Section::Profile)
+        {
+            if let Some(user) = &self.state.current_user {
+                self.profile_edit.name.update(cx, |input, cx| {
+                    input.set(user.global_name.clone().unwrap_or_default(), cx)
+                });
+                self.profile_edit.bio.update(cx, |input, cx| {
+                    input.set(
+                        user.extra
+                            .get("bio")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_owned(),
+                        cx,
+                    )
+                });
+                self.profile_edit.pronouns.update(cx, |input, cx| {
+                    input.set(
+                        user.extra
+                            .get("pronouns")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_owned(),
+                        cx,
+                    )
+                });
+            }
+            self.profile_edit.feedback = None;
         }
         self.settings_section = section;
         self.pane = Pane::Settings;
@@ -49,8 +103,80 @@ impl Fluxer {
         cx.notify();
     }
 
+    fn profile_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let field = |title: &'static str, input: Entity<TextInput>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .mt_4()
+                .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(title))
+                .child(input)
+        };
+        let pending = self.profile_edit.pending;
+        div()
+            .id("profile-settings-body")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .child(
+                div()
+                    .max_w(px(620.))
+                    .flex()
+                    .flex_col()
+                    .child(settings_heading("My profile"))
+                    .child(muted("Your profile is visible to others across Fluxer."))
+                    .child(field("DISPLAY NAME", self.profile_edit.name.clone()))
+                    .child(field("PRONOUNS", self.profile_edit.pronouns.clone()))
+                    .child(field("ABOUT ME", self.profile_edit.bio.clone()))
+                    .child(
+                        div()
+                            .mt_4()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                quiet_button(
+                                    "profile-save",
+                                    if pending { "Saving…" } else { "Save changes" },
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if pending {
+                                            return;
+                                        }
+                                        let global_name =
+                                            this.profile_edit.name.read(cx).content.to_string();
+                                        let bio =
+                                            this.profile_edit.bio.read(cx).content.to_string();
+                                        let pronouns =
+                                            this.profile_edit.pronouns.read(cx).content.to_string();
+                                        this.profile_edit.pending = true;
+                                        this.profile_edit.feedback = Some("Saving…".into());
+                                        this.command(
+                                            Command::UpdateOwnProfile {
+                                                global_name,
+                                                bio,
+                                                pronouns,
+                                            },
+                                            cx,
+                                        );
+                                    },
+                                )),
+                            )
+                            .when_some(self.profile_edit.feedback.clone(), |v, text| {
+                                v.child(muted(&text))
+                            }),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn settings_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = match self.settings_section {
+            Section::Profile => self.profile_settings(cx),
             Section::Voice => self.voice_settings(cx),
             Section::Privacy
             | Section::Appearance
@@ -95,6 +221,7 @@ impl Fluxer {
                     .children(
                         [
                             (Section::Privacy, "settings-privacy", "Privacy & safety"),
+                            (Section::Profile, "settings-profile", "My profile"),
                             (Section::Appearance, "settings-appearance", "Appearance"),
                             (
                                 Section::Accessibility,

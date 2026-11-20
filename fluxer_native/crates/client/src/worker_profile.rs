@@ -122,10 +122,18 @@ impl Worker {
                 return;
             };
             let profile = UserProfile {
-                user,
+                user: user.clone(),
                 user_profile: ProfileDetails {
-                    bio: Some("Exploring Fluxer together.".into()),
-                    pronouns: Some("they/them".into()),
+                    bio: user
+                        .extra
+                        .get("bio")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    pronouns: user
+                        .extra
+                        .get("pronouns")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
                     accent_color: Some(0x5865f2),
                     ..Default::default()
                 },

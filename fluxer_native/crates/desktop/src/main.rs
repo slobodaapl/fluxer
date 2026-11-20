@@ -344,6 +344,7 @@ struct Fluxer {
     context: context_actions::ContextUi,
     media_ui: media_actions::MediaUi,
     profile_ui: profile_view::ProfileUi,
+    profile_edit: settings_view::ProfileEdit,
     role_mention: Entity<role_mention::RoleMention>,
     friends_ui: friends_view::FriendsUi,
     status_ui: status_view::StatusUi,
@@ -484,6 +485,7 @@ impl Fluxer {
             context: context_actions::ContextUi::new(cx),
             media_ui: media_actions::MediaUi::default(),
             profile_ui: profile_view::ProfileUi::new(cx),
+            profile_edit: settings_view::ProfileEdit::new(cx),
             role_mention: cx.new(role_mention::RoleMention::new),
             friends_ui: friends_view::FriendsUi::new(cx),
             status_ui: status_view::StatusUi::new(window, cx),
@@ -897,6 +899,17 @@ impl Fluxer {
             match event {
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
+                Event::OwnProfileMutation(status) => {
+                    self.profile_edit.pending =
+                        matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
+                    self.profile_edit.feedback = Some(match status {
+                        fluxer_client::RelationshipMutationStatus::Pending => "Saving…".into(),
+                        fluxer_client::RelationshipMutationStatus::Complete => {
+                            "Profile saved".into()
+                        }
+                        fluxer_client::RelationshipMutationStatus::Failed(message) => message,
+                    });
+                }
                 Event::DisplaySettingsMutation(status) => {
                     self.interface.server_pending =
                         matches!(status, fluxer_client::RelationshipMutationStatus::Pending);
