@@ -1741,6 +1741,28 @@ impl Worker {
             Command::RegisterGifShare { share_id, query } => {
                 self.register_gif_share(share_id, query);
             }
+            Command::SendFavoriteGif {
+                id,
+                channel_id,
+                url,
+                reply_to,
+                mention_author,
+            } => {
+                let reference = reply_to.map(|message_id| MessageReference {
+                    channel_id,
+                    message_id: Some(message_id),
+                    guild_id: None,
+                    kind: 0,
+                });
+                self.request_pending_submission(
+                    id,
+                    channel_id,
+                    url,
+                    reference,
+                    mention_author,
+                    false,
+                )?;
+            }
             Command::SendGif {
                 id,
                 channel_id,

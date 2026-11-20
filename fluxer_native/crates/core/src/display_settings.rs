@@ -98,6 +98,60 @@ fn accessibility(bytes: &[u8]) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+/// URL favorites are field 25 of SyncedPreferences. Decode only the fields used
+/// by the picker; prost retains compatibility with other preference fields.
+#[derive(Clone, PartialEq, prost::Message)]
+struct GifFavoritePreferences {
+    #[prost(message, repeated, tag = "1")]
+    entries: Vec<FavoriteGif>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct FavoriteGif {
+    #[prost(string, tag = "1")]
+    pub url: String,
+    #[prost(string, tag = "2")]
+    pub proxy_url: String,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
+    #[prost(map = "string, message", tag = "5")]
+    pub media: std::collections::HashMap<String, FavoriteGifFormat>,
+    #[prost(string, tag = "6")]
+    pub content_type: String,
+    #[prost(string, tag = "7")]
+    pub placeholder: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct FavoriteGifFormat {
+    #[prost(string, tag = "1")]
+    pub src: String,
+    #[prost(string, tag = "2")]
+    pub proxy_src: String,
+    #[prost(uint32, tag = "3")]
+    pub width: u32,
+    #[prost(uint32, tag = "4")]
+    pub height: u32,
+}
+
+pub fn favorite_gifs(settings: &Value) -> Option<Vec<FavoriteGif>> {
+    use prost::Message;
+    let bytes = decoded(settings)?;
+    let mut payload = Vec::new();
+    for (tag, _, start, end) in fields(&bytes)? {
+        if tag == (25 << 3 | 2) {
+            payload.extend_from_slice(&bytes[start..end]);
+        }
+    }
+    Some(
+        GifFavoritePreferences::decode(payload.as_slice())
+            .ok()?
+            .entries,
+    )
+}
+
 pub fn message_font_size(settings: &Value) -> f32 {
     let value = (|| {
         let bytes = decoded(settings)?;

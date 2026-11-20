@@ -429,6 +429,13 @@ pub enum Command {
         share_id: String,
         query: String,
     },
+    SendFavoriteGif {
+        id: u64,
+        channel_id: fluxer_core::Snowflake,
+        url: String,
+        reply_to: Option<fluxer_core::Snowflake>,
+        mention_author: bool,
+    },
     SendGif {
         id: u64,
         channel_id: Snowflake,

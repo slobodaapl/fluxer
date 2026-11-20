@@ -11,6 +11,7 @@ use std::time::Duration;
 pub(super) struct GifPicker {
     pub(super) search: Entity<TextInput>,
     pub(super) open: bool,
+    favorites: bool,
     request: u64,
     observed_query: String,
     feed: GifFeed,
@@ -24,6 +25,7 @@ impl GifPicker {
         Self {
             search: cx.new(|cx| TextInput::new("Search GIFs…", cx)),
             open: false,
+            favorites: false,
             request: 0,
             observed_query: String::new(),
             feed: GifFeed::Featured,
@@ -35,6 +37,7 @@ impl GifPicker {
 
     pub(super) fn reset(&mut self) {
         self.open = false;
+        self.favorites = false;
         self.debounce = None;
         self.results = None;
     }
@@ -123,6 +126,7 @@ impl Fluxer {
     }
 
     fn load_gif_feed(&mut self, feed: GifFeed, debounce: bool, cx: &mut Context<Self>) {
+        self.gif_picker.favorites = false;
         self.gif_picker.debounce = None;
         self.gif_picker.request = self.gif_picker.request.wrapping_add(1);
         self.gif_picker.feed = feed.clone();
@@ -228,6 +232,16 @@ impl Fluxer {
                         )),
                     )
                     .child(
+                        quiet_button("gif-favorites", "Favorites").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.gif_picker.debounce = None;
+                                this.gif_picker.request = this.gif_picker.request.wrapping_add(1);
+                                this.gif_picker.favorites = true;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
                         crate::controls::icon_button(
                             "gif-close",
                             crate::controls::Icon::Close,
@@ -238,21 +252,105 @@ impl Fluxer {
                         })),
                     ),
             )
-            .child(match &picker.results {
-                None => muted("Loading GIFs…").into_any_element(),
-                Some(Err(_)) => div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(muted("GIFs are unavailable."))
-                    .child(
-                        button("gif-retry", "Retry").on_click(cx.listener(|this, _, _, cx| {
-                            this.load_gif_feed(this.gif_picker.feed.clone(), false, cx);
-                        })),
-                    )
-                    .into_any_element(),
-                Some(Ok(results)) => self.gif_results(results, cx),
+            .child(if picker.favorites {
+                self.gif_favorites(cx)
+            } else {
+                match &picker.results {
+                    None => muted("Loading GIFs…").into_any_element(),
+                    Some(Err(_)) => div()
+                        .flex()
+                        .gap_2()
+                        .items_center()
+                        .child(muted("GIFs are unavailable."))
+                        .child(button("gif-retry", "Retry").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.load_gif_feed(this.gif_picker.feed.clone(), false, cx);
+                            },
+                        )))
+                        .into_any_element(),
+                    Some(Ok(results)) => self.gif_results(results, cx),
+                }
             })
+            .into_any_element()
+    }
+
+    fn gif_favorites(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(entries) = fluxer_core::favorite_gifs(&self.state.user_settings) else {
+            return muted("Favorites are unavailable.").into_any_element();
+        };
+        if entries.is_empty() {
+            return muted("No favorite GIFs yet.").into_any_element();
+        }
+        let animate = !(self.image_viewer.is_open() || self.playback.modal.is_open());
+        let autoplay = media_animation::effective_gif_autoplay(
+            &self.state.user_settings,
+            self.interface.reduced_motion(),
+        );
+        div()
+            .id("gif-favorites-scroll")
+            .track_scroll(&self.gif_picker.scroll)
+            .overflow_y_scroll()
+            .min_h_0()
+            .flex_1()
+            .child(div().flex().flex_wrap().gap_1().children(
+                entries.into_iter().rev().enumerate().map(|(index, entry)| {
+                    let url = entry.url.clone();
+                    let preview = [
+                        "tinywebp",
+                        "tinygif",
+                        "mediumwebp",
+                        "mediumgif",
+                        "webp",
+                        "gif",
+                        "nanowebp",
+                        "nanogif",
+                    ]
+                    .iter()
+                    .filter_map(|key| entry.media.get(*key).map(|f| f.proxy_src.as_str()))
+                    .chain(
+                        std::iter::once(entry.proxy_url.as_str())
+                            .filter(|_| entry.content_type.starts_with("image/")),
+                    )
+                    .find_map(|source| media_animation::animated_proxy_url(source, false))
+                    .map(SharedString::from);
+                    div()
+                        .id(("favorite-gif", index))
+                        .focusable()
+                        .tab_stop(true)
+                        .cursor_pointer()
+                        .size(px(96.))
+                        .overflow_hidden()
+                        .rounded_md()
+                        .bg(rgb(BG))
+                        .when_some(preview, |view, source| {
+                            view.child(
+                                VisibleImage::new(
+                                    ("favorite-gif-preview", index),
+                                    96.,
+                                    96.,
+                                    move || img(source.clone()).object_fit(ObjectFit::Cover),
+                                )
+                                .enabled(animate)
+                                .autoplay(autoplay),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            if !this.gif_picker_visible() {
+                                return;
+                            }
+                            if event.modifiers().shift {
+                                this.composer.update(cx, |input, cx| {
+                                    let space = if input.content.is_empty() { "" } else { " " };
+                                    input.append_text(&format!("{space}{url} "), window, cx);
+                                });
+                            } else if !this.message_pending() && this.slowmode_remaining() == 0 {
+                                this.dismiss_gif_picker(window, cx);
+                                this.send_favorite_gif_optimistically(url.clone(), cx);
+                            }
+                        }))
+                }),
+            ))
             .into_any_element()
     }
 

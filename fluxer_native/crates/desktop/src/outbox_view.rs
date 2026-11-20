@@ -87,7 +87,7 @@ impl Fluxer {
     }
 
     pub(super) fn send_optimistically(&mut self, content: String, cx: &mut Context<Self>) {
-        self.enqueue_optimistic_message(content, None, cx);
+        self.enqueue_optimistic_message(content, None, true, cx);
     }
 
     pub(super) fn send_gif_optimistically(
@@ -96,13 +96,18 @@ impl Fluxer {
         query: String,
         cx: &mut Context<Self>,
     ) {
-        self.enqueue_optimistic_message(share.url.clone(), Some((share, query)), cx);
+        self.enqueue_optimistic_message(share.url.clone(), Some((share, query)), false, cx);
+    }
+
+    pub(super) fn send_favorite_gif_optimistically(&mut self, url: String, cx: &mut Context<Self>) {
+        self.enqueue_optimistic_message(url, None, false, cx);
     }
 
     fn enqueue_optimistic_message(
         &mut self,
         content: String,
         gif: Option<(fluxer_client::GifShare, String)>,
+        from_composer: bool,
         cx: &mut Context<Self>,
     ) {
         let Some(channel) = self.state.selected_channel else {
@@ -112,13 +117,19 @@ impl Fluxer {
         let reply = self.replies.get(&channel);
         let reply_to = reply.map(|(message, _)| message.id);
         let mention_author = reply.is_some_and(|(_, mention)| *mention);
-        let from_composer = gif.is_none();
         let command = match gif {
             Some((share, query)) => Command::SendGif {
                 id,
                 channel_id: channel,
                 share,
                 query,
+                reply_to,
+                mention_author,
+            },
+            None if !from_composer => Command::SendFavoriteGif {
+                id,
+                channel_id: channel,
+                url: content.clone(),
                 reply_to,
                 mention_author,
             },
