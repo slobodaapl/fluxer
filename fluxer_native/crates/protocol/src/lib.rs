@@ -22,7 +22,7 @@ pub use http::{
     HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken, normalize_forum_content,
 };
 pub use instance::Instance;
-pub use invites::{InvitePreview, valid_invite_code};
+pub use invites::{CommunityInvite, InvitePreview, valid_invite_code};
 pub use reqwest::Method;
 pub use sudo::{SudoChallenge, SudoMethods};
 pub use url::Url;

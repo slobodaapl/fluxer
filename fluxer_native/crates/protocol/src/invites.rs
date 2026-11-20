@@ -40,6 +40,19 @@ pub struct InvitePreview {
     pub temporary: bool,
 }
 
+/// Metadata returned by the community invite management endpoint.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CommunityInvite {
+    pub code: String,
+    pub channel: InviteChannel,
+    pub inviter: Option<InviteRecipient>,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub uses: u32,
+    pub max_uses: u32,
+    pub temporary: bool,
+}
+
 const OFFICIAL_INVITE_BASES: &[&str] = &[
     "https://fluxer.app/invite",
     "https://canary.fluxer.app/invite",
@@ -139,6 +152,23 @@ impl Client {
             return Err(Error::InvalidInviteResponse);
         }
         Ok(format!("{}/{code}", base.as_str().trim_end_matches('/')))
+    }
+
+    pub async fn community_invites(&self, guild: Snowflake) -> Result<Vec<CommunityInvite>> {
+        let value = self.request(Method::GET, &format!("/guilds/{guild}/invites"), None).await?;
+        let invites: Vec<CommunityInvite> = serde_json::from_value(value)?;
+        if invites.iter().any(|invite| !valid_invite_code(&invite.code)) {
+            return Err(Error::InvalidInviteResponse);
+        }
+        Ok(invites)
+    }
+
+    pub async fn revoke_invite(&self, code: &str) -> Result<()> {
+        if !valid_invite_code(code) {
+            return Err(Error::InvalidEndpoint("invalid invite code".into()));
+        }
+        self.request(Method::DELETE, &format!("/invites/{code}"), None).await?;
+        Ok(())
     }
 
     pub async fn preview_invite(&self, code: &str) -> Result<InvitePreview> {
@@ -264,6 +294,46 @@ mod tests {
         assert_eq!(joined.member_count, 3);
         server.await.unwrap();
     }
+    #[tokio::test]
+    async fn community_invites_list_and_revoke_use_classic_routes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let instance = crate::Instance {
+            api: base.clone(), gateway: base.clone(), web_app: base, api_version: 1,
+            features: json!({}), document: json!({}),
+        };
+        let server = tokio::spawn(async move {
+            for (route, body) in [
+                ("GET /v1/guilds/42/invites", json!([{
+                    "code":"Ab-C", "channel":{"id":"43","type":0,"name":"general"},
+                    "inviter":{"username":"alice"}, "created_at":"2026-01-01T00:00:00Z",
+                    "expires_at":null,"uses":2,"max_uses":0,"temporary":false
+                }])),
+                ("DELETE /v1/invites/Ab-C", json!({})),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(request).unwrap();
+                assert!(head.starts_with(route), "{head}");
+                assert!(head.to_ascii_lowercase().contains("authorization: test-session\r\n"));
+                let body = body.to_string();
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let client = Client::new(instance).unwrap()
+            .with_token(crate::SessionToken::new("test-session").unwrap());
+        let invites = client.community_invites(Snowflake(42)).await.unwrap();
+        assert_eq!(invites[0].channel.name.as_deref(), Some("general"));
+        assert_eq!(invites[0].uses, 2);
+        client.revoke_invite(&invites[0].code).await.unwrap();
+        assert!(client.revoke_invite("../bad").await.is_err());
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn create_invite_uses_classic_defaults_and_instance_endpoint() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
