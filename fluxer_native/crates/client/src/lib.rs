@@ -251,6 +251,10 @@ pub enum Command {
         parent_id: Snowflake,
         name: String,
     },
+    LoadForum {
+        channel_id: Snowflake,
+        creation_order: bool,
+    },
     FetchMentions {
         before: Option<Snowflake>,
         filters: MentionFilters,
@@ -502,6 +506,12 @@ pub enum Event {
     MessageAckResult {
         channel_id: Snowflake,
         message_id: Snowflake,
+        error: Option<String>,
+    },
+    Forum {
+        channel_id: Snowflake,
+        posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
+        has_more: bool,
         error: Option<String>,
     },
     Search(SearchSnapshot),

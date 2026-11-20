@@ -320,6 +320,13 @@ struct Fluxer {
     controller: Option<Controller>,
     desktop: desktop_integration::DesktopState,
     state: ClientState,
+    forum: Option<(
+        Snowflake,
+        Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
+        bool,
+        Option<String>,
+    )>,
+    forum_creation_order: bool,
     demo: bool,
     message_demo_started: bool,
     image_demo_started: bool,
@@ -465,6 +472,8 @@ impl Fluxer {
             desktop: desktop_integration::DesktopState::new(demo, window),
             controller,
             state: ClientState::default(),
+            forum: None,
+            forum_creation_order: false,
             demo,
             message_demo_started: false,
             image_demo_started: false,
@@ -1029,6 +1038,20 @@ impl Fluxer {
                         });
                     }
                     if old != self.state.selected_channel {
+                        self.forum = None;
+                        if let Some(channel_id) = self.state.selected_channel.filter(|id| {
+                            self.state.channels.get(id).is_some_and(|c| {
+                                matches!(c.kind, ChannelType::Forum | ChannelType::Media)
+                            })
+                        }) {
+                            self.command(
+                                Command::LoadForum {
+                                    channel_id,
+                                    creation_order: self.forum_creation_order,
+                                },
+                                cx,
+                            );
+                        }
                         self.profile_ui.reset(cx);
                         self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                         self.members_identity = None;
@@ -1576,6 +1599,16 @@ impl Fluxer {
                     message_id,
                     error,
                 } => self.on_message_ack(channel_id, message_id, error),
+                Event::Forum {
+                    channel_id,
+                    posts,
+                    has_more,
+                    error,
+                } => {
+                    if self.state.selected_channel == Some(channel_id) {
+                        self.forum = Some((channel_id, posts, has_more, error));
+                    }
+                }
                 Event::Search(snapshot) => self.on_search_snapshot(snapshot, cx),
                 Event::Pins(snapshot) => self.on_pins_snapshot(snapshot, cx),
                 Event::History(snapshot) => self.on_history_snapshot(snapshot, cx),

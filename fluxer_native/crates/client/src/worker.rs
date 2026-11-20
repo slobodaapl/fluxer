@@ -1406,6 +1406,10 @@ impl Worker {
                 }
                 self.emit(Event::ThreadCreated { parent_id, result });
             }
+            Command::LoadForum {
+                channel_id,
+                creation_order,
+            } => self.load_forum(channel_id, creation_order)?,
             Command::SearchMessages {
                 channel_id,
                 query,
@@ -2647,7 +2651,23 @@ impl Worker {
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {
-        self.require_history(channel)?;
+        let forum = self
+            .state
+            .channels
+            .get(&channel)
+            .is_some_and(|c| matches!(c.kind, ChannelType::Forum | ChannelType::Media));
+        if forum {
+            let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
+            if !self
+                .state
+                .permissions_for(channel, user.id)
+                .contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY)
+            {
+                return Err("You cannot view this forum".into());
+            }
+        } else {
+            self.require_history(channel)?;
+        }
         if !self.state.channels.contains_key(&channel) {
             return Err("Unknown channel".into());
         }
@@ -2666,8 +2686,10 @@ impl Worker {
         // Channel selection is navigation, not evidence a message was visible.
         // The UI explicitly acknowledges only rows painted in its viewport.
         self.state.selected_channel = Some(channel);
-        self.request_channel_slowmode(channel);
-        self.request_history(channel, navigation_flow::HistoryRequest::Latest)?;
+        if !forum {
+            self.request_channel_slowmode(channel);
+            self.request_history(channel, navigation_flow::HistoryRequest::Latest)?;
+        }
         if !self.demo {
             self.sync_selected_guild().await?;
         }

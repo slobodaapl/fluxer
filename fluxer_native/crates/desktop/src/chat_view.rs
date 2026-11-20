@@ -99,6 +99,11 @@ impl Fluxer {
             .state
             .selected_channel
             .and_then(|id| self.state.channels.get(&id));
+        if channel
+            .is_some_and(|channel| matches!(channel.kind, ChannelType::Forum | ChannelType::Media))
+        {
+            return self.forum_view(cx);
+        }
         let has_guild_members =
             channel.is_some_and(|channel| channel.guild_id.is_some() && !channel.kind.is_thread());
         let voice_channel = channel
@@ -912,5 +917,89 @@ impl Render for MessageTimestampTooltip {
             .text_color(rgb(TEXT))
             .text_size(px(12.))
             .child(self.0.clone())
+    }
+}
+
+impl Fluxer {
+    fn forum_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(channel_id) = self.state.selected_channel else {
+            return div().into_any_element();
+        };
+        let title = self.channel_name(channel_id);
+        let mut list = div()
+            .id("forum-posts")
+            .flex_1()
+            .overflow_y_scroll()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2();
+        if let Some((_, posts, has_more, error)) = &self.forum {
+            if let Some(error) = error {
+                list = list.child(div().child(error.clone()));
+            }
+            if posts.is_empty() && error.is_none() {
+                list = list.child(div().child("No posts found."));
+            }
+            for (index, (post, preview)) in posts.iter().enumerate() {
+                let id = post.id;
+                let text = preview
+                    .as_ref()
+                    .map(|message| message.content.clone())
+                    .unwrap_or_default();
+                list = list.child(
+                    div()
+                        .id(("forum-post", index))
+                        .p_3()
+                        .bg(rgb(0x303136))
+                        .rounded_md()
+                        .cursor_pointer()
+                        .child(div().child(post.display_name()))
+                        .when(!text.is_empty(), |view| {
+                            view.child(div().text_sm().text_color(rgb(0xb5bac1)).child(text))
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| this.select(id, cx))),
+                );
+            }
+            if *has_more {
+                list = list.child(
+                    div().child("More posts are available; pagination is not yet supported."),
+                );
+            }
+        } else {
+            list = list.child(div().child("Loading posts…"));
+        }
+        div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .flex()
+            .flex_col()
+            .child(div().p_4().child(format!("# {title}")))
+            .child(
+                div().p_2().child(
+                    quiet_button(
+                        "forum-sort",
+                        if self.forum_creation_order {
+                            "Sort: newest"
+                        } else {
+                            "Sort: recent activity"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.forum_creation_order = !this.forum_creation_order;
+                        this.forum = None;
+                        this.command(
+                            Command::LoadForum {
+                                channel_id,
+                                creation_order: this.forum_creation_order,
+                            },
+                            cx,
+                        );
+                    })),
+                ),
+            )
+            .child(list)
+            .into_any_element()
     }
 }

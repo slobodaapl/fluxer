@@ -726,3 +726,11 @@ Full profile modal, rich/selectable biography interactions, connected-account an
 badge presentation, relationship/DM/moderation actions, profile animation and live
 refresh of an already-open completed profile remain migration work. Source data
 is retained for later parity work; these cards do not claim full profile coverage.
+
+Forum browsing (parity19): selecting a forum or media channel loads the first
+25 posts from `GET /channels/:id/threads/search`, showing returned first-message
+text and opening a post in the existing message view. Activity and creation-time
+sorts are available. Search-index and request failures are shown in the list.
+Pagination, tag filtering, post creation, post-data fallback, forum unread state,
+and moderation are not yet implemented. Search is guarded by the same view and
+history permissions as the native message navigation; the server remains authoritative.

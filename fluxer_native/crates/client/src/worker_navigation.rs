@@ -49,6 +49,12 @@ pub(super) enum HistoryRequest {
     After(Snowflake),
 }
 pub(super) enum NavigationEvent {
+    Forum {
+        epoch: u64,
+        token: u64,
+        channel: Snowflake,
+        result: Result<Value>,
+    },
     Mentions {
         epoch: u64,
         token: u64,
@@ -110,6 +116,7 @@ struct MentionsJob {
     task: Option<Task>,
 }
 pub(super) struct NavigationState {
+    forum: Option<(u64, Task)>,
     mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
@@ -130,6 +137,7 @@ impl NavigationState {
     pub fn new() -> Self {
         let (tx, rx) = async_mpsc::unbounded_channel();
         Self {
+            forum: None,
             mentions: None,
             epoch: 1,
             next: 0,
@@ -154,6 +162,53 @@ impl NavigationState {
 }
 
 impl Worker {
+    pub(super) fn load_forum(&mut self, channel: Snowflake, creation_order: bool) -> Result<()> {
+        let target = self.state.channels.get(&channel).ok_or("Unknown forum")?;
+        if !matches!(target.kind, ChannelType::Forum | ChannelType::Media) {
+            return Err("Choose a forum".into());
+        }
+        let user = self.state.current_user.as_ref().ok_or("Sign in first")?;
+        if !self
+            .state
+            .permissions_for(channel, user.id)
+            .contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY)
+        {
+            return Err("You cannot view this forum".into());
+        }
+        let client = if self.demo {
+            None
+        } else {
+            Some(self.client()?)
+        };
+        let epoch = self.navigation.epoch;
+        let token = self.navigation.token();
+        let tx = self.navigation.tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match client {
+                Some(client) => client
+                    .forum_posts(
+                        &channel.to_string(),
+                        if creation_order {
+                            "creation_time"
+                        } else {
+                            "last_message_time"
+                        },
+                    )
+                    .await
+                    .map_err(error),
+                None => Err("Forum posts are unavailable in demo mode".to_owned()),
+            };
+            let _ = tx.send(NavigationEvent::Forum {
+                epoch,
+                token,
+                channel,
+                result,
+            });
+        });
+        self.navigation.forum = Some((token, Task(task)));
+        Ok(())
+    }
+
     pub(super) fn navigation_mention_message(&mut self, message: &Message) {
         let Some(job) = self.navigation.mentions.as_ref() else {
             return;
@@ -320,6 +375,7 @@ impl Worker {
         self.navigation.slowmode = Some((channel, token, Task(task)));
     }
     pub(super) fn clear_navigation(&mut self) {
+        self.navigation.forum = None;
         self.navigation.epoch = self.navigation.epoch.wrapping_add(1);
         self.navigation.searches.clear();
         self.navigation.mentions = None;
@@ -1514,6 +1570,72 @@ impl Worker {
     }
     pub(super) fn navigation_event(&mut self, event: NavigationEvent) {
         match event {
+            NavigationEvent::Forum {
+                epoch,
+                token,
+                channel,
+                result,
+            } => {
+                if epoch != self.navigation.epoch
+                    || !self
+                        .navigation
+                        .forum
+                        .as_ref()
+                        .is_some_and(|(current, _)| *current == token)
+                    || self.state.selected_channel != Some(channel)
+                {
+                    return;
+                }
+                self.navigation.forum = None;
+                let mut posts = Vec::new();
+                let mut has_more = false;
+                let mut failure = None;
+                match result {
+                    Ok(body)
+                        if body.get("code").and_then(Value::as_str)
+                            == Some("SEARCH_INDEX_NOT_READY") =>
+                    {
+                        failure =
+                            Some("Forum search index is still building. Try again later.".into())
+                    }
+                    Ok(body) => {
+                        has_more = body
+                            .get("has_more")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let previews: Vec<Message> = body
+                            .get("first_messages")
+                            .cloned()
+                            .and_then(|v| serde_json::from_value(v).ok())
+                            .unwrap_or_default();
+                        if let Some(threads) = body.get("threads").and_then(Value::as_array) {
+                            for value in threads {
+                                if let Ok(post) =
+                                    serde_json::from_value::<fluxer_core::Channel>(value.clone())
+                                {
+                                    if post.parent_id != Some(channel) {
+                                        continue;
+                                    }
+                                    let preview =
+                                        previews.iter().find(|m| m.channel_id == post.id).cloned();
+                                    self.state.channels.insert(post.id, post.clone());
+                                    posts.push((post, preview));
+                                }
+                            }
+                        } else {
+                            failure = Some("Invalid forum response".into());
+                        }
+                    }
+                    Err(e) => failure = Some(e),
+                }
+                self.snapshot();
+                self.emit(Event::Forum {
+                    channel_id: channel,
+                    posts,
+                    has_more,
+                    error: failure,
+                });
+            }
             NavigationEvent::Mentions {
                 epoch,
                 token,

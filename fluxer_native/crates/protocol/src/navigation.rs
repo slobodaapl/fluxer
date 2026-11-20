@@ -33,6 +33,33 @@ fn api_client() -> Result<reqwest::Client> {
         .build()?)
 }
 impl Client {
+    /// ForumController search returns posts and optional first-message previews.
+    pub async fn forum_posts(&self, channel: &str, sort_by: &str) -> Result<Value> {
+        let path = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query
+                .append_pair("sort_by", sort_by)
+                .append_pair("sort_order", "desc")
+                .append_pair("limit", "25");
+            format!(
+                "/channels/{}/threads/search?{}",
+                segment(channel),
+                query.finish()
+            )
+        };
+        self.navigation_request(Method::GET, &path).await
+    }
+
+    /// Read-only POST: ForumController returns owners and first messages by post ID.
+    pub async fn forum_post_data(&self, channel: &str, thread_ids: &[String]) -> Result<Value> {
+        self.request(
+            Method::POST,
+            &format!("/channels/{}/post-data", segment(channel)),
+            Some(&json!({"thread_ids": thread_ids})),
+        )
+        .await
+    }
+
     pub async fn recent_mentions(
         &self,
         before: Option<&str>,
