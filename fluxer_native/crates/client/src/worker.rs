@@ -177,6 +177,7 @@ pub(crate) struct Worker {
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
+    community: community_flow::CommunityState,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     audio_key: Option<String>,
@@ -258,6 +259,7 @@ impl Worker {
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
+            community: community_flow::CommunityState::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             audio_key: None,
@@ -608,6 +610,7 @@ impl Worker {
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
                 OwnProfile(Option<own_profile_flow::OwnProfileEvent>),
+                Community(Option<community_flow::CommunityEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
@@ -647,6 +650,7 @@ impl Worker {
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.own_profile.rx.recv()=>Incoming::OwnProfile(event),
+                event=self.community.rx.recv()=>Incoming::Community(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
@@ -771,6 +775,11 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Profile(None) => Ok(()),
+                Incoming::Community(Some(event)) => {
+                    self.community_event(event).await;
+                    Ok(())
+                }
+                Incoming::Community(None) => Ok(()),
                 Incoming::Navigation(Some(event)) => {
                     self.navigation_event(event);
                     Ok(())
@@ -888,6 +897,7 @@ impl Worker {
         self.clear_navigation();
         self.clear_own_profile();
         self.clear_profiles();
+        self.clear_community();
         self.clear_attachments();
         if let Some(task) = self.restore_task.take() {
             task.abort();
@@ -1314,11 +1324,11 @@ impl Worker {
                 guild_id,
                 force,
             } => self.load_user_profile(user_id, guild_id, force),
-            Command::CreateCommunity { name } => self.create_community(name).await,
+            Command::CreateCommunity { name } => self.create_community(name),
             Command::LeaveCommunity {
                 guild_id,
                 delete_messages,
-            } => self.leave_community(guild_id, delete_messages).await,
+            } => self.leave_community(guild_id, delete_messages),
             Command::PreviewInvite { request_id, input } => self.preview_invite(request_id, input),
             Command::AcceptInvite { request_id } => self.accept_invite(request_id).await,
             Command::CancelInvite { request_id } => self.cancel_invite(request_id),
