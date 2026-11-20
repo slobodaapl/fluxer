@@ -49,6 +49,7 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.gif_picker.reset();
         if self.emoji_target == Some(target) {
             self.emoji_target = None;
         } else {

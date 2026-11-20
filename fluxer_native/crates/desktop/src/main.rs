@@ -27,6 +27,7 @@ mod emoji_time_demo;
 mod external_control;
 mod friends_view;
 mod gif_demo;
+mod gif_picker;
 mod image_demo;
 mod image_gallery;
 mod image_transform;
@@ -388,6 +389,7 @@ struct Fluxer {
     emoji_index: usize,
     emoji_scroll: UniformListScrollHandle,
     emoji_picker: EmojiPickerState,
+    gif_picker: gif_picker::GifPicker,
     forwarding: Option<Message>,
     forward_search: Entity<TextInput>,
     forward_pending: bool,
@@ -544,6 +546,7 @@ impl Fluxer {
             emoji_index: 0,
             emoji_scroll: UniformListScrollHandle::new(),
             emoji_picker: EmojiPickerState::new(),
+            gif_picker: gif_picker::GifPicker::new(cx),
             forwarding: None,
             forward_search: cx.new(|cx| {
                 let mut input = TextInput::new("Search destinations…", cx);
@@ -755,6 +758,7 @@ impl Fluxer {
         })
         .detach();
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
+        cx.observe(&view.gif_picker.search, |this, _, cx| this.gif_search_changed(cx)).detach();
         cx.observe(&view.emoji_search, |this, _, cx| {
             this.refresh_emoji_results(cx);
         })
@@ -948,6 +952,7 @@ impl Fluxer {
                         self.account_sessions = Some(result);
                     }
                 }
+                Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::OwnProfileMutation(status) => {
@@ -1092,6 +1097,7 @@ impl Fluxer {
                                 cx,
                             );
                         }
+                        self.gif_picker.reset();
                         self.profile_ui.reset(cx);
                         self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                         self.members_identity = None;
@@ -1103,6 +1109,7 @@ impl Fluxer {
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.status_ui.reset(cx);
                         self.invite_ui.reset(cx);
+                        self.gif_picker.reset();
                         self.friends_ui.status.clear();
                         self.friends_ui.dm_status.clear();
                         self.friends_ui.confirm = None;
@@ -2950,6 +2957,10 @@ impl Render for Fluxer {
                     this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
                 }
 
+                if event.keystroke.key == "escape" && this.dismiss_gif_picker(window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "escape" && (this.emoji_target.is_some() || this.forwarding.is_some()) {
                     this.close_emoji_focus(window, cx);
                     if !this.forward_pending { this.forwarding=None; }

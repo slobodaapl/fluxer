@@ -791,6 +791,11 @@ impl TextInput {
         self.history.group = None;
     }
 
+    pub(super) fn append_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.content.len(), cx);
+        self.insert_text(text, window, cx);
+    }
+
     pub fn set(&mut self, text: String, cx: &mut Context<Self>) {
         self.reset_context_menu(cx);
         // Switching drafts and sending are history boundaries. A programmatic

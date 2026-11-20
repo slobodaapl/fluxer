@@ -765,6 +765,9 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(self.gif_picker.open, |view| {
+                        view.child(div().flex().justify_end().child(self.gif_picker_panel(cx)))
+                    })
                     .when(self.editing.is_none(), |view| {
                         view.child(self.attachment_strip(cx))
                     })
@@ -860,6 +863,11 @@ impl Fluxer {
                             .child(self.attachment_button(cx))
                             .child(quiet_button("composer-sticker", "Stickers").on_click(cx.listener(|this, _, _, cx| { this.sticker_picker_open = !this.sticker_picker_open; cx.notify(); })))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
+                            .when(self.gif_picker_available(), |view| {
+                                view.child(quiet_button("composer-gif", "GIF").on_click(cx.listener(
+                                    |this, _, window, cx| this.toggle_gif_picker(window, cx),
+                                )))
+                            })
                             .child(
                                 icon_button("composer-emoji", Icon::React, "Choose emoji")
                                     .on_click(cx.listener(

@@ -87,6 +87,24 @@ impl Fluxer {
     }
 
     pub(super) fn send_optimistically(&mut self, content: String, cx: &mut Context<Self>) {
+        self.enqueue_optimistic_message(content, None, cx);
+    }
+
+    pub(super) fn send_gif_optimistically(
+        &mut self,
+        share: fluxer_client::GifShare,
+        query: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.enqueue_optimistic_message(share.url.clone(), Some((share, query)), cx);
+    }
+
+    fn enqueue_optimistic_message(
+        &mut self,
+        content: String,
+        gif: Option<(fluxer_client::GifShare, String)>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(channel) = self.state.selected_channel else {
             return;
         };
@@ -94,12 +112,23 @@ impl Fluxer {
         let reply = self.replies.get(&channel);
         let reply_to = reply.map(|(message, _)| message.id);
         let mention_author = reply.is_some_and(|(_, mention)| *mention);
-        let command = Command::SendPendingMessage {
-            id,
-            channel_id: channel,
-            content: content.clone(),
-            reply_to,
-            mention_author,
+        let from_composer = gif.is_none();
+        let command = match gif {
+            Some((share, query)) => Command::SendGif {
+                id,
+                channel_id: channel,
+                share,
+                query,
+                reply_to,
+                mention_author,
+            },
+            None => Command::SendPendingMessage {
+                id,
+                channel_id: channel,
+                content: content.clone(),
+                reply_to,
+                mention_author,
+            },
         };
         let result = self
             .controller
@@ -111,11 +140,11 @@ impl Fluxer {
             cx.notify();
             return;
         }
-        let attachments = self
-            .attachments
-            .channels
-            .remove(&channel)
-            .unwrap_or_default();
+        let attachments = if from_composer {
+            self.attachments.channels.remove(&channel).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let reference = reply_to.map(|message_id| fluxer_core::MessageReference {
             channel_id: channel,
             message_id: Some(message_id),
@@ -133,9 +162,10 @@ impl Fluxer {
             },
         );
         self.replies.remove(&channel);
-        self.state.drafts.remove(&channel);
-        self.composer
-            .update(cx, |input, cx| input.set(String::new(), cx));
+        if from_composer {
+            self.state.drafts.remove(&channel);
+            self.composer.update(cx, |input, cx| input.set(String::new(), cx));
+        }
         if self
             .search_ui
             .histories

@@ -694,6 +694,18 @@ impl Worker {
         reference: Option<fluxer_core::MessageReference>,
         mention_author: bool,
     ) -> Result<()> {
+        self.request_pending_submission(token, channel, content, reference, mention_author, true)
+    }
+
+    pub(super) fn request_pending_submission(
+        &mut self,
+        token: u64,
+        channel: Snowflake,
+        content: String,
+        reference: Option<fluxer_core::MessageReference>,
+        mention_author: bool,
+        from_composer: bool,
+    ) -> Result<()> {
         self.refresh_attachment_policy(channel);
         if self.attachments.sends.contains_key(&token) {
             return Err("Duplicate pending message ID".into());
@@ -704,7 +716,7 @@ impl Worker {
             .get(&channel)
             .into_iter()
             .flatten()
-            .filter(|stage| stage.last_send_nonce.is_none())
+            .filter(|stage| from_composer && stage.last_send_nonce.is_none())
             .collect::<Vec<_>>();
         let ids = stages.iter().map(|stage| stage.dto.id).collect::<Vec<_>>();
         let fingerprint = Fingerprint {
@@ -748,7 +760,7 @@ impl Worker {
                 stage.dto.status = AttachmentStatus::Queued;
             }
         }
-        if self.state.drafts.get(&channel)
+        if from_composer && self.state.drafts.get(&channel)
             == Some(&self.attachments.attempts[&nonce].fingerprint.content)
         {
             self.state.set_draft(channel, String::new());

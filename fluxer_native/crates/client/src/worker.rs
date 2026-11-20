@@ -539,6 +539,13 @@ impl Worker {
     fn client(&self) -> Result<Client> {
         self.client.clone().ok_or_else(|| "Sign in first".into())
     }
+    fn register_gif_share(&self, share_id: String, query: String) {
+        let Ok(client) = self.client() else { return };
+        let locale = self.locale.clone();
+        tokio::spawn(async move {
+            let _ = client.register_gif_share(&share_id, &query, &locale).await;
+        });
+    }
     fn selected(&self) -> Result<Snowflake> {
         self.state
             .selected_channel
@@ -1604,6 +1611,40 @@ impl Worker {
             }
             Command::RemovePendingMessage { channel_id, id } => {
                 self.remove_pending_message(channel_id, id)?
+            }
+            Command::BrowseGifs { request, feed } => {
+                let client = self.client();
+                let locale = self.locale.clone();
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    let result = match client {
+                        Ok(client) => client.gifs(feed, &locale).await.map_err(error),
+                        Err(error) => Err(error),
+                    };
+                    let _ = events.send(Event::Gifs { request, result });
+                });
+            }
+            Command::RegisterGifShare { share_id, query } => {
+                self.register_gif_share(share_id, query);
+            }
+            Command::SendGif {
+                id,
+                channel_id,
+                share,
+                query,
+                reply_to,
+                mention_author,
+            } => {
+                let reference = reply_to.map(|message_id| MessageReference {
+                    channel_id,
+                    message_id: Some(message_id),
+                    guild_id: None,
+                    kind: 0,
+                });
+                self.request_pending_submission(
+                    id, channel_id, share.url, reference, mention_author, false,
+                )?;
+                self.register_gif_share(share.id, query);
             }
             Command::SendPendingMessage {
                 id,

@@ -13,6 +13,7 @@ pub use navigation::{
 };
 
 pub use fluxer_core::{ClientState, Snowflake};
+pub use fluxer_protocol::{GifFeed, GifResults, GifShare};
 
 /// A locally accepted message, retained until the server confirms it or the
 /// user removes it. IDs are scoped to the current client session.
@@ -377,6 +378,22 @@ pub enum Command {
         reply_to: Option<Snowflake>,
         mention_author: bool,
     },
+    BrowseGifs {
+        request: u64,
+        feed: GifFeed,
+    },
+    RegisterGifShare {
+        share_id: String,
+        query: String,
+    },
+    SendGif {
+        id: u64,
+        channel_id: Snowflake,
+        share: GifShare,
+        query: String,
+        reply_to: Option<Snowflake>,
+        mention_author: bool,
+    },
     SendPendingMessage {
         id: u64,
         channel_id: Snowflake,
@@ -532,6 +549,10 @@ pub enum Event {
         posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
         has_more: bool,
         error: Option<String>,
+    },
+    Gifs {
+        request: u64,
+        result: Result<GifResults, String>,
     },
     Search(SearchSnapshot),
     Pins(PinsSnapshot),

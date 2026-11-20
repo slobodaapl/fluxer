@@ -3,6 +3,7 @@
 mod attachments;
 mod error;
 mod gateway;
+mod gifs;
 mod http;
 mod installation;
 mod instance;
@@ -13,6 +14,7 @@ pub use error::{Error, Result};
 pub use gateway::{
     Gateway, GatewayCommand, GatewayEvent, ResumeSession, VoiceServerUpdate, VoiceStateUpdate,
 };
+pub use gifs::{Gif, GifCategory, GifFeed, GifProvider, GifResults, GifShare};
 pub use http::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus,
     HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken,

@@ -174,6 +174,60 @@ impl Client {
     /// Generic JSON access for endpoints without a typed wrapper. Requests are
     /// pinned to this instance; redirects never forward the account token.
     /// No mutation is retried automatically, preventing accidental duplicate sends.
+    pub async fn gifs(&self, feed: crate::GifFeed, locale: &str) -> Result<crate::GifResults> {
+        let mut request = self
+            .api_request_using(&self.http, Method::GET, feed.endpoint(), true)?
+            .query(&[("locale", locale)]);
+        if let crate::GifFeed::Search(query) = &feed {
+            request = request.query(&[("q", query)]);
+        }
+        let response = request.send().await?;
+        let discovery = self.instance.document.get("gif");
+        let configured = |key| discovery.and_then(|value| value.get(key));
+        let header = |key| response.headers().get(key).and_then(|value| value.to_str().ok());
+        let provider = header("x-fluxer-gif-provider")
+            .or_else(|| configured("provider").and_then(Value::as_str))
+            .unwrap_or("klipy");
+        let display_name = header("x-fluxer-gif-provider-display-name")
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                (configured("provider").and_then(Value::as_str) == Some(provider))
+                    .then(|| configured("display_name").and_then(Value::as_str))
+                    .flatten()
+            })
+            .unwrap_or(if provider == "tenor" { "Tenor" } else { "Klipy" });
+        let provider = crate::GifProvider {
+            display_name: display_name.to_owned(),
+            attribution_required: header("x-fluxer-gif-provider-attribution-required")
+                .and_then(|value| value.parse().ok())
+                .or_else(|| configured("attribution_required").and_then(Value::as_bool))
+                .unwrap_or(false),
+        };
+        let body = Self::parse_api_response(response).await?;
+        let (gifs, categories) = if feed == crate::GifFeed::Featured {
+            #[derive(serde::Deserialize)]
+            struct Featured {
+                gifs: Vec<crate::Gif>,
+                categories: Vec<crate::GifCategory>,
+            }
+            let featured: Featured = serde_json::from_value(body)?;
+            (featured.gifs, featured.categories)
+        } else {
+            (serde_json::from_value(body)?, Vec::new())
+        };
+        Ok(crate::GifResults { provider, gifs, categories })
+    }
+
+    pub async fn register_gif_share(&self, id: &str, query: &str, locale: &str) -> Result<()> {
+        self.request(
+            Method::POST,
+            "/gifs/register-share",
+            Some(&json!({"id": id, "q": query, "locale": locale})),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn channel_slowmode(&self, channel: &str) -> Result<Value> {
         self.request(Method::GET, &format!("/channels/{channel}/slowmode"), None)
             .await
