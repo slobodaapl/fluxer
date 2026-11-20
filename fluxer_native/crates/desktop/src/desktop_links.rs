@@ -66,7 +66,7 @@ impl DesktopLink {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{DesktopLink, Snowflake};
     #[test]
     fn decodes_reference_route_forms_and_keeps_full_snowflake_precision() {
         let target = DesktopLink {

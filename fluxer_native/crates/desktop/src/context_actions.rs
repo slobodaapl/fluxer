@@ -968,13 +968,13 @@ impl Fluxer {
                 self.command_if_live(Command::LeaveVoice, cx)
             }
             (Target::Channel(channel), "channel-edit") => {
-                if let Some(c) = self.state.channels.get(channel) {
-                    if let Some(guild) = c.guild_id {
-                        self.channel_name
-                            .update(cx, |input, cx| input.set(c.name.clone(), cx));
-                        self.selected_guild = Some(guild);
-                        self.channel_form = Some((guild, None, c.kind.code(), Some(*channel)));
-                    }
+                if let Some(c) = self.state.channels.get(channel)
+                    && let Some(guild) = c.guild_id
+                {
+                    self.channel_name
+                        .update(cx, |input, cx| input.set(c.name.clone(), cx));
+                    self.selected_guild = Some(guild);
+                    self.channel_form = Some((guild, None, c.kind.code(), Some(*channel)));
                 }
             }
             (Target::Channel(channel), "category-create-text" | "category-create-voice") => {

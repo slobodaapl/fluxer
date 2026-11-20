@@ -315,18 +315,19 @@ enum EmojiTarget {
     Reaction(Snowflake),
 }
 
+struct ForumResults {
+    posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
+    has_more: bool,
+    error: Option<String>,
+}
+
 struct Fluxer {
     focus: FocusHandle,
     _external_control: Option<external_control::ExternalControl>,
     controller: Option<Controller>,
     desktop: desktop_integration::DesktopState,
     state: ClientState,
-    forum: Option<(
-        Snowflake,
-        Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
-        bool,
-        Option<String>,
-    )>,
+    forum: Option<ForumResults>,
     forum_creation_order: bool,
     demo: bool,
     message_demo_started: bool,
@@ -1656,7 +1657,11 @@ impl Fluxer {
                     error,
                 } => {
                     if self.state.selected_channel == Some(channel_id) {
-                        self.forum = Some((channel_id, posts, has_more, error));
+                        self.forum = Some(ForumResults {
+                            posts,
+                            has_more,
+                            error,
+                        });
                     }
                 }
                 Event::Search(snapshot) => self.on_search_snapshot(snapshot, cx),

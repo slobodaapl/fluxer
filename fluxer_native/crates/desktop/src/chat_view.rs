@@ -942,7 +942,12 @@ impl Fluxer {
             .flex()
             .flex_col()
             .gap_2();
-        if let Some((_, posts, has_more, error)) = &self.forum {
+        if let Some(ForumResults {
+            posts,
+            has_more,
+            error,
+        }) = &self.forum
+        {
             if let Some(error) = error {
                 list = list.child(div().child(error.clone()));
             }
