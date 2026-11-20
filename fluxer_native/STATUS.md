@@ -129,8 +129,8 @@ reconnects preserve drafts/UI; real account/instance boundaries reset private
 state and restore authoritative drafts. The full local workspace gate passes
 **674 tests, zero failures, 14 ignored**, audit, formatting and strict Clippy.
 
-The installed live app is **375faae7b-local**, with session restoration and unchanged
-audio preferences checked under GDB/Vulkan validation. See
+Build **375faae7b-local** passed a session restore and audio preference check
+under GDB/Vulkan validation. See
 [CHAT_PARITY_2026_11_16.md](CHAT_PARITY_2026_11_16.md) for evidence, limitations and
 [REVIEW.md](REVIEW.md) for pending acceptance. The local gate/build includes the
 preexisting uncommitted DSP work, which remains separate from the chat commits.
@@ -190,8 +190,8 @@ workspace lockfile.
 
 The microphone path now captures physical PCM directly. The previous WebRTC
 Device-track tap never delivered PCM because its source implements `AddSink` as
-a no-op. Linux uses exact PipeWire source names, preserving GoXLR Chat Mic versus
-Stream Mix/Sampler. Standalone WebRTC resampling/DSP precedes application controls
+a no-op. Linux uses exact PipeWire source names to distinguish logical mic and
+mix inputs. Standalone WebRTC resampling/DSP precedes application controls
 and the published native track. Explicit test stop and disconnect wait for device
 release; mute/deafen release input capture. See the media README for hardware
 validation commands and remaining DSP limits.
@@ -213,8 +213,8 @@ The pinned WebRTC archive also exports weak PipeWire forwarding symbols. Native
 media initializes its documented library loader before calling pipewire-rs;
 otherwise the linker resolves `pw_init` to an uninitialized forwarding pointer.
 A regression exercises those symbols in a LiveKit-linked binary without opening
-devices. Idle setup and real muted local join/leave/rejoin pass on this desktop.
-The exact GoXLR Chat Mic source now produces real nonzero meter levels. The
+devices. Local checks passed for idle setup, muted join, leave and rejoin, and
+nonzero meter levels from the selected physical microphone. The
 isolated virtual-microphone test also passes capture → publication → a second
 client's decoded PCM, including proportional gain, PTT, mute/unmute and meter
 teardown. Its generated tone uses a local disposable server and temporary audio
@@ -226,18 +226,13 @@ remain open.
 
 Linux output enumeration/playback now uses logical PipeWire sinks instead of
 ALSA backends/cards. The final inventory was checked against the supplied real
-Fluxer screenshot: Linux default, HDMI/monitor, GoXLR Chat/Game/Music/Sample/System
-and JDS DAC, in the same order. Internal Fluxer capture sinks and raw internal
-hardware nodes are excluded. Each explicit choice routes to its exact node;
+Fluxer screenshot and matched its logical device order. Internal Fluxer capture
+sinks and raw hardware nodes are excluded. Each explicit choice routes to its exact node;
 selecting one never changes the OS default or another application's route.
 Both direct and decoded LiveKit playback tests pass with two isolated virtual
 sinks: monitor PCM and graph links verify destination isolation, gain, participant
 mute, live switching and completed teardown. Refresh errors are reported rather
 than silently replacing the device list with an empty inventory.
-
-The shared build cache was moved from RAM-backed `/tmp` into the ignored
-`fluxer_native/target/gpui-shared-cache` directory. The old `/tmp` path is only a
-symlink for existing Cargo cache references; new build output consumes disk.
 
 The implemented native UI includes community/channel navigation, paginated text
 history, multiline compose/edit/delete/reactions/copy, draft retention on failed
@@ -330,7 +325,7 @@ still required.
 A subsequent real-call report exposed performance gaps in the earlier stop-only
 fixture. Under continuous 1080p video, the presentation poll could repeatedly
 consume newly arriving frames before yielding to input, and its debug RGBA-to-BGRA
-pixel loop measured about 68 ms per frame on this desktop. GPUI also requires
+pixel loop measured about 68 ms per frame in a local fixture. GPUI also requires
 explicit sprite-atlas image eviction; dropping the Rust image alone does not release
 its texture. Sustained presentation and texture lifetime checks now complement the
 local teardown tests. An animated 1080p30 GPUI run rendered about 30 FPS, kept
@@ -370,8 +365,8 @@ sinks; it does not capture personal applications or the system mix.
 
 The reaction/composer emoji picker now opens as a bounded popover with centered
 square icon cells, a category rail, tone controls, search and an inspector. The old
-eager grid built all 3,970 base/tone choices and took 5.7–6.6 seconds to appear on
-this desktop. The virtualized grid built 56 visible cells in the measured run;
+eager grid built all 3,970 base/tone choices and took 5.7–6.6 seconds to appear
+in a local fixture. The virtualized grid built 56 visible cells in the measured run;
 cold first paint took 91 ms and external click-to-visible took 112 ms. Cached
 reopening painted in 23–29 ms (78 ms in an external capture check). These are
 local fixture measurements, not a cross-platform latency guarantee.
@@ -446,10 +441,8 @@ return-to-latest, pin pagination and cancel/confirm unpin. Real-account/two-clie
 acceptance remains pending in REVIEW.md; fixtures use isolated peers and generated
 messages, never production mutations.
 
-On this Umbriel Wayland session, a newly created window can remain in a hidden
-tab/workspace and retain its first frame until focused. Focusing the explicitly
-identified `app.fluxer.Native` window delivered redraws and displayed the populated
-demo. This was checked separately from the existing Electron client.
+A Wayland check confirmed that focusing the Native window from a hidden
+workspace resumed redraws and displayed the populated demo.
 
 No complete feature area is marked verified solely because it has a model,
 button, demo, or passing unit test. Remaining broader parity work is in PLAN.md.

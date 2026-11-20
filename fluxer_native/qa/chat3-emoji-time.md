@@ -21,7 +21,7 @@ Relative timestamp refresh is one one-shot timer per window, independent of toke
 
 ## Verification
 
-Commands use `/tmp/fluxer-push-cargo` (serialized shared disk cache), explicit isolated-tree manifest, `--locked`, and offline cache. No cargo clean.
+Checks used the Native workspace manifest and Cargo's locked, offline mode.
 
 - Emoji-focused gate: 13 passed, including real animated lossless WebP decode with four distinct 160ms frames.
 - Formatter gate: 2 passed, including English/French, locale-specific relative grammar, floor thresholds, and account 12/24-hour preference.
@@ -36,7 +36,7 @@ Run the review binary with `--demo --demo-emoji-time`. This flag is required in 
 
 Optional flags: `--demo-emoji-paused` (hover-only animation), `--demo-timestamp-fr`, `--demo-timestamp-24h`. Rows include Unicode family/flag/skin-tone/joined hands, mixed static/animated custom emoji, concealed animation, 30/31 counts, formatted/nonjumbo text, all nine timestamp styles, concealed/invalid timestamps, and a reply preview.
 
-Validation: final offline desktop gate passed **280 tests, 1 ignored**, with the explicit locked worktree manifest through `/tmp/fluxer-push-cargo`; `cargo check` and `git diff --check` passed. Logs: `/tmp/chat3-emoji-time-final-tests.log` and `/tmp/chat3-emoji-time-check.log`.
+The final offline desktop gate passed **280 tests with 1 ignored**. Cargo check and diff validation passed.
 
 Root owns GUI validation and integrated binary build. Check multiple animated frames, pause/resume on scroll and concealment, no loading forever after returning, bitmap sizes/spacing at changed account fonts and display scale, timestamp tooltip/copy, French/24-hour settings, and relative refresh while scrolling offscreen. No GUI execution is claimed by this worktree task.
 
@@ -44,7 +44,7 @@ Root owns GUI validation and integrated binary build. Check multiple animated fr
 
 `renderers/common/CodeElements.tsx` renders code content as literal text. Inline and fenced code Unicode therefore bypass emoji image substitution and emoji-driven line-height expansion. Composer fallback remains enabled, while message projection consumes only its explicit eligible replacement tokens. The same non-code eligibility gates token generation, Unicode bitmap painting, custom-image painting, and row-height contribution. Ordinary table/body Unicode continues to use bundled Fluxer artwork. Selection and source copy preserve the original Unicode bytes.
 
-Follow-up validation: all 38 `input::` tests passed through the locked offline worktree manifest (`/tmp/chat3-code-unicode-input-tests.log`). Regression tests inspect actual inline/fenced AST code spans beside ordinary body/table emoji, exact 16px→24px ordinary emoji height contribution, absent code height contribution/tokens, literal message projection, composer fallback, explicit message token round-trips, and unchanged source/copy.
+All 38 `input::` tests passed. Regression tests inspect actual inline/fenced AST code spans beside ordinary body/table emoji, exact 16px→24px ordinary emoji height contribution, absent code height contribution/tokens, literal message projection, composer fallback, explicit message token round-trips, and unchanged source/copy.
 
 ## Timestamp viewport and narrow-table follow-up
 
@@ -54,7 +54,7 @@ Table columns now reserve the actual shaped width of the widest atomic display t
 
 Message wrapping now reflows complete source-atomic timestamp/emoji units using actual styled ShapedLine advances. It uses the checked-in GPUI word/CJK candidate policy and grapheme boundaries, so prefix/suffix text wraps around full labels without splitting UTF-8 source ranges or assuming uniform glyph widths. Composer wrapping and messages without replacements keep their existing wrapper. Tests cover a date between prefix/suffix text, unequal advances, CJK and combining graphemes, per-column intrinsic sizing, literal inline code, and formatted selection copy.
 
-Follow-up validation: full offline desktop gate passed **299 tests, 1 ignored** through the serialized wrapper and locked isolated manifest (`/tmp/chat3-timestamp-viewport-all-tests.log`). Focused atomic reflow tests passed 2/2, and timestamp tests (including the later-than-128 viewport scenario and narrow-column sizing) passed 6/6.
+The full offline desktop gate passed **299 tests with 1 ignored**. Focused atomic reflow tests passed 2/2, and timestamp tests (including the later-than-128 viewport scenario and narrow-column sizing) passed 6/6.
 
 The explicit demo adds a narrow six-column date table. Add `--demo-many-timestamps` to `--demo --demo-emoji-time` for a 260-row message that can be scrolled beyond the old absolute-token limit. GUI validation belongs to the root integration; this task claims test validation only.
 

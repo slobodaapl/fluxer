@@ -47,20 +47,9 @@ deployments remain usable during migration. Server replacement is not needed to
 replace the desktop renderer. Rust services already present in the repository
 remain the reference implementation for their respective server behavior.
 
-Implementation branches/worktrees:
-
-| Owner | Branch | Worktree | Merge responsibility |
-|---|---|---|---|
-| State agent | `gpui/core` | `/tmp/fluxer-gpui-core` | Main agent |
-| Protocol agent | `gpui/protocol` | `/tmp/fluxer-gpui-protocol` | Main agent |
-| GPUI agent | `gpui/desktop` | `/tmp/fluxer-gpui-desktop` | Main agent |
-| Client/backend agent | `gpui/backend` | `/tmp/fluxer-gpui-backend` | Main agent |
-| Audio agent | `gpui/audio` | `/tmp/fluxer-gpui-audio` | Main agent |
-| Main agent | `yolo/gpui` | Repository root | Integration, media, plans, checks |
-
-Agents commit only their owned crate. Main merges reviewed commits, resolves
-cross-crate contracts, owns the shared lockfile, and runs integration checks.
-Further work follows the same isolated-worktree process.
+Parallel implementation uses separate Git worktrees. Integrate reviewed commits
+on `yolo/gpui`, resolve cross-crate contracts there, and run the workspace
+verification gate from the integration checkout.
 
 ## Release gates
 

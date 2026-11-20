@@ -17,7 +17,7 @@ Implemented behavior:
 
 Verification performed without opening the app or writing to an account:
 
-- `fluxer-desktop` check passed through `/tmp/fluxer-push-cargo` with explicit isolated-worktree manifest.
+- `cargo check --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop` passed.
 - Core display setting tests: exact boolean wire keys, font projection and bounds, corrupt-input refusal, and preservation of unknown nested/top-level protobuf fields (3 passed).
 - Client loopback HTTP test: exact authenticated partial PATCH bodies, one pending write per display scope, optimistic compact rollback on 403, subsequent successful GIF update, unchanged status (1 passed).
 - Native preference tests: actual keystroke-to-action selection changes after rebinding, conflict/reserved validation, serialization, atomic persistence, and disk-failure rollback (5 passed).

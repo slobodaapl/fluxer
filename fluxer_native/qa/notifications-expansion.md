@@ -23,7 +23,7 @@ Existing preference loading, bounded/private atomic JSON persistence, early user
 
 ## Automated verification
 
-All Rust checks/tests use `/tmp/fluxer-push-cargo` with this isolated worktree's explicit manifest.
+The Rust checks used the Native workspace manifest at `fluxer_native/Cargo.toml`.
 
 - Desktop notification tests: existing safe-text/failure/preference tests plus access/session/channel-generation click guards. Private D-Bus fixture tests cover exact Notify payload/actions/hints, an action emitted inside Notify before its reply (registration race), NotificationClosed cleanup, CloseNotification and clear-all, daemon-owner replacement reusing ID 1, stale old-owner actions, five-per-channel eviction, idle teardown, stalled-call cancellation, connection unique-name disappearance, and full-queue dismissal cancellation. No user's session bus is used.
 - Core: all 59 tests pass, including three new live mention fixtures for DM/role behavior, blocked/suppressed/muted handling, non-member threads, duplicate dispatch and already acknowledged history.

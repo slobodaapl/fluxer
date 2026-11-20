@@ -20,10 +20,9 @@ Preserve the existing uncommitted audio/DSP work (snapshot under ignored
 
 Terra: `expand2/call-recovery`, `expand2/profiles-presence`; Sol:
 `expand2/settings`. Worktrees are under ignored `target/worktrees/expand2-*`.
-Root owns desktop notifications, D-Bus frontend, source/UX review, worktree merges,
-combined validation, final build and review records. Build/test commands use
-`/tmp/fluxer-push-cargo` with each worktree's explicit manifest so the shared
-disk-backed target is serialized and source changes are not confused.
+The integration checkout owns desktop notifications, D-Bus, source and UX
+review, and combined validation. Build and test commands use the explicit
+Native workspace manifest for each checkout.
 
 Local server interactions must match the existing Fluxer request builders,
 schemas, ordering and omission rules. External IPC is a native extension that
@@ -90,26 +89,18 @@ rendering, compact first-block layout, and GPUI mixed-font coalescing. Generated
 screenshots are evidence of these specific offline paths, not live acceptance.
 
 Manual review remains required for physical device loss/restoration and selected
-GoXLR devices; network and suspend recovery; real Fluxer interoperability while
+audio devices; network and suspend recovery; real Fluxer interoperability while
 sharing/watching; timed presence across account/reconnect; OS notification clicks,
 sounds and cross-client read state; actual StreamDeck button and live state
 feedback. Record outcomes against the review IDs in `REVIEW.md` and per-lane QA
 notes; do not infer hardware or full migration acceptance from fixtures.
 
-## Installed build
+## Relaunch validation
 
-`29a36327b-local` is installed atomically at `target/debug/fluxer-desktop` and
-running with GDB and private Vulkan validation enabled. A read-only runtime
-check confirmed a restored current user, restore complete/no restore failure,
-and no active voice channel. The audio-preference file hash matches its value
-before restart. `scripts/fluxer-call status` succeeds against the real session
-bus with API version 1 and truthful disconnected/no-share state. No mutating
-call action was issued to the live account.
+Build `29a36327b-local` restored the signed-in session and preserved the
+audio-preference file hash after relaunch. The read-only
+`scripts/fluxer-call status` check returned API version 1 and reported the
+expected disconnected, inactive sharing state.
 
-Runtime logs are under the directory recorded in `/tmp/fluxer-live-debug-dir`;
-installed binary metadata and the offline QA captures are under
-`target/qa/expansion2-2026-11-15/`. The full final gate log is
-`/tmp/fluxer-expansion2-verify8.log` (638 passed, 14 ignored). Existing uncommitted
-audio/DSP work remains present and unstaged; its pre-integration backup is
-retained. Documentation-only commits following the installed build do not change
-its executable code.
+Offline captures are under `target/qa/expansion2-2026-11-15/`. The workspace
+gate passed 638 tests with 14 ignored.

@@ -55,12 +55,10 @@ a tooltip on timestamp row 250, and keyboard reveal/first-Enter activation of an
 otherwise offscreen eighth-column role and the following user profile at 880×720.
 No live messages, account-setting mutations, call joins or capture were performed.
 
-The installed application is **375faae7b-local**, relaunched after the final gate
-under GDB/Vulkan validation. Its authenticated session and selected community/
-channel restored; the audio-preference file is unchanged. Build/launch evidence
-is recorded in `results.json` and the live debugger directory pointed to by
-`/tmp/fluxer-live-debug-dir`. The build includes the preserved local DSP work.
-Intentional debugger SIGINT events during setup are recorded as such.
+Build **375faae7b-local** passed a relaunch check under GDB/Vulkan validation.
+The authenticated session, selected community and channel, and saved audio
+preferences were preserved. Build and launch results are recorded in
+`results.json`. The tested build included the local DSP changes.
 
 ## Review queue and limits
 
@@ -87,7 +85,6 @@ timestamp follow-ups formerly listed as unmerged are now integrated. Subsequent
 Clippy, redraw and attribution agent work is also merged. Agent worktrees remain
 available for inspection; no worktrees or saved WIP were removed.
 
-All Cargo operations use the serialized `/tmp/fluxer-push-cargo` or equivalent
-build lock and the disk-backed `/tmp/fluxer-gpui-target`. Do not cargo clean or
-stage unrelated audio/DSP changes. `Cargo.lock` contains committed Arborium
-changes plus the original uncommitted DSP dependency graph.
+The build used the Native workspace manifest at `fluxer_native/Cargo.toml`.
+The lockfile at this checkpoint included both the committed Arborium changes
+and the local DSP dependency graph.

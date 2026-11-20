@@ -1,7 +1,6 @@
 # Short GIFV GPU lifetime investigation
 
-Evidence: `/home/alyx/Development/tmp/fluxer-freeze-20261115-105752/diagnosis.txt`
-and its kernel/thread captures. The kernel identifies fluxer-desktop in an NVIDIA
+The original kernel and thread captures identify fluxer-desktop in an NVIDIA
 Xid 13 MMU fault. The main UI thread is inside Vulkan semaphore waiting from
 BladeRenderer, while file playback is idle. The preserved open file is a 640x640
 VP8 WebM with duration 160 ms; its association with the precise visible GIF has
@@ -54,9 +53,8 @@ in ignored `target/qa/gif-gpu-lifetime-2026-11-15/`.
 * The generated 640x640, 160 ms VP8 clip completed all 48 scroll cycles, with 200
   video fetches as offscreen players retired/reopened. The end capture shows
   decoded frames and a responsive window. No Vulkan warning/error or fatal GPU
-  wait was logged. The owned fixture's process maps confirm the Khronos layer
-  was loaded from an extracted package under `/tmp/fluxer-vulkan-validation`;
-  nothing was installed system-wide. This was on the same RTX 3090 Ti/620.70.06.
+  wait was logged. The fixture's process maps confirm that the Khronos
+  validation layer loaded.
 * The pre-fix build was not deliberately subjected to the unsafe GPU lifetime
   scenario again. Passing stress/validation is evidence for the patch's behavior,
   not proof of the original fault's cause or a guarantee against driver faults.

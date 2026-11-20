@@ -4,10 +4,11 @@ Linux native Fluxer exposes a session-bus API while the real application is
 running. A StreamDeck host that can run a command can invoke it without focusing
 Fluxer or injecting a shortcut into a game. Demo windows do not claim this name.
 
-Configure a button to run:
+Configure a button to run the script using the absolute path to your checkout.
+From the repository root, use this command.
 
 ```sh
-/home/alyx/Development/tmp/fluxer/fluxer_native/scripts/fluxer-call toggle-mute
+./fluxer_native/scripts/fluxer-call toggle-mute
 ```
 
 For a dedicated mute button use `mute`; it always requests muted rather than

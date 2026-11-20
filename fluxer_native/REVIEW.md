@@ -88,7 +88,7 @@ source contracts and limitations are in
 
 | ID | Review | Evidence / status |
 |---|---|---|
-| EXP-1 | Device loss/restoration, network drop, leave/mute during reconnect, suspend/resume and honest reshare behavior | Actor/order/cancel/recovery fixtures pass; actual synthetic LiveKit pending-publication cancellation passed. **Physical GoXLR/network/suspend and two-client call acceptance pending.** |
+| EXP-1 | Device loss/restoration, network drop, leave/mute during reconnect, suspend/resume and honest reshare behavior | Actor/order/cancel/recovery fixtures pass; actual synthetic LiveKit pending-publication cancellation passed. **Physical audio devices, network recovery, suspend and two-client call acceptance pending.** |
 | EXP-3 | Appearance font/compact, GIF autoplay/reduced motion, shortcut recording/cancel/reset and persisted settings | Source wire/protobuf, rollback and real-file persistence tests pass; owned GUI navigation/font 8/16/48px/compact/name click/keybind flows checked. **Real account saves and subjective/IME review pending.** |
 | EXP-4 | Full profile, biography links, cached artwork, custom emoji/status expiry dropdowns and idle | Owned GUI modal/link-warning/cancel and status controls checked; expiry failure/retry and private Wayland/backend fixtures pass. **Live timed/idle behavior and account switching pending.** |
 | EXP-5 | Notification click/focus/sound, daemon restart, accepted remote ACK/delete clear, role/DM mentions and manual unread preservation | Real private-bus lifecycle/race/owner/cancellation and gateway/read-state fixtures pass. **Actual OS notifications/sounds and two-client acceptance pending.** |
@@ -184,9 +184,8 @@ Full feature parity remains in progress.
 | V2 | Watching and stopping streams | Watch/re-watch another person's Live stream, use fullscreen/chat controls, then Stop Watching while voice continues. Check video smoothness, immediate local stop and absence of lingering stream audio. | **Pending sustained real-call check.** Local plain/E2EE lifecycle, 1080p30 throughput, teardown and mixed audio fixtures pass. |
 | V3 | Multiple streams and layouts | Watch two or more streams. Switch Tile all/Main stage, select different streams, resize the window and open chat. Check landscape/portrait layouts, per-stream audio and stopping one stream while the others continue. | **Deferred by the user on 2026-11-13.** Multiple watch subscriptions already exist; this pass adds an explicit local layout choice and tiling from actual stage bounds. Offline evidence is recorded below. |
 
-Successful microphone transmission with GoXLR Chat Mic was previously confirmed
-by the user. Session restore, joining voice, receiving audio and watching a stream
-were also confirmed during development; these confirmations do not establish
+A real-account check confirmed microphone transmission. Session restore, joining
+voice, receiving audio and watching a stream were also confirmed during development; these confirmations do not establish
 acceptance of later changes or every related edge case.
 
 ## Remaining scope notes
@@ -376,7 +375,7 @@ was 0.212111 initially, 0.053028 after volume change, zero while muted/paused,
 Stop silenced both. The opt-in 1080p decoder/mailbox test measured 91 frames in
 3.005 s landscape and91 in 3.004 s rotated, clock ratios 0.999 and0.998. These are
 engine/mailbox results with simulated speaker timing, not display scanout or a
-physical GoXLR listening check. Logs are in `target/qa/native-playback/`.
+physical output listening check. Logs are in `target/qa/native-playback/`.
 
 The loopback `--demo-media` app displays real decoded silent video, changing GIFV
 pixels, a blurred paused spoiler-video preview and an idle audio card. Its optional
