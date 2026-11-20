@@ -188,6 +188,11 @@ pub enum Command {
         user_id: Snowflake,
         action: RelationshipAction,
     },
+    TimeoutMember {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        duration_seconds: Option<u64>,
+    },
     KickMember {
         guild_id: Snowflake,
         user_id: Snowflake,

@@ -1380,6 +1380,15 @@ impl Worker {
                     });
                 }
             }
+            Command::TimeoutMember {
+                guild_id,
+                user_id,
+                duration_seconds,
+            } => {
+                if let Err(message) = self.timeout_member(guild_id, user_id, duration_seconds) {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::KickMember { guild_id, user_id } => {
                 if let Err(message) = self.kick_member(guild_id, user_id) {
                     self.emit(Event::Error(message));

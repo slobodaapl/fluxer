@@ -17,6 +17,7 @@ pub(super) struct KickEvent {
     user: Snowflake,
     generation: u64,
     result: Result<()>,
+    timeout: bool,
 }
 
 struct RoleJob {
@@ -108,12 +109,79 @@ impl Worker {
                 user,
                 generation,
                 result,
+                timeout: false,
             });
         });
         self.people
             .kicks
             .insert((guild, user), Job { generation, task });
         self.emit(Event::Status("Kicking member…".into()));
+        Ok(())
+    }
+    pub(super) fn timeout_member(
+        &mut self,
+        guild: Snowflake,
+        user: Snowflake,
+        duration: Option<u64>,
+    ) -> Result<()> {
+        if duration.is_some_and(|d| ![60, 300, 600, 3600, 86400, 604800].contains(&d)) {
+            return Err("Invalid timeout duration".into());
+        }
+        let actor = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let guild_data = self
+            .state
+            .guilds
+            .get(&guild)
+            .ok_or("Community no longer available")?;
+        let actor_member = self
+            .state
+            .members
+            .get(&(guild, actor))
+            .ok_or("Your member information is unavailable")?;
+        let target = self
+            .state
+            .members
+            .get(&(guild, user))
+            .ok_or("Member no longer available")?;
+        if !fluxer_core::moderation_capabilities(guild_data, actor_member, target).timeout {
+            return Err("You cannot time out this member".into());
+        }
+        if self.people.kicks.contains_key(&(guild, user)) {
+            return Err("A moderation action is already pending".into());
+        }
+        if self.demo {
+            return Err("Timeouts are disabled in the offline demo".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        self.people.next = self.people.next.wrapping_add(1);
+        let generation = self.people.next;
+        let tx = self.people.kick_tx.clone();
+        let task = tokio::spawn(async move {
+            let until = duration.map(|seconds| {
+                (chrono::Utc::now() + chrono::Duration::seconds(seconds as i64))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            });
+            let result = match tokio::time::timeout(
+                Duration::from_secs(15),
+                client.set_member_timeout(&guild.to_string(), &user.to_string(), until.as_deref()),
+            )
+            .await
+            {
+                Ok(result) => result.map(|_| ()).map_err(error),
+                Err(_) => Err("Timeout update timed out".into()),
+            };
+            let _ = tx.send(KickEvent {
+                guild,
+                user,
+                generation,
+                result,
+                timeout: true,
+            });
+        });
+        self.people
+            .kicks
+            .insert((guild, user), Job { generation, task });
+        self.emit(Event::Status("Updating member timeout…".into()));
         Ok(())
     }
     pub(super) fn kick_event(&mut self, event: KickEvent) {
@@ -126,9 +194,21 @@ impl Worker {
             return;
         }
         self.people.kicks.remove(&(event.guild, event.user));
+        let action = if event.timeout {
+            "update timeout"
+        } else {
+            "kick member"
+        };
         match event.result {
-            Ok(()) => self.emit(Event::Status("Member kicked".into())),
-            Err(message) => self.emit(Event::Error(format!("Could not kick member: {message}"))),
+            Ok(()) => self.emit(Event::Status(
+                if event.timeout {
+                    "Member timeout updated"
+                } else {
+                    "Member kicked"
+                }
+                .into(),
+            )),
+            Err(message) => self.emit(Event::Error(format!("Could not {action}: {message}"))),
         }
     }
     pub(super) fn change_relationship(

@@ -379,6 +379,25 @@ impl Fluxer {
             })
             .unwrap_or(false)
     }
+    pub(super) fn can_timeout_member(&self, guild: Snowflake, user: Snowflake) -> bool {
+        if self.demo {
+            return false;
+        }
+        self.state
+            .current_user
+            .as_ref()
+            .and_then(|current| {
+                Some(
+                    fluxer_core::moderation_capabilities(
+                        self.state.guilds.get(&guild)?,
+                        self.state.members.get(&(guild, current.id))?,
+                        self.state.members.get(&(guild, user))?,
+                    )
+                    .timeout,
+                )
+            })
+            .unwrap_or(false)
+    }
     fn close_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.context.kick_confirm = None;
         self.context.kick_armed = false;
@@ -388,18 +407,46 @@ impl Fluxer {
         cx.notify();
     }
     fn accept_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((guild_id, user_id, _)) = self.context.kick_confirm.clone() {
+        if let Some((guild_id, user_id, _, timeout)) = self.context.kick_confirm.clone() {
             self.close_kick_confirmation(window, cx);
-            if self.can_kick_member(guild_id, user_id) {
-                self.command(Command::KickMember { guild_id, user_id }, cx);
-            } else {
-                self.error = Some("You can no longer kick this member".into());
+            match timeout {
+                Some(duration_seconds) if self.can_timeout_member(guild_id, user_id) => self
+                    .command(
+                        Command::TimeoutMember {
+                            guild_id,
+                            user_id,
+                            duration_seconds,
+                        },
+                        cx,
+                    ),
+                None if self.can_kick_member(guild_id, user_id) => {
+                    self.command(Command::KickMember { guild_id, user_id }, cx)
+                }
+                _ => self.error = Some("You can no longer moderate this member".into()),
             }
         }
     }
     pub(super) fn kick_confirmation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some((_, _, name)) = &self.context.kick_confirm else {
+        let Some((_, _, name, timeout)) = &self.context.kick_confirm else {
             return div().into_any_element();
+        };
+        let (title, description) = match timeout {
+            None => ("Kick member", format!("Kick {name} from this community?")),
+            Some(None) => ("Remove timeout", format!("Remove the timeout for {name}?")),
+            Some(Some(seconds)) => (
+                "Time out member",
+                format!(
+                    "Time out {name} for {}? They cannot send messages, react, or join voice channels.",
+                    match seconds {
+                        60 => "60 seconds",
+                        300 => "5 minutes",
+                        600 => "10 minutes",
+                        3600 => "1 hour",
+                        86400 => "1 day",
+                        _ => "1 week",
+                    }
+                ),
+            ),
         };
         div()
             .absolute()
@@ -455,9 +502,9 @@ impl Fluxer {
                         div()
                             .text_size(px(20.))
                             .font_weight(FontWeight::BOLD)
-                            .child("Kick member"),
+                            .child(title),
                     )
-                    .child(format!("Kick {name} from this community?"))
+                    .child(description)
                     .child(
                         div()
                             .flex()
@@ -475,7 +522,7 @@ impl Fluxer {
                                     })),
                             )
                             .child(
-                                crate::controls::quiet_button("kick-confirm", "Kick member")
+                                crate::controls::quiet_button("kick-confirm", title)
                                     .bg(rgb(if self.context.kick_selected {
                                         0xe15059
                                     } else {

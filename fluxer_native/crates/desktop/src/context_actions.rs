@@ -39,7 +39,7 @@ impl UserAudioOverride {
 }
 pub(super) struct ContextUi {
     pub menu: Entity<ContextMenu>,
-    pub kick_confirm: Option<(Snowflake, Snowflake, String)>,
+    pub kick_confirm: Option<(Snowflake, Snowflake, String, Option<Option<u64>>)>,
     pub kick_focus: FocusHandle,
     pub kick_previous: Option<FocusHandle>,
     pub kick_selected: bool,
@@ -430,6 +430,40 @@ impl Fluxer {
                     })
                     .unwrap_or_else(|| user.to_string());
                 items.push(Item::Header(name));
+                if self.can_timeout_member(*guild, *user) {
+                    for (id, label) in [
+                        ("timeout-60", "Time out for 60 seconds"),
+                        ("timeout-300", "Time out for 5 minutes"),
+                        ("timeout-600", "Time out for 10 minutes"),
+                        ("timeout-3600", "Time out for 1 hour"),
+                        ("timeout-86400", "Time out for 1 day"),
+                        ("timeout-604800", "Time out for 1 week"),
+                    ] {
+                        items.push(Item::Action {
+                            id: id.into(),
+                            label: label.into(),
+                            icon: None,
+                            enabled: true,
+                            danger: true,
+                        });
+                    }
+                    if self
+                        .state
+                        .members
+                        .get(&(*guild, *user))
+                        .and_then(|m| m.communication_disabled_until.as_deref())
+                        .and_then(|until| chrono::DateTime::parse_from_rfc3339(until).ok())
+                        .is_some_and(|until| until > chrono::Utc::now())
+                    {
+                        items.push(Item::Action {
+                            id: "timeout-clear".into(),
+                            label: "Remove timeout".into(),
+                            icon: None,
+                            enabled: true,
+                            danger: false,
+                        });
+                    }
+                }
                 if self.can_kick_member(*guild, *user) {
                     items.push(Item::Action {
                         id: "kick-member".into(),
@@ -870,6 +904,35 @@ impl Fluxer {
             (Target::Stream(_), "stream-tiles") => self.viewer.layout = StreamLayout::Tiled,
             (Target::Stream(_), "fullscreen") => window.toggle_fullscreen(),
             (Target::Stream(_), "stream-chat") => self.viewer.chat_open = !self.viewer.chat_open,
+            (Target::Member { guild, user }, action) if action.starts_with("timeout-") => {
+                let duration = match action.strip_prefix("timeout-").unwrap_or("") {
+                    "clear" => Some(None),
+                    value => value
+                        .parse::<u64>()
+                        .ok()
+                        .filter(|d| [60, 300, 600, 3600, 86400, 604800].contains(d))
+                        .map(Some),
+                };
+                if let Some(duration) = duration
+                    && self.can_timeout_member(*guild, *user)
+                {
+                    let name = self
+                        .state
+                        .members
+                        .get(&(*guild, *user))
+                        .map(|m| {
+                            m.nick
+                                .clone()
+                                .unwrap_or_else(|| m.user.display_name().to_owned())
+                        })
+                        .unwrap_or_else(|| user.to_string());
+                    self.context.kick_confirm = Some((*guild, *user, name, Some(duration)));
+                    self.context.kick_previous = window.focused(cx);
+                    self.context.kick_selected = false;
+                    self.context.kick_armed = false;
+                    window.focus(&self.context.kick_focus);
+                }
+            }
             (Target::Member { guild, user }, "kick-member") => {
                 if self.can_kick_member(*guild, *user) {
                     let name = self
@@ -882,7 +945,7 @@ impl Fluxer {
                                 .unwrap_or_else(|| m.user.display_name().to_owned())
                         })
                         .unwrap_or_else(|| user.to_string());
-                    self.context.kick_confirm = Some((*guild, *user, name));
+                    self.context.kick_confirm = Some((*guild, *user, name, None));
                     self.context.kick_previous = window.focused(cx);
                     self.context.kick_selected = false;
                     self.context.kick_armed = false;
