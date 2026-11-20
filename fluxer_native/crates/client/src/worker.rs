@@ -209,6 +209,8 @@ pub(crate) struct Worker {
     dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
     dm_generation: u64,
     dm_job: Option<DmJob>,
+    group_add_generation: u64,
+    group_add_job: Option<DmJob>,
     thread_creation: Option<ThreadCreation>,
     thread_management: Option<ThreadManagement>,
     presence: presence_flow::PresenceState,
@@ -303,6 +305,8 @@ impl Worker {
             dm_rx,
             dm_generation: 0,
             dm_job: None,
+            group_add_generation: 0,
+            group_add_job: None,
             thread_creation: None,
             thread_management: None,
             presence: presence_flow::PresenceState::new(),
@@ -998,6 +1002,8 @@ impl Worker {
         self.thread_creation = None;
         self.thread_management = None;
         self.cancel_open_dm();
+        self.group_add_generation = self.group_add_generation.wrapping_add(1);
+        self.group_add_job = None;
         self.clear_presence();
         self.clear_display_settings();
         self.clear_people();
@@ -2837,10 +2843,7 @@ impl Worker {
             .channels
             .get(&channel_id)
             .ok_or("Group no longer available")?;
-        if self.state.selected_channel != Some(channel_id)
-            || channel.kind != fluxer_core::ChannelType::GroupDm
-            || channel.guild_id.is_some()
-        {
+        if channel.kind != fluxer_core::ChannelType::GroupDm || channel.guild_id.is_some() {
             return Err("Select the group DM first".into());
         }
         let mut unique = std::collections::BTreeSet::new();
@@ -2857,12 +2860,15 @@ impl Worker {
                 return Err("Select distinct friends who aren't already in the group".into());
             }
         }
-        if unique.is_empty() {
-            return Err("Select at least one friend".into());
+        if unique.is_empty() || unique.len() > 49 {
+            return Err("Select between 1 and 49 friends".into());
+        }
+        if self.group_add_job.is_some() {
+            return Err("A group addition is already in progress".into());
         }
         let client = self.client.clone().ok_or("Not signed in")?;
-        self.cancel_open_dm();
-        let generation = self.dm_generation;
+        self.group_add_generation = self.group_add_generation.wrapping_add(1);
+        let generation = self.group_add_generation;
         let tx = self.dm_tx.clone();
         let task = tokio::spawn(async move {
             let mut failures = Vec::new();
@@ -2890,11 +2896,26 @@ impl Worker {
                 result,
             });
         });
-        self.dm_job = Some(DmJob { generation, task });
+        self.group_add_job = Some(DmJob { generation, task });
         self.emit(Event::Status("Adding friends to group…".into()));
         Ok(())
     }
     async fn finish_open_dm(&mut self, event: DmEvent) -> Result<()> {
+        if event.group_add {
+            if self
+                .group_add_job
+                .as_ref()
+                .is_none_or(|job| job.generation != event.generation)
+            {
+                return Ok(());
+            }
+            self.group_add_job = None;
+            self.emit(Event::Status(match event.result {
+                Ok(_) => "Friends added to group".into(),
+                Err(message) => format!("Couldn't add some friends: {message}"),
+            }));
+            return Ok(());
+        }
         if self
             .dm_job
             .as_ref()
@@ -2903,13 +2924,6 @@ impl Worker {
             return Ok(());
         }
         self.dm_job = None;
-        if event.group_add {
-            self.emit(Event::Status(match event.result {
-                Ok(_) => "Friends added to group".into(),
-                Err(message) => format!("Couldn't add some friends: {message}"),
-            }));
-            return Ok(());
-        }
         let result: Result<()> = async {
             let channel: fluxer_core::Channel =
                 self.state.decode_api(event.result?).map_err(error)?;

@@ -3929,3 +3929,76 @@ async fn camera_replacement_reports_missing_watch_and_hide_failure_is_not_start_
         .unwrap();
     assert!(matches!(error, Event::Error(_)));
 }
+
+#[tokio::test]
+async fn group_add_survives_navigation_and_rejects_duplicate_job() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        assert!(request.starts_with("PUT /api/channels/50/recipients/42 "));
+        accepted_tx.send(()).unwrap();
+        release_rx.await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker
+        .state
+        .apply_gateway(
+            "CHANNEL_CREATE",
+            json!({"id":"50", "type":3, "recipients":[]}),
+        )
+        .unwrap();
+    worker.state.selected_channel = Some(50.into());
+    worker.state.relationships.insert(
+        42.into(),
+        fluxer_core::Relationship {
+            id: 42.into(),
+            kind: 1,
+            ..Default::default()
+        },
+    );
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker
+        .add_group_recipients(50.into(), vec![42.into()])
+        .unwrap();
+    timeout(Duration::from_secs(2), accepted_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        worker
+            .add_group_recipients(50.into(), vec![42.into()])
+            .is_err()
+    );
+    worker.demo = true;
+    worker
+        .command(Command::SelectChannel {
+            channel_id: 12.into(),
+        })
+        .await
+        .unwrap();
+    release_tx.send(()).unwrap();
+    let event = timeout(Duration::from_secs(2), worker.dm_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(event.result.is_ok());
+    worker.finish_open_dm(event).await.unwrap();
+    assert_eq!(worker.state.selected_channel, Some(12.into()));
+    assert!(worker.group_add_job.is_none());
+    server.await.unwrap();
+}
