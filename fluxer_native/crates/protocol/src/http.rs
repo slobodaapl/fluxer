@@ -1053,6 +1053,26 @@ impl Client {
         }
     }
 
+    pub async fn connections(&self) -> Result<Value> {
+        self.request(Method::GET, "/users/@me/connections", None)
+            .await
+    }
+
+    pub async fn update_connection_visibility(
+        &self,
+        kind: &str,
+        id: &str,
+        flags: i64,
+    ) -> Result<Value> {
+        let path = format!("/users/@me/connections/{}/{}", segment(kind), segment(id));
+        self.request(
+            Method::PATCH,
+            &path,
+            Some(&serde_json::json!({"visibility_flags": flags})),
+        )
+        .await
+    }
+
     pub async fn auth_sessions(&self) -> Result<Value> {
         self.request(Method::GET, "/auth/sessions", None).await
     }

@@ -228,6 +228,7 @@ pub(crate) struct Worker {
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
+    connections_task: Option<JoinHandle<()>>,
     account_sessions_task: Option<JoinHandle<()>>,
     community: community_flow::CommunityState,
     channels: channel_flow::ChannelJobs,
@@ -328,6 +329,7 @@ impl Worker {
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
+            connections_task: None,
             account_sessions_task: None,
             community: community_flow::CommunityState::new(),
             channels: channel_flow::ChannelJobs::new(),
@@ -1027,6 +1029,9 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        if let Some(task) = self.connections_task.take() {
+            task.abort();
+        }
         if let Some(task) = self.account_sessions_task.take() {
             task.abort();
         }
@@ -1363,6 +1368,30 @@ impl Worker {
                     )
                     .map_err(error)?;
                 self.snapshot();
+            }
+            Command::FetchConnections { request_id, update } => {
+                let client = self.client()?;
+                let events = self.events.clone();
+                if let Some(task) = self.connections_task.take() {
+                    task.abort();
+                }
+                self.connections_task = Some(tokio::spawn(async move {
+                    let operation = async {
+                        if let Some((kind, id, flags)) = update {
+                            client
+                                .update_connection_visibility(&kind, &id, flags)
+                                .await?;
+                        }
+                        client.connections().await
+                    };
+                    let result =
+                        match tokio::time::timeout(Duration::from_secs(15), operation).await {
+                            Ok(result) => result
+                                .map_err(|_| "Could not update or load connections.".to_string()),
+                            Err(_) => Err("Loading connections timed out.".into()),
+                        };
+                    let _ = events.send(Event::Connections { request_id, result });
+                }));
             }
             Command::FetchAccountSessions { request_id } => {
                 let client = self.client()?;

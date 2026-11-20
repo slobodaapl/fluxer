@@ -175,6 +175,10 @@ pub enum Command {
     CancelInvite {
         request_id: u64,
     },
+    FetchConnections {
+        request_id: u64,
+        update: Option<(String, String, i64)>,
+    },
     FetchAccountSessions {
         request_id: u64,
     },
@@ -641,6 +645,10 @@ pub enum Event {
     Invite {
         request_id: u64,
         status: InviteStatus,
+    },
+    Connections {
+        request_id: u64,
+        result: Result<serde_json::Value, String>,
     },
     AccountSessions {
         request_id: u64,

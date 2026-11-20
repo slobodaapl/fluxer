@@ -7,6 +7,7 @@ use crate::controls::{Icon, icon_button, quiet_button};
 pub(super) enum Section {
     Profile,
     AccountSessions,
+    Connections,
     Appearance,
     Privacy,
     Accessibility,
@@ -190,6 +191,9 @@ impl Fluxer {
         }
         self.settings_section = section;
         self.pane = Pane::Settings;
+        if section == Section::Connections && !self.demo {
+            self.fetch_connections(None, cx);
+        }
         if section == Section::AccountSessions && !self.demo {
             let request_id = fluxer_client::next_pending_message_id();
             self.account_sessions_request = Some(request_id);
@@ -272,6 +276,102 @@ impl Fluxer {
             proof,
         };
         self.command(command, cx);
+    }
+
+    fn fetch_connections(&mut self, update: Option<(String, String, i64)>, cx: &mut Context<Self>) {
+        let request_id = fluxer_client::next_pending_message_id();
+        self.connections_request = Some(request_id);
+        self.command(Command::FetchConnections { request_id, update }, cx);
+    }
+
+    fn connections_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div()
+            .id("connections-body")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(div().text_size(px(22.)).child("Linked accounts"))
+            .child(muted(
+                "Choose who can see your linked accounts on your profile.",
+            ));
+        if self.demo {
+            body = body.child(muted("Sign in to view linked accounts."));
+        } else if self.connections_request.is_some() {
+            body = body.child(muted("Loading linked accounts…"));
+        } else if let Some(Ok(value)) = &self.connections {
+            if let Some(items) = value.as_array() {
+                if items.is_empty() {
+                    body = body.child(muted("No linked accounts."));
+                }
+                for (index, item) in items.iter().enumerate() {
+                    let name = item["name"].as_str().unwrap_or("Unknown account");
+                    let kind = item["type"].as_str().unwrap_or("").to_owned();
+                    let id = item["id"].as_str().unwrap_or("").to_owned();
+                    let flags = item["visibility_flags"].as_i64().unwrap_or(0);
+                    let mut row = div()
+                        .p_4()
+                        .bg(rgb(0x25222e))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(format!(
+                            "{} · {}{}",
+                            name,
+                            kind,
+                            if item["verified"].as_bool() == Some(true) {
+                                " · Verified"
+                            } else {
+                                ""
+                            }
+                        ));
+                    for (flag, label) in [(1, "Everyone"), (2, "Friends"), (4, "Community members")]
+                    {
+                        let enabled = flags & flag != 0 || (flag != 1 && flags & 1 != 0);
+                        let title = format!("{}: {}", label, if enabled { "On" } else { "Off" });
+                        if !kind.is_empty() && !id.is_empty() && !(flag != 1 && flags & 1 != 0) {
+                            let kind = kind.clone();
+                            let id = id.clone();
+                            row = row.child(
+                                quiet_button(
+                                    ("connection-visibility", index * 8 + flag as usize),
+                                    title,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.fetch_connections(
+                                            Some((kind.clone(), id.clone(), flags ^ flag)),
+                                            cx,
+                                        );
+                                        cx.notify();
+                                    },
+                                )),
+                            );
+                        } else {
+                            row = row.child(muted(title));
+                        }
+                    }
+                    body = body.child(row);
+                }
+            } else {
+                body = body.child(muted("Could not read linked accounts."));
+            }
+        } else if let Some(Err(error)) = &self.connections {
+            body = body.child(muted(error.clone()));
+        }
+        if !self.demo && self.connections_request.is_none() {
+            body = body.child(quiet_button("refresh-connections", "Refresh").on_click(
+                cx.listener(|this, _, _, cx| {
+                    this.fetch_connections(None, cx);
+                    cx.notify();
+                }),
+            ));
+        }
+        body.into_any_element()
     }
 
     fn account_sessions_view(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -996,6 +1096,7 @@ impl Fluxer {
         let content = match self.settings_section {
             Section::Profile => self.profile_settings(cx),
             Section::AccountSessions => self.account_sessions_view(cx),
+            Section::Connections => self.connections_view(cx),
             Section::Voice => self.voice_settings(cx),
             Section::Privacy
             | Section::Appearance
@@ -1041,6 +1142,11 @@ impl Fluxer {
                         [
                             (Section::Privacy, "settings-privacy", "Privacy & safety"),
                             (Section::Profile, "settings-profile", "My profile"),
+                            (
+                                Section::Connections,
+                                "settings-connections",
+                                "Linked accounts",
+                            ),
                             (
                                 Section::AccountSessions,
                                 "settings-account-sessions",

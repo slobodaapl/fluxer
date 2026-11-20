@@ -501,3 +501,34 @@ async fn role_overwrite_uses_decimal_masks_and_single_target_route() {
         json!({"type":0,"allow":"1024","deny":"2048"})
     );
 }
+
+#[tokio::test]
+async fn connections_list_and_visibility_use_authenticated_endpoints() {
+    let connections = json!([{ "id": "example.org", "type": "domain", "name": "example.org", "verified": true, "visibility_flags": 3, "sort_order": 0 }]);
+    let mut server = Server::new(vec![Reply::json(200, connections.clone()), Reply::empty()]).await;
+    let client = client(&server.origin);
+    assert_eq!(client.connections().await.unwrap(), connections);
+    client
+        .update_connection_visibility("domain", "example.org", 5)
+        .await
+        .unwrap();
+    let list = server.next().await;
+    assert_eq!(list.line, "GET /api/v1/users/@me/connections HTTP/1.1");
+    assert_eq!(
+        list.headers.get("authorization").unwrap(),
+        "synthetic-session"
+    );
+    let update = server.next().await;
+    assert_eq!(
+        update.line,
+        "PATCH /api/v1/users/@me/connections/domain/example%2Eorg HTTP/1.1"
+    );
+    assert_eq!(
+        update.headers.get("authorization").unwrap(),
+        "synthetic-session"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.body).unwrap(),
+        json!({"visibility_flags": 5})
+    );
+}

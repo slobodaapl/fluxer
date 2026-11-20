@@ -358,6 +358,8 @@ struct Fluxer {
     session_context_loaded: bool,
     pane: Pane,
     settings_section: settings_view::Section,
+    connections_request: Option<u64>,
+    connections: Option<Result<serde_json::Value, String>>,
     account_sessions_request: Option<u64>,
     account_sessions: Option<Result<serde_json::Value, String>>,
     session_revocation: Option<settings_view::SessionRevocation>,
@@ -534,6 +536,8 @@ impl Fluxer {
             session_context_loaded: false,
             pane: Pane::Chat,
             settings_section: settings_view::Section::Voice,
+            connections_request: None,
+            connections: None,
             account_sessions_request: None,
             account_sessions: None,
             session_revocation: None,
@@ -1046,6 +1050,12 @@ impl Fluxer {
                     result,
                 } => self.bans_event(request_id, guild_id, result, cx),
                 Event::Invite { request_id, status } => self.invite_status(request_id, status, cx),
+                Event::Connections { request_id, result } => {
+                    if self.connections_request == Some(request_id) {
+                        self.connections_request = None;
+                        self.connections = Some(result);
+                    }
+                }
                 Event::AccountSessions { request_id, result } => {
                     if self.account_sessions_request == Some(request_id) {
                         self.account_sessions_request = None;
