@@ -251,6 +251,12 @@ impl Render for ControlTooltip {
             .child(self.0.clone())
     }
 }
+pub(super) fn tooltip(
+    label: impl Into<SharedString>,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let label = label.into();
+    move |_, cx| cx.new(|_| ControlTooltip(label.clone())).into()
+}
 pub(super) fn icon_button(
     id: impl Into<ElementId>,
     kind: Icon,

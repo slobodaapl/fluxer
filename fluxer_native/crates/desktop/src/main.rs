@@ -2400,9 +2400,10 @@ impl Fluxer {
                     } else {
                         transparent_black()
                     })
-                    .focus(|style| style.border_color(rgb(ACCENT)))
+                    .focus(|style| style.border_color(rgb(TEXT)))
                     .bg(transparent_black())
                     .overflow_hidden()
+                    .tooltip(controls::tooltip(guild.name.clone()))
                     .child(avatar_images::community_icon(
                         guild,
                         self.media_endpoint.as_deref(),
@@ -2611,6 +2612,10 @@ impl Fluxer {
                                 .pb_1()
                                 .text_color(rgb(MUTED))
                                 .text_size(px(11.))
+                                .border_1()
+                                .border_color(transparent_black())
+                                .rounded_md()
+                                .focus(|style| style.border_color(rgb(TEXT)))
                                 .child(emoji_sprites::unicode_text(
                                     &channel.name.to_uppercase(),
                                     11.,
@@ -2647,6 +2652,9 @@ impl Fluxer {
                                     .flex()
                                     .items_center()
                                     .gap_2()
+                                    .border_1()
+                                    .border_color(transparent_black())
+                                    .focus(|style| style.bg(rgb(0x484054)).border_color(rgb(TEXT)))
                                     .bg(rgb(if self.state.selected_channel == Some(id) {
                                         0x3b344f
                                     } else {

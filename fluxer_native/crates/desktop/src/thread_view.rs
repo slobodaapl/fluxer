@@ -46,6 +46,9 @@ impl Fluxer {
                 let label = format!("↳  {}", thread.name);
                 button_base(("thread", id.0))
                     .ml_4()
+                    .border_1()
+                    .border_color(transparent_black())
+                    .focus(|style| style.bg(rgb(0x484054)).border_color(rgb(TEXT)))
                     .bg(rgb(if self.state.selected_channel == Some(id) {
                         0x3b344f
                     } else {
