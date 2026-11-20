@@ -243,6 +243,7 @@ pub(crate) struct Worker {
     commerce_task: Option<JoinHandle<()>>,
     account_sessions_task: Option<JoinHandle<()>>,
     roles: role_flow::RoleState,
+    discovery_join_task: Option<JoinHandle<()>>,
     community: community_flow::CommunityState,
     channels: channel_flow::ChannelJobs,
     attachments: attachment_flow::AttachmentState,
@@ -348,6 +349,7 @@ impl Worker {
             commerce_task: None,
             account_sessions_task: None,
             roles: role_flow::RoleState::new(),
+            discovery_join_task: None,
             community: community_flow::CommunityState::new(),
             channels: channel_flow::ChannelJobs::new(),
             attachments: attachment_flow::AttachmentState::new(),
@@ -1135,6 +1137,9 @@ impl Worker {
         }
         self.emit(Event::IpAuthorizationCleared);
         self.clear_browser_login();
+        if let Some(task) = self.discovery_join_task.take() {
+            task.abort();
+        }
         self.client = None;
         self.media = None;
         self.emit(Event::MediaEndpoint(None));
@@ -2145,6 +2150,62 @@ impl Worker {
             }
             Command::RemovePendingMessage { channel_id, id } => {
                 self.remove_pending_message(channel_id, id)?
+            }
+            Command::JoinDiscovery { request, guild_id } => {
+                if self
+                    .discovery_join_task
+                    .as_ref()
+                    .is_some_and(|task| !task.is_finished())
+                {
+                    self.emit(Event::DiscoveryJoin {
+                        request,
+                        guild_id,
+                        result: Err("A join request is already in progress.".into()),
+                    });
+                    return Ok(());
+                }
+                let client = self.client();
+                let already_member = self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|user| self.state.members.contains_key(&(guild_id, user.id)));
+                let restriction = crate::discovery::join_restriction(
+                    self.state.current_user.as_ref(),
+                    already_member,
+                );
+                let events = self.events.clone();
+                self.discovery_join_task = Some(tokio::spawn(async move {
+                    let result = match client {
+                        Ok(_) if restriction.is_some() => Err(restriction.unwrap().into()),
+                        Ok(client)
+                            if client
+                                .instance()
+                                .features
+                                .get("discovery_enabled")
+                                .and_then(Value::as_bool)
+                                != Some(false)
+                                && client
+                                    .instance()
+                                    .document
+                                    .pointer("/community/single_community")
+                                    .and_then(Value::as_bool)
+                                    != Some(true) =>
+                        {
+                            match tokio::time::timeout(Duration::from_secs(12), client.discovery_join(guild_id)).await {
+                                Ok(result) => result.map_err(error),
+                                Err(_) => Err("The request timed out. Check your community list before trying again.".into()),
+                            }
+                        }
+                        Ok(_) => Err("Discovery is unavailable on this instance".into()),
+                        Err(err) => Err(err),
+                    };
+                    let _ = events.send(Event::DiscoveryJoin {
+                        request,
+                        guild_id,
+                        result,
+                    });
+                }));
             }
             Command::BrowseDiscovery { request, params } => {
                 let client = self.client();

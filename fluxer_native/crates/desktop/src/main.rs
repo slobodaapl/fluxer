@@ -1116,6 +1116,11 @@ impl Fluxer {
                 Event::AccountSessionRevocation { request_id, result } => {
                     self.handle_session_revocation_result(request_id, result, cx);
                 }
+                Event::DiscoveryJoin {
+                    request,
+                    guild_id,
+                    result,
+                } => self.discovery_join_result(request, guild_id, result, cx),
                 Event::Discovery { request, result } => self.discovery_result(request, result, cx),
                 Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,

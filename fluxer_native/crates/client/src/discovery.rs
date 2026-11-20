@@ -68,10 +68,53 @@ impl DiscoveryState {
     }
 }
 
+/// Classic blocks known limited accounts before issuing the join request. The
+/// server remains authoritative for restrictions absent from the local cache.
+pub(crate) fn join_restriction(
+    user: Option<&fluxer_core::User>,
+    already_member: bool,
+) -> Option<&'static str> {
+    let Some(user) = user else {
+        return Some("Sign in before joining a community.");
+    };
+    if user.extra.get("account_limited").and_then(Value::as_bool) == Some(true) {
+        return Some(
+            "Messaging is paused on your account. Check your email for a step to continue.",
+        );
+    }
+    if user.bot {
+        return Some("Bot accounts cannot join through Explore.");
+    }
+    if already_member {
+        return Some("You are already a member of this community.");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn join_restrictions_follow_known_account_state() {
+        let mut user = fluxer_core::User::default();
+        assert!(join_restriction(None, false).is_some());
+        assert_eq!(join_restriction(Some(&user), false), None);
+        assert!(join_restriction(Some(&user), true).is_some());
+        user.extra.insert("account_limited".into(), json!(true));
+        assert!(
+            join_restriction(Some(&user), false)
+                .unwrap()
+                .contains("paused")
+        );
+        user.extra.clear();
+        user.bot = true;
+        assert!(
+            join_restriction(Some(&user), false)
+                .unwrap()
+                .contains("Bot")
+        );
+    }
     #[test]
     fn ignores_replaced_and_reset_requests_and_deduplicates_pages() {
         let mut state = DiscoveryState::default();

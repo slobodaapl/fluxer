@@ -11,6 +11,17 @@ pub(super) struct DiscoveryUi {
     pub available: bool,
     state: DiscoveryState,
     categories: Vec<Value>,
+    join: DiscoveryJoin,
+    join_generation: u64,
+}
+#[derive(Default)]
+enum DiscoveryJoin {
+    #[default]
+    Idle,
+    Confirm(Snowflake),
+    Pending(Snowflake),
+    Complete(Snowflake),
+    Failed(Snowflake, String),
 }
 impl DiscoveryUi {
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
@@ -24,10 +35,14 @@ impl DiscoveryUi {
             available: false,
             state: DiscoveryState::default(),
             categories: Vec::new(),
+            join: DiscoveryJoin::Idle,
+            join_generation: 0,
         }
     }
     pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
         self.state.reset();
+        self.join_generation = self.join_generation.wrapping_add(1);
+        self.join = DiscoveryJoin::Idle;
         self.categories.clear();
         self.available = false;
         self.input
@@ -76,6 +91,34 @@ impl Fluxer {
             }
             Err(error) => self.discovery_ui.state.finish(request, Err(error)),
         }
+        cx.notify();
+    }
+    fn confirm_discovery_join(&mut self, guild_id: Snowflake, cx: &mut Context<Self>) {
+        if !matches!(self.discovery_ui.join, DiscoveryJoin::Confirm(id) if id == guild_id) {
+            return;
+        }
+        self.discovery_ui.join_generation = self.discovery_ui.join_generation.wrapping_add(1);
+        let request = self.discovery_ui.join_generation;
+        self.discovery_ui.join = DiscoveryJoin::Pending(guild_id);
+        self.command_if_live(Command::JoinDiscovery { request, guild_id }, cx);
+        cx.notify();
+    }
+    pub(super) fn discovery_join_result(
+        &mut self,
+        request: u64,
+        guild_id: Snowflake,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if request != self.discovery_ui.join_generation
+            || !matches!(self.discovery_ui.join, DiscoveryJoin::Pending(id) if id == guild_id)
+        {
+            return;
+        }
+        self.discovery_ui.join = match result {
+            Ok(()) => DiscoveryJoin::Complete(guild_id),
+            Err(message) => DiscoveryJoin::Failed(guild_id, message),
+        };
         cx.notify();
     }
     pub(super) fn discovery_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -145,6 +188,75 @@ impl Fluxer {
                 .get("online_count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
+            let id = guild
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<u64>().ok())
+                .map(Snowflake);
+            let member = id.is_some_and(|id| {
+                self.state
+                    .current_user
+                    .as_ref()
+                    .is_some_and(|user| self.state.members.contains_key(&(id, user.id)))
+            });
+            let mut actions = div().flex().flex_col().gap_2();
+            if let Some(id) = id {
+                actions = match &self.discovery_ui.join {
+                    DiscoveryJoin::Confirm(selected) if *selected == id => {
+                        actions.child("Join this community?").child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    controls::quiet_button(
+                                        ("discovery-confirm-join", id.0),
+                                        "Confirm join",
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| this.confirm_discovery_join(id, cx),
+                                    )),
+                                )
+                                .child(
+                                    controls::quiet_button(
+                                        ("discovery-cancel-join", id.0),
+                                        "Cancel",
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.discovery_ui.join = DiscoveryJoin::Idle;
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                        )
+                    }
+                    DiscoveryJoin::Pending(selected) if *selected == id => {
+                        actions.child("Joining…")
+                    }
+                    DiscoveryJoin::Complete(selected) if *selected == id => {
+                        actions.child("Joined. The community will appear in your sidebar.")
+                    }
+                    DiscoveryJoin::Failed(selected, message) if *selected == id => {
+                        actions.child(format!("Could not join: {message}")).child(
+                            controls::quiet_button(("discovery-retry-join", id.0), "Try again")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.discovery_ui.join = DiscoveryJoin::Confirm(id);
+                                    cx.notify();
+                                })),
+                        )
+                    }
+                    _ if member => actions.child("Already a member"),
+                    _ if matches!(self.discovery_ui.join, DiscoveryJoin::Pending(_)) => actions,
+                    _ => actions.child(
+                        controls::quiet_button(("discovery-join", id.0), "Join").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.discovery_ui.join = DiscoveryJoin::Confirm(id);
+                                cx.notify();
+                            }),
+                        ),
+                    ),
+                };
+            }
             results = results.child(
                 div()
                     .p_4()
@@ -159,7 +271,8 @@ impl Fluxer {
                         div()
                             .text_color(rgb(MUTED))
                             .child(format!("{members} members · {online} online")),
-                    ),
+                    )
+                    .child(actions),
             );
         }
         let has_more = state.loaded_count < state.total && !state.loading;

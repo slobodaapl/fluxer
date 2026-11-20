@@ -41,6 +41,17 @@ impl Client {
     pub async fn discovery_search(&self, params: &DiscoverySearch) -> Result<Value> {
         self.request(Method::GET, &params.path(), None).await
     }
+    /// Direct join is a separate, explicit action; the server enforces discovery
+    /// eligibility, account restrictions, bans and membership limits.
+    pub async fn discovery_join(&self, guild: fluxer_core::Snowflake) -> Result<()> {
+        self.request(
+            Method::POST,
+            &format!("/discovery/guilds/{}/join", guild.0),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
     pub async fn discovery_categories(&self) -> Result<Value> {
         self.request(Method::GET, "/discovery/categories", None)
             .await

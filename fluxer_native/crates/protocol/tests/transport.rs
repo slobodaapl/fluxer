@@ -872,3 +872,38 @@ async fn webhook_management_requests_and_secrets_are_scoped() {
         }
     }
 }
+
+#[tokio::test]
+async fn discovery_join_uses_authenticated_bodyless_post_and_preserves_refusal() {
+    let (origin, mut requests) = http_server_with_origin_policy(
+        vec![
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+            response("403 Forbidden", json!({"code":"INVITES_DISABLED"})),
+        ],
+        true,
+        None,
+    )
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("synthetic-token").unwrap());
+    client
+        .discovery_join(fluxer_core::Snowflake(123))
+        .await
+        .unwrap();
+    assert!(
+        matches!(client.discovery_join(fluxer_core::Snowflake(456)).await, Err(Error::Api { status: 403, ref code, .. }) if code.as_deref() == Some("INVITES_DISABLED"))
+    );
+    for id in [123, 456] {
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(&format!(
+            "POST /api/v1/discovery/guilds/{id}/join HTTP/1.1\r\n"
+        )));
+        let header = request.to_ascii_lowercase();
+        assert!(header.contains("\r\nauthorization: synthetic-token\r\n"));
+        assert!(header.contains(&format!("\r\norigin: {origin}\r\n")));
+        assert!(request.ends_with("\r\n\r\n"));
+    }
+}

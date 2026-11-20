@@ -548,6 +548,10 @@ pub enum Command {
         reply_to: Option<Snowflake>,
         mention_author: bool,
     },
+    JoinDiscovery {
+        request: u64,
+        guild_id: Snowflake,
+    },
     BrowseDiscovery {
         request: u64,
         params: fluxer_protocol::DiscoverySearch,
@@ -810,6 +814,11 @@ pub enum Event {
         next_offset: usize,
         has_more: bool,
         error: Option<String>,
+    },
+    DiscoveryJoin {
+        request: u64,
+        guild_id: Snowflake,
+        result: Result<(), String>,
     },
     Discovery {
         request: u64,
