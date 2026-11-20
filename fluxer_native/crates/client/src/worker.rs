@@ -22,6 +22,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 mod attachment_flow;
 #[path = "worker_community.rs"]
 mod community_flow;
+#[path = "worker_channels.rs"]
+mod channel_flow;
 #[path = "worker_settings.rs"]
 mod display_settings_flow;
 #[path = "worker_idle.rs"]
@@ -194,6 +196,7 @@ pub(crate) struct Worker {
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
     community: community_flow::CommunityState,
+    channels: channel_flow::ChannelJobs,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     audio_key: Option<String>,
@@ -277,6 +280,7 @@ impl Worker {
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
             community: community_flow::CommunityState::new(),
+            channels: channel_flow::ChannelJobs::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             audio_key: None,
@@ -629,6 +633,7 @@ impl Worker {
                 Profile(Option<profile_flow::ProfileEvent>),
                 OwnProfile(Option<own_profile_flow::OwnProfileEvent>),
                 Community(Option<community_flow::CommunityEvent>),
+                Channel(Option<channel_flow::ChannelEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
@@ -670,6 +675,7 @@ impl Worker {
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.own_profile.rx.recv()=>Incoming::OwnProfile(event),
                 event=self.community.rx.recv()=>Incoming::Community(event),
+                event=self.channels.rx.recv()=>Incoming::Channel(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
@@ -793,6 +799,11 @@ impl Worker {
                     }
                     Ok(())
                 }
+                Incoming::Channel(Some(event)) => {
+                    self.channel_event(event);
+                    Ok(())
+                }
+                Incoming::Channel(None) => Ok(()),
                 Incoming::Profile(Some(event)) => {
                     self.profile_event(event);
                     Ok(())
@@ -920,6 +931,7 @@ impl Worker {
         self.clear_invites();
         self.clear_navigation();
         self.clear_own_profile();
+        self.clear_channel_jobs();
         self.clear_profiles();
         self.clear_community();
         self.clear_attachments();
@@ -1362,92 +1374,12 @@ impl Worker {
                 kind,
                 name,
             } => {
-                let result = async {
-                    if !matches!(kind, 0 | 2 | 4) || name.trim().is_empty() {
-                        return Err("Invalid channel name or type".to_owned());
-                    }
-                    let user = self.state.current_user.as_ref().ok_or("Not signed in")?;
-                    let guild = self
-                        .state
-                        .guilds
-                        .get(&guild_id)
-                        .ok_or("Community unavailable")?;
-                    let allowed = if let Some(parent) = parent_id {
-                        self.state.channels.get(&parent).is_some_and(|c| {
-                            c.guild_id == Some(guild_id) && c.kind == ChannelType::Category
-                        }) && self
-                            .state
-                            .permissions_for(parent, user.id)
-                            .contains(Permissions::MANAGE_CHANNELS)
-                    } else if guild.owner_id == user.id {
-                        true
-                    } else {
-                        self.state
-                            .members
-                            .get(&(guild_id, user.id))
-                            .is_some_and(|m| {
-                                fluxer_core::resolve_permissions(guild, m, &[])
-                                    .contains(Permissions::MANAGE_CHANNELS)
-                            })
-                    };
-                    if !allowed || (kind == 4 && parent_id.is_some()) {
-                        return Err("You cannot manage channels here".to_owned());
-                    }
-                    let client = self.client.as_ref().ok_or("Not connected")?;
-                    let value = client
-                        .create_guild_channel(
-                            &guild_id.to_string(),
-                            name.trim(),
-                            kind,
-                            parent_id.map(|id| id.to_string()).as_deref(),
-                        )
-                        .await
-                        .map_err(error)?;
-                    self.state
-                        .apply_gateway("CHANNEL_CREATE", value)
-                        .map_err(error)?;
-                    self.snapshot();
-                    Ok(())
-                }
-                .await;
-                if let Err(message) = result {
+                if let Err(message) = self.create_basic_channel(guild_id, parent_id, kind, name) {
                     self.emit(Event::Error(message));
                 }
             }
             Command::RenameBasicChannel { channel_id, name } => {
-                let result = async {
-                    let user = self.state.current_user.as_ref().ok_or("Not signed in")?;
-                    let channel = self
-                        .state
-                        .channels
-                        .get(&channel_id)
-                        .ok_or("Channel unavailable")?;
-                    if channel.guild_id.is_none()
-                        || !matches!(
-                            channel.kind,
-                            ChannelType::Text | ChannelType::Voice | ChannelType::Category
-                        )
-                        || name.trim().is_empty()
-                        || !self
-                            .state
-                            .permissions_for(channel_id, user.id)
-                            .contains(Permissions::MANAGE_CHANNELS)
-                    {
-                        return Err("You cannot edit this channel".to_owned());
-                    }
-                    let client = self.client.as_ref().ok_or("Not connected")?;
-                    let value = client
-                        .rename_channel(&channel_id.to_string(), name.trim())
-                        .await
-                        .map_err(error)?;
-                    self.state
-                        .apply_gateway("CHANNEL_UPDATE", value)
-                        .map_err(error)?;
-                    self.snapshot();
-                    Ok(())
-                }
-                .await;
-                if let Err(message) = result {
+                if let Err(message) = self.rename_basic_channel(channel_id, name) {
                     self.emit(Event::Error(message));
                 }
             }
