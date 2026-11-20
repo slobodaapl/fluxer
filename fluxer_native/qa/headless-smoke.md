@@ -1,7 +1,7 @@
 # Private Wayland smoke runs
 
 Run the driver with an Umbriel executable, the native Desktop executable, an
-artifact directory, and one of `messages`, `media`, `stream`, or `forum`.
+artifact directory, and one of `messages`, `media`, `stream`, `forum`, or `private-call`.
 Use a new artifact directory for each run. The driver requires Linux, Bash,
 `dbus-run-session`, `grim`, `wtype`, `rg`, and Python 3.
 
@@ -27,3 +27,4 @@ Inspect the screenshots in scenario order. The driver uses coordinates for a
 | `media` | The silent clip starts inline, opens in focus view, and returns to the chat timeline on Escape. |
 | `stream` | Tile all shows Alex and Morgan. Main stage starts with Alex, then switches to Morgan's portrait stream when selected. |
 | `forum` | `#ideas` starts with Keyboard shortcuts and Compact navigation. Load more reveals Focus indicators. Design filters to Compact navigation and Focus indicators. Tab focuses Accessibility and Enter selects it. Tab and Space switch the match mode. With both tags selected, Match all shows only Focus indicators. Tab and Enter on Clear tags restore the unfiltered page. Newest puts Focus indicators first. Tab highlights it and Enter opens its starter message. |
+| `private-call` | Alex's incoming call banner appears with a Decline button. Decline dismisses the banner locally. |

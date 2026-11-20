@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 if [[ $# != 4 ]]; then
-    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|media|stream|forum}" >&2
+    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|media|stream|forum|private-call}" >&2
     exit 2
 fi
 umbriel="$(realpath "$1")"
@@ -17,6 +17,7 @@ case "$scenario" in
     media) demo=--demo-media ;;
     stream) demo=--demo-stream ;;
     forum) demo=--demo ;;
+    private-call) demo=--demo-private-call ;;
     *) echo "Unknown scenario: $scenario" >&2; exit 2 ;;
 esac
 if [[ ! -x "$umbriel" || ! -x "$desktop" ]]; then
@@ -165,6 +166,10 @@ case "$scenario" in
         screenshot forum-keyboard-focus
         wtype -s 150 -k Return
         screenshot forum-post-opened
+        ;;
+    private-call)
+        click 1227 63
+        screenshot call-declined
         ;;
 esac
 SESSION
