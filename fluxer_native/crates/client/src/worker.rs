@@ -2118,6 +2118,39 @@ impl Worker {
             Command::RemovePendingMessage { channel_id, id } => {
                 self.remove_pending_message(channel_id, id)?
             }
+            Command::BrowseDiscovery { request, params } => {
+                let client = self.client();
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    let result = match client {
+                        Ok(client)
+                            if client
+                                .instance()
+                                .features
+                                .get("discovery_enabled")
+                                .and_then(Value::as_bool)
+                                != Some(false)
+                                && client
+                                    .instance()
+                                    .document
+                                    .pointer("/community/single_community")
+                                    .and_then(Value::as_bool)
+                                    != Some(true) =>
+                        {
+                            match tokio::try_join!(
+                                client.discovery_search(&params),
+                                client.discovery_categories()
+                            ) {
+                                Ok(values) => Ok(values),
+                                Err(err) => Err(error(err)),
+                            }
+                        }
+                        Ok(_) => Err("Discovery is unavailable on this instance".into()),
+                        Err(err) => Err(err),
+                    };
+                    let _ = events.send(Event::Discovery { request, result });
+                });
+            }
             Command::BrowseGifs { request, feed } => {
                 let client = self.client();
                 let locale = self.locale.clone();

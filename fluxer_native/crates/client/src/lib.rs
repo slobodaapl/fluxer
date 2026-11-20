@@ -3,6 +3,8 @@
 mod attachments;
 mod audio_preferences;
 pub use audio_preferences::{FilePlaybackKind, FilePlaybackPreference, UserAudioPreference};
+pub use discovery::DiscoveryState;
+mod discovery;
 mod navigation;
 mod worker;
 
@@ -529,6 +531,10 @@ pub enum Command {
         reply_to: Option<Snowflake>,
         mention_author: bool,
     },
+    BrowseDiscovery {
+        request: u64,
+        params: fluxer_protocol::DiscoverySearch,
+    },
     BrowseGifs {
         request: u64,
         feed: GifFeed,
@@ -772,6 +778,10 @@ pub enum Event {
         next_offset: usize,
         has_more: bool,
         error: Option<String>,
+    },
+    Discovery {
+        request: u64,
+        result: Result<(serde_json::Value, serde_json::Value), String>,
     },
     Gifs {
         request: u64,

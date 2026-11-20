@@ -24,6 +24,7 @@ mod desktop_links;
 mod desktop_notifications;
 mod desktop_tray;
 mod diagnostics;
+mod discovery_view;
 mod dropdown;
 mod emoji_picker;
 mod emoji_presentation;
@@ -155,6 +156,7 @@ const MUTED: u32 = 0xa19bb3;
 enum Pane {
     Chat,
     Friends,
+    Discovery,
     Call,
     Settings,
     Screens,
@@ -406,6 +408,7 @@ struct Fluxer {
     profile_edit: settings_view::ProfileEdit,
     role_mention: Entity<role_mention::RoleMention>,
     friends_ui: friends_view::FriendsUi,
+    discovery_ui: discovery_view::DiscoveryUi,
     status_ui: status_view::StatusUi,
     members_open: bool,
     members_start: u32,
@@ -581,6 +584,7 @@ impl Fluxer {
             profile_edit: settings_view::ProfileEdit::new(cx),
             role_mention: cx.new(role_mention::RoleMention::new),
             friends_ui: friends_view::FriendsUi::new(cx),
+            discovery_ui: discovery_view::DiscoveryUi::new(cx),
             status_ui: status_view::StatusUi::new(window, cx),
             members_open: false,
             members_start: 0,
@@ -1088,6 +1092,7 @@ impl Fluxer {
                 Event::AccountSessionRevocation { request_id, result } => {
                     self.handle_session_revocation_result(request_id, result, cx);
                 }
+                Event::Discovery { request, result } => self.discovery_result(request, result, cx),
                 Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
@@ -1167,6 +1172,17 @@ impl Fluxer {
                         .and_then(|d| d.pointer("/endpoints/api_public"))
                         .and_then(|v| v.as_str())
                         .map(str::to_owned);
+                    self.discovery_ui.reset(cx);
+                    self.discovery_ui.available = document.as_ref().is_some_and(|document| {
+                        document
+                            .pointer("/features/discovery_enabled")
+                            .and_then(serde_json::Value::as_bool)
+                            != Some(false)
+                            && document
+                                .pointer("/community/single_community")
+                                .and_then(serde_json::Value::as_bool)
+                                != Some(true)
+                    });
                     avatar_images::configure_instance(document.as_ref());
                     emoji_sprites::configure_instance(document.as_ref());
                     if let Some(document) = document {
@@ -2890,6 +2906,13 @@ impl Fluxer {
                         })),
                 )
             })
+            .when(self.selected_guild.is_none() && !self.demo && self.discovery_ui.available, |view| {
+                view.child(controls::quiet_button("discovery-navigation", "Explore")
+                    .mx_2().my_2().on_click(cx.listener(|this, _, _, cx| {
+                        this.pane = Pane::Discovery;
+                        this.search_discovery(0, cx);
+                    })))
+            })
             .child(
                 div()
                     .id("channels")
@@ -3425,6 +3448,7 @@ impl Render for Fluxer {
                         .into_any_element()
                 }
                 Pane::Friends => self.friends_view(window, cx),
+                Pane::Discovery => self.discovery_view(cx),
                 Pane::Call => self.call_view(window, cx),
                 Pane::Settings => self.settings_shell(cx),
                 Pane::Screens => self.screens(cx),
