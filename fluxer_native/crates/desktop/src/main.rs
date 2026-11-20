@@ -3087,6 +3087,18 @@ impl Render for Fluxer {
                     cx.stop_propagation();
                     return;
                 }
+                if event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.shift
+                    && this.editing.is_none()
+                    && this.composer.focus_handle(cx).is_focused(window)
+                    && !this.composer.read(cx).is_composing()
+                    && let Some(channel) = this.state.selected_channel
+                    && this.replies.remove(&channel).is_some()
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key == "escape" && this.pane == Pane::Call {
