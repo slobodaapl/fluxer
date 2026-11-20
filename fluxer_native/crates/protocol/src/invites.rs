@@ -44,6 +44,7 @@ pub struct InvitePreview {
 #[derive(Clone, Debug, Deserialize)]
 pub struct CommunityInvite {
     pub code: String,
+    pub guild: InviteGuild,
     pub channel: InviteChannel,
     pub inviter: Option<InviteRecipient>,
     pub created_at: String,
@@ -155,9 +156,14 @@ impl Client {
     }
 
     pub async fn community_invites(&self, guild: Snowflake) -> Result<Vec<CommunityInvite>> {
-        let value = self.request(Method::GET, &format!("/guilds/{guild}/invites"), None).await?;
+        let value = self
+            .request(Method::GET, &format!("/guilds/{guild}/invites"), None)
+            .await?;
         let invites: Vec<CommunityInvite> = serde_json::from_value(value)?;
-        if invites.iter().any(|invite| !valid_invite_code(&invite.code)) {
+        if invites
+            .iter()
+            .any(|invite| !valid_invite_code(&invite.code) || invite.guild.id != guild)
+        {
             return Err(Error::InvalidInviteResponse);
         }
         Ok(invites)
@@ -167,7 +173,8 @@ impl Client {
         if !valid_invite_code(code) {
             return Err(Error::InvalidEndpoint("invalid invite code".into()));
         }
-        self.request(Method::DELETE, &format!("/invites/{code}"), None).await?;
+        self.request(Method::DELETE, &format!("/invites/{code}"), None)
+            .await?;
         Ok(())
     }
 
@@ -300,17 +307,33 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let instance = crate::Instance {
-            api: base.clone(), gateway: base.clone(), web_app: base, api_version: 1,
-            features: json!({}), document: json!({}),
+            api: base.clone(),
+            gateway: base.clone(),
+            web_app: base,
+            api_version: 1,
+            features: json!({}),
+            document: json!({}),
         };
         let server = tokio::spawn(async move {
             for (route, body) in [
-                ("GET /v1/guilds/42/invites", json!([{
-                    "code":"Ab-C", "channel":{"id":"43","type":0,"name":"general"},
-                    "inviter":{"username":"alice"}, "created_at":"2026-01-01T00:00:00Z",
-                    "expires_at":null,"uses":2,"max_uses":0,"temporary":false
-                }])),
+                (
+                    "GET /v1/guilds/42/invites",
+                    json!([{
+                        "code":"Ab-C", "guild":{"id":"42","name":"test","icon":null}, "channel":{"id":"43","type":0,"name":"general"},
+                        "inviter":{"username":"alice"}, "created_at":"2026-01-01T00:00:00Z",
+                        "expires_at":null,"uses":2,"max_uses":0,"temporary":false
+                    }]),
+                ),
                 ("DELETE /v1/invites/Ab-C", json!({})),
+                (
+                    "GET /v1/guilds/42/invites",
+                    json!([{
+                        "code":"other", "guild":{"id":"99","name":"other","icon":null},
+                        "channel":{"id":"43","type":0,"name":"general"},
+                        "created_at":"2026-01-01T00:00:00Z", "expires_at":null,
+                        "uses":0,"max_uses":0,"temporary":false
+                    }]),
+                ),
             ] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
@@ -319,18 +342,23 @@ mod tests {
                 }
                 let head = String::from_utf8(request).unwrap();
                 assert!(head.starts_with(route), "{head}");
-                assert!(head.to_ascii_lowercase().contains("authorization: test-session\r\n"));
+                assert!(
+                    head.to_ascii_lowercase()
+                        .contains("authorization: test-session\r\n")
+                );
                 let body = body.to_string();
                 stream.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
             }
         });
-        let client = Client::new(instance).unwrap()
+        let client = Client::new(instance)
+            .unwrap()
             .with_token(crate::SessionToken::new("test-session").unwrap());
         let invites = client.community_invites(Snowflake(42)).await.unwrap();
         assert_eq!(invites[0].channel.name.as_deref(), Some("general"));
         assert_eq!(invites[0].uses, 2);
         client.revoke_invite(&invites[0].code).await.unwrap();
         assert!(client.revoke_invite("../bad").await.is_err());
+        assert!(client.community_invites(Snowflake(42)).await.is_err());
         server.await.unwrap();
     }
 

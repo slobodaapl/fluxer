@@ -141,6 +141,15 @@ impl CallControlHandle {
 }
 
 pub enum Command {
+    ListCommunityInvites {
+        request_id: u64,
+        guild_id: Snowflake,
+    },
+    RevokeCommunityInvite {
+        request_id: u64,
+        guild_id: Snowflake,
+        code: String,
+    },
     CreateInvite {
         request_id: u64,
         channel_id: Snowflake,
@@ -588,6 +597,8 @@ pub enum DirectMessageStatus {
 
 #[derive(Clone, Debug)]
 pub enum InviteStatus {
+    Listed(Vec<fluxer_protocol::CommunityInvite>),
+    Revoked(String),
     Created(String),
     Preview(Box<fluxer_protocol::InvitePreview>),
     Opening,

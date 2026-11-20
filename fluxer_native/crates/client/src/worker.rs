@@ -1575,6 +1575,15 @@ impl Worker {
                 guild_id,
                 delete_messages,
             } => self.leave_community(guild_id, delete_messages),
+            Command::ListCommunityInvites {
+                request_id,
+                guild_id,
+            } => self.manage_community_invites(request_id, guild_id, None),
+            Command::RevokeCommunityInvite {
+                request_id,
+                guild_id,
+                code,
+            } => self.manage_community_invites(request_id, guild_id, Some(code)),
             Command::CreateInvite {
                 request_id,
                 channel_id,

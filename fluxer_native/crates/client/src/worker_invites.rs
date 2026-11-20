@@ -13,6 +13,8 @@ pub(super) struct InviteEvent {
 enum InviteResult {
     Preview(InvitePreview),
     Created(String),
+    Listed(Vec<fluxer_protocol::CommunityInvite>),
+    Revoked(String),
 }
 
 pub(super) struct InviteState {
@@ -21,6 +23,7 @@ pub(super) struct InviteState {
     task: Option<JoinHandle<()>>,
     request_id: u64,
     preview: Option<(String, InvitePreview)>,
+    managed: Option<(Snowflake, Vec<fluxer_protocol::CommunityInvite>)>,
     accepted: Option<InvitePreview>,
     accepting: bool,
     navigation_superseded: bool,
@@ -36,6 +39,7 @@ impl InviteState {
             task: None,
             request_id: 0,
             preview: None,
+            managed: None,
             accepted: None,
             accepting: false,
             navigation_superseded: false,
@@ -48,6 +52,7 @@ impl InviteState {
             task.abort();
         }
         self.preview = None;
+        self.managed = None;
         self.accepted = None;
         self.accepting = false;
         self.navigation_superseded = false;
@@ -100,6 +105,77 @@ impl Worker {
         if self.invites.request_id == request_id && !self.invites.accepting {
             self.clear_invites();
         }
+    }
+
+    pub(super) fn manage_community_invites(
+        &mut self,
+        request_id: u64,
+        guild_id: Snowflake,
+        code: Option<String>,
+    ) {
+        if self.invites.accepting {
+            return;
+        }
+        let allowed = self.state.current_user.as_ref().is_some_and(|user| {
+            self.state.guilds.contains_key(&guild_id)
+                && self
+                    .state
+                    .guild_permissions_for(guild_id, user.id)
+                    .contains(Permissions::MANAGE_GUILD)
+        });
+        let listed = code.as_ref().is_none_or(|code| {
+            self.invites.managed.as_ref().is_some_and(|(id, invites)| {
+                *id == guild_id && invites.iter().any(|invite| &invite.code == code)
+            })
+        });
+        let managed = if code.is_some() {
+            self.invites.managed.take()
+        } else {
+            None
+        };
+        self.clear_invites();
+        self.invites.managed = managed;
+        self.invites.request_id = request_id;
+        if !allowed || !listed || self.demo {
+            self.invite_status(InviteStatus::Failed(
+                "You cannot manage these invites.".into(),
+            ));
+            return;
+        }
+        let Ok(client) = self.client() else {
+            self.invite_status(InviteStatus::Failed("Sign in to manage invites.".into()));
+            return;
+        };
+        let tx = self.invites.tx.clone();
+        self.invites.task = Some(tokio::spawn(async move {
+            let result = tokio::time::timeout(Duration::from_secs(12), async {
+                if let Some(code) = code {
+                    client
+                        .revoke_invite(&code)
+                        .await
+                        .map(|_| InviteResult::Revoked(code))
+                } else {
+                    client
+                        .community_invites(guild_id)
+                        .await
+                        .map(InviteResult::Listed)
+                }
+            })
+            .await;
+            let result = match result {
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(_)) => {
+                    Err("Could not manage invites. Check your permissions and connection.".into())
+                }
+                Err(_) => Err("Invite request timed out. Refresh the list and try again.".into()),
+            };
+            let _ = tx.send(InviteEvent {
+                request_id,
+                code: guild_id.to_string(),
+                result,
+                accepting: false,
+            });
+        }));
     }
 
     pub(super) fn create_invite(&mut self, request_id: u64, channel_id: Snowflake) {
@@ -244,6 +320,18 @@ impl Worker {
             return;
         }
         match event.result {
+            Ok(InviteResult::Listed(invites)) => {
+                if let Ok(id) = event.code.parse::<u64>() {
+                    self.invites.managed = Some((Snowflake(id), invites.clone()));
+                }
+                self.invite_status(InviteStatus::Listed(invites));
+            }
+            Ok(InviteResult::Revoked(code)) => {
+                if let Some((_, invites)) = &mut self.invites.managed {
+                    invites.retain(|invite| invite.code != code);
+                }
+                self.invite_status(InviteStatus::Revoked(code));
+            }
             Ok(InviteResult::Created(url)) => self.invite_status(InviteStatus::Created(url)),
             Ok(InviteResult::Preview(preview)) if event.accepting => {
                 self.on_invite_accepted(preview).await

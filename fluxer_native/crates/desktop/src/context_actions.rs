@@ -706,6 +706,13 @@ impl Fluxer {
                         Icon::Settings,
                     ));
                 }
+                if self.can_edit_community_overview(*id) {
+                    items.push(action(
+                        "community-manage-invites",
+                        "Manage invites",
+                        Icon::Settings,
+                    ));
+                }
                 if self.invite_channel_for_community(*id).is_some() {
                     items.push(action("community-invite", "Invite people", Icon::Copy));
                 }
@@ -1203,6 +1210,11 @@ impl Fluxer {
                     *channel,
                 ) {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
+                }
+            }
+            (Target::Community(guild), "community-manage-invites") => {
+                if self.can_edit_community_overview(*guild) {
+                    self.manage_community_invites(*guild, window, cx);
                 }
             }
             (Target::Community(guild), "community-invite") => {

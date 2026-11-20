@@ -13,6 +13,11 @@ enum InviteStep {
     Opening,
     Created(String),
     CreateLoading,
+    ManageLoading(Snowflake),
+    ManageError(Snowflake, String),
+    ManageList(Snowflake, Vec<fluxer_protocol::CommunityInvite>),
+    ConfirmRevoke(Snowflake, Vec<fluxer_protocol::CommunityInvite>, String),
+    Revoking(Snowflake, Vec<fluxer_protocol::CommunityInvite>),
     CreateError(String),
     Error(String),
 }
@@ -26,6 +31,7 @@ pub(super) struct InviteView {
     restore_focus: bool,
     dialog_focus: FocusHandle,
     focus_step: bool,
+    selected: usize,
 }
 
 impl InviteView {
@@ -41,6 +47,7 @@ impl InviteView {
             restore_focus: false,
             dialog_focus: cx.focus_handle(),
             focus_step: false,
+            selected: 0,
         }
     }
 
@@ -55,7 +62,10 @@ impl InviteView {
     }
 
     fn joining(&self) -> bool {
-        matches!(self.step, InviteStep::Joining | InviteStep::Opening)
+        matches!(
+            self.step,
+            InviteStep::Joining | InviteStep::Opening | InviteStep::Revoking(..)
+        )
     }
 }
 
@@ -113,6 +123,63 @@ impl Fluxer {
         }
         cx.notify();
     }
+    pub(super) fn manage_community_invites(
+        &mut self,
+        guild_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.invite_ui.reset(cx);
+        self.invite_ui.previous = window.focused(cx);
+        self.invite_ui.open = true;
+        self.invite_ui.dialog_focus.focus(window);
+        self.load_community_invites(guild_id, cx);
+    }
+
+    fn load_community_invites(&mut self, guild_id: Snowflake, cx: &mut Context<Self>) {
+        self.invite_ui.request_id = self.invite_ui.request_id.wrapping_add(1);
+        self.invite_ui.selected = 0;
+        self.invite_ui.step = InviteStep::ManageLoading(guild_id);
+        if let Err(message) = self
+            .controller
+            .as_ref()
+            .ok_or("The native client worker is unavailable".to_owned())
+            .and_then(|controller| {
+                controller.send(Command::ListCommunityInvites {
+                    request_id: self.invite_ui.request_id,
+                    guild_id,
+                })
+            })
+        {
+            self.invite_ui.step = InviteStep::ManageError(guild_id, message);
+        }
+        cx.notify();
+    }
+
+    fn revoke_community_invite(&mut self, cx: &mut Context<Self>) {
+        let InviteStep::ConfirmRevoke(guild, invites, code) = &self.invite_ui.step else {
+            return;
+        };
+        let (guild, invites, code) = (*guild, invites.clone(), code.clone());
+        self.invite_ui.request_id = self.invite_ui.request_id.wrapping_add(1);
+        self.invite_ui.step = InviteStep::Revoking(guild, invites);
+        if let Err(message) = self
+            .controller
+            .as_ref()
+            .ok_or("The native client worker is unavailable".to_owned())
+            .and_then(|controller| {
+                controller.send(Command::RevokeCommunityInvite {
+                    request_id: self.invite_ui.request_id,
+                    guild_id: guild,
+                    code,
+                })
+            })
+        {
+            self.invite_ui.step = InviteStep::ManageError(guild, message);
+        }
+        cx.notify();
+    }
+
     pub(super) fn invite_button(&self, cx: &mut Context<Self>) -> AnyElement {
         button("join-by-invite", "Join")
             .size(px(44.))
@@ -205,8 +272,32 @@ impl Fluxer {
             return;
         }
         self.invite_ui.focus_step = true;
+        let managing = match &self.invite_ui.step {
+            InviteStep::ManageLoading(guild) | InviteStep::Revoking(guild, _) => Some(*guild),
+            _ => None,
+        };
         let creating = matches!(self.invite_ui.step, InviteStep::CreateLoading);
+        if matches!(&status, InviteStatus::Revoked(_)) {
+            self.invite_ui.selected = 0;
+        }
         self.invite_ui.step = match status {
+            InviteStatus::Listed(invites) => {
+                InviteStep::ManageList(managing.unwrap_or_default(), invites)
+            }
+            InviteStatus::Revoked(code) => match &self.invite_ui.step {
+                InviteStep::Revoking(guild, invites) => InviteStep::ManageList(
+                    *guild,
+                    invites
+                        .iter()
+                        .filter(|invite| invite.code != code)
+                        .cloned()
+                        .collect(),
+                ),
+                _ => return,
+            },
+            InviteStatus::Failed(message) if managing.is_some() => {
+                InviteStep::ManageError(managing.unwrap(), message)
+            }
             InviteStatus::Created(url) => InviteStep::Created(url),
             InviteStatus::Preview(preview) => InviteStep::Preview(preview),
             InviteStatus::Opening => InviteStep::Opening,
@@ -245,7 +336,49 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) {
         match event.keystroke.key.as_str() {
+            "escape" if matches!(self.invite_ui.step, InviteStep::ConfirmRevoke(..)) => {
+                if let InviteStep::ConfirmRevoke(guild, invites, _) = &self.invite_ui.step {
+                    self.invite_ui.step = InviteStep::ManageList(*guild, invites.clone());
+                    cx.notify();
+                }
+            }
             "escape" => self.close_invite(window, cx),
+            "up" | "down" if matches!(self.invite_ui.step, InviteStep::ManageList(..)) => {
+                if let InviteStep::ManageList(_, invites) = &self.invite_ui.step {
+                    if !invites.is_empty() {
+                        self.invite_ui.selected = if event.keystroke.key == "up" {
+                            (self.invite_ui.selected + invites.len() - 1) % invites.len()
+                        } else {
+                            (self.invite_ui.selected + 1) % invites.len()
+                        };
+                        cx.notify();
+                    }
+                }
+            }
+            "enter"
+                if !event.is_held && matches!(self.invite_ui.step, InviteStep::ManageList(..)) =>
+            {
+                if let InviteStep::ManageList(guild, invites) = &self.invite_ui.step {
+                    if let Some(invite) = invites.get(self.invite_ui.selected) {
+                        self.invite_ui.step =
+                            InviteStep::ConfirmRevoke(*guild, invites.clone(), invite.code.clone());
+                        cx.notify();
+                    }
+                }
+            }
+            "enter"
+                if !event.is_held
+                    && matches!(self.invite_ui.step, InviteStep::ConfirmRevoke(..)) =>
+            {
+                self.revoke_community_invite(cx)
+            }
+            "enter"
+                if !event.is_held && matches!(self.invite_ui.step, InviteStep::ManageError(..)) =>
+            {
+                if let InviteStep::ManageError(guild, _) = self.invite_ui.step {
+                    self.load_community_invites(guild, cx);
+                }
+            }
             "tab" => {
                 if matches!(
                     self.invite_ui.step,
@@ -314,6 +447,15 @@ impl Fluxer {
                     .child(heading(
                         if matches!(
                             step,
+                            InviteStep::ManageLoading(_)
+                                | InviteStep::ManageError(..)
+                                | InviteStep::ManageList(..)
+                                | InviteStep::ConfirmRevoke(..)
+                                | InviteStep::Revoking(..)
+                        ) {
+                            "Invites"
+                        } else if matches!(
+                            step,
                             InviteStep::CreateLoading
                                 | InviteStep::Created(_)
                                 | InviteStep::CreateError(_)
@@ -336,6 +478,103 @@ impl Fluxer {
             );
 
         match step {
+            InviteStep::ManageLoading(_) => {
+                card = card.child("Loading invites…");
+            }
+            InviteStep::ManageError(guild, message) => {
+                let guild = *guild;
+                card = card.child(message.clone()).child(
+                    button("retry-community-invites", "Try again").on_click(
+                        cx.listener(move |this, _, _, cx| this.load_community_invites(guild, cx)),
+                    ),
+                );
+            }
+            InviteStep::ManageList(guild, invites) => {
+                let guild = *guild;
+                let invites = invites.clone();
+                card = card.child("View all invites for this community. To create an invite, use a channel’s invite button. Use the arrow keys to select an invite and Enter to revoke it.");
+                if invites.is_empty() {
+                    card = card.child("No active invites.");
+                }
+                let mut list_view = div()
+                    .id("community-invites-list")
+                    .max_h(px(360.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_2();
+                for (index, invite) in invites.iter().enumerate() {
+                    let code = invite.code.clone();
+                    let list = invites.clone();
+                    let details = format!(
+                        "{} · #{} · by {} · {} uses · expires {}",
+                        code,
+                        invite.channel.name.as_deref().unwrap_or("unknown"),
+                        invite
+                            .inviter
+                            .as_ref()
+                            .map(|user| user.username.as_str())
+                            .unwrap_or("unknown"),
+                        invite.uses,
+                        invite.expires_at.as_deref().unwrap_or("never")
+                    );
+                    list_view = list_view.child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_2()
+                            .child(if index == self.invite_ui.selected {
+                                format!("› {details}")
+                            } else {
+                                details
+                            })
+                            .child(
+                                button(
+                                    SharedString::from(format!("revoke-invite-{index}")),
+                                    "Revoke",
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.invite_ui.step = InviteStep::ConfirmRevoke(
+                                            guild,
+                                            list.clone(),
+                                            code.clone(),
+                                        );
+                                        cx.notify();
+                                    },
+                                )),
+                            ),
+                    );
+                }
+                card = card.child(list_view);
+            }
+            InviteStep::ConfirmRevoke(guild, invites, code) => {
+                let (guild, invites) = (*guild, invites.clone());
+                card = card
+                    .child(format!(
+                        "Revoke invite {code}? People will no longer be able to use it."
+                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                button("cancel-revoke-invite", "Cancel").on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.invite_ui.step =
+                                            InviteStep::ManageList(guild, invites.clone());
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(button("confirm-revoke-invite", "Revoke invite").on_click(
+                                cx.listener(|this, _, _, cx| this.revoke_community_invite(cx)),
+                            )),
+                    );
+            }
+            InviteStep::Revoking(..) => {
+                card = card.child("Revoking invite…");
+            }
             InviteStep::CreateLoading => {
                 card = card.child("Creating invite…");
             }
