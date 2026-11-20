@@ -149,11 +149,15 @@ case "$scenario" in
         screenshot forum-next-page
         click 360 115
         screenshot forum-design
-        click 450 115
+        wtype -s 150 -k Tab
+        screenshot forum-tag-keyboard-focus
+        wtype -s 150 -k Return
         screenshot forum-match-any
-        click 550 115
+        wtype -s 150 -k Tab
+        wtype -s 150 -k space
         screenshot forum-match-all
-        click 638 115
+        wtype -s 150 -k Tab
+        wtype -s 150 -k Return
         screenshot forum-tags-cleared
         click 387 159
         screenshot forum-newest
