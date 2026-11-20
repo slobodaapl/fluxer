@@ -581,3 +581,28 @@ async fn group_dm_uses_recipients_request_shape() {
     let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body, json!({"recipients":["42","43"]}));
 }
+
+#[tokio::test]
+async fn private_call_ring_and_stop_use_explicit_recipients() {
+    let (origin, mut requests) = http_server(vec![
+        response("200 OK", Value::Null),
+        response("200 OK", Value::Null),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap();
+    let recipients = vec!["12".to_owned(), "34".to_owned()];
+    client.call_ringing("56", &recipients, false).await.unwrap();
+    client.call_ringing("56", &recipients, true).await.unwrap();
+    for action in ["ring", "stop-ringing"] {
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(&format!("POST /api/v1/channels/56/call/{action} ")));
+        let body = request.split_once("\r\n\r\n").unwrap().1;
+        assert_eq!(
+            serde_json::from_str::<Value>(body).unwrap(),
+            json!({"recipients": ["12", "34"]})
+        );
+    }
+}

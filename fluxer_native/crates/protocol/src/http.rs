@@ -829,6 +829,23 @@ impl Client {
             result => result,
         }
     }
+    /// Ring or stop ringing the specified private-call recipients.
+    pub async fn call_ringing(
+        &self,
+        channel: &str,
+        recipients: &[String],
+        stop: bool,
+    ) -> Result<()> {
+        let action = if stop { "stop-ringing" } else { "ring" };
+        self.request(
+            Method::POST,
+            &format!("/channels/{channel}/call/{action}"),
+            Some(&json!({"recipients": recipients})),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn typing(&self, channel: &str) -> Result<()> {
         self.request(
             Method::POST,

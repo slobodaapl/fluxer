@@ -131,6 +131,13 @@ impl Fluxer {
                     || matches!(parent.kind, ChannelType::Forum | ChannelType::Media)
             })
             .map(|parent| (parent.id, parent.name.clone()));
+        let private_call = channel
+            .filter(|channel| {
+                !self.demo
+                    && channel.guild_id.is_none()
+                    && matches!(channel.kind, ChannelType::Dm | ChannelType::GroupDm)
+            })
+            .map(|channel| channel.id);
         let group_add = channel
             .filter(|channel| {
                 !self.demo && channel.kind == ChannelType::GroupDm && channel.guild_id.is_none()
@@ -253,6 +260,15 @@ impl Fluxer {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .when_some(private_call, |view, channel| view.child(
+                                quiet_button("start-private-call", "Start voice call").on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.command(Command::StartPrivateCall { channel_id: channel }, cx);
+                                        this.pane = Pane::Call;
+                                        cx.notify();
+                                    }),
+                                ),
+                            ))
                             .when_some(group_add, |view, channel| view.child(
                                 quiet_button("group-add-friends", "Add friends").on_click(
                                     cx.listener(move |this, _, _, cx| this.add_friends_to_group(channel, cx)),

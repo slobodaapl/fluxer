@@ -249,6 +249,7 @@ pub(crate) struct Worker {
     media: Option<MediaEngine>,
     media_events: Option<MediaEvents>,
     voice_target: Option<VoiceTarget>,
+    private_ring: Option<(Snowflake, Vec<String>, bool)>,
     voice_connect: Option<VoiceConnectJob>,
     voice_recovery_started: Option<tokio::time::Instant>,
     voice_recovery_at: Option<tokio::time::Instant>,
@@ -345,6 +346,7 @@ impl Worker {
             media: None,
             media_events: None,
             voice_target: None,
+            private_ring: None,
             voice_connect: None,
             voice_recovery_started: None,
             voice_recovery_at: None,
@@ -2134,6 +2136,50 @@ impl Worker {
                 self.snapshot();
                 self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
             }
+            Command::StartPrivateCall { channel_id } => {
+                if self.demo {
+                    return Err("Voice transmission requires signing in to a real instance".into());
+                }
+                if !self.gateway_ready {
+                    return Err("Wait for the gateway to connect".into());
+                }
+                let channel = self
+                    .state
+                    .channels
+                    .get(&channel_id)
+                    .ok_or("Unknown private channel")?;
+                if channel.guild_id.is_some()
+                    || !matches!(channel.kind, ChannelType::Dm | ChannelType::GroupDm)
+                {
+                    return Err("Choose a direct or group message".into());
+                }
+                let me = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+                let recipients = channel
+                    .recipients
+                    .iter()
+                    .filter(|u| u.id != me)
+                    .map(|u| u.id.to_string())
+                    .collect::<Vec<_>>();
+                if recipients.is_empty() {
+                    return Err("No call recipients available".into());
+                }
+                self.leave_voice(true).await?;
+                self.call_generation = self.call_generation.wrapping_add(1);
+                self.voice_target = Some(VoiceTarget {
+                    guild_id: None,
+                    channel_id,
+                    connection_id: None,
+                });
+                self.private_ring = Some((channel_id, recipients, false));
+                self.voice_join_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(15));
+                if let Err(message) = self.update_voice().await {
+                    let _ = self.leave_voice(false).await;
+                    return Err(message);
+                }
+                self.snapshot();
+                self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
+            }
             Command::LeaveVoice => self.leave_voice(true).await?,
             Command::SetMute(muted) => {
                 let mut next = self.state.voice.clone();
@@ -3320,6 +3366,7 @@ impl Worker {
     }
 
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
+        let ring = self.private_ring.take();
         self.pending_share = None;
         self.active_share_audio = false;
         if let Some(job) = self.voice_connect.take() {
@@ -3386,6 +3433,16 @@ impl Worker {
                 self.pending_voice_leave = Some(payload.clone());
             }
             let _ = tx.send(GatewayCommand::VoiceState(payload)).await;
+        }
+        if let Some((channel, recipients, true)) = ring {
+            if let Ok(client) = self.client() {
+                if let Err(failure) = client
+                    .call_ringing(&channel.to_string(), &recipients, true)
+                    .await
+                {
+                    self.emit(Event::Error(error(failure)));
+                }
+            }
         }
         self.snapshot();
         disconnected
@@ -4119,6 +4176,20 @@ impl Worker {
                 self.voice_recovery_at = None;
                 self.voice_recovery_attempts = 0;
                 self.state.voice.join(channel);
+                if let Some((ring_channel, recipients, false)) = self.private_ring.clone()
+                    && ring_channel == channel
+                {
+                    // A failed response may still mean the server accepted the ring.
+                    // Retain cleanup intent before sending, and never retry on recovery.
+                    self.private_ring = Some((channel, recipients.clone(), true));
+                    if let Err(failure) = self
+                        .client()?
+                        .call_ringing(&channel.to_string(), &recipients, false)
+                        .await
+                    {
+                        self.emit(Event::Error(error(failure)));
+                    }
+                }
                 if job.revoked_share
                     && let Err(message) = self.update_voice().await
                 {

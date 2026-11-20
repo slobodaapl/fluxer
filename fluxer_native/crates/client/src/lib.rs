@@ -479,6 +479,9 @@ pub enum Command {
         guild_id: Option<Snowflake>,
         channel_id: Snowflake,
     },
+    StartPrivateCall {
+        channel_id: Snowflake,
+    },
     LeaveVoice,
     SetMute(bool),
     SetDeaf(bool),
