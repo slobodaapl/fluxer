@@ -3939,7 +3939,7 @@ async fn group_add_survives_navigation_and_rejects_duplicate_job() {
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let request = read_request(&mut socket).await;
-        assert!(request.starts_with("PUT /api/channels/50/recipients/42 "));
+        assert!(request.starts_with("PUT /api/v1/channels/50/recipients/42 "));
         accepted_tx.send(()).unwrap();
         release_rx.await.unwrap();
         socket
