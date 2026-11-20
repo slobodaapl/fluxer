@@ -115,19 +115,18 @@ impl Fluxer {
         if self.roles_ui.pending {
             return;
         }
-        if let Some(original) = &self.roles_ui.original {
-            if self
+        if let Some(original) = &self.roles_ui.original
+            && self
                 .state
                 .guilds
                 .get(&guild_id)
-                .and_then(|g| g.roles.iter().find(|r| r.id == original.id))
+                .and_then(|guild| guild.roles.iter().find(|role| role.id == original.id))
                 != Some(original)
-            {
-                self.roles_ui.error =
-                    Some("This role changed. Select it again to reload before saving.".into());
-                cx.notify();
-                return;
-            }
+        {
+            self.roles_ui.error =
+                Some("This role changed. Select it again to reload before saving.".into());
+            cx.notify();
+            return;
         }
         let color = u32::from_str_radix(
             self.roles_ui

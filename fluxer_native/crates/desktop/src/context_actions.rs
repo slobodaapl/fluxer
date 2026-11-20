@@ -215,6 +215,88 @@ fn participant_target(
 }
 
 impl Fluxer {
+    fn open_channel_permissions(
+        &mut self,
+        channel: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(guild) = self
+            .state
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.guild_id)
+        else {
+            return;
+        };
+        let streaming = self.streaming();
+        let options = self
+            .state
+            .guilds
+            .get(&guild)
+            .into_iter()
+            .flat_map(|guild| &guild.roles)
+            .map(|role| (format!("0-{}", role.id), format!("Role · {}", role.name)))
+            .chain(
+                self.state
+                    .members
+                    .iter()
+                    .filter(|((id, _), _)| *id == guild)
+                    .map(|((_, id), member)| {
+                        (
+                            format!("1-{id}"),
+                            format!("Member · {}", streaming.name(member.user.display_name())),
+                        )
+                    }),
+            )
+            .collect();
+        let selector = cx
+            .new(|cx| crate::dropdown::Dropdown::new("Role or member", options, None, window, cx));
+        cx.subscribe(
+            &selector,
+            move |this, selector, selected: &crate::dropdown::Selected, cx| {
+                if !this
+                    .overwrite_selector
+                    .as_ref()
+                    .is_some_and(|(id, current)| *id == channel && *current == selector)
+                {
+                    return;
+                }
+                let Some((kind, target)) = selected.0.split_once('-').and_then(|(kind, target)| {
+                    Some((kind.parse::<u8>().ok()?, Snowflake(target.parse().ok()?)))
+                }) else {
+                    return;
+                };
+                let existing = this
+                    .state
+                    .channels
+                    .get(&channel)
+                    .and_then(|channel| {
+                        channel
+                            .permission_overwrites
+                            .iter()
+                            .find(|entry| entry.id == target && entry.kind == kind)
+                    })
+                    .cloned();
+                let draft = existing
+                    .clone()
+                    .unwrap_or(fluxer_core::PermissionOverwrite {
+                        id: target,
+                        kind,
+                        ..Default::default()
+                    });
+                this.overwrite_form = Some((channel, draft, existing));
+                cx.notify();
+            },
+        )
+        .detach();
+        selector.read(cx).focus_handle().focus(window);
+        self.selected_guild = Some(guild);
+        self.overwrite_selector = Some((channel, selector));
+        self.overwrite_form = None;
+        cx.notify();
+    }
+
     fn can_manage_guild_channels(&self, id: Snowflake) -> bool {
         let Some(user) = self.state.current_user.as_ref() else {
             return false;
@@ -707,48 +789,13 @@ impl Fluxer {
                     }
                     if channel.guild_id.is_some()
                         && !channel.kind.is_thread()
-                        && self.state.current_user.as_ref().is_some_and(|u| {
+                        && self.state.current_user.as_ref().is_some_and(|user| {
                             self.state
-                                .permissions_for(*id, u.id)
+                                .permissions_for(*id, user.id)
                                 .contains(fluxer_core::Permissions::MANAGE_ROLES)
                         })
                     {
-                        if let Some(guild_id) = channel.guild_id {
-                            if let Some(guild) = self.state.guilds.get(&guild_id) {
-                                for role in &guild.roles {
-                                    let exists = channel
-                                        .permission_overwrites
-                                        .iter()
-                                        .any(|o| o.id == role.id);
-                                    items.push(action(
-                                        &format!("overwrite-0-{}", role.id),
-                                        &format!(
-                                            "{} permissions: {}",
-                                            if exists { "Edit" } else { "Add" },
-                                            role.name
-                                        ),
-                                        Icon::Settings,
-                                    ));
-                                }
-                            }
-                            for ((member_guild, member_id), member) in &self.state.members {
-                                if *member_guild == guild_id {
-                                    let exists = channel
-                                        .permission_overwrites
-                                        .iter()
-                                        .any(|o| o.id == *member_id);
-                                    items.push(action(
-                                        &format!("overwrite-1-{}", member_id),
-                                        &format!(
-                                            "{} permissions: {}",
-                                            if exists { "Edit" } else { "Add" },
-                                            member.user.display_name()
-                                        ),
-                                        Icon::Settings,
-                                    ));
-                                }
-                            }
-                        }
+                        items.push(action("channel-permissions", "Permissions", Icon::Settings));
                     }
                     items.extend(self.navigation_items(target));
                     items.push(Item::Separator);
@@ -1259,43 +1306,8 @@ impl Fluxer {
                     window.focus(&self.context.kick_focus);
                 }
             }
-            (Target::Channel(channel), id) if id.starts_with("overwrite-") => {
-                if let Some(c) = self.state.channels.get(channel)
-                    && let Some(guild) = c.guild_id
-                    && let Some((kind, target)) = id
-                        .strip_prefix("overwrite-")
-                        .and_then(|s| s.split_once('-'))
-                    && let Ok(kind) = kind.parse::<u8>()
-                    && let Some(target) = (if kind == 0 {
-                        self.state.guilds.get(&guild).and_then(|g| {
-                            g.roles
-                                .iter()
-                                .find(|r| r.id.to_string() == target)
-                                .map(|r| r.id)
-                        })
-                    } else {
-                        self.state
-                            .members
-                            .keys()
-                            .find(|(g, m)| *g == guild && m.to_string() == target)
-                            .map(|(_, m)| *m)
-                    })
-                {
-                    let existing = c
-                        .permission_overwrites
-                        .iter()
-                        .find(|o| o.id == target && o.kind == kind)
-                        .cloned();
-                    let draft = existing
-                        .clone()
-                        .unwrap_or(fluxer_core::PermissionOverwrite {
-                            id: target,
-                            kind,
-                            ..Default::default()
-                        });
-                    self.selected_guild = Some(guild);
-                    self.overwrite_form = Some((*channel, draft, existing));
-                }
+            (Target::Channel(channel), "channel-permissions") => {
+                self.open_channel_permissions(*channel, window, cx);
             }
             (Target::Channel(channel), "channel-webhooks") => {
                 self.open_webhooks(*channel, window, cx)

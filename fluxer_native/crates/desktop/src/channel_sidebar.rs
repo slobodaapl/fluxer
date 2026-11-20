@@ -39,89 +39,6 @@ pub(super) fn guild_channel_rows(mut channels: Vec<&Channel>) -> Vec<&Channel> {
     rows
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn move_payload_clamps_text_and_voice_and_keeps_category_blocks() {
-        use ChannelType::*;
-        let channels = [
-            (10, Category, None, 0),
-            (11, Text, Some(10), 0),
-            (12, Voice, Some(10), 1),
-            (20, Category, None, 1),
-            (21, Text, Some(20), 0),
-            (22, Voice, Some(20), 1),
-        ]
-        .map(|(id, kind, parent, position)| Channel {
-            id: id.into(),
-            kind,
-            parent_id: parent.map(Into::into),
-            position,
-            ..Channel::default()
-        });
-        let rows: Vec<_> = channels.iter().collect();
-        // Appending text to a category places it before the first voice.
-        assert_eq!(
-            move_operation(&rows, 11.into(), None, Some(20.into()), false),
-            Some((Some(20.into()), Some(21.into()), 1))
-        );
-        // Dropping voice before text clamps it after text.
-        assert_eq!(
-            move_operation(&rows, 12.into(), Some(21.into()), None, false),
-            Some((Some(20.into()), Some(21.into()), 1))
-        );
-        // Moving a category carries its children as a block.
-        assert_eq!(
-            move_operation(&rows, 10.into(), None, None, true),
-            Some((None, Some(20.into()), 1))
-        );
-        assert_eq!(
-            move_operation(&rows, 20.into(), Some(10.into()), None, false),
-            Some((None, None, 0))
-        );
-        assert_eq!(
-            move_operation(&rows, 11.into(), Some(12.into()), None, false),
-            None
-        );
-    }
-
-    #[test]
-    fn categories_keep_their_children_when_positions_overlap() {
-        use ChannelType::*;
-
-        let channels = [
-            (10, Category, None, 0),
-            (20, Category, None, 2),
-            (30, Category, None, 4),
-            (31, Category, None, 6),
-            (11, Text, Some(10), 4),
-            (12, Text, Some(10), 5),
-            (21, Voice, Some(20), 3),
-            (22, Voice, Some(20), 7),
-            (23, Forum, Some(20), 8),
-            (32, Text, Some(30), 9),
-            (33, PublicThread, Some(32), 0),
-            (34, Text, Some(99), 0),
-            (9, Text, None, 10),
-            (100, Announcement, None, 10),
-            (101, Voice, None, -1),
-        ]
-        .map(|(id, kind, parent, position)| Channel {
-            id: id.into(),
-            kind,
-            parent_id: parent.map(Into::into),
-            position,
-            ..Channel::default()
-        });
-
-        let rows = guild_channel_rows(channels.iter().rev().collect());
-        let ids: Vec<_> = rows.iter().map(|channel| channel.id.0).collect();
-        assert_eq!(ids, [100, 9, 101, 10, 11, 12, 20, 23, 21, 22, 30, 32, 31]);
-    }
-}
-
 /// Build the classic sibling-based move payload for a compact native menu.
 /// `before` targets a row; `inside` appends to a category; neither means root start.
 pub(super) fn move_operation(
@@ -236,4 +153,87 @@ pub(super) fn move_operation(
         }
     };
     Some((parent, preceding, position))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn move_payload_clamps_text_and_voice_and_keeps_category_blocks() {
+        use ChannelType::*;
+        let channels = [
+            (10, Category, None, 0),
+            (11, Text, Some(10), 0),
+            (12, Voice, Some(10), 1),
+            (20, Category, None, 1),
+            (21, Text, Some(20), 0),
+            (22, Voice, Some(20), 1),
+        ]
+        .map(|(id, kind, parent, position)| Channel {
+            id: id.into(),
+            kind,
+            parent_id: parent.map(Into::into),
+            position,
+            ..Channel::default()
+        });
+        let rows: Vec<_> = channels.iter().collect();
+        // Appending text to a category places it before the first voice.
+        assert_eq!(
+            move_operation(&rows, 11.into(), None, Some(20.into()), false),
+            Some((Some(20.into()), Some(21.into()), 1))
+        );
+        // Dropping voice before text clamps it after text.
+        assert_eq!(
+            move_operation(&rows, 12.into(), Some(21.into()), None, false),
+            Some((Some(20.into()), Some(21.into()), 1))
+        );
+        // Moving a category carries its children as a block.
+        assert_eq!(
+            move_operation(&rows, 10.into(), None, None, true),
+            Some((None, Some(20.into()), 1))
+        );
+        assert_eq!(
+            move_operation(&rows, 20.into(), Some(10.into()), None, false),
+            Some((None, None, 0))
+        );
+        assert_eq!(
+            move_operation(&rows, 11.into(), Some(12.into()), None, false),
+            None
+        );
+    }
+
+    #[test]
+    fn categories_keep_their_children_when_positions_overlap() {
+        use ChannelType::*;
+
+        let channels = [
+            (10, Category, None, 0),
+            (20, Category, None, 2),
+            (30, Category, None, 4),
+            (31, Category, None, 6),
+            (11, Text, Some(10), 4),
+            (12, Text, Some(10), 5),
+            (21, Voice, Some(20), 3),
+            (22, Voice, Some(20), 7),
+            (23, Forum, Some(20), 8),
+            (32, Text, Some(30), 9),
+            (33, PublicThread, Some(32), 0),
+            (34, Text, Some(99), 0),
+            (9, Text, None, 10),
+            (100, Announcement, None, 10),
+            (101, Voice, None, -1),
+        ]
+        .map(|(id, kind, parent, position)| Channel {
+            id: id.into(),
+            kind,
+            parent_id: parent.map(Into::into),
+            position,
+            ..Channel::default()
+        });
+
+        let rows = guild_channel_rows(channels.iter().rev().collect());
+        let ids: Vec<_> = rows.iter().map(|channel| channel.id.0).collect();
+        assert_eq!(ids, [100, 9, 101, 10, 11, 12, 20, 23, 21, 22, 30, 32, 31]);
+    }
 }

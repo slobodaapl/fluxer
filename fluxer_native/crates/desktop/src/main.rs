@@ -383,6 +383,7 @@ struct Fluxer {
     bans_ui: bans_view::BansUi,
     webhooks_ui: webhooks_view::WebhooksUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
+    overwrite_selector: Option<(Snowflake, Entity<Dropdown>)>,
     overwrite_form: Option<(
         Snowflake,
         fluxer_core::PermissionOverwrite,
@@ -529,6 +530,7 @@ impl Fluxer {
         });
         let mut view = Self {
             channel_form: None,
+            overwrite_selector: None,
             overwrite_form: None,
             channel_name: cx.new(|cx| TextInput::new("Channel name", cx)),
             channel_topic: cx.new(|cx| TextInput::new("Channel topic", cx)),
@@ -1339,6 +1341,8 @@ impl Fluxer {
                         self.members_scroll = UniformListScrollHandle::new();
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.overwrite_selector = None;
+                        self.overwrite_form = None;
                         self.status_ui.reset(cx);
                         self.invite_ui.reset(cx);
                         self.gif_picker.reset();
@@ -2683,6 +2687,7 @@ impl Fluxer {
         self.community_ui.reset(cx);
         self.invite_ui.reset(cx);
         self.selected_guild = None;
+        self.overwrite_selector = None;
         self.overwrite_form = None;
         self.session_context_loaded = false;
         self.session_restore_failed = false;
@@ -2824,6 +2829,23 @@ impl Fluxer {
                 },
             )
             .when_some(
+                self.overwrite_selector.as_ref().filter(|(id, _)| {
+                    self.state.channels.get(id).and_then(|channel| channel.guild_id) == self.selected_guild
+                }),
+                |view, (_, selector)| {
+                    view.child(div().px_2().py_1().flex().flex_col().gap_1()
+                        .child(muted("Channel permissions"))
+                        .child(selector.clone())
+                        .when(self.overwrite_form.is_none(), |view| {
+                            view.child(controls::quiet_button("overwrite-picker-close", "Close")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.overwrite_selector = None;
+                                    cx.notify();
+                                })))
+                        }))
+                },
+            )
+            .when_some(
                 self.overwrite_form.clone().filter(|(id, _, _)| {
                     self.state.channels.get(id).and_then(|c| c.guild_id) == self.selected_guild
                 }),
@@ -2836,14 +2858,12 @@ impl Fluxer {
                         .and_then(|g| self.state.guilds.get(&g))
                         .and_then(|g| g.roles.iter().find(|r| overwrite.kind == 0 && r.id == overwrite.id))
                         .map(|r| r.name.clone())
-                        .or_else(|| self.state.users.get(&overwrite.id).map(|u| u.display_name().to_string()))
+                        .or_else(|| self.state.users.get(&overwrite.id).map(|user| self.streaming().name(user.display_name()).into_owned()))
                         .unwrap_or_else(|| overwrite.id.to_string());
-                    let mut form = div()
-                        .p_2()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
+                    let form = div().p_2().flex().flex_col().gap_2()
                         .child(muted(format!("Permissions · {role_name}")));
+                    let mut choices = div().id("channel-permission-choices").max_h(px(260.))
+                        .overflow_y_scroll().flex().flex_col().gap_1();
                     for (label, bit) in [
                         ("View channel", fluxer_core::Permissions::VIEW_CHANNEL),
                         ("Send messages", fluxer_core::Permissions::SEND_MESSAGES),
@@ -2873,8 +2893,8 @@ impl Fluxer {
                         } else {
                             "Inherit"
                         };
-                        form = form.child(
-                            button(("overwrite", bit.0), format!("{label}: {status}")).on_click(
+                        choices = choices.child(
+                            controls::quiet_button(("overwrite", bit.0), format!("{label}: {status}")).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     if let Some((_, draft, _)) = this.overwrite_form.as_mut() {
                                         if draft.allow.contains(bit) {
@@ -2892,7 +2912,7 @@ impl Fluxer {
                         );
                     }
                     view.child(
-                        form.child(
+                        form.child(choices).child(
                             div()
                                 .flex()
                                 .gap_2()
@@ -2901,6 +2921,7 @@ impl Fluxer {
                                         if let Some((channel_id, overwrite, expected)) =
                                             this.overwrite_form.take()
                                         {
+                                            this.overwrite_selector = None;
                                             this.command_if_live(
                                                 Command::SetChannelOverwrite {
                                                     channel_id,
@@ -2914,12 +2935,14 @@ impl Fluxer {
                                     },
                                 )))
                                 .when_some(original, |row, expected| row.child(button("overwrite-remove", "Remove").on_click(cx.listener(move |this, _, _, cx| {
+                                    this.overwrite_selector = None;
                                     this.overwrite_form = None;
                                     this.command_if_live(Command::DeleteChannelOverwrite { channel_id, expected: expected.clone() }, cx);
                                     cx.notify();
                                 }))))
                                 .child(button("overwrite-cancel", "Cancel").on_click(cx.listener(
                                     |this, _, _, cx| {
+                                        this.overwrite_selector = None;
                                         this.overwrite_form = None;
                                         cx.notify();
                                     },

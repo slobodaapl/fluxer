@@ -242,6 +242,10 @@ impl Fluxer {
         let effects = self.streaming();
         self.native_notifications.set_streaming(effects);
         let previous = std::mem::replace(&mut self.streamer_detection.presented, effects);
+        if effects.hide_names != previous.hide_names {
+            self.overwrite_selector = None;
+            self.overwrite_form = None;
+        }
         if effects.hide_invites != previous.hide_invites
             || effects.hide_names != previous.hide_names
         {

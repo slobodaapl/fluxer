@@ -223,10 +223,9 @@ impl Fluxer {
                             if let (Some(row), Some(base)) = (
                                 this.webhooks_ui.rows.get(index),
                                 this.webhooks_ui.public_endpoint.as_ref(),
-                            ) {
-                                if let Some(url) = row.copy_url(base) {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(url));
-                                }
+                            ) && let Some(url) = row.copy_url(base)
+                            {
+                                cx.write_to_clipboard(ClipboardItem::new_string(url));
                             }
                         }),
                     ),

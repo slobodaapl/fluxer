@@ -36,7 +36,7 @@
       "milestone": "M5",
       "status": "partial",
       "acceptance": "Login, registration, unclaimed accounts, recovery, MFA, passkeys, SSO, verification and sudo.",
-      "evidence": "Native client implementation and tests; see STATUS.md for scope and release gaps."
+      "evidence": "Native sign-in and verification handoff, confirmed device revocation proofs and a native password reset request with browser CAPTCHA/reset continuation. Native registration and reset-token/MFA UI remain open. See STATUS.md."
     },
     {
       "id": "channel",
@@ -44,7 +44,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings.",
-      "evidence": "Native community and group chat includes source-backed channel create, rename, topics, and confirmed deletion. Message rendering and navigation evidence is in STATUS.md and REVIEW.md."
+      "evidence": "Channel/category create, rename, topics, confirmed deletion, and permission-gated moves by category or sibling position. Drag-and-drop and full channel settings remain open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "code_highlighting",
@@ -58,8 +58,9 @@
       "id": "connection",
       "source": "fluxer_app/src/features/connection",
       "milestone": "M5",
-      "status": "pending",
-      "acceptance": "Linked external accounts, verification, authorize/deauthorize and callback handling."
+      "status": "partial",
+      "acceptance": "Linked external accounts, verification, authorize/deauthorize and callback handling.",
+      "evidence": "Linked account list, visibility edits and confirmed unlink with authoritative refresh. Authorized apps, creation and callback flows remain open. See STATUS.md."
     },
     {
       "id": "devtools",
@@ -72,8 +73,9 @@
       "id": "discovery",
       "source": "fluxer_app/src/features/discovery",
       "milestone": "M4",
-      "status": "pending",
-      "acceptance": "Explore, filters, previews, join, visitor behavior and community listing management."
+      "status": "partial",
+      "acceptance": "Explore, filters, previews, join, visitor behavior and community listing management.",
+      "evidence": "Native Explore directory with instance-scoped search, category/language filters, pagination and explicit confirmed joins. Visitor previews and listing management remain open. See qa/discovery.md."
     },
     {
       "id": "emoji",
@@ -104,7 +106,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation.",
-      "evidence": "Forum and media post pagination and tag filtering, plus forum text-post creation. See STATUS.md and REVIEW.md."
+      "evidence": "Forum/media pagination and tag filtering, text post creation, staged attachments and media posts with source-compatible first-message upload metadata. Live permissions, upload failure/retry and moderation remain open. See STATUS.md."
     },
     {
       "id": "gateway",
@@ -118,8 +120,9 @@
       "id": "gift",
       "source": "fluxer_app/src/features/gift",
       "milestone": "M6",
-      "status": "pending",
-      "acceptance": "Gift redemption, purchase handoff and gift code lifecycle."
+      "status": "partial",
+      "acceptance": "Gift redemption, purchase handoff and gift code lifecycle.",
+      "evidence": "Native gift inventory with available and redeemed entries and explicit code copy for available gifts. Purchase, redeem, delivery and unread handling remain open. See STATUS.md."
     },
     {
       "id": "guild",
@@ -127,7 +130,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Community list and channel loading; M4 adds CRUD, roles, bans, audit log and integrations.",
-      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
+      "evidence": "Native community creation, joins and leave, invite and channel administration, role definition CRUD, paginated audit log, bans and channel webhooks. Role ordering, richer audit changes and remaining settings need coverage. See STATUS.md."
     },
     {
       "id": "i18n",
@@ -191,7 +194,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows.",
-      "evidence": "Permission-gated kick, timeout, permanent ban, ban listing and revocation. See STATUS.md and REVIEW.md."
+      "evidence": "Permission-gated kick, timeout, permanent ban, ban listing and revocation. Chat and forum views gate mature content and scoped warnings. Reports, regional gating and complete entry-point coverage remain open. See STATUS.md."
     },
     {
       "id": "navigation",
@@ -215,7 +218,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Owner/admin, role hierarchy, everyone/role/member overwrites, implicit permissions and live invalidation.",
-      "evidence": "Core channel and role resolution plus editing six permission bits of existing role overwrites. Full overwrite administration and release acceptance remain open."
+      "evidence": "Core permissions, permission-gated role management and role/member channel overwrite creation, editing and removal. Member picker uses loaded members. Full hierarchy/editor coverage and release acceptance remain open. See STATUS.md."
     },
     {
       "id": "platform",
@@ -229,8 +232,9 @@
       "id": "premium",
       "source": "fluxer_app/src/features/premium",
       "milestone": "M6",
-      "status": "pending",
-      "acceptance": "Plutonium entitlements, subscription lifecycle, checkout returns, billing and Operator Pass."
+      "status": "partial",
+      "acceptance": "Plutonium entitlements, subscription lifecycle, checkout returns, billing and Operator Pass.",
+      "evidence": "Plutonium entitlement and perk status plus hosted gift inventory. Checkout, return, billing mutations and full gift flows remain open. See STATUS.md."
     },
     {
       "id": "presence",
@@ -262,7 +266,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Remote message search, filters, pagination, jump-to-message and quick switcher.",
-      "evidence": "Server-backed search with source-query fixtures, pagination, historical jumps, filter suggestions, scoped recent searches and a native Quick Switcher. Full source autocomplete coverage and live acceptance remain open. See STATUS.md and REVIEW.md."
+      "evidence": "Server-backed search with source-query fixtures, historical jumps, filter suggestions, and scoped recent searches plus Quick Switcher. Full autocomplete, mature-content coverage and live acceptance remain open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "slowmode",
@@ -299,8 +303,9 @@
       "id": "theme_settings",
       "source": "fluxer_app/src/features/theme_settings",
       "milestone": "M5",
-      "status": "pending",
-      "acceptance": "Theme import/export, colors, fonts, local file watching and supported custom style semantics."
+      "status": "partial",
+      "acceptance": "Theme import/export, colors, fonts, local file watching and supported custom style semantics.",
+      "evidence": "Device-local Dark and Coal presets applied to root and navigation surfaces. Full palettes, custom theme import/export and file watching remain open. See STATUS.md."
     },
     {
       "id": "threads",
@@ -308,7 +313,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels.",
-      "evidence": "Active discovery, standalone creation, chat, public membership and archived browsing, and owner archive/lock actions. See STATUS.md and REVIEW.md."
+      "evidence": "Active/archived browsing and public join/leave, private and message-started creation, owner archive/lock. Starter text, private membership and full moderator/read parity remain open. See STATUS.md."
     },
     {
       "id": "trusted_domain",
@@ -316,7 +321,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "External link confirmation, trusted-domain list and deceptive link handling.",
-      "evidence": "External link confirmation and trusted domain removal. See STATUS.md and REVIEW.md."
+      "evidence": "External link warning can save an exact host after explicit consent. Trusted domains can be removed and cleared in settings. Full link settings and live acceptance remain open. See STATUS.md."
     },
     {
       "id": "typing",
@@ -361,8 +366,9 @@
       "id": "webhook",
       "source": "fluxer_app/src/features/webhook",
       "milestone": "M4",
-      "status": "pending",
-      "acceptance": "Create/edit/delete webhooks, secrets, channel destinations and integration views."
+      "status": "partial",
+      "acceptance": "Create/edit/delete webhooks, secrets, channel destinations and integration views.",
+      "evidence": "Channel permission-gated webhook list, copy URL, create, rename and confirmed delete. Avatar, destination changes and additional webhooks UI remain open. See STATUS.md."
     },
     {
       "id": "window",
