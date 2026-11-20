@@ -2242,6 +2242,7 @@ impl Fluxer {
                     .size(px(44.))
                     .rounded_full()
                     .on_click(cx.listener(|this, _, window, cx| {
+                        this.community_ui.previous_focus = window.focused(cx);
                         this.community_ui.open_create(cx);
                         this.community_ui
                             .name

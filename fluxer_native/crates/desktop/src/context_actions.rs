@@ -1034,7 +1034,9 @@ impl Fluxer {
                 cx.write_to_clipboard(ClipboardItem::new_string(guild.to_string()))
             }
             (Target::Community(guild), "community-leave") => {
+                self.community_ui.previous_focus = window.focused(cx);
                 self.community_ui.open_leave(*guild);
+                window.focus(&self.community_ui.focus);
                 cx.notify();
             }
             (Target::Community(guild), "community-open") => {

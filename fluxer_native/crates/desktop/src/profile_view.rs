@@ -365,6 +365,29 @@ impl ProfilePopup {
             )
             + usize::from(self.open.as_ref().is_some_and(|o| o.can_relationship))
     }
+    fn role_options(&self) -> Vec<(Snowflake, bool)> {
+        let Some(open) = &self.open else {
+            return Vec::new();
+        };
+        let profile = self.snapshot.as_ref().and_then(|s| s.profile.as_ref());
+        let ready = self
+            .snapshot
+            .as_ref()
+            .is_some_and(|s| matches!(s.status, ProfileStatus::Ready));
+        let member = if ready || profile.is_some() {
+            profile.and_then(|p| p.guild_member.as_ref())
+        } else {
+            open.member.as_ref()
+        };
+        let Some(member) = member else {
+            return Vec::new();
+        };
+        open.roles
+            .iter()
+            .filter(|role| open.manageable_roles.contains(&role.id))
+            .map(|role| (role.id, !member.roles.contains(&role.id)))
+            .collect()
+    }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.presenting_loading && event.keystroke.key != "escape" {
             self.armed = false;
@@ -393,6 +416,12 @@ impl ProfilePopup {
                         )
                         + usize::from(self.open.as_ref().is_some_and(|o| o.can_relationship))
                         + self.bio_links.len()
+                        + usize::from(!self.role_options().is_empty())
+                        + if self.role_picker {
+                            self.role_options().len()
+                        } else {
+                            0
+                        }
                 };
                 self.selected = if event.keystroke.modifiers.shift {
                     (self.selected + count - 1) % count
@@ -474,8 +503,32 @@ impl ProfilePopup {
                 } else {
                     let base = self.action_count();
                     if self.selected >= base {
-                        if let Some(url) = self.bio_links.get(self.selected - base) {
+                        let index = self.selected - base;
+                        if let Some(url) = self.bio_links.get(index) {
                             cx.emit(ProfileAction::Link(url.clone()));
+                        } else {
+                            let role_index = index - self.bio_links.len();
+                            let options = self.role_options();
+                            if role_index == 0 && !options.is_empty() {
+                                self.role_picker = !self.role_picker;
+                                cx.notify();
+                            } else if self.role_picker
+                                && !self.role_pending
+                                && let Some(&(role_id, add)) =
+                                    role_index.checked_sub(1).and_then(|i| options.get(i))
+                                && let Some(open) = &self.open
+                                && let Some(guild_id) = open.guild_id
+                            {
+                                self.role_pending = true;
+                                self.role_error = None;
+                                cx.emit(ProfileAction::SetRole {
+                                    guild_id,
+                                    user_id: open.user.id,
+                                    role_id,
+                                    add,
+                                });
+                                cx.notify();
+                            }
                         }
                     } else {
                         self.block_action(cx);
@@ -1011,6 +1064,10 @@ impl Render for ProfilePopup {
                 content = content.child(
                     div()
                         .id("profile-manage-roles")
+                        .when(
+                            self.selected == self.action_count() + self.bio_links.len(),
+                            |view| view.bg(rgb(0x535064)),
+                        )
                         .mt_2()
                         .cursor_pointer()
                         .text_size(px(12.))
@@ -1026,16 +1083,22 @@ impl Render for ProfilePopup {
                         })),
                 );
                 if self.role_picker {
-                    for role in open
+                    for (index, role) in open
                         .roles
                         .iter()
                         .filter(|r| open.manageable_roles.contains(&r.id))
+                        .enumerate()
                     {
                         let role_id = role.id;
                         let add = !member.roles.contains(&role_id);
                         content = content.child(
                             div()
                                 .id(SharedString::from(format!("profile-role-{role_id}")))
+                                .when(
+                                    self.selected
+                                        == self.action_count() + self.bio_links.len() + 1 + index,
+                                    |view| view.bg(rgb(0x535064)),
+                                )
                                 .px_2()
                                 .py_1()
                                 .text_size(px(12.))
