@@ -445,7 +445,7 @@ async fn forum_post_keeps_attachments_inside_the_first_message_for_both_upload_p
             "fixture.bin"
         );
         assert_eq!(
-            payload["message"]["attachments"][0]["uploaded_filename"].as_str(),
+            payload["message"]["attachments"][0]["upload_filename"].as_str(),
             presigned.then_some("uploaded/object")
         );
         assert!(payload.get("attachments").is_none());
