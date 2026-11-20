@@ -325,6 +325,9 @@ impl Fluxer {
                 voice_channel.filter(|_| self.pane != Pane::Call),
                 |view, channel| view.child(self.voice_participant_pane(channel, cx)),
             )
+            .when(self.pane != Pane::Call && !self.available_cameras.is_empty(), |view| {
+                view.child(self.camera_strip(cx))
+            })
             .when(
                 self.pane != Pane::Call && !self.available_streams.is_empty(),
                 |v| {

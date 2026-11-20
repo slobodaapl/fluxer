@@ -5,6 +5,7 @@ mod avatar_crop;
 mod avatar_demo;
 mod avatar_images;
 mod call_view;
+mod camera_view;
 mod chat_helpers;
 mod chat_view;
 mod community_view;
@@ -104,7 +105,7 @@ use fluxer_core::{
 use fluxer_media::{
     AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
     NoiseSuppressionBackend, ParticipantAudioSettings, ScreenShareOptions, ScreenSource,
-    ScreenSourceKind, SharedAudioSelection, SharedAudioSettings,
+    ScreenSourceKind, SharedAudioSelection, SharedAudioSettings, VideoSource,
 };
 use gpui::{prelude::*, *};
 use image_viewer::ImageViewer;
@@ -434,6 +435,9 @@ struct Fluxer {
     reshare_required: bool,
     editing: Option<Snowflake>,
     viewer: Viewer<Arc<RenderImage>>,
+    camera_viewer: Viewer<Arc<RenderImage>>,
+    available_cameras: BTreeSet<String>,
+    pending_camera_starts: BTreeSet<String>,
     demo_stream: bool,
     fixture_generation: u64,
     video_stats: VideoStats,
@@ -640,6 +644,9 @@ impl Fluxer {
             reshare_required: false,
             editing: None,
             viewer: Viewer::default(),
+            camera_viewer: Viewer::default(),
+            available_cameras: BTreeSet::new(),
+            pending_camera_starts: BTreeSet::new(),
             demo_stream,
             fixture_generation: 1,
             video_stats: VideoStats::new(),
@@ -913,34 +920,58 @@ impl Fluxer {
         }
     }
     fn clear_viewer(&mut self, cx: &mut Context<Self>) {
-        for frame in self.viewer.frames.values() {
+        for frame in self
+            .viewer
+            .frames
+            .values()
+            .chain(self.camera_viewer.frames.values())
+        {
             self.retire_image(frame.image.clone(), cx);
         }
         self.viewer.clear();
+        self.camera_viewer.clear();
+        self.available_cameras.clear();
+        self.pending_camera_starts.clear();
     }
     fn reset_viewer_transport(&mut self, cx: &mut Context<Self>) {
-        for frame in self.viewer.frames.values() {
+        for frame in self
+            .viewer
+            .frames
+            .values()
+            .chain(self.camera_viewer.frames.values())
+        {
             self.retire_image(frame.image.clone(), cx);
         }
         self.viewer.transport_reset();
+        self.camera_viewer.transport_reset();
+    }
+    fn video_viewer(&mut self, source: VideoSource) -> &mut Viewer<Arc<RenderImage>> {
+        match source {
+            VideoSource::ScreenShare => &mut self.viewer,
+            VideoSource::Camera => &mut self.camera_viewer,
+        }
     }
     fn display_video(&mut self, frame: fluxer_media::VideoFrame, cx: &mut Context<Self>) {
-        if !self
-            .viewer
-            .accepts(&frame.participant, frame.watch_generation)
-        {
+        let viewer = self.video_viewer(frame.source);
+        if !viewer.accepts(&frame.participant, frame.watch_generation) {
             return;
         }
+        let previous = viewer
+            .frames
+            .get(&frame.participant)
+            .map(|frame| frame.image.clone());
         if let Some(buffer) = image::RgbaImage::from_raw(
             frame.width,
             frame.height,
             Arc::try_unwrap(frame.bgra).unwrap_or_else(|shared| shared.as_ref().clone()),
         ) {
             let image = RenderImage::new(smallvec::smallvec![image::Frame::new(buffer)]);
-            self.retire_stream_image(&frame.participant, cx);
+            if let Some(previous) = previous {
+                self.retire_image(previous, cx);
+            }
             self.video_stats.accepted();
             self.video_stats.image_added(image.id.0);
-            self.viewer.receive(
+            self.video_viewer(frame.source).receive(
                 frame.participant,
                 StreamFrame {
                     track_id: frame.track_id,
@@ -1430,6 +1461,31 @@ impl Fluxer {
                 // Commands update desired viewing immediately. Delayed worker
                 // snapshots must never re-add a locally stopped stream.
                 Event::WatchedStreams(_) => {}
+                Event::WatchedCameras(watched) => {
+                    // A delayed positive acknowledgment cannot undo a local hide.
+                    for identity in watched {
+                        self.pending_camera_starts.remove(&identity);
+                    }
+                }
+                Event::CameraWatchFailed { identity, error } => {
+                    self.pending_camera_starts.remove(&identity);
+                    if self.camera_viewer.desired.contains(&identity) {
+                        self.hide_camera(&identity, cx);
+                        self.camera_viewer.errors.insert(identity, error);
+                    }
+                }
+                Event::CameraAvailable {
+                    identity,
+                    available,
+                } => {
+                    if available {
+                        self.available_cameras.insert(identity);
+                    } else {
+                        self.available_cameras.remove(&identity);
+                        self.pending_camera_starts.remove(&identity);
+                        self.hide_camera(&identity, cx);
+                    }
+                }
                 Event::AudioPreferences {
                     dsp,
                     mixer,
@@ -1779,14 +1835,22 @@ impl Fluxer {
                     MediaEvent::VideoEnded {
                         track_id,
                         watch_generation,
+                        source,
                         ..
                     } => {
-                        for frame in self.viewer.frames.values().filter(|frame| {
-                            frame.track_id == track_id && frame.watch_generation == watch_generation
-                        }) {
-                            self.retire_image(frame.image.clone(), cx);
+                        let viewer = self.video_viewer(source);
+                        let retired = viewer
+                            .frames
+                            .values()
+                            .find(|frame| {
+                                frame.track_id == track_id
+                                    && frame.watch_generation == watch_generation
+                            })
+                            .map(|frame| frame.image.clone());
+                        viewer.end_track(&track_id, watch_generation);
+                        if let Some(image) = retired {
+                            self.retire_image(image, cx);
                         }
-                        self.viewer.end_track(&track_id, watch_generation);
                     }
                     MediaEvent::Disconnected => {
                         self.active_speakers.clear();
@@ -1800,6 +1864,7 @@ impl Fluxer {
                         self.shared_audio = false;
                     }
                     MediaEvent::Reconnecting => {
+                        self.available_cameras.clear();
                         self.active_speakers.clear();
                         self.sharing = false;
                         self.reset_viewer_transport(cx);
@@ -1890,8 +1955,10 @@ impl Fluxer {
             self.display_video(frame, cx);
             changed = true;
         }
-        self.video_stats
-            .poll(poll_started.elapsed(), self.viewer.frames.len());
+        self.video_stats.poll(
+            poll_started.elapsed(),
+            self.viewer.frames.len() + self.camera_viewer.frames.len(),
+        );
         let countdown = self
             .ip_authorization
             .as_ref()
@@ -2954,19 +3021,20 @@ impl Render for Fluxer {
         self.playback.begin_frame(output, retained_browser, cx);
         self.video_stats.rendered(
             window,
-            self.pane == Pane::Call
-                && match self.viewer.layout {
-                    stream_layout::StreamLayout::Tiled => self
-                        .viewer
-                        .desired
-                        .iter()
-                        .any(|identity| self.viewer.frames.contains_key(identity)),
-                    stream_layout::StreamLayout::MainStage => self
-                        .viewer
-                        .focused
-                        .as_ref()
-                        .is_some_and(|identity| self.viewer.frames.contains_key(identity)),
-                },
+            (matches!(self.pane, Pane::Chat | Pane::Call) && !self.camera_viewer.frames.is_empty())
+                || self.pane == Pane::Call
+                    && match self.viewer.layout {
+                        stream_layout::StreamLayout::Tiled => self
+                            .viewer
+                            .desired
+                            .iter()
+                            .any(|identity| self.viewer.frames.contains_key(identity)),
+                        stream_layout::StreamLayout::MainStage => self
+                            .viewer
+                            .focused
+                            .as_ref()
+                            .is_some_and(|identity| self.viewer.frames.contains_key(identity)),
+                    },
         );
         let content = if self.session_restoring {
             self.restoring_view(cx)

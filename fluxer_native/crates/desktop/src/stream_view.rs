@@ -68,8 +68,17 @@ impl Fluxer {
     }
 
     pub(super) fn stream_name(&self, identity: &str) -> String {
-        if let Some((name, _)) = self.participants.get(identity) {
-            return name.clone();
+        self.video_participant_name(identity)
+            .unwrap_or_else(|| "Screen share".into())
+    }
+
+    pub(super) fn video_participant_name(&self, identity: &str) -> Option<String> {
+        if let Some((name, _)) = self
+            .participants
+            .get(identity)
+            .filter(|(name, _)| !name.is_empty())
+        {
+            return Some(name.clone());
         }
         if let Some(channel) = self.state.voice.channel_id
             && let Some(participant) = self
@@ -78,13 +87,12 @@ impl Fluxer {
                 .iter()
                 .find(|participant| participant.livekit_identity.as_deref() == Some(identity))
         {
-            return participant.display_name.clone();
+            return Some(participant.display_name.clone());
         }
         let user = self
             .cached_stream_user(identity)
             .and_then(|id| self.state.users.get(&id));
         user.map(|user| user.display_name().to_owned())
-            .unwrap_or_else(|| "Screen share".into())
     }
 
     fn cached_stream_user(&self, identity: &str) -> Option<Snowflake> {
@@ -644,6 +652,9 @@ impl Fluxer {
                             .flex()
                             .flex_col()
                             .child(stage)
+                            .when(!self.available_cameras.is_empty(), |view| {
+                                view.child(self.camera_strip(cx))
+                            })
                             .when(!strip_streams.is_empty() || !members.is_empty(), |view| {
                                 view.child(
                                     div()

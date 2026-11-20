@@ -204,6 +204,7 @@ impl AnimatedFixture {
                         source: fluxer_media::VideoSource::ScreenShare,
                         track_id: "animated-preview".into(),
                         participant: "preview-0".into(),
+                        source: fluxer_media::VideoSource::ScreenShare,
                         watch_generation: epoch.load(Ordering::Acquire),
                         width: WIDTH as u32,
                         height: HEIGHT as u32,
