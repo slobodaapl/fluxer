@@ -33,6 +33,7 @@ mod image_transform;
 mod image_viewer;
 mod inbox_view;
 mod input;
+mod invite_view;
 mod media_actions;
 mod media_animation;
 mod media_context_policy;
@@ -338,6 +339,7 @@ struct Fluxer {
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
     quick_switcher: quick_switcher::QuickSwitcher,
+    invite_ui: invite_view::InviteView,
     inbox_ui: inbox_view::InboxUi,
     composer_member_query: Option<(Snowflake, String)>,
     composer_query_generation: u64,
@@ -473,6 +475,7 @@ impl Fluxer {
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
+            invite_ui: invite_view::InviteView::new(cx),
             inbox_ui: inbox_view::InboxUi::new(cx),
             composer_member_query: None,
             composer_query_generation: 0,
@@ -897,6 +900,7 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::Invite { request_id, status } => self.invite_status(request_id, status, cx),
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::OwnProfileMutation(status) => {
@@ -1017,6 +1021,7 @@ impl Fluxer {
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.status_ui.reset(cx);
+                        self.invite_ui.reset(cx);
                         self.friends_ui.status.clear();
                         self.friends_ui.dm_status.clear();
                         self.friends_ui.confirm = None;
@@ -1719,7 +1724,7 @@ impl Fluxer {
             self.arm_status_submit(window, cx);
             return;
         }
-        if self.quick_switcher.open {
+        if self.quick_switcher.open || self.invite_ui.open {
             return;
         }
         if self.composer.focus_handle(cx).is_focused(window) {
@@ -2085,6 +2090,7 @@ impl Fluxer {
                         cx.notify();
                     })),
             )
+            .when(!self.demo, |rail| rail.child(self.invite_button(cx)))
             .children(self.state.guilds.values().map(|guild| {
                 let id = guild.id;
                 button_base(("guild", id.0))
@@ -2139,6 +2145,7 @@ impl Fluxer {
         self.command(Command::Logout, cx);
         self.community_ui.dialog = None;
         self.community_ui.pending = false;
+        self.invite_ui.reset(cx);
         self.selected_guild = None;
         self.session_context_loaded = false;
         self.session_restore_failed = false;
@@ -2752,7 +2759,7 @@ impl Render for Fluxer {
         };
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {if this.invite_ui.open { this.invite_key_down(event, window, cx); return; } this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| this.status_key_up(event, window, cx)))
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
@@ -2769,7 +2776,7 @@ impl Render for Fluxer {
                 this.open_settings(settings_view::Section::Voice, window, cx);
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
-                if this.status_ui.is_open() { return; }
+                if this.status_ui.is_open() || this.invite_ui.open { return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.role_mention.read(cx).is_open() {this.role_mention.update(cx, |popup,cx| popup.dismiss(window,cx));cx.stop_propagation();return;}
@@ -2830,7 +2837,8 @@ impl Render for Fluxer {
             .child(self.image_viewer_overlay(window, cx))
             .child(self.playback.overlay(window, cx))
             .child(self.inbox_overlay(window, cx))
-            .child(self.quick_switcher_overlay(window, cx));
+            .child(self.quick_switcher_overlay(window, cx))
+            .child(self.invite_overlay(window, cx));
         self.playback.finish_frame(cx);
         self.schedule_history_center(window, cx);
         self.video_stats.render_built(render_started.elapsed());

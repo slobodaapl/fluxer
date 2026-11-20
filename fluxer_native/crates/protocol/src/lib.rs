@@ -6,6 +6,7 @@ mod gateway;
 mod http;
 mod installation;
 mod instance;
+mod invites;
 mod navigation;
 
 pub use error::{Error, Result};
@@ -17,6 +18,7 @@ pub use http::{
     HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken,
 };
 pub use instance::Instance;
+pub use invites::InvitePreview;
 pub use reqwest::Method;
 pub use url::Url;
 

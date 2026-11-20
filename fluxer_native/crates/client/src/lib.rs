@@ -140,6 +140,16 @@ impl CallControlHandle {
 }
 
 pub enum Command {
+    PreviewInvite {
+        request_id: u64,
+        input: String,
+    },
+    AcceptInvite {
+        request_id: u64,
+    },
+    CancelInvite {
+        request_id: u64,
+    },
     ControlCall {
         account_id: Snowflake,
         generation: u64,
@@ -429,11 +439,23 @@ pub enum DirectMessageStatus {
     Failed(String),
 }
 
+#[derive(Clone, Debug)]
+pub enum InviteStatus {
+    Preview(Box<fluxer_protocol::InvitePreview>),
+    Opening,
+    Opened { guild_id: Option<Snowflake> },
+    Failed(String),
+}
+
 pub enum Event {
     CommunityMutation {
         created: Option<Snowflake>,
         left: Option<Snowflake>,
         error: Option<String>,
+    },
+    Invite {
+        request_id: u64,
+        status: InviteStatus,
     },
     /// The previous screen capture stopped and needs an explicit new share.
     ShareReshareRequired,

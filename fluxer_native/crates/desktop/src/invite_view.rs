@@ -1,0 +1,401 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+use super::*;
+use fluxer_client::InviteStatus;
+use fluxer_protocol::InvitePreview;
+
+#[derive(Default)]
+enum InviteStep {
+    #[default]
+    Input,
+    Loading,
+    Preview(Box<InvitePreview>),
+    Joining,
+    Opening,
+    Error(String),
+}
+
+pub(super) struct InviteView {
+    input: Entity<TextInput>,
+    request_id: u64,
+    pub open: bool,
+    previous: Option<FocusHandle>,
+    step: InviteStep,
+    restore_focus: bool,
+    dialog_focus: FocusHandle,
+    focus_step: bool,
+}
+
+impl InviteView {
+    pub fn new(cx: &mut Context<Fluxer>) -> Self {
+        let input = cx.new(|cx| TextInput::new("Invite link or code", cx));
+        cx.observe(&input, |_, _, cx| cx.notify()).detach();
+        Self {
+            input,
+            request_id: 0,
+            open: false,
+            previous: None,
+            step: InviteStep::Input,
+            restore_focus: false,
+            dialog_focus: cx.focus_handle(),
+            focus_step: false,
+        }
+    }
+
+    pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
+        self.open = false;
+        self.step = InviteStep::Input;
+        self.previous = None;
+        self.restore_focus = false;
+        self.focus_step = false;
+        self.input
+            .update(cx, |input, cx| input.set(String::new(), cx));
+    }
+
+    fn joining(&self) -> bool {
+        matches!(self.step, InviteStep::Joining | InviteStep::Opening)
+    }
+}
+
+impl Fluxer {
+    pub(super) fn invite_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        button("join-by-invite", "Join")
+            .size(px(44.))
+            .p_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.))
+            .rounded_full()
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.status_ui.is_open()
+                    || this.quick_switcher.open
+                    || this.inbox_ui.open
+                    || this.message_actions.is_blocking()
+                {
+                    return;
+                }
+                this.invite_ui.reset(cx);
+                this.invite_ui.previous = window.focused(cx);
+                this.invite_ui.open = true;
+                this.invite_ui.input.focus_handle(cx).focus(window);
+                cx.notify();
+            }))
+            .into_any_element()
+    }
+
+    fn close_invite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.invite_ui.joining() {
+            return;
+        }
+        self.command(
+            Command::CancelInvite {
+                request_id: self.invite_ui.request_id,
+            },
+            cx,
+        );
+        if let Some(focus) = self.invite_ui.previous.take() {
+            focus.focus(window);
+        } else {
+            self.composer.focus_handle(cx).focus(window);
+        }
+        self.invite_ui.reset(cx);
+        cx.notify();
+    }
+
+    fn invite_action(&mut self, cx: &mut Context<Self>) {
+        let changes = match self.invite_ui.step {
+            InviteStep::Input | InviteStep::Error(_) => {
+                let input = self.invite_ui.input.read(cx).content.to_string();
+                if input.trim().is_empty() {
+                    return;
+                }
+                self.invite_ui.request_id = self.invite_ui.request_id.wrapping_add(1);
+                (
+                    Command::PreviewInvite {
+                        request_id: self.invite_ui.request_id,
+                        input,
+                    },
+                    InviteStep::Loading,
+                )
+            }
+            InviteStep::Preview(_) => (
+                Command::AcceptInvite {
+                    request_id: self.invite_ui.request_id,
+                },
+                InviteStep::Joining,
+            ),
+            _ => return,
+        };
+        self.invite_ui.focus_step = true;
+        self.invite_ui.step = match self
+            .controller
+            .as_ref()
+            .ok_or("The native client worker is unavailable".to_owned())
+            .and_then(|controller| controller.send(changes.0))
+        {
+            Ok(()) => changes.1,
+            Err(message) => InviteStep::Error(message),
+        };
+        cx.notify();
+    }
+
+    pub(super) fn invite_status(
+        &mut self,
+        request_id: u64,
+        status: InviteStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.invite_ui.open || self.invite_ui.request_id != request_id {
+            return;
+        }
+        self.invite_ui.focus_step = true;
+        self.invite_ui.step = match status {
+            InviteStatus::Preview(preview) => InviteStep::Preview(preview),
+            InviteStatus::Opening => InviteStep::Opening,
+            InviteStatus::Failed(message) => InviteStep::Error(message),
+            InviteStatus::Opened { guild_id } => {
+                self.selected_guild = guild_id;
+                self.pane = Pane::Chat;
+                if let Some(channel) = self.state.selected_channel {
+                    self.quick_switcher.visit(channel);
+                    self.reset_ack_context(channel);
+                    self.search_ui.return_to_latest_on_select(channel);
+                }
+                let previous = self.invite_ui.previous.take();
+                self.invite_ui.reset(cx);
+                self.invite_ui.previous = previous;
+                self.invite_ui.restore_focus = true;
+                InviteStep::Input
+            }
+        };
+        cx.notify();
+    }
+
+    pub(super) fn invite_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "escape" => self.close_invite(window, cx),
+            "tab" => {
+                if matches!(
+                    self.invite_ui.step,
+                    InviteStep::Input | InviteStep::Loading | InviteStep::Error(_)
+                ) {
+                    self.invite_ui.input.focus_handle(cx).focus(window);
+                } else {
+                    self.invite_ui.dialog_focus.focus(window);
+                }
+            }
+            "enter" if !event.is_held && !self.invite_ui.input.read(cx).is_composing() => {
+                self.invite_action(cx)
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    pub(super) fn invite_overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if std::mem::take(&mut self.invite_ui.restore_focus) {
+            if self.state.selected_channel.is_some() {
+                self.composer.focus_handle(cx).focus(window);
+            } else if let Some(previous) = self.invite_ui.previous.take() {
+                previous.focus(window);
+            }
+        }
+        if !self.invite_ui.open {
+            return div().into_any_element();
+        }
+        if std::mem::take(&mut self.invite_ui.focus_step) {
+            if matches!(
+                self.invite_ui.step,
+                InviteStep::Input | InviteStep::Loading | InviteStep::Error(_)
+            ) {
+                self.invite_ui.input.focus_handle(cx).focus(window);
+            } else {
+                self.invite_ui.dialog_focus.focus(window);
+            }
+        }
+        let step = &self.invite_ui.step;
+        let width = px(440.);
+        let mut card = div()
+            .id("invite-dialog")
+            .track_focus(&self.invite_ui.dialog_focus)
+            .w(width)
+            .max_w(relative(0.94))
+            .p_5()
+            .rounded_lg()
+            .bg(rgb(PANEL))
+            .border_1()
+            .border_color(rgb(0x4c435e))
+            .shadow_lg()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(heading("Join by invite"))
+                    .when(!self.invite_ui.joining(), |card| {
+                        card.child(
+                            controls::icon_button("close-invite", controls::Icon::Close, "Close")
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.close_invite(window, cx)
+                                    }),
+                                ),
+                        )
+                    }),
+            );
+
+        match step {
+            InviteStep::Input | InviteStep::Loading | InviteStep::Error(_) => {
+                let loading = matches!(step, InviteStep::Loading);
+                card = card.child(self.invite_ui.input.clone());
+                if let InviteStep::Error(message) = step {
+                    card = card.child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(rgb(0xffa9b5))
+                            .child(message.clone()),
+                    );
+                }
+                card = card.child(
+                    div().flex().justify_end().child(
+                        button(
+                            "preview-invite",
+                            if loading {
+                                "Loading…"
+                            } else {
+                                "Preview invite"
+                            },
+                        )
+                        .when(
+                            !loading && !self.invite_ui.input.read(cx).content.trim().is_empty(),
+                            |button| {
+                                button
+                                    .bg(rgb(ACCENT))
+                                    .on_click(cx.listener(|this, _, _, cx| this.invite_action(cx)))
+                            },
+                        ),
+                    ),
+                );
+            }
+            InviteStep::Preview(preview) => {
+                let (title, detail, action) = match &preview.guild {
+                    Some(guild) => (
+                        guild.name.clone(),
+                        format!(
+                            "{} members · {} online",
+                            preview.member_count,
+                            preview.presence_count.unwrap_or_default()
+                        ),
+                        if self.state.members.contains_key(&(
+                            guild.id,
+                            self.state
+                                .current_user
+                                .as_ref()
+                                .map(|user| user.id)
+                                .unwrap_or_default(),
+                        )) {
+                            "Open community"
+                        } else {
+                            "Join community"
+                        },
+                    ),
+                    None => (
+                        preview
+                            .channel
+                            .name
+                            .clone()
+                            .filter(|name| !name.is_empty())
+                            .unwrap_or_else(|| {
+                                let names = preview
+                                    .channel
+                                    .recipients
+                                    .iter()
+                                    .map(|recipient| recipient.username.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                if names.is_empty() {
+                                    "Group DM".into()
+                                } else {
+                                    names
+                                }
+                            }),
+                        format!("{} members", preview.member_count),
+                        "Join group DM",
+                    ),
+                };
+                card = card
+                    .child(
+                        div()
+                            .p_3()
+                            .rounded_md()
+                            .bg(rgb(RAIL))
+                            .child(
+                                div()
+                                    .text_size(px(17.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(muted(detail))
+                            .when_some(
+                                preview
+                                    .channel
+                                    .name
+                                    .clone()
+                                    .filter(|_| preview.guild.is_some()),
+                                |view, name| view.child(muted(format!("#{name}"))),
+                            )
+                            .when(preview.temporary, |view| {
+                                view.child(muted("Temporary membership"))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_between()
+                            .gap_2()
+                            .child(button("edit-invite", "Back").on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    this.invite_ui.step = InviteStep::Input;
+                                    this.invite_ui.input.focus_handle(cx).focus(window);
+                                    cx.notify();
+                                },
+                            )))
+                            .child(
+                                button("accept-invite", action)
+                                    .bg(rgb(ACCENT))
+                                    .on_click(cx.listener(|this, _, _, cx| this.invite_action(cx))),
+                            ),
+                    );
+            }
+            InviteStep::Joining => card = card.child(muted("Accepting invite…")),
+            InviteStep::Opening => card = card.child(muted("Waiting for the destination to sync…")),
+        }
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .bg(rgba(0x00000099))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.close_invite(window, cx)),
+            )
+            .child(card)
+            .into_any_element()
+    }
+}

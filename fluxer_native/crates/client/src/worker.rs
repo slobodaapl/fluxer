@@ -26,6 +26,8 @@ mod community_flow;
 mod display_settings_flow;
 #[path = "worker_idle.rs"]
 mod idle_flow;
+#[path = "worker_invites.rs"]
+mod invite_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
 #[path = "worker_own_profile.rs"]
@@ -171,6 +173,7 @@ pub(crate) struct Worker {
     display_settings: display_settings_flow::DisplaySettingsState,
     system_idle: Option<(bool, bool)>,
     people: people_flow::PeopleState,
+    invites: invite_flow::InviteState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
@@ -251,6 +254,7 @@ impl Worker {
             display_settings: display_settings_flow::DisplaySettingsState::new(),
             system_idle: None,
             people: people_flow::PeopleState::new(),
+            invites: invite_flow::InviteState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
@@ -582,6 +586,8 @@ impl Worker {
                 Presence(Option<presence_flow::PresenceEvent>),
                 DisplaySettings(Option<display_settings_flow::DisplaySettingsEvent>),
                 People(Option<people_flow::PeopleEvent>),
+                Invite(Option<invite_flow::InviteEvent>),
+                InviteTimeout,
                 Dm(Option<DmEvent>),
                 DevicePoll,
                 PresencePoll,
@@ -624,6 +630,8 @@ impl Worker {
                 event=self.presence.rx.recv()=>Incoming::Presence(event),
                 event=self.display_settings.rx.recv()=>Incoming::DisplaySettings(event),
                 event=self.people.rx.recv()=>Incoming::People(event),
+                event=self.invites.rx.recv()=>Incoming::Invite(event),
+                _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
                 event = idle_rx.recv() => Incoming::SystemIdle(event),
@@ -666,6 +674,16 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::People(None) => Ok(()),
+                Incoming::Invite(event) => {
+                    if let Some(event) = event {
+                        self.invite_event(event).await;
+                    }
+                    Ok(())
+                }
+                Incoming::InviteTimeout => {
+                    self.invite_timeout();
+                    Ok(())
+                }
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
                 Incoming::SystemIdle(Some(idle)) => {
@@ -859,6 +877,7 @@ impl Worker {
         self.clear_presence();
         self.clear_display_settings();
         self.clear_people();
+        self.clear_invites();
         self.clear_navigation();
         self.clear_own_profile();
         self.clear_profiles();
@@ -1269,6 +1288,9 @@ impl Worker {
                 guild_id,
                 delete_messages,
             } => self.leave_community(guild_id, delete_messages).await,
+            Command::PreviewInvite { request_id, input } => self.preview_invite(request_id, input),
+            Command::AcceptInvite { request_id } => self.accept_invite(request_id).await,
+            Command::CancelInvite { request_id } => self.cancel_invite(request_id),
             Command::SelectGuild { guild_id } => {
                 self.cancel_open_dm();
                 self.selected_guild = Some(guild_id);
@@ -3077,6 +3099,12 @@ impl Worker {
                     }
                     self.sync_stream_availability().await?;
                     self.snapshot();
+                    if matches!(
+                        name.as_str(),
+                        "READY" | "GUILD_CREATE" | "GUILD_SYNC" | "CHANNEL_CREATE"
+                    ) {
+                        self.open_accepted_invite().await;
+                    }
                     if name == "READY" {
                         self.emit(Event::AudioPreferences {
                             dsp: self.audio_preferences.dsp.clone(),
