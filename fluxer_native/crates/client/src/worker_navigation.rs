@@ -136,7 +136,12 @@ struct MentionsJob {
 }
 pub(super) struct NavigationState {
     forum: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
-    archived_threads: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
+    archived_threads: Option<(
+        u64,
+        Task,
+        BTreeMap<Snowflake, Option<Value>>,
+        BTreeMap<Snowflake, Option<Value>>,
+    )>,
     mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
@@ -217,7 +222,8 @@ impl Worker {
                 result,
             });
         });
-        self.navigation.archived_threads = Some((token, Task(task), BTreeMap::new()));
+        self.navigation.archived_threads =
+            Some((token, Task(task), BTreeMap::new(), BTreeMap::new()));
         Ok(())
     }
 
@@ -347,11 +353,17 @@ impl Worker {
         else {
             return;
         };
-        for (_, _, changes) in self
+        for changes in self
             .navigation
             .forum
             .iter_mut()
-            .chain(self.navigation.archived_threads.iter_mut())
+            .map(|(_, _, changes)| changes)
+            .chain(
+                self.navigation
+                    .archived_threads
+                    .iter_mut()
+                    .map(|(_, _, changes, _)| changes),
+            )
         {
             if name == "THREAD_DELETE" {
                 changes.insert(id, None);
@@ -362,6 +374,59 @@ impl Worker {
                 if let Some(existing) = entry.as_mut() {
                     merge_forum_patch(existing, data);
                 }
+            }
+        }
+    }
+
+    /// Record self membership changes even when the archived thread is not cached yet.
+    pub(super) fn navigation_archive_membership_event(&mut self, name: &str, data: &Value) {
+        let Some(user) = self.state.current_user.as_ref().map(|user| user.id) else {
+            return;
+        };
+        let Some((_, _, _, changes)) = self.navigation.archived_threads.as_mut() else {
+            return;
+        };
+        let Some(id) = data
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<Snowflake>().ok())
+        else {
+            return;
+        };
+        if name == "THREAD_MEMBER_UPDATE" {
+            if data
+                .get("user_id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<Snowflake>().ok())
+                == Some(user)
+            {
+                changes.insert(id, Some(data.clone()));
+            }
+        } else if name == "THREAD_MEMBERS_UPDATE" {
+            if data
+                .get("removed_member_ids")
+                .and_then(Value::as_array)
+                .is_some_and(|ids| {
+                    ids.iter().any(|id| {
+                        id.as_str().and_then(|id| id.parse::<Snowflake>().ok()) == Some(user)
+                    })
+                })
+            {
+                changes.insert(id, None);
+            } else if let Some(member) = data
+                .get("added_members")
+                .and_then(Value::as_array)
+                .and_then(|members| {
+                    members.iter().find(|member| {
+                        member
+                            .get("user_id")
+                            .and_then(Value::as_str)
+                            .and_then(|id| id.parse::<Snowflake>().ok())
+                            == Some(user)
+                    })
+                })
+            {
+                changes.insert(id, Some(member.clone()));
             }
         }
     }
@@ -1774,11 +1839,12 @@ impl Worker {
                         .navigation
                         .archived_threads
                         .as_ref()
-                        .is_some_and(|(current, _, _)| *current == token)
+                        .is_some_and(|(current, _, _, _)| *current == token)
                 {
                     return;
                 }
-                let (_, _, changes) = self.navigation.archived_threads.take().unwrap();
+                let (_, _, changes, membership_changes) =
+                    self.navigation.archived_threads.take().unwrap();
                 let Some(guild) = self
                     .state
                     .channels
@@ -1798,6 +1864,12 @@ impl Worker {
                             .and_then(Value::as_bool)
                             .unwrap_or(false);
                         if let Some(items) = body.get("threads").and_then(Value::as_array) {
+                            next = items
+                                .last()
+                                .and_then(|item| item.get("thread_metadata"))
+                                .and_then(|metadata| metadata.get("archive_timestamp"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned);
                             for item in items {
                                 let mut value = item.clone();
                                 let id = value
@@ -1816,15 +1888,22 @@ impl Worker {
                                         merge_forum_patch(&mut value, patch);
                                     }
                                 }
-                                if !id.is_some_and(|id| changes.contains_key(&id))
-                                    && let Some(member) = body
-                                        .get("members")
-                                        .and_then(Value::as_array)
-                                        .and_then(|members| {
-                                            members.iter().find(|m| m.get("id") == value.get("id"))
-                                        })
+                                if let Some(member) = body
+                                    .get("members")
+                                    .and_then(Value::as_array)
+                                    .and_then(|members| {
+                                        members.iter().find(|m| m.get("id") == value.get("id"))
+                                    })
                                 {
                                     value["member"] = member.clone();
+                                }
+                                if let Some(change) = id.and_then(|id| membership_changes.get(&id))
+                                {
+                                    if let Some(member) = change {
+                                        value["member"] = member.clone();
+                                    } else if let Some(object) = value.as_object_mut() {
+                                        object.remove("member");
+                                    }
                                 }
                                 if let Ok(thread) = serde_json::from_value::<Channel>(value) {
                                     if thread.parent_id != Some(channel)
@@ -1837,12 +1916,6 @@ impl Worker {
                                     {
                                         continue;
                                     }
-                                    next = thread
-                                        .extra
-                                        .get("thread_metadata")
-                                        .and_then(|m| m.get("archive_timestamp"))
-                                        .and_then(Value::as_str)
-                                        .map(str::to_owned);
                                     let id = thread.id;
                                     self.state.channels.insert(id, thread);
                                     threads.push(id);

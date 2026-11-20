@@ -4067,6 +4067,12 @@ impl Worker {
                     if matches!(name.as_str(), "THREAD_UPDATE" | "THREAD_DELETE") {
                         self.navigation_forum_thread_event(&name, &data);
                     }
+                    if matches!(
+                        name.as_str(),
+                        "THREAD_MEMBER_UPDATE" | "THREAD_MEMBERS_UPDATE"
+                    ) {
+                        self.navigation_archive_membership_event(&name, &data);
+                    }
                     let outcome = self
                         .state
                         .apply_gateway(&name, data.clone())

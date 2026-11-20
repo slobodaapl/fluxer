@@ -1446,3 +1446,56 @@ fn forum_gateway_patches_preserve_nested_fields() {
         json!({"archived":true,"locked":false})
     );
 }
+
+#[tokio::test]
+async fn archived_page_preserves_membership_events_and_server_cursor_after_deletion() {
+    let (mut worker, events) = demo();
+    let user = worker.state.current_user.as_ref().unwrap().id.to_string();
+    let guild = worker.state.channels[&11.into()]
+        .guild_id
+        .unwrap()
+        .to_string();
+    let token = worker.navigation.token();
+    worker.navigation.archived_threads = Some((
+        token,
+        Task(tokio::spawn(pending())),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    ));
+    worker.navigation_archive_membership_event(
+        "THREAD_MEMBERS_UPDATE",
+        &json!({"id":"91", "removed_member_ids":[user.clone()]}),
+    );
+    worker.navigation_archive_membership_event(
+        "THREAD_MEMBER_UPDATE",
+        &json!({"id":"92", "user_id":user, "flags":42}),
+    );
+    worker.navigation_forum_thread_event("THREAD_DELETE", &json!({"id":"93"}));
+    worker.navigation_event(NavigationEvent::ArchivedThreads {
+        epoch: worker.navigation.epoch, token, channel: 11.into(), before: None,
+        result: Ok(json!({"threads":[
+            {"id":"91", "guild_id":guild, "parent_id":"11", "type":11, "name":"left", "thread_metadata":{"archived":true,"archive_timestamp":"2026-01-03T00:00:00Z"}},
+            {"id":"92", "guild_id":guild, "parent_id":"11", "type":11, "name":"joined", "thread_metadata":{"archived":true,"archive_timestamp":"2026-01-02T00:00:00Z"}},
+            {"id":"93", "guild_id":guild, "parent_id":"11", "type":11, "name":"deleted", "thread_metadata":{"archived":true,"archive_timestamp":"2026-01-01T00:00:00Z"}}
+        ], "members":[{"id":"91", "user_id":user}], "has_more":true}))
+    });
+    assert!(
+        worker.state.channels[&91.into()]
+            .extra
+            .get("member")
+            .is_none()
+    );
+    assert_eq!(
+        worker.state.channels[&92.into()].extra["member"]["flags"],
+        42
+    );
+    assert!(!worker.state.channels.contains_key(&93.into()));
+    let result = std::iter::from_fn(|| events.try_recv().ok())
+        .find_map(|event| match event {
+            Event::ArchivedThreads { next, threads, .. } => Some((next, threads)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(result.0.as_deref(), Some("2026-01-01T00:00:00Z"));
+    assert_eq!(result.1, vec![91.into(), 92.into()]);
+}

@@ -1210,6 +1210,7 @@ impl Fluxer {
                         });
                     }
                     if old != self.state.selected_channel {
+                        self.archived_threads = None;
                         self.forum = None;
                         self.forum_filter_tags.clear();
                         self.forum_match_all = self
