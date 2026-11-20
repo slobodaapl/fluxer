@@ -14,6 +14,7 @@ mod context_menu;
 mod controls;
 mod conversation_scope;
 mod desktop_integration;
+mod desktop_links;
 mod desktop_notifications;
 mod desktop_tray;
 mod diagnostics;
@@ -2799,7 +2800,18 @@ fn main() {
                 || v == "--demo-outbox"
                 || v == "--demo-media"
         });
-    if !demo && desktop_tray::activate_existing() {
+    let launch_url = std::env::args().skip(1).find(|arg| {
+        arg.split_once(':')
+            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("fluxer"))
+    });
+    let launch_link = launch_url
+        .as_deref()
+        .and_then(desktop_links::DesktopLink::parse);
+    if !demo && launch_url.is_some() && launch_link.is_none() {
+        eprintln!("Fluxer Native supports channel and message links.");
+        return;
+    }
+    if !demo && desktop_tray::activate_existing(launch_url.as_deref()) {
         return;
     }
     Application::new()
@@ -2846,7 +2858,11 @@ fn main() {
                 },
                 move |window, cx| {
                     window.set_window_title(&window_title);
-                    cx.new(|cx| Fluxer::new(demo, demo_stream, window, cx))
+                    cx.new(move |cx| {
+                        let mut view = Fluxer::new(demo, demo_stream, window, cx);
+                        view.set_startup_link(launch_link);
+                        view
+                    })
                 },
             )
             .expect("open Fluxer window");

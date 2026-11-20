@@ -11,6 +11,7 @@ pub(super) struct DesktopState {
     startup_decided: bool,
     started: Instant,
     previous_status: String,
+    pending_link: Option<crate::desktop_links::DesktopLink>,
 }
 impl DesktopState {
     pub fn new(demo: bool, window: &Window) -> Self {
@@ -22,10 +23,24 @@ impl DesktopState {
             startup_decided: false,
             started: Instant::now(),
             previous_status: String::new(),
+            pending_link: None,
         }
     }
 }
 impl Fluxer {
+    pub(super) fn set_startup_link(&mut self, link: Option<crate::desktop_links::DesktopLink>) {
+        self.desktop.pending_link = link;
+    }
+
+    fn follow_pending_desktop_link(&mut self, cx: &mut Context<Self>) {
+        if self.state.current_user.is_some()
+            && !self.session_restoring
+            && let Some(link) = self.desktop.pending_link.take()
+        {
+            link.open(self, cx);
+        }
+    }
+
     pub(super) fn desktop_tray_status(&self) -> String {
         if !self.interface.window_behavior().show_tray_icon {
             "The system tray icon is off. Closing the window quits Fluxer Native.".into()
@@ -63,6 +78,7 @@ impl Fluxer {
         }
     }
     pub(super) fn poll_desktop(&mut self, cx: &mut Context<Self>) {
+        self.follow_pending_desktop_link(cx);
         let preferences = self.interface.window_behavior();
         let mut actions = Vec::new();
         if self.desktop.hidden && (!preferences.show_tray_icon || !self.desktop.tray.available()) {
@@ -141,9 +157,18 @@ impl Fluxer {
         };
         let focus_window = matches!(
             action,
-            Action::Show | Action::Toggle | Action::ToggleActive | Action::Settings
+            Action::Show
+                | Action::Toggle
+                | Action::ToggleActive
+                | Action::Settings
+                | Action::OpenLink(_)
         );
         match action {
+            Action::OpenLink(link) => {
+                self.show_from_tray(window, cx);
+                self.desktop.pending_link = Some(link);
+                self.follow_pending_desktop_link(cx);
+            }
             Action::ToggleActive => {
                 if self.desktop.hidden || !window.is_window_active() {
                     self.show_from_tray(window, cx);

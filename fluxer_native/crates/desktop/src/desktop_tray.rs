@@ -35,6 +35,7 @@ pub(super) enum Action {
         action: Box<Action>,
         token: String,
     },
+    OpenLink(super::desktop_links::DesktopLink),
     Toggle,
     ToggleActive,
     Show,
@@ -122,7 +123,7 @@ impl Drop for DesktopTray {
 }
 /// Reopening the desktop launcher raises the existing native window, not another login.
 /// No D-Bus auto-activation is installed; name probing cannot recursively launch us.
-pub(super) fn activate_existing() -> bool {
+pub(super) fn activate_existing(url: Option<&str>) -> bool {
     #[cfg(target_os = "linux")]
     {
         let result = (|| -> zbus::Result<()> {
@@ -136,13 +137,20 @@ pub(super) fn activate_existing() -> bool {
             let proxy =
                 zbus::blocking::Proxy::new(&connection, WINDOW_BUS, WINDOW_PATH, WINDOW_INTERFACE)?;
             let token = std::env::var("XDG_ACTIVATION_TOKEN").unwrap_or_default();
-            proxy.call::<_, _, ()>("Activate", &(token,))?;
+            if let Some(url) = url {
+                proxy.call::<_, _, ()>("OpenLink", &(url, token))?;
+            } else {
+                proxy.call::<_, _, ()>("Activate", &(token,))?;
+            }
             Ok(())
         })();
         result.is_ok()
     }
     #[cfg(not(target_os = "linux"))]
-    false
+    {
+        let _ = url;
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -153,11 +161,21 @@ mod linux {
     #[zbus::interface(name = "app.fluxer.Native.Desktop1")]
     impl WindowInterface {
         fn activate(&self, token: String) -> zbus::fdo::Result<()> {
+            self.enqueue(Action::Show, token)
+        }
+        fn open_link(&self, url: &str, token: String) -> zbus::fdo::Result<()> {
+            let target = crate::desktop_links::DesktopLink::parse(url)
+                .ok_or_else(|| zbus::fdo::Error::InvalidArgs("Unsupported Fluxer link".into()))?;
+            self.enqueue(Action::OpenLink(target), token)
+        }
+    }
+    impl WindowInterface {
+        fn enqueue(&self, action: Action, token: String) -> zbus::fdo::Result<()> {
             let action = if token.is_empty() || token.len() > 4096 {
-                Action::Show
+                action
             } else {
                 Action::Activate {
-                    action: Box::new(Action::Show),
+                    action: Box::new(action),
                     token,
                 }
             };
