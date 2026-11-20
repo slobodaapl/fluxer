@@ -64,6 +64,21 @@ struct PendingShare {
     audio: Option<SharedAudioSelection>,
 }
 
+struct ThreadCreation {
+    account: Snowflake,
+    guild: Snowflake,
+    parent: Snowflake,
+    kind: ChannelType,
+    removed: BTreeSet<Snowflake>,
+    task: JoinHandle<Result<Value>>,
+}
+
+impl Drop for ThreadCreation {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 struct PendingIpAuthorization {
     client: Client,
     ticket: String,
@@ -169,6 +184,7 @@ pub(crate) struct Worker {
     dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
     dm_generation: u64,
     dm_job: Option<DmJob>,
+    thread_creation: Option<ThreadCreation>,
     presence: presence_flow::PresenceState,
     display_settings: display_settings_flow::DisplaySettingsState,
     system_idle: Option<(bool, bool)>,
@@ -251,6 +267,7 @@ impl Worker {
             dm_rx,
             dm_generation: 0,
             dm_job: None,
+            thread_creation: None,
             presence: presence_flow::PresenceState::new(),
             display_settings: display_settings_flow::DisplaySettingsState::new(),
             system_idle: None,
@@ -598,6 +615,7 @@ impl Worker {
                 Invite(Option<invite_flow::InviteEvent>),
                 InviteTimeout,
                 Dm(Option<DmEvent>),
+                ThreadCreated(Result<Value>),
                 DevicePoll,
                 PresencePoll,
                 SystemIdle(Option<Option<(bool, bool)>>),
@@ -643,6 +661,7 @@ impl Worker {
                 event=self.invites.rx.recv()=>Incoming::Invite(event),
                 _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
+                result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
                 event = idle_rx.recv() => Incoming::SystemIdle(event),
                 _ = device_poll.tick() => Incoming::DevicePoll,
@@ -697,6 +716,10 @@ impl Worker {
                 }
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
+                Incoming::ThreadCreated(result) => {
+                    self.finish_thread_creation(result);
+                    Ok(())
+                }
                 Incoming::SystemIdle(Some(idle)) => {
                     self.system_idle = idle;
                     Ok(())
@@ -889,6 +912,7 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        self.thread_creation = None;
         self.cancel_open_dm();
         self.clear_presence();
         self.clear_display_settings();
@@ -1443,11 +1467,12 @@ impl Worker {
                 self.select_channel(channel_id).await?;
             }
             Command::CreatePublicThread { parent_id, name } => {
-                let result = self.create_public_thread(parent_id, &name).await;
-                if result.is_ok() {
-                    self.snapshot();
+                if let Err(message) = self.begin_thread_creation(parent_id, &name) {
+                    self.emit(Event::ThreadCreated {
+                        parent_id,
+                        result: Err(message),
+                    });
                 }
-                self.emit(Event::ThreadCreated { parent_id, result });
             }
             Command::LoadForum {
                 channel_id,
@@ -2697,34 +2722,84 @@ impl Worker {
         Ok(())
     }
 
-    async fn create_public_thread(&mut self, parent: Snowflake, name: &str) -> Result<Snowflake> {
+    fn begin_thread_creation(&mut self, parent: Snowflake, name: &str) -> Result<()> {
+        if self.thread_creation.is_some() {
+            return Err("A thread is already being created".into());
+        }
         let kind = self
             .state
             .public_thread_type(parent)
             .ok_or("You cannot create a public thread in this channel")?;
-        let name = name.trim();
+        let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+        let guild = self.state.channels[&parent]
+            .guild_id
+            .ok_or("Unknown community")?;
+        let name = name.trim().to_owned();
         if !(1..=100).contains(&name.encode_utf16().count()) {
             return Err("Use a thread name between 1 and 100 characters".into());
         }
-        let value = self
-            .client()?
-            .create_public_thread(
-                &parent.to_string(),
-                name,
-                kind == ChannelType::AnnouncementThread,
+        let client = self.client()?;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                client.create_public_thread(
+                    &parent.to_string(),
+                    &name,
+                    kind == ChannelType::AnnouncementThread,
+                ),
             )
             .await
-            .map_err(error)?;
-        let thread: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
-        if thread.parent_id != Some(parent)
-            || thread.kind != kind
-            || thread.guild_id != self.state.channels[&parent].guild_id
-        {
-            return Err("The server returned an unexpected thread".into());
+            .map_err(|_| "Thread creation timed out".to_owned())?
+            .map_err(error)
+        });
+        self.thread_creation = Some(ThreadCreation {
+            account,
+            guild,
+            parent,
+            kind,
+            removed: BTreeSet::new(),
+            task,
+        });
+        Ok(())
+    }
+
+    fn finish_thread_creation(&mut self, result: Result<Value>) {
+        let Some(job) = self.thread_creation.take() else {
+            return;
+        };
+        if self.state.current_user.as_ref().map(|user| user.id) != Some(job.account) {
+            return;
         }
-        let id = thread.id;
-        self.state.channels.insert(id, thread);
-        Ok(id)
+        let result = result.and_then(|value| {
+            let thread: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
+            if thread.parent_id != Some(job.parent)
+                || thread.kind != job.kind
+                || thread.guild_id != Some(job.guild)
+            {
+                return Err("The server returned an unexpected thread".into());
+            }
+            if job.removed.contains(&thread.id)
+                || self
+                    .state
+                    .channels
+                    .get(&job.parent)
+                    .and_then(|channel| channel.guild_id)
+                    != Some(job.guild)
+            {
+                return Err("The thread is no longer available".into());
+            }
+            let id = thread.id;
+            // The gateway may already have newer name, membership or lifecycle data.
+            self.state.channels.entry(id).or_insert(thread);
+            Ok(id)
+        });
+        if result.is_ok() {
+            self.snapshot();
+        }
+        self.emit(Event::ThreadCreated {
+            parent_id: job.parent,
+            result,
+        });
     }
 
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {
@@ -3117,6 +3192,20 @@ impl Worker {
                         .state
                         .apply_gateway(&name, data.clone())
                         .map_err(error)?;
+                    if name == "THREAD_DELETE"
+                        && let Some(job) = &mut self.thread_creation
+                        && data
+                            .get("parent_id")
+                            .and_then(Value::as_str)
+                            .and_then(|id| id.parse::<Snowflake>().ok())
+                            == Some(job.parent)
+                        && let Some(id) = data
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .and_then(|id| id.parse::<Snowflake>().ok())
+                    {
+                        job.removed.insert(id);
+                    }
                     if outcome == fluxer_core::ApplyOutcome::Applied
                         && matches!(
                             name.as_str(),
@@ -4047,6 +4136,14 @@ async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> 
 async fn receive_media(receiver: &mut Option<MediaEvents>) -> Option<MediaEvent> {
     match receiver {
         Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+async fn thread_creation_result(task: &mut Option<ThreadCreation>) -> Result<Value> {
+    match task {
+        Some(job) => (&mut job.task)
+            .await
+            .map_err(|_| "Thread creation stopped".to_owned())?,
         None => pending().await,
     }
 }
