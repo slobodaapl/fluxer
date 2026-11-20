@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Explicit remote subscriptions matching VoiceRoomEventBinder.ts and the
-//! screen-share watch managers. Camera demand remains a separate future API.
+//! screen-share and camera watch managers.
 use livekit::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 
@@ -12,6 +12,7 @@ pub(crate) struct Decision {
 #[derive(Default)]
 pub(crate) struct Policy {
     pub watched: BTreeSet<String>,
+    pub watched_cameras: BTreeSet<String>,
     pub deafened: bool,
 }
 impl Policy {
@@ -30,6 +31,10 @@ impl Policy {
         } else {
             match source {
                 TrackSource::Microphone => (!self.deafened, !self.deafened),
+                TrackSource::Camera => {
+                    let watch = self.watched_cameras.contains(identity);
+                    (watch, watch)
+                }
                 TrackSource::Screenshare => {
                     let watch = self.watched.contains(identity);
                     (watch, watch)
@@ -61,6 +66,7 @@ pub(crate) struct Registry {
     publications: HashMap<String, Publication>,
     available: BTreeSet<String>,
     watch_generations: HashMap<String, u64>,
+    camera_generations: HashMap<String, u64>,
 }
 impl Registry {
     pub fn replace_watched(&mut self, identities: Vec<String>) -> Plan {
@@ -74,6 +80,29 @@ impl Registry {
         }
         self.policy.watched = next;
         self.plan()
+    }
+    pub fn replace_watched_cameras(&mut self, identities: Vec<String>) -> Plan {
+        let next = identities
+            .into_iter()
+            .filter(|id| !id.is_empty())
+            .collect::<BTreeSet<_>>();
+        for identity in self.policy.watched_cameras.symmetric_difference(&next) {
+            let generation = self.camera_generations.entry(identity.clone()).or_default();
+            *generation = generation.wrapping_add(1);
+        }
+        self.policy.watched_cameras = next;
+        self.plan()
+    }
+    pub fn generation_for(&self, identity: &str, source: TrackSource) -> u64 {
+        if source == TrackSource::Camera {
+            self.camera_generations.get(identity).copied().unwrap_or(0)
+        } else {
+            self.watch_generation(identity)
+        }
+    }
+    fn camera_watch_is_current(&self, identity: &str, generation: u64) -> bool {
+        self.policy.watched_cameras.contains(identity)
+            && self.generation_for(identity, TrackSource::Camera) == generation
     }
     pub fn watch_generation(&self, identity: &str) -> u64 {
         self.watch_generations.get(identity).copied().unwrap_or(0)
@@ -181,8 +210,13 @@ impl Registry {
                 TrackSource::Screenshare | TrackSource::ScreenshareAudio
             ) || (publication.kind() == TrackKind::Audio
                 && is_screen_audio_label(&publication.name()));
+            let camera = publication.source() == TrackSource::Camera;
             self.decision(&entry.identity, publication).subscribe
-                && (!watched_media || self.watch_is_current(&entry.identity, generation))
+                && if camera {
+                    self.camera_watch_is_current(&entry.identity, generation)
+                } else {
+                    !watched_media || self.watch_is_current(&entry.identity, generation)
+                }
         })
     }
     pub fn desired_track(&self, sid: &str) -> bool {
@@ -239,6 +273,46 @@ mod tests {
         assert!(registry.watch_is_current("alice", current));
     }
     #[test]
+    fn camera_and_screen_watch_intent_and_epochs_are_independent() {
+        let mut registry = Registry::default();
+        registry.replace_watched(vec!["alice".into()]);
+        registry.replace_watched_cameras(vec!["alice".into()]);
+        let screen = registry.watch_generation("alice");
+        let camera = registry.generation_for("alice", TrackSource::Camera);
+        registry.replace_watched_cameras(vec![]);
+        assert!(!registry.camera_watch_is_current("alice", camera));
+        assert!(registry.watch_is_current("alice", screen));
+        assert!(
+            !registry
+                .policy
+                .decision("alice", TrackSource::Camera, false)
+                .subscribe
+        );
+        registry.replace_watched_cameras(vec!["alice".into()]);
+        assert_ne!(
+            camera,
+            registry.generation_for("alice", TrackSource::Camera)
+        );
+        assert!(!registry.camera_watch_is_current("alice", camera));
+        assert!(registry.camera_watch_is_current(
+            "alice",
+            registry.generation_for("alice", TrackSource::Camera)
+        ));
+        assert!(
+            registry
+                .policy
+                .decision("alice", TrackSource::Screenshare, false)
+                .subscribe
+        );
+        registry.replace_watched(vec![]);
+        assert!(
+            registry
+                .policy
+                .decision("alice", TrackSource::Camera, false)
+                .subscribe
+        );
+    }
+    #[test]
     fn microphone_deafen_never_auto_subscribes_video_or_stream_audio() {
         let mut policy = Policy::default();
         assert_eq!(
@@ -270,6 +344,7 @@ mod tests {
         let mut policy = Policy {
             watched: BTreeSet::from(["alice".into()]),
             deafened: false,
+            ..Default::default()
         };
         for source in [TrackSource::Screenshare, TrackSource::ScreenshareAudio] {
             assert!(policy.decision("alice", source, false).subscribe);

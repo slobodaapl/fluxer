@@ -112,9 +112,16 @@ impl AudioSettings {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoSource {
+    Camera,
+    ScreenShare,
+}
+
 /// BGRA pixels, directly consumable by GPUI without per-pixel swizzling. The receiving UI should retain only the latest frame per track.
 #[derive(Clone, Debug)]
 pub struct VideoFrame {
+    pub source: VideoSource,
     pub track_id: String,
     pub participant: String,
     pub watch_generation: u64,
@@ -1137,7 +1144,7 @@ impl MediaEngine {
                                 let identity = participant.identity().to_string();
                                 (
                                     registry.decision(&identity, &publication),
-                                    registry.watch_generation(&identity),
+                                    registry.generation_for(&identity, publication.source()),
                                 )
                             })
                             .unwrap_or((
@@ -1158,6 +1165,11 @@ impl MediaEngine {
                         }
                         let id = track.sid().to_string();
                         let identity = participant.identity().to_string();
+                        let source = if publication.source() == TrackSource::Camera {
+                            VideoSource::Camera
+                        } else {
+                            VideoSource::ScreenShare
+                        };
                         let mut stream = NativeVideoStream::new(track.rtc_track());
                         let frame_mailbox = video_frames.clone();
                         let frame_id = id.clone();
@@ -1186,6 +1198,7 @@ impl MediaEngine {
                                 // Bounded channel: drop frames when UI is slow rather
                                 // than accumulating unbounded video latency/memory.
                                 frame_mailbox.publish(VideoFrame {
+                                    source,
                                     track_id: frame_id.clone(),
                                     participant: identity.clone(),
                                     watch_generation,
@@ -1286,6 +1299,31 @@ impl MediaEngine {
             &self.video_frames,
         );
         Ok(())
+    }
+    /// Explicit camera receive demand, independent of screen-share watching.
+    pub fn set_watched_cameras(&mut self, identities: Vec<String>) -> Result<()> {
+        let plan = {
+            let mut registry = self
+                .subscriptions
+                .lock()
+                .map_err(|_| MediaError::Audio("Subscription registry unavailable".into()))?;
+            registry.replace_watched_cameras(identities)
+        };
+        apply_subscription_actions(
+            &plan,
+            &self.mixer,
+            &self.audio_tasks,
+            &self.video_tasks,
+            &self.video_frames,
+        );
+        Ok(())
+    }
+    /// Generation used to discard frames from an earlier camera watch.
+    pub fn camera_watch_generation(&self, identity: &str) -> u64 {
+        self.subscriptions
+            .lock()
+            .map(|registry| registry.generation_for(identity, TrackSource::Camera))
+            .unwrap_or(0)
     }
     /// Frames from an earlier watch of the same publication carry an older
     /// epoch, allowing consumers to reject buffered pixels after rapid rewatch.

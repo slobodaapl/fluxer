@@ -201,6 +201,7 @@ impl AnimatedFixture {
                         bgra[start..start + stripe.len()].copy_from_slice(&stripe);
                     }
                     *output.lock().unwrap() = Some(fluxer_media::VideoFrame {
+                        source: fluxer_media::VideoSource::ScreenShare,
                         track_id: "animated-preview".into(),
                         participant: "preview-0".into(),
                         watch_generation: epoch.load(Ordering::Acquire),

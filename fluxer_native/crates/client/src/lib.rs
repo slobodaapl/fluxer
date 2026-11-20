@@ -855,6 +855,7 @@ mod controller_tests {
         let frames = Arc::new(Mutex::new(BTreeMap::from([(
             "sid".into(),
             VideoFrame {
+                source: fluxer_media::VideoSource::ScreenShare,
                 track_id: "sid".into(),
                 participant: "user_1_stream".into(),
                 watch_generation: 1,
@@ -917,6 +918,7 @@ mod controller_tests {
                         frames.insert(
                             track.into(),
                             VideoFrame {
+                                source: fluxer_media::VideoSource::ScreenShare,
                                 track_id: track.into(),
                                 participant: "user_1_stream".into(),
                                 watch_generation: 1,

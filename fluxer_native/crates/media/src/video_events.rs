@@ -120,6 +120,7 @@ mod tests {
     use super::*;
     fn frame(sequence: u8, generation: u64) -> VideoFrame {
         VideoFrame {
+            source: crate::VideoSource::ScreenShare,
             track_id: "screen".into(),
             participant: "alice".into(),
             watch_generation: generation,

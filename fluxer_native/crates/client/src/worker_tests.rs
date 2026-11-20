@@ -446,6 +446,7 @@ async fn watch_roster_in_ready_is_projected_when_joining_and_republished_after_t
 
 fn watch_frame(identity: &str, generation: u64) -> VideoFrame {
     VideoFrame {
+        source: fluxer_media::VideoSource::ScreenShare,
         track_id: "same-screen-sid".into(),
         participant: identity.into(),
         watch_generation: generation,
