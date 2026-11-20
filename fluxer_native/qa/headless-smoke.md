@@ -23,7 +23,7 @@ Inspect the screenshots in scenario order. The driver uses coordinates for a
 
 | Scenario | Expected screenshots |
 | --- | --- |
-| `messages` | The quick switcher opens, filters to `off-topic`, and navigates on Enter. Accessibility shows Reduce motion off and then on. Escape returns to `off-topic`. |
+| `messages` | The quick switcher opens, filters to `off-topic`, and navigates on Enter. Accessibility shows Reduce motion off and then on. Escape returns to `off-topic`. The Send button and Enter each move a draft into the timeline and clear the composer. |
 | `media` | The silent clip starts inline, opens in focus view, and returns to the chat timeline on Escape. |
 | `stream` | Tile all shows Alex and Morgan. Main stage starts with Alex, then switches to Morgan's portrait stream when selected. |
 | `forum` | `#ideas` starts with Keyboard shortcuts and Compact navigation. Load more reveals Focus indicators. Design filters to Compact navigation and Focus indicators. Tab focuses Accessibility and Enter selects it. Tab and Space switch the match mode. With both tags selected, Match all shows only Focus indicators. Tab and Enter on Clear tags restore the unfiltered page. Newest puts Focus indicators first. Tab highlights it and Enter opens its starter message. |

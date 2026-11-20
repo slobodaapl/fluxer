@@ -1012,7 +1012,7 @@ impl Fluxer {
                                 .when(self.message_pending() || self.slowmode_remaining() > 0, |button| button.opacity(0.5))
                                 .text_color(rgb(ACCENT))
                                 .on_click(cx.listener(
-                                    |this, _, window, cx| this.submit(&Submit, window, cx),
+                                    |this, _, window, cx| this.send_from_composer(window, cx),
                                 )),
                             ),
                     )

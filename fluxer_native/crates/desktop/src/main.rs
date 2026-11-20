@@ -2105,7 +2105,7 @@ impl Fluxer {
             self.arm_status_submit(window, cx);
             return;
         }
-        if self.quick_switcher.open || self.invite_ui.open {
+        if self.text_submission_blocked(cx) {
             return;
         }
         if self.composer.focus_handle(cx).is_focused(window) {
@@ -2119,17 +2119,6 @@ impl Fluxer {
             }) {
                 return;
             }
-        }
-        if self.context_menu_open(cx)
-            || self.message_actions.is_open()
-            || self.message_links.is_open()
-            || self.image_viewer.is_open()
-            || self.playback.modal.is_open()
-        {
-            return;
-        }
-        if self.search_ui.confirm.is_some() {
-            return;
         }
         if self.search_ui.open == Some(BrowserTab::Search)
             && self.search.focus_handle(cx).is_focused(window)
@@ -2150,8 +2139,31 @@ impl Fluxer {
             self.login(cx);
             return;
         }
+        if self.composer.focus_handle(cx).is_focused(window) {
+            self.send_from_composer(window, cx);
+        }
+    }
+
+    fn text_submission_blocked(&self, cx: &App) -> bool {
+        self.quick_switcher.open
+            || self.invite_ui.open
+            || self.context_menu_open(cx)
+            || self.message_actions.is_open()
+            || self.message_links.is_open()
+            || self.image_viewer.is_open()
+            || self.playback.modal.is_open()
+            || self.search_ui.confirm.is_some()
+    }
+
+    fn send_from_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !(self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open))
-            || !self.composer.focus_handle(cx).is_focused(window)
+            || self.session_restoring
+            || self.state.current_user.is_none()
+            || self.community_ui.dialog.is_some()
+            || self.status_ui.is_open()
+            || self.text_submission_blocked(cx)
+            || self.composer.read(cx).is_composing()
+            || self.state.selected_channel.is_none()
             || self.message_pending()
             || self.slowmode_remaining() > 0
             || self.emoji_target.is_some()
@@ -2163,6 +2175,7 @@ impl Fluxer {
         if content.trim().is_empty() && (self.editing.is_some() || !self.has_attachments()) {
             return;
         }
+        self.composer.focus_handle(cx).focus(window);
         if let Some(message_id) = self.editing {
             if let Some(channel) = self.state.selected_channel {
                 self.pending_messages.insert(channel, content.clone());

@@ -128,6 +128,13 @@ case "$scenario" in
         screenshot reduced-motion
         wtype -s 150 -k Escape
         screenshot settings-closed
+        click 505 639
+        wtype -s 150 'Sent by clicking the Send button.'
+        screenshot send-button-draft
+        click 1230 640
+        screenshot send-button-sent
+        wtype -s 150 'Sent by pressing Enter.' -k Return
+        screenshot send-enter-sent
         ;;
     media)
         click 590 350
