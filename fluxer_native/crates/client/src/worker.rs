@@ -195,6 +195,7 @@ pub(crate) struct Worker {
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
+    account_sessions_task: Option<JoinHandle<()>>,
     community: community_flow::CommunityState,
     channels: channel_flow::ChannelJobs,
     attachments: attachment_flow::AttachmentState,
@@ -279,6 +280,7 @@ impl Worker {
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
+            account_sessions_task: None,
             community: community_flow::CommunityState::new(),
             channels: channel_flow::ChannelJobs::new(),
             attachments: attachment_flow::AttachmentState::new(),
@@ -930,6 +932,9 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        if let Some(task) = self.account_sessions_task.take() {
+            task.abort();
+        }
         self.thread_creation = None;
         self.cancel_open_dm();
         self.clear_presence();
@@ -1228,10 +1233,19 @@ impl Worker {
             Command::FetchAccountSessions { request_id } => {
                 let client = self.client()?;
                 let events = self.events.clone();
-                tokio::spawn(async move {
-                    let result = client.auth_sessions().await.map_err(|e| e.to_string());
+                if let Some(task) = self.account_sessions_task.take() {
+                    task.abort();
+                }
+                self.account_sessions_task = Some(tokio::spawn(async move {
+                    let result =
+                        match tokio::time::timeout(Duration::from_secs(15), client.auth_sessions())
+                            .await
+                        {
+                            Ok(result) => result.map_err(|e| e.to_string()),
+                            Err(_) => Err("Loading devices timed out".into()),
+                        };
                     let _ = events.send(Event::AccountSessions { request_id, result });
-                });
+                }));
             }
             Command::SetLocale(locale) => {
                 if locale.is_empty() || locale.bytes().any(|byte| byte < 32 || byte == 127) {
