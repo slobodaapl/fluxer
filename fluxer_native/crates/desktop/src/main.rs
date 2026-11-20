@@ -3191,7 +3191,8 @@ fn main() {
                 .expect("load bundled Fluxer fonts");
             input::init(cx);
             cx.bind_keys([
-                KeyBinding::new("enter", Submit, Some("TextInput")),
+                // Let the switcher receive Enter down and up for result activation.
+                KeyBinding::new("enter", Submit, Some("TextInput && !QuickSwitcher")),
                 KeyBinding::new("left", PickerLeft, Some("ChatPicker")),
                 KeyBinding::new("right", PickerRight, Some("ChatPicker")),
                 KeyBinding::new("up", PickerUp, Some("ChatPicker")),

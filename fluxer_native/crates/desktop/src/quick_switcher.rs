@@ -397,6 +397,7 @@ impl Fluxer {
         div().absolute().inset_0().occlude().bg(rgba(0x00000099)).flex().items_start().justify_center().pt(px((f32::from(window.viewport_size().height)*0.17).max(24.)))
             .on_mouse_down(MouseButton::Left,cx.listener(|this,_,window,cx|this.close_quick_switcher(window,cx)))
             .child(div().id("quick-switcher-dialog").w(px(560.)).max_w(relative(0.94)).rounded_lg().bg(rgb(PANEL)).border_1().border_color(rgb(0x4c435e)).shadow_lg()
+                .key_context("QuickSwitcher")
                 .on_mouse_down(MouseButton::Left,|_,_,cx|cx.stop_propagation())
                 .capture_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx| {
                     match event.keystroke.key.as_str(){
