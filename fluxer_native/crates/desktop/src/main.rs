@@ -1102,6 +1102,7 @@ impl Fluxer {
                             );
                         }
                         self.gif_picker.reset();
+                        self.sticker_picker_open = false;
                         self.profile_ui.reset(cx);
                         self.role_mention.update(cx, |popup, cx| popup.reset(cx));
                         self.members_identity = None;
@@ -1114,6 +1115,7 @@ impl Fluxer {
                         self.status_ui.reset(cx);
                         self.invite_ui.reset(cx);
                         self.gif_picker.reset();
+                        self.sticker_picker_open = false;
                         self.friends_ui.status.clear();
                         self.friends_ui.dm_status.clear();
                         self.friends_ui.confirm = None;
@@ -2965,6 +2967,7 @@ impl Render for Fluxer {
                     this.dismiss_pin_confirmation(window,cx);cx.stop_propagation();return;
                 }
 
+                if event.keystroke.key == "escape" && this.sticker_picker_open { this.sticker_picker_open = false; cx.notify(); cx.stop_propagation(); return; }
                 if event.keystroke.key == "escape" && this.dismiss_gif_picker(window, cx) {
                     cx.stop_propagation();
                     return;

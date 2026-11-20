@@ -376,6 +376,7 @@ pub enum Command {
         id: u64,
     },
     SendSticker {
+        channel_id: Snowflake,
         sticker_id: Snowflake,
     },
     SendMessage {

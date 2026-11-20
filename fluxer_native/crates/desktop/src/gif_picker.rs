@@ -70,6 +70,7 @@ impl Fluxer {
             return;
         }
         self.emoji_target = None;
+        self.sticker_picker_open = false;
         self.forwarding = None;
         self.gif_picker
             .search

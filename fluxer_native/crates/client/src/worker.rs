@@ -166,6 +166,12 @@ impl VoiceTarget {
     }
 }
 
+struct StickerEvent {
+    token: u64,
+    channel: Snowflake,
+    result: Result<Message>,
+}
+
 struct DmEvent {
     user_id: Snowflake,
     generation: u64,
@@ -182,6 +188,10 @@ impl Drop for DmJob {
 }
 
 pub(crate) struct Worker {
+    sticker_tx: async_mpsc::UnboundedSender<StickerEvent>,
+    sticker_rx: async_mpsc::UnboundedReceiver<StickerEvent>,
+    sticker_jobs: BTreeMap<u64, JoinHandle<()>>,
+    sticker_token: u64,
     dm_tx: async_mpsc::UnboundedSender<DmEvent>,
     dm_rx: async_mpsc::UnboundedReceiver<DmEvent>,
     dm_generation: u64,
@@ -266,7 +276,12 @@ impl Worker {
         frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
     ) -> Self {
         let (dm_tx, dm_rx) = async_mpsc::unbounded_channel();
+        let (sticker_tx, sticker_rx) = async_mpsc::unbounded_channel();
         Self {
+            sticker_tx,
+            sticker_rx,
+            sticker_jobs: BTreeMap::new(),
+            sticker_token: 0,
             dm_tx,
             dm_rx,
             dm_generation: 0,
@@ -622,6 +637,7 @@ impl Worker {
                 InviteTimeout,
                 Kick(Option<people_flow::KickEvent>),
                 Dm(Option<DmEvent>),
+                Sticker(Option<StickerEvent>),
                 ThreadCreated(Result<Value>),
                 DevicePoll,
                 PresencePoll,
@@ -670,6 +686,7 @@ impl Worker {
                 _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
                 event=self.people.kick_rx.recv()=>Incoming::Kick(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
+                event=self.sticker_rx.recv()=>Incoming::Sticker(event),
                 result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
                 event = idle_rx.recv() => Incoming::SystemIdle(event),
@@ -731,6 +748,22 @@ impl Worker {
                 Incoming::Kick(None) => Ok(()),
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
+                Incoming::Sticker(Some(event)) => {
+                    if self.sticker_jobs.remove(&event.token).is_some() {
+                        match event.result {
+                            Ok(message) if message.channel_id == event.channel => {
+                                self.state.insert_message(message);
+                                self.snapshot();
+                            }
+                            Ok(_) => self.emit(Event::Error(
+                                "Sticker response had an unexpected channel".into(),
+                            )),
+                            Err(message) => self.emit(Event::Error(message)),
+                        }
+                    }
+                    Ok(())
+                }
+                Incoming::Sticker(None) => Ok(()),
                 Incoming::ThreadCreated(result) => {
                     self.finish_thread_creation(result);
                     Ok(())
@@ -947,6 +980,9 @@ impl Worker {
         self.clear_profiles();
         self.clear_community();
         self.clear_attachments();
+        for (_, job) in std::mem::take(&mut self.sticker_jobs) {
+            job.abort();
+        }
         if let Some(task) = self.restore_task.take() {
             task.abort();
         }
@@ -1661,8 +1697,10 @@ impl Worker {
                 });
                 self.request_pending_send(id, channel_id, content, reference, mention_author)?;
             }
-            Command::SendSticker { sticker_id } => {
-                let channel = self.selected()?;
+            Command::SendSticker {
+                channel_id: channel,
+                sticker_id,
+            } => {
                 let target = self
                     .state
                     .channels
@@ -1694,7 +1732,7 @@ impl Worker {
                     })
                     .cloned()
                     .ok_or("Sticker is unavailable")?;
-                let message = if self.demo {
+                if self.demo {
                     let mut message = Message::text(
                         self.state.next_local_message_id(),
                         channel,
@@ -1705,21 +1743,35 @@ impl Worker {
                         "",
                     );
                     message.extra.insert("stickers".into(), json!([sticker]));
-                    message
+                    self.state.insert_message(message);
+                    self.snapshot();
                 } else {
-                    serde_json::from_value(
-                        self.client()?
+                    if self.sticker_jobs.len() >= 8 {
+                        return Err("Too many sticker sends in progress".into());
+                    }
+                    let client = self.client()?.clone();
+                    self.sticker_token = self.sticker_token.wrapping_add(1);
+                    let token = self.sticker_token;
+                    let tx = self.sticker_tx.clone();
+                    let task = tokio::spawn(async move {
+                        let result = match client
                             .send_message_body(
                                 &channel.to_string(),
                                 json!({"sticker_ids": [sticker_id.to_string()]}),
                             )
                             .await
-                            .map_err(error)?,
-                    )
-                    .map_err(error)?
-                };
-                self.state.insert_message(message);
-                self.snapshot();
+                        {
+                            Ok(value) => serde_json::from_value(value).map_err(error),
+                            Err(err) => Err(error(err)),
+                        };
+                        let _ = tx.send(StickerEvent {
+                            token,
+                            channel,
+                            result,
+                        });
+                    });
+                    self.sticker_jobs.insert(token, task);
+                }
             }
             Command::SendMessage {
                 content,

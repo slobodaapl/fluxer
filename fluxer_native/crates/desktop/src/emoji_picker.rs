@@ -50,6 +50,7 @@ impl Fluxer {
         cx: &mut Context<Self>,
     ) {
         self.gif_picker.reset();
+        self.sticker_picker_open = false;
         if self.emoji_target == Some(target) {
             self.emoji_target = None;
         } else {

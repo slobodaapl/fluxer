@@ -39,6 +39,7 @@ impl Fluxer {
     }
 
     fn sticker_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let channel_id = self.state.selected_channel;
         let stickers = self
             .state
             .selected_channel
@@ -51,6 +52,7 @@ impl Fluxer {
             .into_iter()
             .flatten()
             .filter_map(|sticker| {
+                let channel_id = channel_id?;
                 let id = sticker.get("id")?.as_str()?.parse::<Snowflake>().ok()?;
                 let name = sticker
                     .get("name")
@@ -73,7 +75,13 @@ impl Fluxer {
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.sticker_picker_open = false;
-                            this.command(Command::SendSticker { sticker_id: id }, cx);
+                            this.command(
+                                Command::SendSticker {
+                                    channel_id,
+                                    sticker_id: id,
+                                },
+                                cx,
+                            );
                             cx.notify();
                         })),
                 )
@@ -861,7 +869,7 @@ impl Fluxer {
                             .border_1()
                             .border_color(rgb(0x40394d))
                             .child(self.attachment_button(cx))
-                            .child(quiet_button("composer-sticker", "Stickers").on_click(cx.listener(|this, _, _, cx| { this.sticker_picker_open = !this.sticker_picker_open; cx.notify(); })))
+                            .child(quiet_button("composer-sticker", "Stickers").on_click(cx.listener(|this, _, _, cx| { this.sticker_picker_open = !this.sticker_picker_open; if this.sticker_picker_open { this.gif_picker.reset(); this.emoji_target = None; } cx.notify(); })))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .when(self.gif_picker_available(), |view| {
                                 view.child(quiet_button("composer-gif", "GIF").on_click(cx.listener(
