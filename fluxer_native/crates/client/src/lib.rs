@@ -268,6 +268,7 @@ pub enum Command {
     LoadForum {
         channel_id: Snowflake,
         creation_order: bool,
+        offset: usize,
     },
     FetchMentions {
         before: Option<Snowflake>,
@@ -554,6 +555,8 @@ pub enum Event {
     Forum {
         channel_id: Snowflake,
         posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
+        offset: usize,
+        next_offset: usize,
         has_more: bool,
         error: Option<String>,
     },

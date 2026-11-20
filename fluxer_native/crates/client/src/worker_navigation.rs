@@ -64,6 +64,7 @@ pub(super) enum NavigationEvent {
         epoch: u64,
         token: u64,
         channel: Snowflake,
+        offset: usize,
         result: Result<Value>,
     },
     Mentions {
@@ -173,7 +174,12 @@ impl NavigationState {
 }
 
 impl Worker {
-    pub(super) fn load_forum(&mut self, channel: Snowflake, creation_order: bool) -> Result<()> {
+    pub(super) fn load_forum(
+        &mut self,
+        channel: Snowflake,
+        creation_order: bool,
+        offset: usize,
+    ) -> Result<()> {
         let target = self.state.channels.get(&channel).ok_or("Unknown forum")?;
         if !matches!(target.kind, ChannelType::Forum | ChannelType::Media) {
             return Err("Choose a forum".into());
@@ -204,6 +210,7 @@ impl Worker {
                         } else {
                             "last_message_time"
                         },
+                        offset,
                     )
                     .await
                     .map_err(error),
@@ -213,6 +220,7 @@ impl Worker {
                 epoch,
                 token,
                 channel,
+                offset,
                 result,
             });
         });
@@ -1611,6 +1619,7 @@ impl Worker {
                 epoch,
                 token,
                 channel,
+                offset,
                 result,
             } => {
                 if epoch != self.navigation.epoch
@@ -1626,6 +1635,7 @@ impl Worker {
                 let (_, _, changes) = self.navigation.forum.take().unwrap();
                 let mut posts = Vec::new();
                 let mut has_more = false;
+                let mut next_offset = offset;
                 let mut failure = None;
                 match result {
                     Ok(body)
@@ -1646,6 +1656,7 @@ impl Worker {
                             .and_then(|v| serde_json::from_value(v).ok())
                             .unwrap_or_default();
                         if let Some(threads) = body.get("threads").and_then(Value::as_array) {
+                            next_offset += threads.len();
                             for value in threads {
                                 let mut value = value.clone();
                                 let id = value
@@ -1686,6 +1697,8 @@ impl Worker {
                 self.emit(Event::Forum {
                     channel_id: channel,
                     posts,
+                    offset,
+                    next_offset,
                     has_more,
                     error: failure,
                 });

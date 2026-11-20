@@ -34,13 +34,14 @@ fn api_client() -> Result<reqwest::Client> {
 }
 impl Client {
     /// ForumController search returns posts and optional first-message previews.
-    pub async fn forum_posts(&self, channel: &str, sort_by: &str) -> Result<Value> {
+    pub async fn forum_posts(&self, channel: &str, sort_by: &str, offset: usize) -> Result<Value> {
         let path = {
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             query
                 .append_pair("sort_by", sort_by)
                 .append_pair("sort_order", "desc")
-                .append_pair("limit", "25");
+                .append_pair("limit", "25")
+                .append_pair("offset", &offset.to_string());
             format!(
                 "/channels/{}/threads/search?{}",
                 segment(channel),

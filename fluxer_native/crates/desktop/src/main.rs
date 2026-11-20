@@ -318,6 +318,8 @@ enum EmojiTarget {
 struct ForumResults {
     posts: Vec<(fluxer_core::Channel, Option<fluxer_core::Message>)>,
     has_more: bool,
+    next_offset: usize,
+    loading_more: bool,
     error: Option<String>,
 }
 
@@ -1097,6 +1099,7 @@ impl Fluxer {
                                 Command::LoadForum {
                                     channel_id,
                                     creation_order: self.forum_creation_order,
+                                    offset: 0,
                                 },
                                 cx,
                             );
@@ -1675,15 +1678,39 @@ impl Fluxer {
                 Event::Forum {
                     channel_id,
                     posts,
+                    offset,
+                    next_offset,
                     has_more,
                     error,
                 } => {
                     if self.state.selected_channel == Some(channel_id) {
-                        self.forum = Some(ForumResults {
-                            posts,
-                            has_more,
-                            error,
-                        });
+                        if offset > 0 {
+                            if let Some(forum) = self.forum.as_mut() {
+                                forum.loading_more = false;
+                                if error.is_none() {
+                                    for post in posts {
+                                        if !forum
+                                            .posts
+                                            .iter()
+                                            .any(|existing| existing.0.id == post.0.id)
+                                        {
+                                            forum.posts.push(post);
+                                        }
+                                    }
+                                    forum.has_more = has_more;
+                                    forum.next_offset = next_offset;
+                                }
+                                forum.error = error;
+                            }
+                        } else {
+                            self.forum = Some(ForumResults {
+                                posts,
+                                has_more,
+                                next_offset,
+                                loading_more: false,
+                                error,
+                            });
+                        }
                     }
                 }
                 Event::Search(snapshot) => self.on_search_snapshot(snapshot, cx),

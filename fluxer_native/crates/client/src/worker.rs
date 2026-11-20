@@ -1471,7 +1471,8 @@ impl Worker {
             Command::LoadForum {
                 channel_id,
                 creation_order,
-            } => self.load_forum(channel_id, creation_order)?,
+                offset,
+            } => self.load_forum(channel_id, creation_order, offset)?,
             Command::SearchMessages {
                 channel_id,
                 query,

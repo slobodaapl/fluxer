@@ -956,6 +956,8 @@ impl Fluxer {
         if let Some(ForumResults {
             posts,
             has_more,
+            next_offset,
+            loading_more,
             error,
         }) = &self.forum
         {
@@ -986,8 +988,27 @@ impl Fluxer {
                 );
             }
             if *has_more {
+                let offset = *next_offset;
+                let loading = *loading_more;
                 list = list.child(
-                    div().child("More posts are available; pagination is not yet supported."),
+                    quiet_button("forum-more", if loading { "Loading…" } else { "Load more" })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if loading {
+                                return;
+                            }
+                            if let Some(forum) = this.forum.as_mut() {
+                                forum.loading_more = true;
+                                forum.error = None;
+                            }
+                            this.command(
+                                Command::LoadForum {
+                                    channel_id,
+                                    creation_order: this.forum_creation_order,
+                                    offset,
+                                },
+                                cx,
+                            );
+                        })),
                 );
             }
         } else {
@@ -1017,6 +1038,7 @@ impl Fluxer {
                             Command::LoadForum {
                                 channel_id,
                                 creation_order: this.forum_creation_order,
+                                offset: 0,
                             },
                             cx,
                         );
