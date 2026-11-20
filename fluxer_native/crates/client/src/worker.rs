@@ -2244,7 +2244,11 @@ impl Worker {
             Command::WatchCamera { identity, watch } => {
                 let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
                 if let Err(error) = self.set_camera_watch(identity.clone(), watch, connected) {
-                    self.emit(Event::CameraWatchFailed { identity, error });
+                    if watch {
+                        self.emit(Event::CameraWatchFailed { identity, error });
+                    } else {
+                        self.emit(Event::Error(error));
+                    }
                 }
             }
             Command::StartMicrophoneTest => {
@@ -4406,6 +4410,12 @@ impl Worker {
             .cloned()
             .collect();
         for identity in stopped_cameras {
+            if !old_cameras.contains(&identity) {
+                self.emit(Event::CameraAvailable {
+                    identity: identity.clone(),
+                    available: false,
+                });
+            }
             self.set_camera_watch(identity, false, false)?;
         }
         let previous = std::mem::replace(&mut self.available_streams, next);

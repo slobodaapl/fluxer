@@ -3894,3 +3894,38 @@ async fn camera_watch_is_explicit_roster_bound_and_independent_of_screen() {
     assert!(events.try_iter().any(|event| matches!(event, Event::CameraAvailable { identity: ref id, available: false } if id == &identity)));
     assert!(outgoing.try_recv().is_err());
 }
+
+#[tokio::test]
+async fn camera_replacement_reports_missing_watch_and_hide_failure_is_not_start_failure() {
+    let (mut worker, events, _) = watch_worker();
+    let identity = "user_123_live".to_owned();
+    gateway_voice(&mut worker, json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"live","self_video":true})).await;
+    worker
+        .set_camera_watch(identity.clone(), true, true)
+        .unwrap();
+    events.try_iter().for_each(drop);
+    // Replacement forgets advertised availability while retaining watch intent.
+    worker.available_cameras.clear();
+    worker
+        .state
+        .apply_gateway(
+            "VOICE_STATE_UPDATE",
+            json!({"user_id":"123","connection_id":"live","self_video":false}),
+        )
+        .unwrap();
+    worker.sync_stream_availability().await.unwrap();
+    assert!(events.try_iter().any(|event| matches!(event, Event::CameraAvailable { identity: ref id, available: false } if id == &identity)));
+    assert!(!worker.watched_cameras.contains(&identity));
+    worker
+        .command(Command::WatchCamera {
+            identity: "invalid".into(),
+            watch: false,
+        })
+        .await
+        .unwrap();
+    let error = events
+        .try_iter()
+        .find(|event| matches!(event, Event::Error(_) | Event::CameraWatchFailed { .. }))
+        .unwrap();
+    assert!(matches!(error, Event::Error(_)));
+}
