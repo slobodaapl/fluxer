@@ -212,6 +212,10 @@ pub enum Command {
     CreateGroupDm {
         recipients: Vec<Snowflake>,
     },
+    AddGroupRecipients {
+        channel_id: Snowflake,
+        recipients: Vec<Snowflake>,
+    },
     LoadUserProfile {
         user_id: Snowflake,
         guild_id: Option<Snowflake>,

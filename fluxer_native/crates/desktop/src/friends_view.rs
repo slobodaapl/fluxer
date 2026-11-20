@@ -15,6 +15,7 @@ enum Filter {
 pub(super) struct FriendsUi {
     filter: Filter,
     group_selecting: bool,
+    group_target: Option<Snowflake>,
     group_recipients: std::collections::BTreeSet<Snowflake>,
     pub status: BTreeMap<Snowflake, RelationshipMutationStatus>,
     pub dm_status: BTreeMap<Snowflake, DirectMessageStatus>,
@@ -29,6 +30,7 @@ impl FriendsUi {
         Self {
             filter: Filter::Online,
             group_selecting: false,
+            group_target: None,
             group_recipients: std::collections::BTreeSet::new(),
             status: BTreeMap::new(),
             dm_status: BTreeMap::new(),
@@ -41,6 +43,14 @@ impl FriendsUi {
     }
 }
 impl Fluxer {
+    pub(super) fn add_friends_to_group(&mut self, channel: Snowflake, cx: &mut Context<Self>) {
+        self.friends_ui.group_target = Some(channel);
+        self.friends_ui.group_selecting = true;
+        self.friends_ui.group_recipients.clear();
+        self.friends_ui.filter = Filter::All;
+        self.pane = Pane::Friends;
+        cx.notify();
+    }
     fn relationship_action(
         &mut self,
         user: Snowflake,
@@ -316,7 +326,12 @@ impl Fluxer {
                     )),
                 );
             }
-            if relationship.kind == 1 && self.friends_ui.group_selecting {
+            let already_member = self
+                .friends_ui
+                .group_target
+                .and_then(|id| self.state.channels.get(&id))
+                .is_some_and(|channel| channel.recipients.iter().any(|user| user.id == id));
+            if relationship.kind == 1 && self.friends_ui.group_selecting && !already_member {
                 let selected = self.friends_ui.group_recipients.contains(&id);
                 actions = actions.child(
                     quiet_button(
@@ -453,6 +468,12 @@ impl Fluxer {
                                 },
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some(channel) = this.friends_ui.group_target.take() {
+                                    this.friends_ui.group_selecting = false;
+                                    this.friends_ui.group_recipients.clear();
+                                    this.select(channel, cx);
+                                    return;
+                                }
                                 this.friends_ui.group_selecting = !this.friends_ui.group_selecting;
                                 this.friends_ui.group_recipients.clear();
                                 if this.friends_ui.group_selecting {
@@ -467,14 +488,30 @@ impl Fluxer {
                             quiet_button(
                                 "group-dm-create",
                                 format!(
-                                    "Create group ({})",
+                                    "{} ({})",
+                                    if self.friends_ui.group_target.is_some() {
+                                        "Add friends"
+                                    } else {
+                                        "Create group"
+                                    },
                                     self.friends_ui.group_recipients.len()
                                 ),
                             )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let recipients =
                                     this.friends_ui.group_recipients.iter().copied().collect();
-                                this.command(Command::CreateGroupDm { recipients }, cx);
+                                if let Some(channel_id) = this.friends_ui.group_target.take() {
+                                    this.command(
+                                        Command::AddGroupRecipients {
+                                            channel_id,
+                                            recipients,
+                                        },
+                                        cx,
+                                    );
+                                    this.select(channel_id, cx);
+                                } else {
+                                    this.command(Command::CreateGroupDm { recipients }, cx);
+                                }
                                 this.friends_ui.group_selecting = false;
                                 this.friends_ui.group_recipients.clear();
                                 cx.notify();

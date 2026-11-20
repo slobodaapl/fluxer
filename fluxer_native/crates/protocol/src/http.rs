@@ -837,6 +837,19 @@ impl Client {
         )
         .await
     }
+    pub async fn add_group_recipient(&self, channel: &str, user: &str) -> Result<()> {
+        self.request(
+            Method::PUT,
+            &format!(
+                "/channels/{}/recipients/{}",
+                segment(channel),
+                segment(user)
+            ),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
     pub async fn relationships(&self) -> Result<Value> {
         self.request(Method::GET, "/users/@me/relationships", None)
             .await

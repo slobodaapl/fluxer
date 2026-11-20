@@ -131,6 +131,11 @@ impl Fluxer {
                     || matches!(parent.kind, ChannelType::Forum | ChannelType::Media)
             })
             .map(|parent| (parent.id, parent.name.clone()));
+        let group_add = channel
+            .filter(|channel| {
+                !self.demo && channel.kind == ChannelType::GroupDm && channel.guild_id.is_none()
+            })
+            .map(|channel| channel.id);
         let archived = channel.is_some_and(|channel| channel.thread_archived());
         let can_create_thread = selected
             .filter(|parent| !self.demo && self.state.public_thread_type(*parent).is_some());
@@ -236,6 +241,11 @@ impl Fluxer {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .when_some(group_add, |view, channel| view.child(
+                                quiet_button("group-add-friends", "Add friends").on_click(
+                                    cx.listener(move |this, _, _, cx| this.add_friends_to_group(channel, cx)),
+                                ),
+                            ))
                             .when_some(thread_parent, |view, (parent, name)| view.child(
                                 icon_button("thread-parent", Icon::Back, format!("Back to #{name}")).on_click(
                                     cx.listener(move |this, _, _, cx| this.select(parent, cx)),

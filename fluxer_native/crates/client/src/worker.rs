@@ -173,6 +173,7 @@ struct StickerEvent {
 }
 
 struct DmEvent {
+    group_add: bool,
     user_id: Snowflake,
     generation: u64,
     result: Result<Value>,
@@ -1426,6 +1427,14 @@ impl Worker {
                     )));
                 }
             }
+            Command::AddGroupRecipients {
+                channel_id,
+                recipients,
+            } => {
+                if let Err(message) = self.add_group_recipients(channel_id, recipients) {
+                    self.emit(Event::Status(format!("Couldn't add friends: {message}")));
+                }
+            }
             Command::LoadUserProfile {
                 user_id,
                 guild_id,
@@ -2650,6 +2659,7 @@ impl Worker {
                 Err(_) => Err("Opening the direct message timed out".into()),
             };
             let _ = tx.send(DmEvent {
+                group_add: false,
                 user_id,
                 generation,
                 result,
@@ -2693,6 +2703,7 @@ impl Worker {
                 Err(_) => Err("Creating the group DM timed out".into()),
             };
             let _ = tx.send(DmEvent {
+                group_add: false,
                 user_id: 0.into(),
                 generation,
                 result,
@@ -2700,6 +2711,77 @@ impl Worker {
         });
         self.dm_job = Some(DmJob { generation, task });
         self.emit(Event::Status("Creating group DM…".into()));
+        Ok(())
+    }
+    fn add_group_recipients(
+        &mut self,
+        channel_id: Snowflake,
+        recipients: Vec<Snowflake>,
+    ) -> Result<()> {
+        if self.demo {
+            return Err("Unavailable in demo mode".into());
+        }
+        let current = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Group no longer available")?;
+        if self.state.selected_channel != Some(channel_id)
+            || channel.kind != fluxer_core::ChannelType::GroupDm
+            || channel.guild_id.is_some()
+        {
+            return Err("Select the group DM first".into());
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        for id in recipients {
+            if id == current
+                || channel.recipients.iter().any(|user| user.id == id)
+                || !self
+                    .state
+                    .relationships
+                    .get(&id)
+                    .is_some_and(|r| r.kind == 1)
+                || !unique.insert(id)
+            {
+                return Err("Select distinct friends who aren't already in the group".into());
+            }
+        }
+        if unique.is_empty() {
+            return Err("Select at least one friend".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        self.cancel_open_dm();
+        let generation = self.dm_generation;
+        let tx = self.dm_tx.clone();
+        let task = tokio::spawn(async move {
+            let mut failures = Vec::new();
+            for id in unique {
+                match tokio::time::timeout(
+                    Duration::from_secs(15),
+                    client.add_group_recipient(&channel_id.to_string(), &id.to_string()),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => failures.push(format!("{id}: {}", error(e))),
+                    Err(_) => failures.push(format!("{id}: timed out")),
+                }
+            }
+            let result = if failures.is_empty() {
+                Ok(Value::Null)
+            } else {
+                Err(failures.join(", "))
+            };
+            let _ = tx.send(DmEvent {
+                group_add: true,
+                user_id: 0.into(),
+                generation,
+                result,
+            });
+        });
+        self.dm_job = Some(DmJob { generation, task });
+        self.emit(Event::Status("Adding friends to group…".into()));
         Ok(())
     }
     async fn finish_open_dm(&mut self, event: DmEvent) -> Result<()> {
@@ -2711,6 +2793,13 @@ impl Worker {
             return Ok(());
         }
         self.dm_job = None;
+        if event.group_add {
+            self.emit(Event::Status(match event.result {
+                Ok(_) => "Friends added to group".into(),
+                Err(message) => format!("Couldn't add some friends: {message}"),
+            }));
+            return Ok(());
+        }
         let result: Result<()> = async {
             let channel: fluxer_core::Channel =
                 self.state.decode_api(event.result?).map_err(error)?;
