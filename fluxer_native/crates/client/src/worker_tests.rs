@@ -4082,3 +4082,26 @@ async fn incoming_call_accept_requires_our_ring_and_sends_private_voice_join() {
     );
     assert!(worker.media.is_none()); // No media or capture before credentials.
 }
+
+#[tokio::test]
+async fn camera_capture_requires_frame_and_current_generation() {
+    let (mut worker, _events, mut gateway) = watch_worker();
+    worker.pending_camera = Some(2);
+    worker.camera_event(1, true, true).await.unwrap();
+    worker.camera_event(2, true, false).await.unwrap();
+    assert!(!worker.state.voice.camera);
+    worker.camera_event(2, true, true).await.unwrap();
+    assert!(worker.state.voice.camera);
+    worker.camera_event(1, false, false).await.unwrap();
+    assert!(worker.state.voice.camera);
+    worker.camera_event(2, false, false).await.unwrap();
+    assert!(!worker.state.voice.camera);
+    let mut states = Vec::new();
+    while let Ok(GatewayCommand::VoiceState(state)) = gateway.try_recv() {
+        states.push(state.self_video);
+    }
+    assert_eq!(states, [true, false]);
+    worker.camera_event(2, true, true).await.unwrap();
+    assert!(!worker.state.voice.camera);
+    assert!(worker.media.is_none());
+}

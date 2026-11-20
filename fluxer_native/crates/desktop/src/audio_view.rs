@@ -125,6 +125,37 @@ impl Fluxer {
                                 )),
                             )
                         })
+                        .when(
+                            (connected && can_share)
+                                || self.state.voice.camera
+                                || self.camera_starting,
+                            |view| {
+                                view.child(
+                                    quiet_button(
+                                        "camera-toggle",
+                                        if self.state.voice.camera || self.camera_starting {
+                                            "Stop camera"
+                                        } else {
+                                            "Camera"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            if this.state.voice.camera || this.camera_starting {
+                                                this.camera_starting = false;
+                                                this.camera_picker_open = false;
+                                                this.command(Command::StopCamera, cx);
+                                            } else {
+                                                this.camera_picker_open = !this.camera_picker_open;
+                                                if this.camera_picker_open {
+                                                    this.command(Command::RefreshCameras, cx);
+                                                }
+                                            }
+                                        },
+                                    )),
+                                )
+                            },
+                        )
                         .child(
                             icon_button(
                                 "leave",
@@ -141,6 +172,30 @@ impl Fluxer {
                             ),
                         ),
                 )
+            })
+            .when(active && self.camera_picker_open, |view| {
+                let mut picker = div().flex().flex_col().gap_1().child("Choose a camera");
+                if self.camera_devices.is_empty() {
+                    picker = picker.child("No cameras available");
+                }
+                for (index, device) in self.camera_devices.iter().enumerate() {
+                    let id = device.id.clone();
+                    picker = picker.child(
+                        quiet_button(("camera-device", index), device.label.clone()).on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.camera_picker_open = false;
+                                this.camera_starting = true;
+                                this.command(
+                                    Command::StartCamera {
+                                        device_id: id.clone(),
+                                    },
+                                    cx,
+                                );
+                            }),
+                        ),
+                    );
+                }
+                view.child(picker)
             })
             .when(self.sharing, |view| {
                 view.child(

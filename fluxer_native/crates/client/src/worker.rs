@@ -278,6 +278,7 @@ pub(crate) struct Worker {
     member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
+    pending_camera: Option<u64>,
     available_cameras: BTreeSet<String>,
     watched_cameras: BTreeSet<String>,
     camera_generations: BTreeMap<String, u64>,
@@ -375,6 +376,7 @@ impl Worker {
             member_query: None,
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
+            pending_camera: None,
             available_cameras: BTreeSet::new(),
             watched_cameras: BTreeSet::new(),
             camera_generations: BTreeMap::new(),
@@ -2436,6 +2438,23 @@ impl Worker {
                     self.media_events = None;
                 }
             }
+            Command::RefreshCameras => {
+                let devices = self.media()?.camera_devices().map_err(error)?;
+                self.emit(Event::CameraDevices(devices));
+            }
+            Command::StartCamera { device_id } => {
+                if self.state.voice.channel_id.is_none() || self.voice_target.is_none() {
+                    return Err("Join a voice channel first".into());
+                }
+                if self.pending_camera.is_some() || self.state.voice.camera {
+                    return Err("Camera is already starting or active".into());
+                }
+                let result = self.media()?.start_camera(device_id).await.map_err(error);
+                self.pending_camera = Some(result?);
+            }
+            Command::StopCamera => {
+                self.stop_camera().await?;
+            }
             Command::RefreshScreenSources => {
                 let sources = self.media()?.screen_sources().map_err(error)?;
                 self.emit(Event::ScreenSources(sources));
@@ -3613,6 +3632,8 @@ impl Worker {
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
         let ring = self.private_ring.take();
         self.pending_share = None;
+        self.pending_camera = None;
+        self.state.voice.camera = false;
         self.active_share_audio = false;
         if let Some(job) = self.voice_connect.take() {
             job.task.abort();
@@ -4272,6 +4293,8 @@ impl Worker {
         if let Some(media) = &mut self.media {
             media.stop_capture_for_recovery();
         }
+        self.pending_camera = None;
+        self.state.voice.camera = false;
         let revoked_share = self.revoke_share_for_replacement();
         self.media_events = None;
         self.state.voice.disconnect();
@@ -4630,6 +4653,16 @@ impl Worker {
                     }));
                 }
             }
+            MediaEvent::CameraStarted(generation) => {
+                let running = self
+                    .media
+                    .as_ref()
+                    .is_some_and(MediaEngine::camera_capture_has_frame);
+                self.camera_event(generation, true, running).await?;
+            }
+            MediaEvent::CameraStopped(generation) => {
+                self.camera_event(generation, false, false).await?;
+            }
             MediaEvent::ScreenShareStarted => {
                 let running = self
                     .media
@@ -4970,6 +5003,48 @@ impl Worker {
             Ok(()) => Ok(()),
             Err(message) => self.rollback_share(message).await,
         }
+    }
+
+    async fn camera_event(
+        &mut self,
+        generation: u64,
+        started: bool,
+        has_frame: bool,
+    ) -> Result<()> {
+        if started {
+            if !has_frame
+                || self.state.voice.camera
+                || self.pending_camera != Some(generation)
+                || self.voice_target.is_none()
+                || self.state.voice.channel_id.is_none()
+            {
+                return Ok(());
+            }
+            self.state.voice.camera = true;
+            self.snapshot();
+            self.emit(Event::Media(MediaEvent::CameraStarted(generation)));
+            if let Err(message) = self.update_voice().await {
+                let _ = self.stop_camera().await;
+                return Err(message);
+            }
+        } else if self.pending_camera == Some(generation) {
+            self.stop_camera().await?;
+        }
+        Ok(())
+    }
+
+    async fn stop_camera(&mut self) -> Result<()> {
+        let generation = self.pending_camera.take().unwrap_or(0);
+        self.state.voice.camera = false;
+        self.snapshot();
+        self.emit(Event::Media(MediaEvent::CameraStopped(generation)));
+        let stopped = if let Some(media) = &mut self.media {
+            media.stop_camera().await.map_err(error)
+        } else {
+            Ok(())
+        };
+        let gateway = self.update_voice().await;
+        stopped.and(gateway)
     }
 
     async fn shared_audio_event(&mut self, running: bool) -> Result<()> {

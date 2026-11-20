@@ -440,6 +440,9 @@ struct Fluxer {
     share_size: (u32, u32),
     dsp: AudioSettings,
     sharing: bool,
+    camera_picker_open: bool,
+    camera_starting: bool,
+    camera_devices: Vec<fluxer_media::CameraDevice>,
     reshare_required: bool,
     editing: Option<Snowflake>,
     viewer: Viewer<Arc<RenderImage>>,
@@ -653,6 +656,9 @@ impl Fluxer {
             share_size: (1920, 1080),
             dsp: AudioSettings::default(),
             sharing: false,
+            camera_picker_open: false,
+            camera_starting: false,
+            camera_devices: Vec::new(),
             reshare_required: false,
             editing: None,
             viewer: Viewer::default(),
@@ -1387,6 +1393,7 @@ impl Fluxer {
                     }
                 }
                 Event::Error(error) => {
+                    self.camera_starting = false;
                     self.forward_pending = false;
                     self.error = Some(error);
                 }
@@ -1578,6 +1585,9 @@ impl Fluxer {
                         picker.set_options(vec![output.clone()], cx);
                         picker.set_selected(&output.0, cx);
                     });
+                }
+                Event::CameraDevices(devices) => {
+                    self.camera_devices = devices;
                 }
                 Event::Devices(devices) => {
                     let input_label = self.input_picker.update(cx, |picker, cx| {
@@ -1858,6 +1868,9 @@ impl Fluxer {
                 }
                 Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
+                    MediaEvent::CameraStarted(_) | MediaEvent::CameraStopped(_) => {
+                        self.camera_starting = false;
+                    }
                     MediaEvent::ScreenShareStarted => {
                         self.sharing = true;
                         self.reshare_required = false;
@@ -1886,6 +1899,8 @@ impl Fluxer {
                     MediaEvent::Disconnected => {
                         self.active_speakers.clear();
                         self.sharing = false;
+                        self.camera_starting = false;
+                        self.camera_picker_open = false;
                         self.clear_viewer(cx);
                         if self.pane == Pane::Call {
                             self.pane = Pane::Chat;
@@ -1898,6 +1913,8 @@ impl Fluxer {
                         self.available_cameras.clear();
                         self.active_speakers.clear();
                         self.sharing = false;
+                        self.camera_starting = false;
+                        self.camera_picker_open = false;
                         self.reset_viewer_transport(cx);
                         self.participants.clear();
                         self.available_streams.clear();

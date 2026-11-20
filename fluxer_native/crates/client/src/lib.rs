@@ -545,6 +545,11 @@ pub enum Command {
     },
     StartMicrophoneTest,
     StopMicrophoneTest,
+    RefreshCameras,
+    StartCamera {
+        device_id: String,
+    },
+    StopCamera,
     RefreshScreenSources,
     StartShare {
         options: ScreenShareOptions,
@@ -753,6 +758,7 @@ pub enum Event {
         audio_playback: FilePlaybackPreference,
         video_playback: FilePlaybackPreference,
     },
+    CameraDevices(Vec<fluxer_media::CameraDevice>),
     ScreenSources(Vec<ScreenSource>),
     AudioApplications(Vec<fluxer_media::AudioApplication>),
     SharedAudioStatus(bool),
