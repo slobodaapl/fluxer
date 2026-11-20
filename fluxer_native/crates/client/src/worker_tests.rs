@@ -3117,6 +3117,7 @@ async fn display_settings_exact_transport_rollback_and_pending_scope() {
             json!({"message_display_compact":true}),
             json!({"gif_auto_play":false}),
             json!({"animate_emoji":false}),
+            json!({"trusted_domains":["example.org"]}),
         ]
         .into_iter()
         .enumerate()
@@ -3190,6 +3191,19 @@ async fn display_settings_exact_transport_rollback_and_pending_scope() {
         .unwrap();
     worker.display_settings_event(result).await;
     assert_eq!(worker.state.user_settings["animate_emoji"], false);
+    worker
+        .set_display_setting(DisplaySetting::TrustedDomains(vec!["example.org".into()]))
+        .await
+        .unwrap();
+    let result = timeout(Duration::from_secs(5), worker.display_settings.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.display_settings_event(result).await;
+    assert_eq!(
+        worker.state.user_settings["trusted_domains"],
+        json!(["example.org"])
+    );
     server.await.unwrap();
 }
 

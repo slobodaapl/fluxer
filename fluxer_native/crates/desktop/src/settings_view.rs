@@ -9,6 +9,7 @@ pub(super) enum Section {
     Privacy,
     Accessibility,
     MessagesMedia,
+    TrustedDomains,
     Keybinds,
     Voice,
     Notifications,
@@ -55,6 +56,7 @@ impl Fluxer {
             | Section::Appearance
             | Section::Accessibility
             | Section::MessagesMedia
+            | Section::TrustedDomains
             | Section::Keybinds
             | Section::Desktop => self.expanded_settings(cx),
             Section::Notifications => div()
@@ -103,6 +105,11 @@ impl Fluxer {
                                 Section::MessagesMedia,
                                 "settings-messages-media",
                                 "Messages & media",
+                            ),
+                            (
+                                Section::TrustedDomains,
+                                "settings-trusted-domains",
+                                "Trusted domains",
                             ),
                             (Section::Desktop, "settings-desktop", "Desktop"),
                             (Section::Keybinds, "settings-keybinds", "Keybinds"),
@@ -376,10 +383,79 @@ A preview of your message text size.",
             }
             Section::MessagesMedia => {
                 let autoplay = media_animation::gif_autoplay(&self.state.user_settings);
-                let animate_emoji = crate::emoji_presentation::autoplay(&self.state.user_settings, false);
+                let animate_emoji =
+                    crate::emoji_presentation::autoplay(&self.state.user_settings, false);
                 body=body.child(settings_heading("Messages & media")).child(muted("Animation preferences · saved to your account"))
                     .child(setting_row("Automatically play GIFs", "Play animated images without hovering. Reduced motion takes priority on this device.",toggle("settings-gif-autoplay",autoplay,"Automatically play GIFs").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::GifAutoplay(!autoplay),cx);}}))))
                     .child(setting_row("Animate custom emoji", "Play animated custom emoji automatically. Reduced motion takes priority on this device.",toggle("settings-animate-emoji",animate_emoji,"Animate custom emoji").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::AnimateEmoji(!animate_emoji),cx);}}))));
+            }
+            Section::TrustedDomains => {
+                body = body.child(settings_heading("Trusted domains")).child(muted(
+                    "Saved to your account. Remove domains you no longer trust.",
+                ));
+                match self
+                    .state
+                    .user_settings
+                    .get("trusted_domains")
+                    .and_then(|value| value.as_array())
+                {
+                    Some(values) if values.iter().all(|value| value.is_string()) => {
+                        let domains: Vec<String> = values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_owned))
+                            .collect();
+                        if domains.is_empty() {
+                            body = body.child(muted("No trusted domains."));
+                        }
+                        for (index, domain) in domains.iter().enumerate() {
+                            let mut remaining = domains.clone();
+                            remaining.remove(index);
+                            body = body.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_3()
+                                    .child(div().min_w_0().child(if domain == "*" {
+                                        "All external domains".to_owned()
+                                    } else {
+                                        domain.clone()
+                                    }))
+                                    .child(
+                                        quiet_button(("remove-trusted-domain", index), "Remove")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if !pending {
+                                                    this.save_display_setting(
+                                                        DisplaySetting::TrustedDomains(
+                                                            remaining.clone(),
+                                                        ),
+                                                        cx,
+                                                    );
+                                                }
+                                            })),
+                                    ),
+                            );
+                        }
+                        if domains.len() > 1 {
+                            body = body.child(
+                                quiet_button("clear-trusted-domains", "Clear trusted domains")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if !pending {
+                                            this.save_display_setting(
+                                                DisplaySetting::TrustedDomains(vec![]),
+                                                cx,
+                                            );
+                                        }
+                                    })),
+                            );
+                        }
+                    }
+                    _ => {
+                        body = body.child(muted(
+                            "Trusted domains are unavailable. Reload settings to manage them.",
+                        ))
+                    }
+                }
             }
             Section::Desktop => {
                 use crate::native_preferences::WindowSetting;
@@ -506,7 +582,10 @@ A preview of your message text size.",
         }
         if matches!(
             self.settings_section,
-            Section::Privacy | Section::Appearance | Section::MessagesMedia
+            Section::Privacy
+                | Section::Appearance
+                | Section::MessagesMedia
+                | Section::TrustedDomains
         ) {
             if pending {
                 body = body.child(muted("Saving account preference…"));

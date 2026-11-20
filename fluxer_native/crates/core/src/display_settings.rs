@@ -16,6 +16,7 @@ pub enum DisplaySetting {
     DefaultGuildsRestricted(bool),
     BotDefaultGuildsRestricted(bool),
     FriendSource { flag: u64, enabled: bool },
+    TrustedDomains(Vec<String>),
 }
 fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
     let mut n = 0u64;
@@ -137,6 +138,17 @@ pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Resu
         DisplaySetting::Compact(v) => json!({"message_display_compact":v}),
         DisplaySetting::GifAutoplay(v) => json!({"gif_auto_play":v}),
         DisplaySetting::AnimateEmoji(v) => json!({"animate_emoji":v}),
+        DisplaySetting::TrustedDomains(domains) => {
+            if domains.len() > 1000
+                || domains
+                    .iter()
+                    .any(|domain| domain.is_empty() || domain.encode_utf16().count() > 253)
+                || (domains.iter().any(|domain| domain == "*") && domains.len() != 1)
+            {
+                return Err("Invalid trusted domains".into());
+            }
+            json!({"trusted_domains": domains})
+        }
         DisplaySetting::FontSize(size) => {
             if !size.is_finite() || !(8. ..=48.).contains(&size) {
                 return Err("Text size must be between 8 and 48 pixels".into());
@@ -233,6 +245,45 @@ mod tests {
                     flag: 8,
                     enabled: true
                 }
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn trusted_domains_patch_obeys_account_contract() {
+        assert_eq!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::TrustedDomains(vec!["example.org".into()])
+            )
+            .unwrap(),
+            json!({"trusted_domains":["example.org"]})
+        );
+        assert!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::TrustedDomains(vec!["*".into(), "example.org".into()])
+            )
+            .is_err()
+        );
+        assert!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::TrustedDomains(vec!["".into()])
+            )
+            .is_err()
+        );
+        assert!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::TrustedDomains(vec!["a".repeat(254)])
+            )
+            .is_err()
+        );
+        assert!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::TrustedDomains(vec!["a".into(); 1001])
             )
             .is_err()
         );
