@@ -2319,6 +2319,7 @@ mod room_cancellation_tests {
         let task = tokio::spawn(std::future::pending::<()>());
         let handles = Mutex::new(ShareCaptureHandles {
             screen: Some(screen::ScreenStopHandle::for_test(screen_stopped.clone())),
+            camera: None,
             audio: Some(task.abort_handle()),
             audio_running: Some(audio_running.clone()),
         });
