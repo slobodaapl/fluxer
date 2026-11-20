@@ -4019,3 +4019,46 @@ async fn group_removal_checks_owner_and_waits_for_gateway() {
 
 #[path = "worker_loopback_tests.rs"]
 mod loopback;
+
+#[tokio::test]
+async fn incoming_call_accept_requires_our_ring_and_sends_private_voice_join() {
+    let (mut worker, _) = worker();
+    worker.state.apply_gateway("READY", json!({"user":{"id":"1","username":"me"},"private_channels":[{"id":"20","type":1,"recipients":[{"id":"2","username":"caller"}]}]})).unwrap();
+    worker
+        .state
+        .apply_gateway("CALL_CREATE", json!({"channel_id":"20","ringing":["2"]}))
+        .unwrap();
+    worker.gateway_ready = true;
+    let (tx, mut outgoing) = async_mpsc::channel(8);
+    worker.gateway_commands = Some(tx);
+    assert!(
+        worker
+            .command(Command::AcceptPrivateCall {
+                channel_id: 20.into()
+            })
+            .await
+            .is_err()
+    );
+    assert!(outgoing.try_recv().is_err());
+    worker
+        .state
+        .apply_gateway("CALL_UPDATE", json!({"channel_id":"20","ringing":["1"]}))
+        .unwrap();
+    worker
+        .command(Command::AcceptPrivateCall {
+            channel_id: 20.into(),
+        })
+        .await
+        .unwrap();
+    let GatewayCommand::VoiceState(payload) = outgoing.try_recv().unwrap() else {
+        panic!("expected voice join")
+    };
+    assert_eq!(payload.channel_id.as_deref(), Some("20"));
+    assert!(payload.guild_id.is_none());
+    assert!(
+        !worker.state.private_calls[&20.into()]
+            .ringing
+            .contains(&1.into())
+    );
+    assert!(worker.media.is_none()); // No media or capture before credentials.
+}

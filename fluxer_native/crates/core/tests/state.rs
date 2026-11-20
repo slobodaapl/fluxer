@@ -494,3 +494,41 @@ fn group_recipient_events_update_members_idempotently() {
         ApplyOutcome::Ignored
     );
 }
+
+#[test]
+fn private_call_gateway_projection_tracks_ringing_and_call_instances() {
+    let mut state = ClientState::default();
+    state
+        .apply_gateway(
+            "CALL_CREATE",
+            json!({"channel_id":"10","message_id":"11","ringing":["1","2","1"]}),
+        )
+        .unwrap();
+    let channel = Snowflake(10);
+    assert_eq!(state.private_calls[&channel].ringing.len(), 2);
+    assert!(
+        state.private_calls[&channel]
+            .ringing
+            .contains(&Snowflake(1))
+    );
+    state
+        .apply_gateway("CALL_UPDATE", json!({"channel_id":"10","region":"us"}))
+        .unwrap();
+    assert_eq!(state.private_calls[&channel].ringing.len(), 2);
+    state
+        .apply_gateway("CALL_UPDATE", json!({"channel_id":"10","ringing":["2"]}))
+        .unwrap();
+    assert!(
+        !state.private_calls[&channel]
+            .ringing
+            .contains(&Snowflake(1))
+    );
+    state
+        .apply_gateway("CALL_UPDATE", json!({"channel_id":"10","message_id":"12"}))
+        .unwrap();
+    assert!(state.private_calls[&channel].ringing.is_empty());
+    state
+        .apply_gateway("CALL_DELETE", json!({"channel_id":"10"}))
+        .unwrap();
+    assert!(!state.private_calls.contains_key(&channel));
+}

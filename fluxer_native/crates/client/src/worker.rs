@@ -2181,6 +2181,75 @@ impl Worker {
                 self.snapshot();
                 self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
             }
+            Command::AcceptPrivateCall { channel_id } => {
+                if self.demo || !self.gateway_ready {
+                    return Err("Wait for the gateway to connect".into());
+                }
+                let me = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+                let channel = self
+                    .state
+                    .channels
+                    .get(&channel_id)
+                    .ok_or("Unknown private channel")?;
+                if channel.guild_id.is_some()
+                    || !matches!(channel.kind, ChannelType::Dm | ChannelType::GroupDm)
+                    || !self
+                        .state
+                        .private_calls
+                        .get(&channel_id)
+                        .is_some_and(|call| call.ringing.contains(&me))
+                {
+                    return Err("This call is no longer ringing".into());
+                }
+                self.leave_voice(true).await?;
+                self.state
+                    .private_calls
+                    .get_mut(&channel_id)
+                    .unwrap()
+                    .ringing
+                    .remove(&me);
+                self.call_generation = self.call_generation.wrapping_add(1);
+                self.voice_target = Some(VoiceTarget {
+                    guild_id: None,
+                    channel_id,
+                    connection_id: None,
+                });
+                self.voice_join_deadline =
+                    Some(tokio::time::Instant::now() + Duration::from_secs(15));
+                if let Err(message) = self.update_voice().await {
+                    let _ = self.leave_voice(false).await;
+                    return Err(message);
+                }
+                self.snapshot();
+                self.emit(Event::VoiceStatus(VoiceStatus::Connecting { channel_id }));
+            }
+            Command::DeclinePrivateCall { channel_id } => {
+                let me = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+                if !self
+                    .state
+                    .private_calls
+                    .get(&channel_id)
+                    .is_some_and(|call| call.ringing.contains(&me))
+                {
+                    return Err("This call is no longer ringing".into());
+                }
+                self.state
+                    .private_calls
+                    .get_mut(&channel_id)
+                    .unwrap()
+                    .ringing
+                    .remove(&me);
+                if self.voice_target.as_ref().is_some_and(|target| {
+                    target.guild_id.is_none() && target.channel_id == channel_id
+                }) {
+                    self.leave_voice(true).await?;
+                }
+                self.snapshot();
+                self.client()?
+                    .reject_call(&channel_id.to_string())
+                    .await
+                    .map_err(error)?;
+            }
             Command::StartPrivateCall { channel_id } => {
                 if self.demo {
                     return Err("Voice transmission requires signing in to a real instance".into());

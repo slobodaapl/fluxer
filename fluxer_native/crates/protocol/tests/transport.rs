@@ -606,7 +606,6 @@ async fn private_call_ring_and_stop_use_explicit_recipients() {
         );
     }
 }
-}
 
 #[tokio::test]
 async fn channel_topic_update_preserves_omission_and_empty_clear() {
@@ -714,4 +713,20 @@ async fn session_revocation_challenge_and_totp_use_the_same_target() {
             assert_eq!(body["mfa_code"], "123456");
         }
     }
+}
+
+#[tokio::test]
+async fn reject_incoming_call_sends_classic_empty_object() {
+    let (origin, mut requests) = http_server(vec![response("200 OK", Value::Null)]).await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap();
+    client.reject_call("56").await.unwrap();
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with("POST /api/v1/channels/56/call/stop-ringing "));
+    assert_eq!(
+        serde_json::from_str::<Value>(request.split_once("\r\n\r\n").unwrap().1).unwrap(),
+        json!({})
+    );
 }

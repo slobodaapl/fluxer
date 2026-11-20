@@ -867,6 +867,17 @@ impl Client {
             result => result,
         }
     }
+    /// Decline an incoming call; classic sends an empty object for reject.
+    pub async fn reject_call(&self, channel: &str) -> Result<()> {
+        self.request(
+            Method::POST,
+            &format!("/channels/{channel}/call/stop-ringing"),
+            Some(&json!({})),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Ring or stop ringing the specified private-call recipients.
     pub async fn call_ringing(
         &self,

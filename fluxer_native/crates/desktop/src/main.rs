@@ -3251,6 +3251,21 @@ impl Render for Fluxer {
                 .child(body)
                 .into_any_element()
         };
+        let incoming_calls: Vec<_> = self
+            .state
+            .current_user
+            .as_ref()
+            .into_iter()
+            .flat_map(|me| {
+                self.state.private_calls.iter().filter_map(|(id, call)| {
+                    let channel = self.state.channels.get(id)?;
+                    (call.ringing.contains(&me.id)
+                        && channel.guild_id.is_none()
+                        && matches!(channel.kind, ChannelType::Dm | ChannelType::GroupDm))
+                    .then(|| (*id, channel.name.clone()))
+                })
+            })
+            .collect();
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
@@ -3350,6 +3365,19 @@ impl Render for Fluxer {
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
+            .children(incoming_calls.into_iter().map(|(channel, name)| {
+                div().px_4().py_2().gap_3().bg(rgb(PANEL)).flex().items_center()
+                    .child(div().flex_1().child(format!("Incoming call · {name}")))
+                    .child(controls::quiet_button(("accept-call", channel.0), "Accept").on_click(cx.listener(move |this, _, _, cx| {
+                        this.select(channel, cx);
+                        this.command(Command::AcceptPrivateCall { channel_id: channel }, cx);
+                        this.pane = Pane::Call;
+                        cx.notify();
+                    })))
+                    .child(controls::quiet_button(("decline-call", channel.0), "Decline").on_click(cx.listener(move |this, _, _, cx| {
+                        this.command(Command::DeclinePrivateCall { channel_id: channel }, cx);
+                    })))
+            }))
             .child(content)
             .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
             .child(self.media_transfer_overlay(cx))

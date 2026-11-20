@@ -31,6 +31,13 @@ pub struct MemberList {
     pub rows: BTreeMap<u32, Value>,
 }
 
+/// Gateway private-call projection used to identify the account being rung.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PrivateCall {
+    pub message_id: Option<Snowflake>,
+    pub ringing: BTreeSet<Snowflake>,
+}
+
 /// One state belongs to one authenticated account. A caller switching accounts
 /// must replace it, avoiding accidental cross-account messages and drafts.
 #[derive(Clone, Debug, Default)]
@@ -51,6 +58,7 @@ pub struct ClientState {
     pub presences: BTreeMap<Snowflake, Presence>,
     /// Keyed by (user, connection) to retain simultaneous voice connections.
     pub voice_states: BTreeMap<(Snowflake, String), VoiceState>,
+    pub private_calls: BTreeMap<Snowflake, PrivateCall>,
     /// Expiration time in Unix milliseconds, grouped by channel and user.
     pub typing: BTreeMap<Snowflake, BTreeMap<Snowflake, u64>>,
     pub selected_channel: Option<Snowflake>,
@@ -1213,6 +1221,38 @@ impl ClientState {
             "PRESENCE_UPDATE" => {
                 let presence: Presence = decode(event, data)?;
                 self.presences.insert(presence.user.id, presence);
+            }
+            "CALL_CREATE" | "CALL_UPDATE" => {
+                #[derive(Deserialize)]
+                struct CallDispatch {
+                    channel_id: Snowflake,
+                    #[serde(default)]
+                    message_id: Option<Snowflake>,
+                    #[serde(default)]
+                    ringing: Option<Vec<Snowflake>>,
+                }
+                let call: CallDispatch = decode(event, data)?;
+                let existing = self.private_calls.entry(call.channel_id).or_default();
+                if existing.message_id.is_some()
+                    && call.message_id.is_some()
+                    && existing.message_id != call.message_id
+                {
+                    *existing = PrivateCall::default();
+                }
+                if let Some(id) = call.message_id {
+                    existing.message_id = Some(id);
+                }
+                if let Some(ringing) = call.ringing {
+                    existing.ringing = ringing.into_iter().collect();
+                }
+            }
+            "CALL_DELETE" => {
+                #[derive(Deserialize)]
+                struct CallDelete {
+                    channel_id: Snowflake,
+                }
+                let call: CallDelete = decode(event, data)?;
+                self.private_calls.remove(&call.channel_id);
             }
             "VOICE_STATE_UPDATE" => {
                 #[derive(Deserialize)]

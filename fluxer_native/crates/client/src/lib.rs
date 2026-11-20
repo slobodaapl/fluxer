@@ -501,6 +501,12 @@ pub enum Command {
         guild_id: Option<Snowflake>,
         channel_id: Snowflake,
     },
+    AcceptPrivateCall {
+        channel_id: Snowflake,
+    },
+    DeclinePrivateCall {
+        channel_id: Snowflake,
+    },
     StartPrivateCall {
         channel_id: Snowflake,
     },
