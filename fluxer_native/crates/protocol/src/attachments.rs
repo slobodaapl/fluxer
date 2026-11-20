@@ -567,7 +567,33 @@ impl Client {
         cancel: &UploadCancellation,
         progress: UploadProgressCallback,
     ) -> Result<Value> {
-        if !message.is_object() {
+        self.send_with_attachments(channel, message, files, cancel, progress, false)
+            .await
+    }
+
+    pub async fn create_forum_post_with_attachments(
+        &self,
+        channel: &str,
+        post: Value,
+        files: &[UploadAttachment],
+        cancel: &UploadCancellation,
+        progress: UploadProgressCallback,
+    ) -> Result<Value> {
+        self.send_with_attachments(channel, post, files, cancel, progress, true)
+            .await
+    }
+
+    async fn send_with_attachments(
+        &self,
+        channel: &str,
+        mut message: Value,
+        files: &[UploadAttachment],
+        cancel: &UploadCancellation,
+        progress: UploadProgressCallback,
+        forum: bool,
+    ) -> Result<Value> {
+        if !message.is_object() || (forum && !message.get("message").is_some_and(Value::is_object))
+        {
             return Err(Error::InvalidUpload("message body must be an object"));
         }
         let files = prepare(files, cancel).await?;
@@ -608,15 +634,28 @@ impl Client {
             }
         }
         let result = if let Some(uploaded) = ready {
-            message["attachments"] = uploaded.into();
+            if forum {
+                message["message"]["attachments"] = uploaded.into();
+            } else {
+                message["attachments"] = uploaded.into();
+            }
             progress.report(Some(UploadPhase::Sending), None, false);
-            cancellable(cancel, self.send_message_body(channel, message)).await
+            if forum {
+                cancellable(cancel, self.send_forum_post_body(channel, message)).await
+            } else {
+                cancellable(cancel, self.send_message_body(channel, message)).await
+            }
         } else {
-            message["attachments"] = files
+            let metadata: Value = files
                 .iter()
                 .map(|file| file.attachment.metadata())
                 .collect::<Vec<_>>()
                 .into();
+            if forum {
+                message["message"]["attachments"] = metadata;
+            } else {
+                message["attachments"] = metadata;
+            }
             progress.report(Some(UploadPhase::Uploading), None, true);
             let mut form = reqwest::multipart::Form::new()
                 .text("payload_json", serde_json::to_string(&message)?);
@@ -635,7 +674,11 @@ impl Client {
                 .upload_api_request(
                     &transport.api,
                     Method::POST,
-                    &format!("/channels/{}/messages", segment(channel)),
+                    &format!(
+                        "/channels/{}/{}",
+                        segment(channel),
+                        if forum { "threads" } else { "messages" }
+                    ),
                 )?
                 .multipart(form);
             cancellable(cancel, async {

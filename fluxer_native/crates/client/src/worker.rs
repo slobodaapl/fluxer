@@ -76,6 +76,7 @@ struct ThreadCreation {
     parent: Snowflake,
     kind: ChannelType,
     removed: BTreeSet<Snowflake>,
+    forum_attachments: Vec<u64>,
     task: JoinHandle<Result<Value>>,
 }
 
@@ -3580,6 +3581,7 @@ impl Worker {
             parent,
             kind,
             removed: BTreeSet::new(),
+            forum_attachments: Vec::new(),
             task,
         });
         Ok(())
@@ -3596,8 +3598,8 @@ impl Worker {
             return Err("A thread is already being created".into());
         }
         let channel = self.state.channels.get(&parent).ok_or("Unknown forum")?;
-        if channel.kind != ChannelType::Forum {
-            return Err("Choose a forum that supports text posts".into());
+        if !matches!(channel.kind, ChannelType::Forum | ChannelType::Media) {
+            return Err("Choose a forum or media channel".into());
         }
         let guild = channel.guild_id.ok_or("Unknown community")?;
         let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
@@ -3614,11 +3616,17 @@ impl Worker {
         if !(1..=100).contains(&name.encode_utf16().count()) {
             return Err("Use a post title between 1 and 100 characters".into());
         }
+        let media = channel.kind == ChannelType::Media;
+        let (files, keepalive, attachment_ids) = self.forum_attachments(parent)?;
+        if media && files.is_empty() {
+            return Err("Add an attachment to create a media post".into());
+        }
         if fluxer_protocol::normalize_forum_content(content)
             .0
             .is_empty()
+            && files.is_empty()
         {
-            return Err("Enter a post body".into());
+            return Err("Enter a post body or attach a file".into());
         }
         let available = channel
             .extra
@@ -3657,13 +3665,27 @@ impl Worker {
         let content = content.to_owned();
         let client = self.client()?;
         let task = tokio::spawn(async move {
-            tokio::time::timeout(
-                Duration::from_secs(15),
-                client.create_forum_post(&parent.to_string(), &name, &content, &tags, archive),
-            )
-            .await
-            .map_err(|_| "Post creation timed out".to_owned())?
-            .map_err(error)
+            for prepared in &keepalive {
+                prepared.validate_source().await?;
+            }
+            let body = fluxer_protocol::forum_post_body(&name, &content, &tags, archive);
+            if files.is_empty() {
+                client
+                    .send_forum_post_body(&parent.to_string(), body)
+                    .await
+                    .map_err(error)
+            } else {
+                client
+                    .create_forum_post_with_attachments(
+                        &parent.to_string(),
+                        body,
+                        &files,
+                        &fluxer_protocol::UploadCancellation::new(),
+                        Arc::new(|_| {}),
+                    )
+                    .await
+                    .map_err(error)
+            }
         });
         self.thread_creation = Some(ThreadCreation {
             account,
@@ -3671,6 +3693,7 @@ impl Worker {
             parent,
             kind: ChannelType::PublicThread,
             removed: BTreeSet::new(),
+            forum_attachments: attachment_ids,
             task,
         });
         Ok(())
@@ -3707,6 +3730,7 @@ impl Worker {
             Ok(id)
         });
         if result.is_ok() {
+            self.finish_forum_attachments(job.parent, &job.forum_attachments);
             self.snapshot();
         }
         self.emit(Event::ThreadCreated {

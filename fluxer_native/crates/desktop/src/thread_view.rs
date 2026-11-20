@@ -348,7 +348,9 @@ impl Fluxer {
             .flex_col()
             .gap_2()
             .child(div().child("Post title").child(self.thread_name.clone()))
-            .child(div().child("Post body").child(self.forum_body.clone()));
+            .child(div().child("Post body").child(self.forum_body.clone()))
+            .child(self.attachment_button(cx))
+            .child(self.attachment_strip(cx));
         if let Some(channel) = self.state.channels.get(&parent) {
             let moderator = self.state.current_user.as_ref().is_some_and(|user| {
                 self.state

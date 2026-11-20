@@ -20,7 +20,7 @@ pub use gifs::{Gif, GifCategory, GifFeed, GifProvider, GifResults, GifShare};
 pub use http::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus,
     HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionRevocationOutcome,
-    SessionRevocationProof, SessionToken, normalize_forum_content,
+    SessionRevocationProof, SessionToken, forum_post_body, normalize_forum_content,
 };
 pub use instance::Instance;
 pub use invites::{CommunityInvite, InvitePreview, valid_invite_code};

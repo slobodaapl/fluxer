@@ -818,6 +818,10 @@ impl Client {
         archive: Option<u64>,
     ) -> Result<Value> {
         let body = forum_post_body(name, content, tags, archive);
+        self.send_forum_post_body(channel, body).await
+    }
+
+    pub async fn send_forum_post_body(&self, channel: &str, body: Value) -> Result<Value> {
         self.request(
             Method::POST,
             &format!("/channels/{}/threads", segment(channel)),
@@ -1700,7 +1704,7 @@ pub fn normalize_forum_content(content: &str) -> (String, u32) {
     )
 }
 
-fn forum_post_body(name: &str, content: &str, tags: &[String], archive: Option<u64>) -> Value {
+pub fn forum_post_body(name: &str, content: &str, tags: &[String], archive: Option<u64>) -> Value {
     let (content, flags) = normalize_forum_content(content);
     let mut body = json!({"name": name, "message": {"content": content}});
     if flags != 0 {

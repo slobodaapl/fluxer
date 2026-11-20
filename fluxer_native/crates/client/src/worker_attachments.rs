@@ -181,12 +181,71 @@ impl Worker {
             .as_ref()
             .ok_or("Sign in before attaching files")?;
         let permissions = self.state.permissions_for(channel, user.id);
-        if !fluxer_core::can_send_message(target.kind, permissions)
+        let can_post = matches!(target.kind, ChannelType::Forum | ChannelType::Media)
+            && permissions.contains(Permissions::VIEW_CHANNEL | Permissions::CREATE_PUBLIC_THREADS);
+        if !(can_post || fluxer_core::can_send_message(target.kind, permissions))
             || !permissions.contains(Permissions::ATTACH_FILES)
         {
             return Err("You cannot attach files in this channel".into());
         }
         Ok(())
+    }
+    pub(super) fn forum_attachments(
+        &self,
+        channel: Snowflake,
+    ) -> Result<(
+        Vec<UploadAttachment>,
+        Vec<Arc<PreparedAttachment>>,
+        Vec<u64>,
+    )> {
+        let stages = self
+            .attachments
+            .channels
+            .get(&channel)
+            .into_iter()
+            .flatten()
+            .filter(|stage| stage.last_send_nonce.is_none())
+            .collect::<Vec<_>>();
+        if !stages.is_empty() {
+            self.can_attach(channel)?;
+        }
+        let policy = self.attachment_policy(channel)?;
+        if stages.len() > policy.max_attachments
+            || stages
+                .iter()
+                .any(|stage| stage.dto.size > policy.max_file_size)
+        {
+            return Err("Staged files exceed this account's upload limits".into());
+        }
+        if stages
+            .iter()
+            .any(|stage| stage.job.is_some() || stage.planning.is_some())
+        {
+            return Err("Attachments are still preparing; try again when ready".into());
+        }
+        if stages.iter().any(|stage| {
+            stage.prepared.is_none() || stage.dto.status == AttachmentStatus::Cancelled
+        }) {
+            return Err("Retry or remove attachments that could not be prepared".into());
+        }
+        Ok((
+            stages
+                .iter()
+                .enumerate()
+                .map(|(i, stage)| upload_file(stage, i.to_string()))
+                .collect(),
+            stages
+                .iter()
+                .filter_map(|stage| stage.prepared.clone())
+                .collect(),
+            stages.iter().map(|stage| stage.dto.id).collect(),
+        ))
+    }
+    pub(super) fn finish_forum_attachments(&mut self, channel: Snowflake, ids: &[u64]) {
+        if let Some(stages) = self.attachments.channels.get_mut(&channel) {
+            stages.retain(|stage| !ids.contains(&stage.dto.id));
+        }
+        self.attachment_snapshot(channel);
     }
     pub(super) fn attachment_snapshot(&self, channel: Snowflake) {
         let attachments = self

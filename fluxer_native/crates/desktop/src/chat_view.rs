@@ -1087,7 +1087,7 @@ impl Fluxer {
         let title = self.channel_name(channel_id);
         let can_post = !self.demo
             && self.state.channels.get(&channel_id).is_some_and(|channel| {
-                channel.kind == ChannelType::Forum
+                matches!(channel.kind, ChannelType::Forum | ChannelType::Media)
                     && channel
                         .guild_id
                         .is_some_and(|guild| self.state.thread_guilds.contains(&guild))

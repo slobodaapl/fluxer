@@ -136,7 +136,14 @@ impl Fluxer {
             return Some("Sign in to attach files".into());
         };
         let permissions = self.state.permissions_for(channel.id, user.id);
-        if !can_send_message(channel.kind, permissions)
+        let can_post = matches!(
+            channel.kind,
+            fluxer_core::ChannelType::Forum | fluxer_core::ChannelType::Media
+        ) && permissions.contains(
+            fluxer_core::Permissions::VIEW_CHANNEL
+                | fluxer_core::Permissions::CREATE_PUBLIC_THREADS,
+        );
+        if !(can_post || can_send_message(channel.kind, permissions))
             || !permissions.contains(fluxer_core::Permissions::ATTACH_FILES)
         {
             return Some("You cannot attach files in this channel".into());
