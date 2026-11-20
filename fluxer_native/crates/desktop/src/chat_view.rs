@@ -107,6 +107,62 @@ impl Fluxer {
             .state
             .selected_channel
             .and_then(|id| self.state.channels.get(&id));
+        if let Some(channel) = channel {
+            let gate = self.state.mature_content_gate(channel);
+            if gate != fluxer_core::MatureContentGate::None {
+                let (title, description) = match gate {
+                    fluxer_core::MatureContentGate::AccountRestricted => (
+                        "Mature content unavailable",
+                        "This mature content is not available to your account.",
+                    ),
+                    fluxer_core::MatureContentGate::Unavailable => (
+                        "Content unavailable",
+                        "The content warning scope is unavailable. Try again when the channel information has loaded.",
+                    ),
+                    _ => (
+                        "Content warning",
+                        "This channel may contain mature or sensitive content. Proceed only if you wish to view it.",
+                    ),
+                };
+                let mut view = div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap_3()
+                    .text_color(rgb(TEXT))
+                    .child(div().text_size(px(20.)).child(title))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(rgb(MUTED))
+                            .child(description),
+                    );
+                if let Some(error) = &self.interface.server_error {
+                    view = view.child(div().text_size(px(12.)).child(error.clone()));
+                }
+                if let fluxer_core::MatureContentGate::Consent { field, id } = gate {
+                    view = view.child(
+                        div()
+                            .id("mature-content-proceed")
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(ACCENT))
+                            .cursor_pointer()
+                            .child("Proceed")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.save_display_setting(
+                                    fluxer_core::DisplaySetting::MatureConsent { field, id },
+                                    cx,
+                                );
+                            })),
+                    );
+                }
+                return view.into_any_element();
+            }
+        }
         if channel
             .is_some_and(|channel| matches!(channel.kind, ChannelType::Forum | ChannelType::Media))
         {

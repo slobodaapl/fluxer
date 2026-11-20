@@ -204,12 +204,12 @@ impl ClientState {
                             .any(|id| member.roles.contains(id))
                     }))
     }
-    pub fn notification_content_allowed(&self, channel: &crate::Channel) -> bool {
+    pub fn mature_content_gate(&self, channel: &crate::Channel) -> MatureContentGate {
         let channel = if channel.kind.is_thread() {
-            channel
-                .parent_id
-                .and_then(|id| self.channels.get(&id))
-                .unwrap_or(channel)
+            let Some(parent) = channel.parent_id.and_then(|id| self.channels.get(&id)) else {
+                return MatureContentGate::Unavailable;
+            };
+            parent
         } else {
             channel
         };
@@ -258,7 +258,7 @@ impl ClientState {
             })
             .unwrap_or((0, 0));
         if !mature.0 && warning.0 != 1 {
-            return true;
+            return MatureContentGate::None;
         }
         if mature.0
             && self
@@ -268,13 +268,9 @@ impl ClientState {
                 .and_then(Value::as_bool)
                 != Some(true)
         {
-            return false;
+            return MatureContentGate::AccountRestricted;
         }
-        let Some(agreements) =
-            decode_preferences(&self.user_settings).and_then(|prefs| prefs.agreements)
-        else {
-            return false;
-        };
+        let agreements = decode_preferences(&self.user_settings).and_then(|prefs| prefs.agreements);
         let scope = if mature.0 && warning.0 == 1 {
             mature.1.max(warning.1)
         } else if mature.0 {
@@ -282,12 +278,35 @@ impl ClientState {
         } else {
             warning.1
         };
-        match scope {
-            2 => agreements.channels.contains(&channel.id.to_string()),
-            1 => parent.is_some_and(|p| agreements.categories.contains(&p.id.to_string())),
-            _ => guild.is_some_and(|g| agreements.guilds.contains(&g.id.to_string())),
+        let target = match scope {
+            2 => Some((1, channel.id)),
+            1 => parent.map(|p| (3, p.id)),
+            _ => guild.map(|g| (2, g.id)),
+        };
+        let Some((field, id)) = target else {
+            return MatureContentGate::Unavailable;
+        };
+        let agreed = agreements.is_some_and(|a| match field {
+            1 => a.channels.contains(&id.to_string()),
+            2 => a.guilds.contains(&id.to_string()),
+            _ => a.categories.contains(&id.to_string()),
+        });
+        if agreed {
+            MatureContentGate::None
+        } else {
+            MatureContentGate::Consent { field, id }
         }
     }
+    pub fn notification_content_allowed(&self, channel: &crate::Channel) -> bool {
+        self.mature_content_gate(channel) == MatureContentGate::None
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatureContentGate {
+    None,
+    AccountRestricted,
+    Unavailable,
+    Consent { field: u64, id: crate::Snowflake },
 }
 #[derive(ProstMessage)]
 struct Preferences {
@@ -463,6 +482,20 @@ mod tests {
             .unwrap()
             .extra
             .insert("nsfw_allowed".into(), serde_json::json!(true));
+        assert_eq!(
+            state.mature_content_gate(&state.channels[&id]),
+            MatureContentGate::Consent { field: 1, id }
+        );
+        let patch = crate::display_settings_patch(
+            &state.user_settings,
+            crate::DisplaySetting::MatureConsent { field: 1, id },
+        )
+        .unwrap();
+        state.user_settings = patch;
+        assert_eq!(
+            state.mature_content_gate(&state.channels[&id]),
+            MatureContentGate::None
+        );
         let prefs = Preferences {
             agreements: Some(Agreements {
                 channels: vec![id.to_string()],

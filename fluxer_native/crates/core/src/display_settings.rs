@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 #[derive(Clone, Debug)]
 pub enum DisplaySetting {
     FavoriteGif { entry: FavoriteGif, add: bool },
+    MatureConsent { field: u64, id: crate::Snowflake },
     Compact(bool),
     GifAutoplay(bool),
     AnimateEmoji(bool),
@@ -292,6 +293,38 @@ pub fn compact_messages(settings: &Value) -> bool {
 }
 pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Result<Value, String> {
     Ok(match setting {
+        DisplaySetting::MatureConsent { field, id } => {
+            if !(1..=3).contains(&field) {
+                return Err("Invalid consent scope".into());
+            }
+            let bytes =
+                decoded(settings).ok_or("Cannot read synced preferences; reload before saving")?;
+            let mut payload = Vec::new();
+            let mut outer = Vec::new();
+            for (tag, start, p, end) in fields(&bytes).ok_or("Invalid synced preferences")? {
+                if tag == (62 << 3 | 2) {
+                    payload.extend_from_slice(&bytes[p..end]);
+                } else {
+                    outer.extend_from_slice(&bytes[start..end]);
+                }
+            }
+            let target = id.to_string();
+            let existing = fields(&payload).ok_or("Invalid consent preferences")?;
+            if !existing.iter().any(|(tag, _, p, end)| {
+                *tag == (field << 3 | 2) && &payload[*p..*end] == target.as_bytes()
+            }) {
+                encode(field << 3 | 2, &mut payload);
+                encode(target.len() as u64, &mut payload);
+                payload.extend_from_slice(target.as_bytes());
+            }
+            if payload.len() > 384 * 1024 {
+                return Err("Consent preferences are full".into());
+            }
+            encode(62 << 3 | 2, &mut outer);
+            encode(payload.len() as u64, &mut outer);
+            outer.extend(payload);
+            json!({"synced_preferences": STANDARD.encode(outer)})
+        }
         DisplaySetting::FavoriteGif { entry, add } => {
             return favorite_gif_patch(settings, entry, add);
         }
@@ -385,6 +418,21 @@ pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mature_consent_preserves_unknown_fields_and_is_idempotent() {
+        let settings = json!({"synced_preferences": STANDARD.encode([0x08, 0x07, 0xf2, 0x03, 0x03, 0x20, 0x81, 0x01])});
+        let setting = || DisplaySetting::MatureConsent {
+            field: 1,
+            id: crate::Snowflake(42),
+        };
+        let first = display_settings_patch(&settings, setting()).unwrap();
+        let second = display_settings_patch(&first, setting()).unwrap();
+        assert_eq!(first, second);
+        let bytes = decoded(&first).unwrap();
+        assert!(bytes.starts_with(&[0x08, 0x07]));
+        assert!(bytes.windows(3).any(|v| v == [0x20, 0x81, 0x01]));
+        assert!(display_settings_patch(&json!({"synced_preferences":"!"}), setting()).is_err());
+    }
     #[test]
     fn gif_mutation_preserves_other_fields_and_removes_only_target() {
         use prost::Message;
