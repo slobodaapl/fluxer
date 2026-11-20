@@ -3,6 +3,8 @@
 //! from an embedded LiveKit API secret. Capture begins only when joining/sharing.
 
 mod audio;
+mod camera;
+pub use camera::CameraDevice;
 mod file_playback;
 pub use file_playback::{
     FilePlaybackFrame, FilePlaybackOptions, FilePlaybackSnapshot, FilePlaybackStatus, FilePlayer,
@@ -56,6 +58,8 @@ pub enum MediaError {
     UnknownDevice(&'static str),
     #[error("Screen capture failed: {0}")]
     Screen(String),
+    #[error("Camera capture failed: {0}")]
+    Camera(String),
     #[error("Invalid media setting: {0}")]
     InvalidSetting(&'static str),
 }
@@ -164,6 +168,8 @@ pub enum MediaEvent {
     },
     ScreenShareStarted,
     ScreenShareStopped,
+    CameraStarted(u64),
+    CameraStopped(u64),
     SharedAudioStopped,
     AudioLevels {
         input: f32,
@@ -232,11 +238,15 @@ impl Default for SharedAudioSettings {
 #[derive(Default)]
 struct ShareCaptureHandles {
     screen: Option<screen::ScreenStopHandle>,
+    camera: Option<camera::StopHandle>,
     audio: Option<tokio::task::AbortHandle>,
     audio_running: Option<Arc<AtomicBool>>,
 }
 impl ShareCaptureHandles {
     fn stop(&mut self) {
+        if let Some(camera) = self.camera.take() {
+            camera.stop();
+        }
         if let Some(screen) = self.screen.take() {
             screen.stop();
         }
@@ -324,6 +334,9 @@ pub struct MediaEngine {
     room_task: Option<JoinHandle<()>>,
     screen: Option<screen::ScreenSession>,
     screen_publication: Option<TrackSid>,
+    camera: Option<camera::Session>,
+    camera_publication: Option<TrackSid>,
+    camera_generation: u64,
     video_tasks: Arc<Mutex<HashMap<String, VideoRenderer>>>,
     video_frames: Arc<video_events::VideoMailbox>,
     stop: Arc<AtomicBool>,
@@ -411,6 +424,9 @@ impl MediaEngine {
             room_task: None,
             screen: None,
             screen_publication: None,
+            camera: None,
+            camera_publication: None,
+            camera_generation: 0,
             video_tasks: Arc::new(Mutex::new(HashMap::new())),
             video_frames,
             stop: Arc::new(AtomicBool::new(false)),
@@ -1661,6 +1677,81 @@ impl MediaEngine {
         screen::sources()
     }
 
+    pub fn camera_devices(&self) -> Result<Vec<CameraDevice>> {
+        camera::devices()
+    }
+
+    pub fn camera_capture_has_frame(&self) -> bool {
+        self.camera.as_ref().is_some_and(camera::Session::has_frame)
+    }
+
+    pub async fn start_camera(&mut self, device_id: String) -> Result<u64> {
+        self.stop_camera().await?;
+        if !camera::devices()?
+            .iter()
+            .any(|device| device.id == device_id)
+        {
+            return Err(MediaError::UnknownDevice("camera"));
+        }
+        let room = self.room.as_ref().ok_or(MediaError::NotConnected)?;
+        let tx = self.events.clone().ok_or(MediaError::NotConnected)?;
+        let source = camera::source();
+        let track = LocalVideoTrack::create_video_track(
+            "Fluxer camera",
+            livekit::webrtc::video_source::RtcVideoSource::Native(source.clone()),
+        );
+        let publication = room
+            .local_participant()
+            .publish_track(
+                LocalTrack::Video(track),
+                livekit::options::TrackPublishOptions {
+                    source: TrackSource::Camera,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| MediaError::Camera(e.to_string()))?;
+        self.camera_publication = Some(publication.sid());
+        self.camera_generation = self.camera_generation.wrapping_add(1);
+        let generation = self.camera_generation;
+        match camera::start(&device_id, source, tx, self.stop.clone(), generation) {
+            Ok(mut session) => {
+                if let Ok(mut handles) = self.share_capture_handles.lock() {
+                    handles.camera = Some(session.controller());
+                    if self.stop.load(Ordering::Acquire) {
+                        handles.stop();
+                        session.stop();
+                    }
+                }
+                self.camera = Some(session);
+                Ok(generation)
+            }
+            Err(error) => {
+                let _ = self.stop_camera().await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn stop_camera(&mut self) -> Result<()> {
+        if let Ok(mut handles) = self.share_capture_handles.lock() {
+            handles.camera = None;
+        }
+        if let Some(mut camera) = self.camera.take() {
+            camera.stop();
+        }
+        let result = if let (Some(room), Some(sid)) = (&self.room, self.camera_publication.take()) {
+            room.local_participant()
+                .unpublish_track(&sid)
+                .await
+                .map(|_| ())
+                .map_err(|e| MediaError::Camera(e.to_string()))
+        } else {
+            Ok(())
+        };
+        result
+    }
+
     pub async fn start_screen_share(&mut self, options: ScreenShareOptions) -> Result<()> {
         options.validate()?;
         self.stop_screen_share().await?;
@@ -1739,6 +1830,9 @@ impl MediaEngine {
         if let Some(mut screen) = self.screen.take() {
             screen.stop();
         }
+        if let Some(mut camera) = self.camera.take() {
+            camera.stop();
+        }
         self.shared_audio_running.store(false, Ordering::Release);
         if let Some(task) = self.shared_audio_task.take() {
             task.abort();
@@ -1782,6 +1876,10 @@ impl MediaEngine {
         if let Some(mut session) = self.screen.take() {
             session.stop();
         }
+        if let Some(mut camera) = self.camera.take() {
+            camera.stop();
+        }
+        self.camera_publication = None;
         self.screen_publication = None;
         self.shared_audio_publication = None;
         self.shared_audio_running.store(false, Ordering::Release);
@@ -1909,6 +2007,9 @@ impl Drop for MediaEngine {
         }
         if let Some(mut session) = self.screen.take() {
             session.stop();
+        }
+        if let Some(mut camera) = self.camera.take() {
+            camera.stop();
         }
         if let Some(mic) = &self.microphone {
             mic.mute();
