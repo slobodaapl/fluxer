@@ -1433,6 +1433,11 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::BanMember { guild_id, user_id } => {
+                if let Err(message) = self.ban_member(guild_id, user_id) {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::KickMember { guild_id, user_id } => {
                 if let Err(message) = self.kick_member(guild_id, user_id) {
                     self.emit(Event::Error(message));

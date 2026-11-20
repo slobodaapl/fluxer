@@ -41,3 +41,64 @@ impl Client {
 fn member_path(guild: &str, user: &str) -> String {
     format!("/guilds/{}/members/{}", segment(guild), segment(user))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn ban_uses_authenticated_put_and_preserves_history() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let instance = crate::Instance {
+            api: base.clone(),
+            gateway: base.clone(),
+            web_app: base,
+            api_version: 1,
+            features: json!({}),
+            document: json!({}),
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let head = String::from_utf8(request).unwrap();
+            assert!(
+                head.starts_with("PUT /v1/guilds/42/bans/99 HTTP/1.1\r\n"),
+                "{head}"
+            );
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains("authorization: test-session\r\n")
+            );
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|v| v.parse().ok())
+                })
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&body).unwrap(),
+                json!({"delete_message_seconds": 0, "reason": null})
+            );
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let client = Client::new(instance)
+            .unwrap()
+            .with_token(crate::SessionToken::new("test-session").unwrap());
+        client.ban_member("42", "99").await.unwrap();
+        server.await.unwrap();
+    }
+}

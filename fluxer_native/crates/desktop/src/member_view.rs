@@ -379,6 +379,25 @@ impl Fluxer {
             })
             .unwrap_or(false)
     }
+    pub(super) fn can_ban_member(&self, guild: Snowflake, user: Snowflake) -> bool {
+        if self.demo {
+            return false;
+        }
+        self.state
+            .current_user
+            .as_ref()
+            .and_then(|current| {
+                Some(
+                    fluxer_core::moderation_capabilities(
+                        self.state.guilds.get(&guild)?,
+                        self.state.members.get(&(guild, current.id))?,
+                        self.state.members.get(&(guild, user))?,
+                    )
+                    .ban,
+                )
+            })
+            .unwrap_or(false)
+    }
     pub(super) fn can_timeout_member(&self, guild: Snowflake, user: Snowflake) -> bool {
         if self.demo {
             return false;
@@ -400,6 +419,7 @@ impl Fluxer {
     }
     fn close_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.context.kick_confirm = None;
+        self.context.ban_confirm = false;
         self.context.kick_armed = false;
         if let Some(focus) = self.context.kick_previous.take() {
             window.focus(&focus);
@@ -408,8 +428,13 @@ impl Fluxer {
     }
     fn accept_kick_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((guild_id, user_id, _, timeout)) = self.context.kick_confirm.clone() {
+            let ban = self.context.ban_confirm;
             self.close_kick_confirmation(window, cx);
             match timeout {
+                None if ban && self.can_ban_member(guild_id, user_id) => {
+                    self.command(Command::BanMember { guild_id, user_id }, cx)
+                }
+                None if ban => self.error = Some("You can no longer moderate this member".into()),
                 Some(duration_seconds) if self.can_timeout_member(guild_id, user_id) => self
                     .command(
                         Command::TimeoutMember {
@@ -431,6 +456,12 @@ impl Fluxer {
             return div().into_any_element();
         };
         let (title, description) = match timeout {
+            None if self.context.ban_confirm => (
+                "Ban member",
+                format!(
+                    "Permanently ban {name} from this community? Their message history will be preserved."
+                ),
+            ),
             None => ("Kick member", format!("Kick {name} from this community?")),
             Some(None) => ("Remove timeout", format!("Remove the timeout for {name}?")),
             Some(Some(seconds)) => (

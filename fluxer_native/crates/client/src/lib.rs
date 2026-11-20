@@ -201,6 +201,10 @@ pub enum Command {
         user_id: Snowflake,
         duration_seconds: Option<u64>,
     },
+    BanMember {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    },
     KickMember {
         guild_id: Snowflake,
         user_id: Snowflake,

@@ -40,6 +40,7 @@ impl UserAudioOverride {
 pub(super) struct ContextUi {
     pub menu: Entity<ContextMenu>,
     pub kick_confirm: Option<(Snowflake, Snowflake, String, Option<Option<u64>>)>,
+    pub ban_confirm: bool,
     pub channel_delete_confirm: Option<(Snowflake, String, bool)>,
     pub kick_focus: FocusHandle,
     pub kick_previous: Option<FocusHandle>,
@@ -58,6 +59,7 @@ impl ContextUi {
         Self {
             menu: cx.new(ContextMenu::new),
             kick_confirm: None,
+            ban_confirm: false,
             channel_delete_confirm: None,
             kick_focus: cx.focus_handle(),
             kick_previous: None,
@@ -472,6 +474,15 @@ impl Fluxer {
                             danger: false,
                         });
                     }
+                }
+                if self.can_ban_member(*guild, *user) {
+                    items.push(Item::Action {
+                        id: "ban-member".into(),
+                        label: "Ban member".into(),
+                        icon: None,
+                        enabled: true,
+                        danger: true,
+                    });
                 }
                 if self.can_kick_member(*guild, *user) {
                     items.push(Item::Action {
@@ -970,6 +981,7 @@ impl Fluxer {
                                 .unwrap_or_else(|| m.user.display_name().to_owned())
                         })
                         .unwrap_or_else(|| user.to_string());
+                    self.context.ban_confirm = false;
                     self.context.kick_confirm = Some((*guild, *user, name, Some(duration)));
                     self.context.kick_previous = window.focused(cx);
                     self.context.kick_selected = false;
@@ -977,8 +989,14 @@ impl Fluxer {
                     window.focus(&self.context.kick_focus);
                 }
             }
-            (Target::Member { guild, user }, "kick-member") => {
-                if self.can_kick_member(*guild, *user) {
+            (Target::Member { guild, user }, action @ ("kick-member" | "ban-member")) => {
+                let ban = action == "ban-member";
+                if if ban {
+                    self.can_ban_member(*guild, *user)
+                } else {
+                    self.can_kick_member(*guild, *user)
+                } {
+                    self.context.ban_confirm = ban;
                     let name = self
                         .state
                         .members

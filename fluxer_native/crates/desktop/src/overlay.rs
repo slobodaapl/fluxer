@@ -117,6 +117,7 @@ impl super::Fluxer {
         crate::input::clear_code_highlight_cache();
         self.reset_context_menu(cx);
         self.context.kick_confirm = None;
+        self.context.ban_confirm = false;
         self.context.channel_delete_confirm = None;
         self.context.kick_previous = None;
         self.context.kick_armed = false;

@@ -18,6 +18,7 @@ pub(super) struct KickEvent {
     generation: u64,
     result: Result<()>,
     timeout: bool,
+    ban: bool,
 }
 
 struct RoleJob {
@@ -110,12 +111,68 @@ impl Worker {
                 generation,
                 result,
                 timeout: false,
+                ban: false,
             });
         });
         self.people
             .kicks
             .insert((guild, user), Job { generation, task });
         self.emit(Event::Status("Kicking member…".into()));
+        Ok(())
+    }
+    pub(super) fn ban_member(&mut self, guild: Snowflake, user: Snowflake) -> Result<()> {
+        let actor = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let guild_data = self
+            .state
+            .guilds
+            .get(&guild)
+            .ok_or("Community no longer available")?;
+        let actor_member = self
+            .state
+            .members
+            .get(&(guild, actor))
+            .ok_or("Your member information is unavailable")?;
+        let target = self
+            .state
+            .members
+            .get(&(guild, user))
+            .ok_or("Member no longer available")?;
+        if !fluxer_core::moderation_capabilities(guild_data, actor_member, target).ban {
+            return Err("You cannot ban this member".into());
+        }
+        if self.people.kicks.contains_key(&(guild, user)) {
+            return Err("A moderation action is already pending".into());
+        }
+        if self.demo {
+            return Err("Bans are disabled in the offline demo".into());
+        }
+        let client = self.client.clone().ok_or("Not signed in")?;
+        self.people.next = self.people.next.wrapping_add(1);
+        let generation = self.people.next;
+        let tx = self.people.kick_tx.clone();
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(15),
+                client.ban_member(&guild.to_string(), &user.to_string()),
+            )
+            .await
+            {
+                Ok(result) => result.map_err(error),
+                Err(_) => Err("Ban timed out".into()),
+            };
+            let _ = tx.send(KickEvent {
+                guild,
+                user,
+                generation,
+                result,
+                timeout: false,
+                ban: true,
+            });
+        });
+        self.people
+            .kicks
+            .insert((guild, user), Job { generation, task });
+        self.emit(Event::Status("Banning member…".into()));
         Ok(())
     }
     pub(super) fn timeout_member(
@@ -176,6 +233,7 @@ impl Worker {
                 generation,
                 result,
                 timeout: true,
+                ban: false,
             });
         });
         self.people
@@ -194,14 +252,18 @@ impl Worker {
             return;
         }
         self.people.kicks.remove(&(event.guild, event.user));
-        let action = if event.timeout {
+        let action = if event.ban {
+            "ban member"
+        } else if event.timeout {
             "update timeout"
         } else {
             "kick member"
         };
         match event.result {
             Ok(()) => self.emit(Event::Status(
-                if event.timeout {
+                if event.ban {
+                    "Member banned"
+                } else if event.timeout {
                     "Member timeout updated"
                 } else {
                     "Member kicked"
