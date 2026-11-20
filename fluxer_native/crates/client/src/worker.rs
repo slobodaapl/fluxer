@@ -28,6 +28,8 @@ mod display_settings_flow;
 mod idle_flow;
 #[path = "worker_navigation.rs"]
 mod navigation_flow;
+#[path = "worker_own_profile.rs"]
+mod own_profile_flow;
 #[path = "worker_people.rs"]
 mod people_flow;
 #[path = "worker_presence.rs"]
@@ -171,6 +173,7 @@ pub(crate) struct Worker {
     people: people_flow::PeopleState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
+    own_profile: own_profile_flow::OwnProfileState,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
     audio_key: Option<String>,
@@ -250,6 +253,7 @@ impl Worker {
             people: people_flow::PeopleState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
+            own_profile: own_profile_flow::OwnProfileState::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
             audio_key: None,
@@ -590,6 +594,7 @@ impl Worker {
                 ),
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
+                OwnProfile(Option<own_profile_flow::OwnProfileEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
                 Command(Option<Command>),
                 Gateway(Option<GatewayEvent>),
@@ -626,6 +631,7 @@ impl Worker {
                 result = recovery_result(&mut recovery) => Incoming::DeviceRecovery(result),
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
+                event=self.own_profile.rx.recv()=>Incoming::OwnProfile(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
                 command = commands.recv() => Incoming::Command(command),
                 event = receive_optional(&mut self.gateway_events) => Incoming::Gateway(event),
@@ -650,6 +656,11 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::DisplaySettings(None) => Ok(()),
+                Incoming::OwnProfile(Some(event)) => {
+                    self.own_profile_event(event);
+                    Ok(())
+                }
+                Incoming::OwnProfile(None) => Ok(()),
                 Incoming::People(Some(event)) => {
                     self.people_event(event);
                     Ok(())
@@ -849,6 +860,7 @@ impl Worker {
         self.clear_display_settings();
         self.clear_people();
         self.clear_navigation();
+        self.clear_own_profile();
         self.clear_profiles();
         self.clear_attachments();
         if let Some(task) = self.restore_task.take() {
@@ -1162,14 +1174,11 @@ impl Worker {
                 bio,
                 pronouns,
             } => {
-                self.emit(Event::OwnProfileMutation(
-                    crate::RelationshipMutationStatus::Pending,
-                ));
-                let result = self.update_own_profile(global_name, bio, pronouns).await;
-                self.emit(Event::OwnProfileMutation(match result {
-                    Ok(()) => crate::RelationshipMutationStatus::Complete,
-                    Err(message) => crate::RelationshipMutationStatus::Failed(message),
-                }));
+                if let Err(message) = self.update_own_profile(global_name, bio, pronouns) {
+                    self.emit(Event::OwnProfileMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
             }
             Command::UpdateDisplaySetting(setting) => {
                 if let Err(message) = self.set_display_setting(setting).await {
@@ -2085,49 +2094,6 @@ impl Worker {
                 }
             }
         }
-        Ok(())
-    }
-
-    async fn update_own_profile(
-        &mut self,
-        global_name: String,
-        bio: String,
-        pronouns: String,
-    ) -> Result<()> {
-        let current = self.state.current_user.clone().ok_or("Sign in first")?;
-        let patch = serde_json::json!({
-            "global_name": if global_name.is_empty() { None } else { Some(global_name) },
-            "bio": if bio.is_empty() { None } else { Some(bio) },
-            "pronouns": if pronouns.is_empty() { None } else { Some(pronouns) },
-        });
-        let response = if self.demo {
-            let mut value = serde_json::to_value(&current).map_err(error)?;
-            value
-                .as_object_mut()
-                .unwrap()
-                .extend(patch.as_object().unwrap().clone());
-            value
-        } else {
-            let client = self.client.clone().ok_or("Not signed in")?;
-            tokio::time::timeout(
-                Duration::from_secs(15),
-                client.request(reqwest::Method::PATCH, "/users/@me", Some(&patch)),
-            )
-            .await
-            .map_err(|_| "Profile update timed out".to_owned())?
-            .map_err(error)?
-        };
-        let mut merged = serde_json::to_value(&current).map_err(error)?;
-        let updates = response.as_object().ok_or("Invalid profile response")?;
-        merged.as_object_mut().unwrap().extend(updates.clone());
-        let user: fluxer_core::User = serde_json::from_value(merged).map_err(error)?;
-        if user.id != current.id {
-            return Err("Profile response user does not match account".into());
-        }
-        self.state.users.insert(user.id, user.clone());
-        self.state.current_user = Some(user);
-        self.invalidate_profiles();
-        self.snapshot();
         Ok(())
     }
 

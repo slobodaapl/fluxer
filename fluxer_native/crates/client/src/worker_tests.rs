@@ -3706,7 +3706,6 @@ async fn own_profile_save_projects_returned_values_and_clears_fields() {
     worker.state = ClientState::demo();
     worker
         .update_own_profile("Ada".into(), "Hello\nworld".into(), "she/her".into())
-        .await
         .unwrap();
     let user = worker.state.current_user.as_ref().unwrap();
     assert_eq!(user.global_name.as_deref(), Some("Ada"));
@@ -3714,10 +3713,57 @@ async fn own_profile_save_projects_returned_values_and_clears_fields() {
     assert_eq!(worker.state.users.get(&user.id), Some(user));
     worker
         .update_own_profile(String::new(), String::new(), String::new())
-        .await
         .unwrap();
     let user = worker.state.current_user.as_ref().unwrap();
     assert_eq!(user.global_name, None);
     assert_eq!(user.extra.get("bio"), Some(&Value::Null));
     assert_eq!(user.extra.get("pronouns"), Some(&Value::Null));
+}
+
+#[tokio::test]
+async fn own_profile_wire_patch_and_account_reset_fence() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let request = read_request(&mut socket).await;
+        assert!(request.starts_with("PATCH /api/v1/users/@me "));
+        let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            body,
+            json!({"global_name":null,"bio":"New bio","pronouns":null})
+        );
+        received_tx.send(()).unwrap();
+        let _ = reply_rx.await;
+        let body = r#"{"id":"1","username":"stale","global_name":"stale"}"#;
+        let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+    });
+    let (mut worker, _) = worker();
+    worker.state = ClientState::demo();
+    worker.client = Some(
+        Client::new(
+            Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+        )
+        .unwrap()
+        .with_token(SessionToken::new("fixture-secret").unwrap()),
+    );
+    worker
+        .update_own_profile(String::new(), "New bio".into(), String::new())
+        .unwrap();
+    timeout(Duration::from_secs(5), received_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        worker
+            .update_own_profile("second".into(), String::new(), String::new())
+            .is_err()
+    );
+    worker.clear_own_profile();
+    let original = worker.state.current_user.clone();
+    let _ = reply_tx.send(());
+    server.await.unwrap();
+    assert_eq!(worker.state.current_user, original);
 }
