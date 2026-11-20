@@ -55,10 +55,10 @@ impl DiscoveryState {
                     .filter_map(|g| g.get("id")?.as_str().map(str::to_owned))
                     .collect();
                 for guild in guilds {
-                    if let Some(id) = guild.get("id").and_then(Value::as_str) {
-                        if seen.insert(id.to_owned()) {
-                            self.guilds.push(guild.clone());
-                        }
+                    if let Some(id) = guild.get("id").and_then(Value::as_str)
+                        && seen.insert(id.to_owned())
+                    {
+                        self.guilds.push(guild.clone());
                     }
                 }
                 self.loaded_count = self.params.offset as u64 + guilds.len() as u64;

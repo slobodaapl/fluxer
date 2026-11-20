@@ -562,7 +562,7 @@ impl Client {
     pub async fn send_message_with_attachments(
         &self,
         channel: &str,
-        mut message: Value,
+        message: Value,
         files: &[UploadAttachment],
         cancel: &UploadCancellation,
         progress: UploadProgressCallback,

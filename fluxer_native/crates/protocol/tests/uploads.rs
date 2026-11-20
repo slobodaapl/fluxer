@@ -377,6 +377,84 @@ async fn feature_disabled_sends_streamed_multipart_with_raw_metadata() {
 }
 
 #[tokio::test]
+async fn forum_post_keeps_attachments_inside_the_first_message_for_both_upload_paths() {
+    let bytes = b"synthetic-forum-attachment";
+    let file = FixtureFile::new(bytes);
+    let mut storage = Server::new(|_| (200, json!({}))).await;
+    let plan = single_plan(&storage.origin, "0", bytes.len());
+    let mut api = Server::new(move |request| {
+        if request.path.contains("/attachments ") {
+            (200, plan.clone())
+        } else {
+            (200, json!({"id":"created-post"}))
+        }
+    })
+    .await;
+    for presigned in [true, false] {
+        let post = json!({
+            "name":"Fixture post",
+            "applied_tags":["7"],
+            "message":{"content":"First message"}
+        });
+        let result = client(&api.origin, presigned)
+            .create_forum_post_with_attachments(
+                "1",
+                post,
+                &[file.attachment("0")],
+                &UploadCancellation::new(),
+                progress().0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["id"], "created-post");
+        if presigned {
+            assert_eq!(
+                api.next().await.path,
+                "POST /api/v1/channels/1/attachments HTTP/1.1"
+            );
+            assert_storage(&storage.next().await, bytes);
+        }
+        let request = api.next().await;
+        assert_eq!(request.path, "POST /api/v1/channels/1/threads HTTP/1.1");
+        assert_eq!(request.headers["authorization"], "fixture-account-secret");
+        let body = String::from_utf8(request.body).unwrap();
+        let payload: Value = if presigned {
+            serde_json::from_str(&body).unwrap()
+        } else {
+            assert!(request.headers["content-type"].starts_with("multipart/form-data; boundary="));
+            assert!(body.contains("name=\"files[0]\"; filename=\"fixture.bin\""));
+            assert!(body.contains("synthetic-forum-attachment"));
+            let payload = body
+                .split_once("name=\"payload_json\"")
+                .unwrap()
+                .1
+                .split_once("\r\n\r\n")
+                .unwrap()
+                .1
+                .split_once("\r\n")
+                .unwrap()
+                .0;
+            serde_json::from_str(payload).unwrap()
+        };
+        assert_eq!(payload["name"], "Fixture post");
+        assert_eq!(payload["applied_tags"], json!(["7"]));
+        assert_eq!(payload["message"]["content"], "First message");
+        assert_eq!(payload["message"]["attachments"][0]["id"], "0");
+        assert_eq!(
+            payload["message"]["attachments"][0]["filename"],
+            "fixture.bin"
+        );
+        assert_eq!(
+            payload["message"]["attachments"][0]["uploaded_filename"].as_str(),
+            presigned.then_some("uploaded/object")
+        );
+        assert!(payload.get("attachments").is_none());
+    }
+    api.none().await;
+    storage.none().await;
+}
+
+#[tokio::test]
 async fn preupload_returns_reusable_metadata_and_does_not_post_message() {
     let file = FixtureFile::new(b"data");
     let mut storage = Server::new(|_| (200, json!({}))).await;

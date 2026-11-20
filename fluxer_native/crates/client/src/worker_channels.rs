@@ -12,7 +12,7 @@ struct Job {
 #[derive(Clone)]
 enum ChannelResponse {
     Created,
-    Updated(Channel),
+    Updated(Box<Channel>),
     GatewayOnly,
 }
 impl Drop for Job {
@@ -123,24 +123,22 @@ impl Worker {
         {
             return Err("You cannot manage channels here".into());
         }
-        if let Some(parent) = parent_id {
-            if !self
-                .state
-                .channels
-                .get(&parent)
-                .is_some_and(|c| c.guild_id == Some(guild_id) && c.kind == ChannelType::Category)
-            {
-                return Err("Category unavailable".into());
-            }
+        if let Some(parent) = parent_id
+            && !self.state.channels.get(&parent).is_some_and(|channel| {
+                channel.guild_id == Some(guild_id) && channel.kind == ChannelType::Category
+            })
+        {
+            return Err("Category unavailable".into());
         }
-        if let Some(preceding) = preceding_sibling_id {
-            if preceding == channel_id
-                || !self.state.channels.get(&preceding).is_some_and(|c| {
-                    c.guild_id == Some(guild_id) && c.parent_id == parent_id && !c.kind.is_thread()
-                })
-            {
-                return Err("Channel order changed; try again".into());
-            }
+        if let Some(preceding) = preceding_sibling_id
+            && (preceding == channel_id
+                || !self.state.channels.get(&preceding).is_some_and(|channel| {
+                    channel.guild_id == Some(guild_id)
+                        && channel.parent_id == parent_id
+                        && !channel.kind.is_thread()
+                }))
+        {
+            return Err("Channel order changed; try again".into());
         }
         let client = self.client.clone().ok_or("Not connected")?;
         self.start_channel_job(account, ChannelResponse::GatewayOnly, async move {
@@ -281,12 +279,16 @@ impl Worker {
         }
         let previous = channel.clone();
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, ChannelResponse::Updated(previous), async move {
-            client
-                .update_basic_channel(&channel_id.to_string(), name.trim(), topic.as_deref())
-                .await
-                .map_err(error)
-        })
+        self.start_channel_job(
+            account,
+            ChannelResponse::Updated(Box::new(previous)),
+            async move {
+                client
+                    .update_basic_channel(&channel_id.to_string(), name.trim(), topic.as_deref())
+                    .await
+                    .map_err(error)
+            },
+        )
     }
     pub(super) fn delete_basic_channel(&mut self, channel_id: Snowflake) -> Result<()> {
         let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
@@ -360,7 +362,7 @@ impl Worker {
             }
             if let ChannelResponse::Updated(previous) = response {
                 // Gateway events may have modified or deleted the channel during the request.
-                if self.state.channels.get(&previous.id) != Some(&previous) {
+                if self.state.channels.get(&previous.id) != Some(previous.as_ref()) {
                     return Ok(());
                 }
                 let id: Snowflake = serde_json::from_value(
@@ -416,9 +418,11 @@ mod tests {
         let previous = channel();
         worker.state.channels.insert(previous.id, previous.clone());
         worker
-            .start_channel_job(1.into(), ChannelResponse::Updated(previous), async {
-                Ok(json!({"id":"2", "name":"rest"}))
-            })
+            .start_channel_job(
+                1.into(),
+                ChannelResponse::Updated(Box::new(previous)),
+                async { Ok(json!({"id":"2", "name":"rest"})) },
+            )
             .unwrap();
         let event = worker.channels.rx.recv().await.unwrap();
         worker.state.channels.get_mut(&2.into()).unwrap().name = "gateway".into();
@@ -432,9 +436,11 @@ mod tests {
         let previous = channel();
         worker.state.channels.insert(previous.id, previous.clone());
         worker
-            .start_channel_job(1.into(), ChannelResponse::Updated(previous), async {
-                Ok(json!({"id":"2", "topic":"rest"}))
-            })
+            .start_channel_job(
+                1.into(),
+                ChannelResponse::Updated(Box::new(previous)),
+                async { Ok(json!({"id":"2", "topic":"rest"})) },
+            )
             .unwrap();
         let event = worker.channels.rx.recv().await.unwrap();
         worker.state.channels.get_mut(&2.into()).unwrap().topic = Some("gateway".into());

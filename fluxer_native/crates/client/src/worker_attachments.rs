@@ -43,6 +43,11 @@ struct PreuploadPlan {
     members: Vec<(u64, u64)>,
     _job: Job,
 }
+pub(super) struct ForumAttachments {
+    pub files: Vec<UploadAttachment>,
+    pub prepared: Vec<Arc<PreparedAttachment>>,
+    pub ids: Vec<u64>,
+}
 #[derive(Clone, PartialEq)]
 struct Fingerprint {
     channel: Snowflake,
@@ -190,14 +195,7 @@ impl Worker {
         }
         Ok(())
     }
-    pub(super) fn forum_attachments(
-        &self,
-        channel: Snowflake,
-    ) -> Result<(
-        Vec<UploadAttachment>,
-        Vec<Arc<PreparedAttachment>>,
-        Vec<u64>,
-    )> {
+    pub(super) fn forum_attachments(&self, channel: Snowflake) -> Result<ForumAttachments> {
         let stages = self
             .attachments
             .channels
@@ -228,18 +226,18 @@ impl Worker {
         }) {
             return Err("Retry or remove attachments that could not be prepared".into());
         }
-        Ok((
-            stages
+        Ok(ForumAttachments {
+            files: stages
                 .iter()
                 .enumerate()
                 .map(|(i, stage)| upload_file(stage, i.to_string()))
                 .collect(),
-            stages
+            prepared: stages
                 .iter()
                 .filter_map(|stage| stage.prepared.clone())
                 .collect(),
-            stages.iter().map(|stage| stage.dto.id).collect(),
-        ))
+            ids: stages.iter().map(|stage| stage.dto.id).collect(),
+        })
     }
     pub(super) fn finish_forum_attachments(&mut self, channel: Snowflake, ids: &[u64]) {
         if let Some(stages) = self.attachments.channels.get_mut(&channel) {

@@ -3732,8 +3732,8 @@ impl Worker {
         } else {
             return Err("You cannot create a private thread in this channel".into());
         };
-        if let Some(id) = message {
-            if !self
+        if let Some(id) = message
+            && !self
                 .state
                 .messages
                 .get(&parent)
@@ -3741,9 +3741,8 @@ impl Worker {
                 .is_some_and(|message| {
                     matches!(message.kind, 0 | 19) && message.flags & (1 << 5) == 0
                 })
-            {
-                return Err("The message is no longer available".into());
-            }
+        {
+            return Err("The message is no longer available".into());
         }
         let archive = self.state.channels[&parent]
             .extra
@@ -3815,7 +3814,11 @@ impl Worker {
             return Err("Use a post title between 1 and 100 characters".into());
         }
         let media = channel.kind == ChannelType::Media;
-        let (files, keepalive, attachment_ids) = self.forum_attachments(parent)?;
+        let attachment_flow::ForumAttachments {
+            files,
+            prepared,
+            ids: attachment_ids,
+        } = self.forum_attachments(parent)?;
         if media && files.is_empty() {
             return Err("Add an attachment to create a media post".into());
         }
@@ -3863,8 +3866,8 @@ impl Worker {
         let content = content.to_owned();
         let client = self.client()?;
         let task = tokio::spawn(async move {
-            for prepared in &keepalive {
-                prepared.validate_source().await?;
+            for attachment in &prepared {
+                attachment.validate_source().await?;
             }
             let body = fluxer_protocol::forum_post_body(&name, &content, &tags, archive);
             if files.is_empty() {
