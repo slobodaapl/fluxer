@@ -1516,8 +1516,12 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
-            Command::RenameBasicChannel { channel_id, name } => {
-                if let Err(message) = self.rename_basic_channel(channel_id, name) {
+            Command::RenameBasicChannel {
+                channel_id,
+                name,
+                topic,
+            } => {
+                if let Err(message) = self.rename_basic_channel(channel_id, name, topic) {
                     self.emit(Event::Error(message));
                 }
             }

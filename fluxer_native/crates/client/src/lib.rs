@@ -282,6 +282,7 @@ pub enum Command {
     RenameBasicChannel {
         channel_id: Snowflake,
         name: String,
+        topic: Option<String>,
     },
     SelectGuild {
         guild_id: Snowflake,

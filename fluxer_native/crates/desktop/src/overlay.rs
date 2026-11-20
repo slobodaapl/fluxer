@@ -98,7 +98,12 @@ impl super::Fluxer {
         self.forum_filter_tags.clear();
         self.forum_match_all = false;
         self.channel_form = None;
-        for field in [&self.thread_name, &self.forum_body, &self.channel_name] {
+        for field in [
+            &self.thread_name,
+            &self.forum_body,
+            &self.channel_name,
+            &self.channel_topic,
+        ] {
             field.update(cx, |input, cx| input.set(String::new(), cx));
         }
         self.composer

@@ -254,7 +254,8 @@ impl Fluxer {
                     .justify_between()
                     .border_b_1()
                     .border_color(rgb(PANEL))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).flex_1().min_w_0().child(crate::emoji_sprites::unicode_text(&title, 18., window.scale_factor() > 1., cx)))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().child(crate::emoji_sprites::unicode_text(&title, 18., window.scale_factor() > 1., cx)))
+                    .when_some(self.state.selected_channel.and_then(|id| self.state.channels.get(&id)).and_then(|c| c.topic.clone()).filter(|t| !t.is_empty()), |view, topic| view.child(div().flex_1().min_w_0().px_3().child(topic)))
                     .child(
                         div()
                             .flex()

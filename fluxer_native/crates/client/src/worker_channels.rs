@@ -97,6 +97,7 @@ impl Worker {
         &mut self,
         channel_id: Snowflake,
         name: String,
+        topic: Option<String>,
     ) -> Result<()> {
         let user = self.state.current_user.as_ref().ok_or("Not signed in")?;
         let account = user.id;
@@ -111,6 +112,9 @@ impl Worker {
                 ChannelType::Text | ChannelType::Voice | ChannelType::Category
             )
             || name.trim().is_empty()
+            || topic.as_ref().is_some_and(|t| {
+                channel.kind != ChannelType::Text || t.encode_utf16().count() > 1024
+            })
             || !self
                 .state
                 .permissions_for(channel_id, account)
@@ -122,7 +126,7 @@ impl Worker {
         let client = self.client.clone().ok_or("Not connected")?;
         self.start_channel_job(account, Some(previous), async move {
             client
-                .rename_channel(&channel_id.to_string(), name.trim())
+                .update_basic_channel(&channel_id.to_string(), name.trim(), topic.as_deref())
                 .await
                 .map_err(error)
         })
@@ -269,6 +273,25 @@ mod tests {
         worker.state.channels.get_mut(&2.into()).unwrap().name = "gateway".into();
         worker.channel_event(event);
         assert_eq!(worker.state.channels[&2.into()].name, "gateway");
+    }
+    #[tokio::test]
+    async fn gateway_topic_wins_over_late_update_response() {
+        let mut worker = worker();
+        worker.state.current_user = Some(user());
+        let previous = channel();
+        worker.state.channels.insert(previous.id, previous.clone());
+        worker
+            .start_channel_job(1.into(), Some(previous), async {
+                Ok(json!({"id":"2", "topic":"rest"}))
+            })
+            .unwrap();
+        let event = worker.channels.rx.recv().await.unwrap();
+        worker.state.channels.get_mut(&2.into()).unwrap().topic = Some("gateway".into());
+        worker.channel_event(event);
+        assert_eq!(
+            worker.state.channels[&2.into()].topic.as_deref(),
+            Some("gateway")
+        );
     }
     #[tokio::test]
     async fn reset_fences_queued_response() {

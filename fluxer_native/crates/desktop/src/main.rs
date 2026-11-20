@@ -354,6 +354,7 @@ struct Fluxer {
     community_ui: community_view::CommunityUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     channel_name: Entity<TextInput>,
+    channel_topic: Entity<TextInput>,
     composer: Entity<TextInput>,
     thread_name: Entity<TextInput>,
     thread_form: Option<Snowflake>,
@@ -484,6 +485,7 @@ impl Fluxer {
         let mut view = Self {
             channel_form: None,
             channel_name: cx.new(|cx| TextInput::new("Channel name", cx)),
+            channel_topic: cx.new(|cx| TextInput::new("Channel topic", cx)),
             focus: cx.focus_handle(),
             _external_control: external_control,
             desktop: desktop_integration::DesktopState::new(demo, window),
@@ -2508,11 +2510,18 @@ impl Fluxer {
                             .flex_col()
                             .gap_2()
                             .child(muted(if self.channel_form.is_some_and(|f| f.3.is_some()) {
-                                "Rename channel"
+                                "Edit channel"
                             } else {
                                 "Create channel"
                             }))
                             .child(self.channel_name.clone())
+                            .when(
+                                self.channel_form.is_some_and(|f| f.3.is_some() && f.2 == 0),
+                                |view| {
+                                    view.child(muted("Channel topic"))
+                                        .child(self.channel_topic.clone())
+                                },
+                            )
                             .child(
                                 div()
                                     .flex()
@@ -2526,11 +2535,27 @@ impl Fluxer {
                                                 cx.notify();
                                                 return;
                                             }
+                                            if this.channel_form.is_some_and(|f| f.3.is_some() && f.2 == 0)
+                                                && this.channel_topic.read(cx).content.encode_utf16().count() > 1024
+                                            {
+                                                this.error = Some("Channel topic is too long. Shorten it and try again.".into());
+                                                cx.notify();
+                                                return;
+                                            }
                                             if let Some((guild_id, parent_id, kind, edit)) =
                                                 this.channel_form.take()
                                             {
                                                 let command = if let Some(channel_id) = edit {
-                                                    Command::RenameBasicChannel { channel_id, name }
+                                                    Command::RenameBasicChannel {
+                                                        channel_id,
+                                                        name,
+                                                        topic: (kind == 0).then(|| {
+                                                            this.channel_topic
+                                                                .read(cx)
+                                                                .content
+                                                                .to_string()
+                                                        }),
+                                                    }
                                                 } else {
                                                     Command::CreateBasicChannel {
                                                         guild_id,

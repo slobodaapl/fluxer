@@ -606,3 +606,24 @@ async fn private_call_ring_and_stop_use_explicit_recipients() {
         );
     }
 }
+}
+
+#[tokio::test]
+async fn channel_topic_update_preserves_omission_and_empty_clear() {
+    let (origin, mut requests) = http_server(vec![response("200 OK", json!({})); 3]).await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap();
+    for topic in [None, Some("hello"), Some("")] {
+        client
+            .update_basic_channel("123", "general", topic)
+            .await
+            .unwrap();
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with("PATCH /api/v1/channels/123 "));
+        let body: Value = serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body.get("name"), Some(&json!("general")));
+        assert_eq!(body.get("topic"), topic.map(|t| json!(t)).as_ref());
+    }
+}

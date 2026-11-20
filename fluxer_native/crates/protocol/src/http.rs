@@ -689,11 +689,20 @@ impl Client {
         )
         .await
     }
-    pub async fn rename_channel(&self, channel: &str, name: &str) -> Result<Value> {
+    pub async fn update_basic_channel(
+        &self,
+        channel: &str,
+        name: &str,
+        topic: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({"name": name});
+        if let Some(topic) = topic {
+            body["topic"] = serde_json::json!(topic);
+        }
         self.request(
             Method::PATCH,
             &format!("/channels/{}", segment(channel)),
-            Some(&serde_json::json!({"name": name})),
+            Some(&body),
         )
         .await
     }

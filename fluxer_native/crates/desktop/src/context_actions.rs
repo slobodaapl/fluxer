@@ -637,7 +637,7 @@ impl Fluxer {
                                 .contains(fluxer_core::Permissions::MANAGE_CHANNELS)
                         })
                     {
-                        items.push(action("channel-edit", "Rename channel", Icon::Settings));
+                        items.push(action("channel-edit", "Edit channel", Icon::Settings));
                         items.push(action("channel-delete", "Delete channel", Icon::Settings));
                         if channel.kind == ChannelType::Category {
                             items.push(action(
@@ -1108,8 +1108,12 @@ impl Fluxer {
                 {
                     self.channel_name
                         .update(cx, |input, cx| input.set(c.name.clone(), cx));
+                    self.channel_topic.update(cx, |input, cx| {
+                        input.set(c.topic.clone().unwrap_or_default(), cx)
+                    });
                     self.selected_guild = Some(guild);
                     self.channel_form = Some((guild, None, c.kind.code(), Some(*channel)));
+                    window.focus(&self.channel_name.focus_handle(cx));
                 }
             }
             (Target::Channel(channel), "category-create-text" | "category-create-voice") => {
