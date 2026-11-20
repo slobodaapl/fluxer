@@ -200,6 +200,56 @@ impl ClientState {
             message.timestamp = timestamp.into();
             state.insert_message(message);
         }
+        state
+            .channels
+            .get_mut(&15.into())
+            .expect("demo forum")
+            .extra
+            .insert(
+                "available_tags".into(),
+                serde_json::json!([
+                    {"id": "901", "name": "Design"},
+                    {"id": "902", "name": "Accessibility"}
+                ]),
+            );
+        for (id, last_message, title, tags, content) in [
+            (
+                70,
+                2070,
+                "Compact navigation",
+                &["901"][..],
+                "Try a denser layout for the channel sidebar.",
+            ),
+            (
+                71,
+                2071,
+                "Keyboard shortcuts",
+                &["902"][..],
+                "Collect common actions that should have shortcuts.",
+            ),
+            (
+                72,
+                2069,
+                "Focus indicators",
+                &["901", "902"][..],
+                "Make focus visible on every interactive row.",
+            ),
+        ] {
+            let channel = Channel {
+                id: id.into(),
+                guild_id: Some(1.into()),
+                parent_id: Some(15.into()),
+                kind: ChannelType::PublicThread,
+                owner_id: Some(alex.id),
+                name: title.into(),
+                extra: [("applied_tags".into(), serde_json::json!(tags))].into(),
+                ..Channel::default()
+            };
+            state.channels.insert(channel.id, channel);
+            let mut message = Message::text(last_message.into(), id.into(), alex.clone(), content);
+            message.timestamp = "2026-11-12T09:40:00Z".into();
+            state.insert_message(message);
+        }
         state.toggle_reaction(11.into(), 1000.into(), Emoji::unicode("👋"));
         state.toggle_reaction(11.into(), 1002.into(), Emoji::unicode("👍"));
         let mut rich_message = Message::text(

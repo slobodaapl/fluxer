@@ -199,12 +199,15 @@ impl Worker {
         } else {
             Some(self.client()?)
         };
+        let demo = self
+            .demo
+            .then(|| self.demo_forum_page(channel, creation_order, offset, &tags, match_all));
         let epoch = self.navigation.epoch;
         let token = self.navigation.token();
         let tx = self.navigation.tx.clone();
         let task = tokio::spawn(async move {
-            let result = match client {
-                Some(client) => client
+            let result = match (client, demo) {
+                (Some(client), _) => client
                     .forum_posts(
                         &channel.to_string(),
                         if creation_order {
@@ -218,7 +221,8 @@ impl Worker {
                     )
                     .await
                     .map_err(error),
-                None => Err("Forum posts are unavailable in demo mode".to_owned()),
+                (None, Some(page)) => Ok(page),
+                (None, None) => Err("Forum posts are unavailable".to_owned()),
             };
             let _ = tx.send(NavigationEvent::Forum {
                 epoch,
@@ -230,6 +234,60 @@ impl Worker {
         });
         self.navigation.forum = Some((token, Task(task), BTreeMap::new()));
         Ok(())
+    }
+
+    fn demo_forum_page(
+        &self,
+        channel: Snowflake,
+        creation_order: bool,
+        offset: usize,
+        tags: &[String],
+        match_all: bool,
+    ) -> Value {
+        // Small pages let the offline demo exercise pagination with just three posts.
+        const DEMO_PAGE_SIZE: usize = 2;
+        let mut threads: Vec<_> = self
+            .state
+            .channels
+            .values()
+            .filter(|post| post.parent_id == Some(channel) && post.kind.is_thread())
+            .filter(|post| {
+                if tags.is_empty() {
+                    return true;
+                }
+                let has_tag = |tag: &String| {
+                    post.extra
+                        .get("applied_tags")
+                        .and_then(Value::as_array)
+                        .is_some_and(|applied| {
+                            applied.iter().any(|id| id.as_str() == Some(tag.as_str()))
+                        })
+                };
+                if match_all {
+                    tags.iter().all(has_tag)
+                } else {
+                    tags.iter().any(has_tag)
+                }
+            })
+            .collect();
+        threads.sort_by_key(|post| {
+            std::cmp::Reverse(if creation_order {
+                post.id
+            } else {
+                post.last_message_id.unwrap_or(post.id)
+            })
+        });
+        let has_more = threads.len().saturating_sub(offset) > DEMO_PAGE_SIZE;
+        let threads: Vec<_> = threads
+            .into_iter()
+            .skip(offset)
+            .take(DEMO_PAGE_SIZE)
+            .collect();
+        let previews: Vec<_> = threads
+            .iter()
+            .filter_map(|post| self.state.messages.get(&post.id)?.values().next())
+            .collect();
+        json!({"threads": threads, "first_messages": previews, "has_more": has_more})
     }
 
     /// Preserve gateway changes that race a forum search, including updates to
