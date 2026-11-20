@@ -196,10 +196,10 @@ fn start_process(
                     frame_metadata: None,
                     buffer,
                 });
-                if !received.swap(true, Ordering::AcqRel) {
-                    if tx.try_send(MediaEvent::CameraStarted(generation)).is_err() {
-                        break;
-                    }
+                if !received.swap(true, Ordering::AcqRel)
+                    && tx.try_send(MediaEvent::CameraStarted(generation)).is_err()
+                {
+                    break;
                 }
             }
             let was_stopped = capture.stopped.swap(true, Ordering::AcqRel);
@@ -231,20 +231,22 @@ fn copy_i420(bytes: &[u8], buffer: &mut I420Buffer) {
     let chroma = luma / 4;
     for (dst, src) in y
         .chunks_mut(sy as usize)
-        .zip(bytes[..luma].chunks_exact(WIDTH as usize))
+        .zip(bytes[..luma].as_chunks::<{ WIDTH as usize }>().0)
     {
         dst[..src.len()].copy_from_slice(src);
     }
-    for (dst, src) in u
-        .chunks_mut(su as usize)
-        .zip(bytes[luma..luma + chroma].chunks_exact(WIDTH as usize / 2))
-    {
+    for (dst, src) in u.chunks_mut(su as usize).zip(
+        bytes[luma..luma + chroma]
+            .as_chunks::<{ WIDTH as usize / 2 }>()
+            .0,
+    ) {
         dst[..src.len()].copy_from_slice(src);
     }
-    for (dst, src) in v
-        .chunks_mut(sv as usize)
-        .zip(bytes[luma + chroma..].chunks_exact(WIDTH as usize / 2))
-    {
+    for (dst, src) in v.chunks_mut(sv as usize).zip(
+        bytes[luma + chroma..]
+            .as_chunks::<{ WIDTH as usize / 2 }>()
+            .0,
+    ) {
         dst[..src.len()].copy_from_slice(src);
     }
 }

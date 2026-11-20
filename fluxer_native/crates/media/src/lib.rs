@@ -1740,7 +1740,7 @@ impl MediaEngine {
         if let Some(mut camera) = self.camera.take() {
             camera.stop();
         }
-        let result = if let (Some(room), Some(sid)) = (&self.room, self.camera_publication.take()) {
+        if let (Some(room), Some(sid)) = (&self.room, self.camera_publication.take()) {
             room.local_participant()
                 .unpublish_track(&sid)
                 .await
@@ -1748,8 +1748,7 @@ impl MediaEngine {
                 .map_err(|e| MediaError::Camera(e.to_string()))
         } else {
             Ok(())
-        };
-        result
+        }
     }
 
     pub async fn start_screen_share(&mut self, options: ScreenShareOptions) -> Result<()> {
