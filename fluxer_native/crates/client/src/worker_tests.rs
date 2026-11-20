@@ -4016,3 +4016,6 @@ async fn group_removal_checks_owner_and_waits_for_gateway() {
     assert!(worker.remove_group_recipient(50.into(), 42.into()).is_err());
     assert_eq!(worker.state.channels[&50.into()].recipients.len(), 1);
 }
+
+#[path = "worker_loopback_tests.rs"]
+mod loopback;
