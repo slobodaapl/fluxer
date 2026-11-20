@@ -22,6 +22,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 mod attachment_flow;
 #[path = "worker_bans.rs"]
 mod bans_flow;
+#[path = "worker_call_jobs.rs"]
+mod call_jobs;
 #[path = "worker_channels.rs"]
 mod channel_flow;
 #[path = "worker_community.rs"]
@@ -255,6 +257,7 @@ pub(crate) struct Worker {
     media_events: Option<MediaEvents>,
     voice_target: Option<VoiceTarget>,
     private_ring: Option<(Snowflake, Vec<String>, bool)>,
+    call_jobs: call_jobs::CallJobs,
     voice_connect: Option<VoiceConnectJob>,
     voice_recovery_started: Option<tokio::time::Instant>,
     voice_recovery_at: Option<tokio::time::Instant>,
@@ -354,6 +357,7 @@ impl Worker {
             media_events: None,
             voice_target: None,
             private_ring: None,
+            call_jobs: call_jobs::CallJobs::new(),
             voice_connect: None,
             voice_recovery_started: None,
             voice_recovery_at: None,
@@ -665,6 +669,7 @@ impl Worker {
             None;
         loop {
             enum Incoming {
+                CallJob(Option<(u64, String)>),
                 Presence(Option<presence_flow::PresenceEvent>),
                 DisplaySettings(Option<display_settings_flow::DisplaySettingsEvent>),
                 People(Option<people_flow::PeopleEvent>),
@@ -716,6 +721,7 @@ impl Worker {
                 Restore(Box<Result<Option<SavedSession>>>),
             }
             let incoming = tokio::select! {
+                event=self.call_jobs.rx.recv()=>Incoming::CallJob(event),
                 event=self.presence.rx.recv()=>Incoming::Presence(event),
                 event=self.display_settings.rx.recv()=>Incoming::DisplaySettings(event),
                 event=self.people.rx.recv()=>Incoming::People(event),
@@ -915,6 +921,13 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Attachment(None) => Ok(()),
+                Incoming::CallJob(Some((epoch, message))) => {
+                    if epoch == self.call_jobs.epoch {
+                        self.emit(Event::Error(message));
+                    }
+                    Ok(())
+                }
+                Incoming::CallJob(None) => Ok(()),
                 Incoming::Command(None | Some(Command::Shutdown)) => break,
                 Incoming::Command(Some(Command::RefreshDevices)) => {
                     recovery_requested = true;
@@ -1046,6 +1059,7 @@ impl Worker {
         self.restore_channel = None;
         self.restoring_gateway = false;
         let _ = self.leave_voice(true).await;
+        self.call_jobs.epoch = self.call_jobs.epoch.wrapping_add(1);
         if let Some(tx) = self.gateway_commands.take() {
             let _ = tx.try_send(GatewayCommand::Close);
         }
@@ -2382,10 +2396,8 @@ impl Worker {
                 if self.demo {
                     return Ok(());
                 }
-                self.client()?
-                    .reject_call(&channel_id.to_string())
-                    .await
-                    .map_err(error)?;
+                let client = self.client()?;
+                self.call_jobs.decline(client, me, channel_id);
             }
             Command::StartPrivateCall { channel_id } => {
                 if self.demo {
@@ -3764,7 +3776,8 @@ impl Worker {
     }
 
     async fn leave_voice(&mut self, notify_gateway: bool) -> Result<()> {
-        let ring = self.private_ring.take();
+        self.private_ring.take();
+        self.call_jobs.cancel();
         self.pending_share = None;
         self.pending_camera = None;
         self.state.voice.camera = false;
@@ -3833,16 +3846,6 @@ impl Worker {
                 self.pending_voice_leave = Some(payload.clone());
             }
             let _ = tx.send(GatewayCommand::VoiceState(payload)).await;
-        }
-        if let Some((channel, recipients, true)) = ring {
-            if let Ok(client) = self.client() {
-                if let Err(failure) = client
-                    .call_ringing(&channel.to_string(), &recipients, true)
-                    .await
-                {
-                    self.emit(Event::Error(error(failure)));
-                }
-            }
         }
         self.snapshot();
         disconnected
@@ -4587,16 +4590,10 @@ impl Worker {
                 if let Some((ring_channel, recipients, false)) = self.private_ring.clone()
                     && ring_channel == channel
                 {
-                    // A failed response may still mean the server accepted the ring.
-                    // Retain cleanup intent before sending, and never retry on recovery.
                     self.private_ring = Some((channel, recipients.clone(), true));
-                    if let Err(failure) = self
-                        .client()?
-                        .call_ringing(&channel.to_string(), &recipients, false)
-                        .await
-                    {
-                        self.emit(Event::Error(error(failure)));
-                    }
+                    let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+                    self.call_jobs
+                        .ring(self.client()?, account, channel, recipients);
                 }
                 if job.revoked_share
                     && let Err(message) = self.update_voice().await
