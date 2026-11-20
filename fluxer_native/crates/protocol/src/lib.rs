@@ -11,6 +11,7 @@ mod invites;
 mod moderation;
 mod navigation;
 mod sudo;
+mod webhooks;
 
 pub use error::{Error, Result};
 pub use gateway::{
@@ -27,6 +28,7 @@ pub use invites::{CommunityInvite, InvitePreview, valid_invite_code};
 pub use reqwest::Method;
 pub use sudo::{SudoChallenge, SudoMethods};
 pub use url::Url;
+pub use webhooks::Webhook;
 
 pub use attachments::{
     PlannedAttachment, UploadAttachment, UploadCancellation, UploadPhase, UploadProgress,

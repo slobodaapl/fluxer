@@ -141,6 +141,11 @@ impl CallControlHandle {
 }
 
 pub enum Command {
+    FetchWebhooks {
+        request_id: u64,
+        channel_id: Snowflake,
+    },
+    CancelWebhooks,
     ListCommunityInvites {
         request_id: u64,
         guild_id: Snowflake,
@@ -670,6 +675,11 @@ pub enum Event {
         request_id: u64,
         guild_id: Snowflake,
         result: Result<serde_json::Value, String>,
+    },
+    WebhookList {
+        request_id: u64,
+        channel_id: Snowflake,
+        result: Result<Vec<fluxer_protocol::Webhook>, String>,
     },
     BanList {
         request_id: u64,

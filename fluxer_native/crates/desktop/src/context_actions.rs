@@ -670,6 +670,16 @@ impl Fluxer {
                         items.push(Item::Separator);
                     }
                     if channel.guild_id.is_some()
+                        && matches!(channel.kind, ChannelType::Text | ChannelType::Voice)
+                        && self.state.current_user.as_ref().is_some_and(|u| {
+                            self.state
+                                .permissions_for(*id, u.id)
+                                .contains(fluxer_core::Permissions::MANAGE_WEBHOOKS)
+                        })
+                    {
+                        items.push(action("channel-webhooks", "Webhooks", Icon::Settings));
+                    }
+                    if channel.guild_id.is_some()
                         && matches!(
                             channel.kind,
                             ChannelType::Text | ChannelType::Voice | ChannelType::Category
@@ -1286,6 +1296,9 @@ impl Fluxer {
                     self.selected_guild = Some(guild);
                     self.overwrite_form = Some((*channel, draft, existing));
                 }
+            }
+            (Target::Channel(channel), "channel-webhooks") => {
+                self.open_webhooks(*channel, window, cx)
             }
             (Target::Channel(channel), "channel-edit") => {
                 if let Some(c) = self.state.channels.get(channel)

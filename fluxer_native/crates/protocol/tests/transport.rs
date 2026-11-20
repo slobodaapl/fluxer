@@ -812,3 +812,63 @@ async fn forgot_password_uses_unauthenticated_instance_transport() {
     let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
     assert_eq!(body, json!({"email":"user@example.test"}));
 }
+
+#[tokio::test]
+async fn webhook_management_requests_and_secrets_are_scoped() {
+    let hook = json!({"id":"42", "guild_id":"1", "channel_id":"2", "name":"Example", "avatar":null, "type":1, "token":"synthetic-secret"});
+    let follower = json!({"id":"43", "guild_id":"1", "channel_id":"2", "name":"Follower", "avatar":null, "type":2});
+    let (origin, mut requests) = http_server(vec![
+        response("200 OK", json!([hook, follower])),
+        response("200 OK", hook.clone()),
+        response("200 OK", hook.clone()),
+        response("200 OK", Value::Null),
+        response(
+            "403 Forbidden",
+            json!({"code":"MISSING_PERMISSIONS", "token":"synthetic-secret"}),
+        ),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap();
+    let rows = client.channel_webhooks("2").await.unwrap();
+    assert!(!format!("{rows:?}").contains("synthetic-secret"));
+    assert_eq!(
+        rows[0].copy_url("https://example.test/api/v1").unwrap(),
+        "https://example.test/api/v1/webhooks/42/synthetic-secret"
+    );
+    assert!(rows[1].copy_url("https://example.test/api/v1").is_none());
+    client.create_webhook("2", "Example").await.unwrap();
+    client
+        .update_webhook("42", "Renamed", Some("avatar-hash"))
+        .await
+        .unwrap();
+    client.delete_webhook("42").await.unwrap();
+    let err = client.channel_webhooks("2").await.unwrap_err();
+    assert!(err.to_string().contains("403"));
+    assert!(!format!("{err:?}").contains("synthetic-secret"));
+    for (method, path, body) in [
+        ("GET", "/api/v1/channels/2/webhooks", None),
+        (
+            "POST",
+            "/api/v1/channels/2/webhooks",
+            Some(json!({"name":"Example","avatar":null})),
+        ),
+        (
+            "PATCH",
+            "/api/v1/webhooks/42",
+            Some(json!({"name":"Renamed","avatar":"avatar-hash"})),
+        ),
+        ("DELETE", "/api/v1/webhooks/42", None),
+        ("GET", "/api/v1/channels/2/webhooks", None),
+    ] {
+        let request = requests.recv().await.unwrap();
+        assert!(request.starts_with(&format!("{method} {path} ")));
+        if let Some(expected) = body {
+            let actual: Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+}

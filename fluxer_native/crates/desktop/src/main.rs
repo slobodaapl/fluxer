@@ -81,6 +81,7 @@ mod stream_view;
 mod thread_view;
 mod video_perf;
 mod visible_image;
+mod webhooks_view;
 
 // Exercise the actual vendored Wayland scheduling policy in the normal native
 // test gate, without requiring a compositor or compiling GPUI's upstream suite.
@@ -373,6 +374,7 @@ struct Fluxer {
     roles_ui: roles_view::RolesUi,
     audit_ui: audit_view::AuditUi,
     bans_ui: bans_view::BansUi,
+    webhooks_ui: webhooks_view::WebhooksUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     overwrite_form: Option<(
         Snowflake,
@@ -559,6 +561,7 @@ impl Fluxer {
             roles_ui: roles_view::RolesUi::new(cx),
             audit_ui: audit_view::AuditUi::new(cx),
             bans_ui: bans_view::BansUi::new(cx),
+            webhooks_ui: webhooks_view::WebhooksUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
@@ -1059,6 +1062,11 @@ impl Fluxer {
                     guild_id,
                     result,
                 } => self.audit_event(request_id, guild_id, result, cx),
+                Event::WebhookList {
+                    request_id,
+                    channel_id,
+                    result,
+                } => self.webhooks_event(request_id, channel_id, result, cx),
                 Event::BanList {
                     request_id,
                     guild_id,
@@ -1153,6 +1161,12 @@ impl Fluxer {
                 } => self.live_message_notification(account_id, &message, cx),
                 Event::MediaEndpoint(endpoint) => self.media_endpoint = endpoint,
                 Event::InstancePresentation(document) => {
+                    self.webhooks_ui.reset();
+                    self.webhooks_ui.public_endpoint = document
+                        .as_ref()
+                        .and_then(|d| d.pointer("/endpoints/api_public"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned);
                     avatar_images::configure_instance(document.as_ref());
                     emoji_sprites::configure_instance(document.as_ref());
                     if let Some(document) = document {
@@ -3457,6 +3471,8 @@ impl Render for Fluxer {
                     this.roles_key(event, window, cx);
                 } else if this.audit_ui.guild.is_some() {
                     this.audit_key(event, window, cx);
+                } else if this.webhooks_ui.channel.is_some() {
+                    this.webhooks_key(event, window, cx);
                 } else if this.bans_ui.guild.is_some() {
                     this.bans_key(event, window, cx);
                 } else if this.community_ui.dialog.is_some() {
@@ -3471,7 +3487,7 @@ impl Render for Fluxer {
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if this.roles_ui.guild.is_some() || this.audit_ui.guild.is_some() || this.bans_ui.guild.is_some() {
+                if this.roles_ui.guild.is_some() || this.audit_ui.guild.is_some() || this.webhooks_ui.channel.is_some() || this.bans_ui.guild.is_some() {
                     cx.stop_propagation();
                 } else if this.community_ui.dialog.is_some() {
                     this.community_key_up(event, window, cx);
@@ -3572,6 +3588,7 @@ impl Render for Fluxer {
             }))
             .child(content)
             .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
+            .when(self.webhooks_ui.channel.is_some(), |view| view.child(self.webhooks_dialog(cx)))
             .when(self.bans_ui.guild.is_some(), |view| view.child(self.bans_dialog(cx)))
             .when(self.roles_ui.guild.is_some(), |view| view.child(self.roles_dialog(cx)))
             .when(self.audit_ui.guild.is_some(), |view| view.child(self.audit_dialog(cx)))

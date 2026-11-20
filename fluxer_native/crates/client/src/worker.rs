@@ -48,6 +48,8 @@ mod presence_flow;
 mod profile_flow;
 #[path = "worker_roles.rs"]
 mod role_flow;
+#[path = "worker_webhooks.rs"]
+mod webhook_flow;
 
 type Result<T> = std::result::Result<T, String>;
 const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
@@ -230,6 +232,7 @@ pub(crate) struct Worker {
     people: people_flow::PeopleState,
     audit: audit_flow::AuditState,
     bans: bans_flow::BanState,
+    webhooks: webhook_flow::WebhookState,
     invites: invite_flow::InviteState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
@@ -333,6 +336,7 @@ impl Worker {
             people: people_flow::PeopleState::new(),
             audit: audit_flow::AuditState::new(),
             bans: bans_flow::BanState::new(),
+            webhooks: webhook_flow::WebhookState::new(),
             invites: invite_flow::InviteState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
@@ -689,6 +693,7 @@ impl Worker {
                 Kick(Option<people_flow::KickEvent>),
                 Audit(Option<audit_flow::AuditEvent>),
                 Bans(Option<bans_flow::BanEvent>),
+                Webhooks(Option<webhook_flow::WebhookEvent>),
                 Dm(Option<DmEvent>),
                 Sticker(Option<StickerEvent>),
                 ThreadCreated(Result<Value>),
@@ -743,6 +748,7 @@ impl Worker {
                 event=self.people.kick_rx.recv()=>Incoming::Kick(event),
                 event=self.audit.rx.recv()=>Incoming::Audit(event),
                 event=self.bans.rx.recv()=>Incoming::Bans(event),
+                event=self.webhooks.rx.recv()=>Incoming::Webhooks(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 event=self.sticker_rx.recv()=>Incoming::Sticker(event),
                 result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
@@ -809,6 +815,12 @@ impl Worker {
                 Incoming::Audit(event) => {
                     if let Some(event) = event {
                         self.audit_event(event);
+                    }
+                    Ok(())
+                }
+                Incoming::Webhooks(event) => {
+                    if let Some(event) = event {
+                        self.webhook_list_event(event);
                     }
                     Ok(())
                 }
@@ -1069,6 +1081,7 @@ impl Worker {
         self.clear_people();
         self.audit.clear();
         self.bans.clear();
+        self.webhooks.clear();
         self.clear_invites();
         self.clear_navigation();
         self.clear_own_profile();
@@ -1630,7 +1643,20 @@ impl Worker {
                     });
                 }
             }
+            Command::FetchWebhooks {
+                request_id,
+                channel_id,
+            } => {
+                if let Err(message) = self.webhook_list_request(request_id, channel_id) {
+                    self.emit(Event::WebhookList {
+                        request_id,
+                        channel_id,
+                        result: Err(message),
+                    });
+                }
+            }
             Command::CancelAuditLog => self.audit.clear(),
+            Command::CancelWebhooks => self.webhooks.clear(),
             Command::FetchBans {
                 request_id,
                 guild_id,
