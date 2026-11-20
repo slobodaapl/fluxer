@@ -58,10 +58,32 @@ pub(super) enum WindowSetting {
     StartMinimized,
     ColoredTrayIcon,
 }
+/// Native subset of the classic base themes. Unknown saved values safely fall back to Dark.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum BaseTheme {
+    #[default]
+    Dark,
+    Coal,
+    #[serde(other)]
+    Unknown,
+}
+impl BaseTheme {
+    pub fn background(self) -> u32 {
+        if self == Self::Coal { 0x000000 } else { BG }
+    }
+    pub fn panel(self) -> u32 {
+        if self == Self::Coal { 0x101010 } else { PANEL }
+    }
+    pub fn rail(self) -> u32 {
+        if self == Self::Coal { 0x080808 } else { RAIL }
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
     reduced_motion: bool,
+    base_theme: BaseTheme,
     shortcuts: [String; 5],
     window_behavior: WindowBehavior,
     search_history: BTreeMap<String, Vec<String>>,
@@ -70,6 +92,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             reduced_motion: false,
+            base_theme: BaseTheme::Dark,
             window_behavior: WindowBehavior::default(),
             search_history: BTreeMap::new(),
             shortcuts: ["ctrl-k", "ctrl-f", "ctrl-,", "ctrl-shift-m", "ctrl-shift-d"]
@@ -223,6 +246,17 @@ impl NativePreferences {
             WindowSetting::StartMinimized => next.window_behavior.start_minimized = value,
             WindowSetting::ColoredTrayIcon => next.window_behavior.colored_tray_icon = value,
         }
+        self.persist(next);
+    }
+    pub fn base_theme(&self) -> BaseTheme {
+        match self.preferences.base_theme {
+            BaseTheme::Unknown => BaseTheme::Dark,
+            theme => theme,
+        }
+    }
+    pub fn set_base_theme(&mut self, theme: BaseTheme) {
+        let mut next = self.preferences.clone();
+        next.base_theme = theme;
         self.persist(next);
     }
     pub fn reduced_motion(&self) -> bool {
@@ -392,10 +426,29 @@ impl Fluxer {
 #[cfg(test)]
 mod tests {
     use super::{
-        NativePreferences, Preferences, Shortcut, WindowBehavior, WindowSetting, keystroke, valid,
-        validate,
+        BaseTheme, NativePreferences, Preferences, Shortcut, WindowBehavior, WindowSetting,
+        keystroke, valid, validate,
     };
     use gpui::Keystroke;
+    #[test]
+    fn base_theme_persists_and_failed_save_preserves_active_theme() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("interface.json");
+        let mut prefs = NativePreferences::new(true);
+        prefs.path = Some(path.clone());
+        prefs.set_base_theme(BaseTheme::Coal);
+        let saved: Preferences = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.base_theme, BaseTheme::Coal);
+        assert_eq!(prefs.base_theme().background(), 0);
+        prefs.path = Some(path.join("impossible"));
+        prefs.set_base_theme(BaseTheme::Dark);
+        assert_eq!(prefs.base_theme(), BaseTheme::Coal);
+        assert!(prefs.error.is_some());
+        let old: Preferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.base_theme, BaseTheme::Dark);
+        let future: Preferences = serde_json::from_str(r#"{"base_theme":"future"}"#).unwrap();
+        assert_eq!(future.base_theme, BaseTheme::Unknown);
+    }
     #[test]
     fn shortcut_conflicts_and_reserved_keys_are_rejected() {
         let mut keys = Preferences::default().shortcuts;

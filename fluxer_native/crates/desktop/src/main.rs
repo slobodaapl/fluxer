@@ -2474,7 +2474,7 @@ impl Fluxer {
         div()
             .w(px(72.))
             .h_full()
-            .bg(rgb(RAIL))
+            .bg(rgb(self.interface.base_theme().rail()))
             .flex()
             .flex_col()
             .items_center()
@@ -2596,7 +2596,7 @@ impl Fluxer {
         div()
             .w(px(230.))
             .h_full()
-            .bg(rgb(PANEL))
+            .bg(rgb(self.interface.base_theme().panel()))
             .flex()
             .flex_col()
             .child(
@@ -3366,7 +3366,7 @@ impl Render for Fluxer {
                 })
             })
             .collect();
-        let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
+        let rendered = div().size_full().flex().flex_col().bg(rgb(self.interface.base_theme().background())).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.bans_ui.guild.is_some() {

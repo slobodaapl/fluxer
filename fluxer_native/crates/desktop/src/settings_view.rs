@@ -1024,7 +1024,7 @@ impl Fluxer {
                     .w(px(200.))
                     .flex_shrink_0()
                     .h_full()
-                    .bg(rgb(0x25222e))
+                    .bg(rgb(self.interface.base_theme().panel()))
                     .p_4()
                     .flex()
                     .flex_col()
@@ -1236,6 +1236,34 @@ impl Fluxer {
                     .unwrap_or_else(|| fluxer_core::message_font_size(&self.state.user_settings));
                 body =
                     body.child(settings_heading("Appearance"))
+                        .child(muted("Base theme · saved on this device"))
+                        .child(
+                            div().flex().gap_2().mt_3().mb_4().children(
+                                [
+                                    (native_preferences::BaseTheme::Dark, "Dark"),
+                                    (native_preferences::BaseTheme::Coal, "Coal"),
+                                ]
+                                .into_iter()
+                                .map(|(theme, label)| {
+                                    let selected = self.interface.base_theme() == theme;
+                                    quiet_button(
+                                        label,
+                                        if selected {
+                                            format!("{label} ✓")
+                                        } else {
+                                            label.to_owned()
+                                        },
+                                    )
+                                    .when(selected, |button| button.bg(rgb(ACCENT)))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.interface.set_base_theme(theme);
+                                            cx.notify();
+                                        },
+                                    ))
+                                }),
+                            ),
+                        )
                         .child(muted("Message presentation · saved to your account"))
                         .child(setting_row(
                             "Compact messages",
