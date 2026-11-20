@@ -89,7 +89,9 @@ static GATE: OnceLock<Arc<Gate>> = OnceLock::new();
 
 fn language(label: &str) -> Option<String> {
     let token = label.split_whitespace().next()?.to_ascii_lowercase();
-    if token.len() > 64 {
+    // Classic reserves these labels for KaTeX, including when it falls back
+    // to plain code. Do not highlight them as ordinary source code.
+    if token.len() > 64 || matches!(token.as_str(), "katex" | "latex" | "tex") {
         return None;
     }
     Some(
@@ -419,6 +421,14 @@ pub(super) fn schedule(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tex_labels_use_plain_fallback_instead_of_syntax_highlighting() {
+        for label in ["tex", "LaTeX extra", " KATEX "] {
+            assert_eq!(language(label), None);
+        }
+        assert_eq!(language("rust extra").as_deref(), Some("rust"));
+    }
 
     #[test]
     fn occupied_worker_services_more_than_eight_waiters_in_fifo_order() {

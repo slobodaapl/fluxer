@@ -1233,6 +1233,22 @@ mod tests {
         assert_eq!(render("`**literal**` ").text, "**literal** ");
     }
     #[test]
+    fn tex_fences_and_dollar_math_keep_source_and_literal_code() {
+        let source = "$x$ $$y$$ `\\alpha`\n\n```LaTeX extra\n\\frac{1}{2}\n```";
+        let doc = render(source);
+        partition(&doc);
+        assert_eq!(doc.source, source);
+        assert!(doc.text.contains("$x$ $$y$$ \\alpha"));
+        assert!(doc.text.contains("\\frac{1}{2}"));
+        assert!(doc.blocks.iter().any(|block| matches!(
+            &block.kind, MessageBlockKind::Code { language: Some(label) } if label == "LaTeX extra"
+        )));
+        assert_eq!(
+            doc.copy_range(0..doc.text.len(), &BTreeSet::new()),
+            doc.text
+        );
+    }
+    #[test]
     fn spoiler_selection_omits_hidden_links_and_emoji_but_source_copy_remains_raw() {
         let source = "visible ||**secret😄** [private](https://example.org) <:party:123>|| end";
         let doc = render(source);
