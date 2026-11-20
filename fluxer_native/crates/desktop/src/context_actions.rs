@@ -671,6 +671,9 @@ impl Fluxer {
                         Icon::Settings,
                     ));
                 }
+                if self.invite_channel_for_community(*id).is_some() {
+                    items.push(action("community-invite", "Invite people", Icon::Copy));
+                }
                 if self.can_manage_guild_channels(*id) {
                     items.push(action(
                         "community-create-text",
@@ -704,6 +707,29 @@ impl Fluxer {
             }
         }
         items
+    }
+    fn invite_channel_for_community(&self, guild: Snowflake) -> Option<Snowflake> {
+        let user = self.state.current_user.as_ref()?;
+        self.state
+            .channels
+            .values()
+            .filter(|channel| {
+                channel.guild_id == Some(guild)
+                    && matches!(
+                        channel.kind,
+                        ChannelType::Text
+                            | ChannelType::Voice
+                            | ChannelType::Announcement
+                            | ChannelType::Forum
+                            | ChannelType::Media
+                    )
+                    && self.state.permissions_for(channel.id, user.id).contains(
+                        fluxer_core::Permissions::VIEW_CHANNEL
+                            | fluxer_core::Permissions::CREATE_INSTANT_INVITE,
+                    )
+            })
+            .min_by_key(|channel| (channel.position, channel.id))
+            .map(|channel| channel.id)
     }
     pub(super) fn open_context_menu(
         &mut self,
@@ -1119,6 +1145,11 @@ impl Fluxer {
                     *channel,
                 ) {
                     cx.write_to_clipboard(ClipboardItem::new_string(url));
+                }
+            }
+            (Target::Community(guild), "community-invite") => {
+                if let Some(channel) = self.invite_channel_for_community(*guild) {
+                    self.create_community_invite(channel, window, cx);
                 }
             }
             (Target::Community(guild), "copy-community") => {

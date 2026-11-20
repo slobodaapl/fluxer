@@ -6,8 +6,13 @@ use fluxer_protocol::InvitePreview;
 pub(super) struct InviteEvent {
     request_id: u64,
     code: String,
-    result: Result<InvitePreview>,
+    result: Result<InviteResult>,
     accepting: bool,
+}
+
+enum InviteResult {
+    Preview(InvitePreview),
+    Created(String),
 }
 
 pub(super) struct InviteState {
@@ -97,6 +102,62 @@ impl Worker {
         }
     }
 
+    pub(super) fn create_invite(&mut self, request_id: u64, channel_id: Snowflake) {
+        if self.invites.accepting {
+            return;
+        }
+        self.clear_invites();
+        self.invites.request_id = request_id;
+        let allowed = self.state.current_user.as_ref().is_some_and(|user| {
+            self.state.channels.get(&channel_id).is_some_and(|channel| {
+                channel.guild_id.is_some()
+                    && matches!(
+                        channel.kind,
+                        ChannelType::Text
+                            | ChannelType::Voice
+                            | ChannelType::Announcement
+                            | ChannelType::Forum
+                            | ChannelType::Media
+                    )
+                    && self
+                        .state
+                        .permissions_for(channel_id, user.id)
+                        .contains(Permissions::VIEW_CHANNEL | Permissions::CREATE_INSTANT_INVITE)
+            })
+        });
+        if !allowed || self.demo {
+            self.invite_status(InviteStatus::Failed(
+                "You cannot create an invite for this channel.".into(),
+            ));
+            return;
+        }
+        let Ok(client) = self.client() else {
+            self.invite_status(InviteStatus::Failed("Sign in to create an invite.".into()));
+            return;
+        };
+        let tx = self.invites.tx.clone();
+        self.invites.task = Some(tokio::spawn(async move {
+            let result = match tokio::time::timeout(
+                Duration::from_secs(12),
+                client.create_channel_invite(channel_id),
+            )
+            .await
+            {
+                Ok(Ok(url)) => Ok(InviteResult::Created(url)),
+                Ok(Err(_)) => {
+                    Err("Could not create an invite. Check your permissions and connection.".into())
+                }
+                Err(_) => Err("Invite creation timed out. Try again.".into()),
+            };
+            let _ = tx.send(InviteEvent {
+                request_id,
+                code: String::new(),
+                result,
+                accepting: false,
+            });
+        }));
+    }
+
     pub(super) fn preview_invite(&mut self, request_id: u64, input: String) {
         if self.invites.accepting {
             self.emit(Event::Invite {
@@ -161,7 +222,9 @@ impl Worker {
                 }
             };
             let result = match tokio::time::timeout(Duration::from_secs(12), request).await {
-                Ok(result) => result.map_err(|error| invite_error(error, accepting)),
+                Ok(result) => result
+                    .map(InviteResult::Preview)
+                    .map_err(|error| invite_error(error, accepting)),
                 Err(_) if accepting => Err(
                     "The request timed out. Check your sidebar to see whether you joined.".into(),
                 ),
@@ -181,8 +244,11 @@ impl Worker {
             return;
         }
         match event.result {
-            Ok(preview) if event.accepting => self.on_invite_accepted(preview).await,
-            Ok(preview) => {
+            Ok(InviteResult::Created(url)) => self.invite_status(InviteStatus::Created(url)),
+            Ok(InviteResult::Preview(preview)) if event.accepting => {
+                self.on_invite_accepted(preview).await
+            }
+            Ok(InviteResult::Preview(preview)) => {
                 self.invites.preview = Some((event.code, preview.clone()));
                 self.invite_status(InviteStatus::Preview(Box::new(preview)));
             }

@@ -113,6 +113,34 @@ impl Client {
         code_from_link(input.trim(), base, self_hosted)
     }
 
+    pub async fn create_channel_invite(&self, channel: Snowflake) -> Result<String> {
+        let value = self
+            .request(
+                Method::POST,
+                &format!("/channels/{channel}/invites"),
+                Some(&json!({"max_age": 604800, "max_uses": 0, "temporary": false})),
+            )
+            .await?;
+        let code = value["code"]
+            .as_str()
+            .filter(|code| valid_code(code))
+            .ok_or(Error::InvalidInviteResponse)?;
+        let base = self.instance().document["endpoints"]["invite"]
+            .as_str()
+            .ok_or(Error::InvalidInviteResponse)?;
+        let base = Url::parse(base).map_err(|_| Error::InvalidInviteResponse)?;
+        if !matches!(base.scheme(), "http" | "https")
+            || base.host_str().is_none()
+            || !base.username().is_empty()
+            || base.password().is_some()
+            || base.query().is_some()
+            || base.fragment().is_some()
+        {
+            return Err(Error::InvalidInviteResponse);
+        }
+        Ok(format!("{}/{code}", base.as_str().trim_end_matches('/')))
+    }
+
     pub async fn preview_invite(&self, code: &str) -> Result<InvitePreview> {
         self.invite_request(Method::GET, code).await
     }
@@ -234,6 +262,57 @@ mod tests {
         assert_eq!(preview.channel.recipients[0].username, "friend");
         let joined = client.accept_invite("Ab-C").await.unwrap();
         assert_eq!(joined.member_count, 3);
+        server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn create_invite_uses_classic_defaults_and_instance_endpoint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let instance = crate::Instance {
+            api: base.clone(),
+            gateway: base.clone(),
+            web_app: base,
+            api_version: 1,
+            features: json!({}),
+            document: json!({"endpoints":{"invite":"https://chat.example/invite"}}),
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let head = String::from_utf8(request).unwrap();
+            assert!(head.starts_with("POST /v1/channels/42/invites HTTP/1.1\r\n"));
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains("authorization: test-session\r\n")
+            );
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .and_then(|n| n.parse().ok())
+                })
+                .unwrap();
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).await.unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                json!({"max_age":604800,"max_uses":0,"temporary":false})
+            );
+            let response = r#"{"code":"Ab-C"}"#;
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+        });
+        let client = Client::new(instance)
+            .unwrap()
+            .with_token(crate::SessionToken::new("test-session").unwrap());
+        assert_eq!(
+            client.create_channel_invite(Snowflake(42)).await.unwrap(),
+            "https://chat.example/invite/Ab-C"
+        );
         server.await.unwrap();
     }
 }

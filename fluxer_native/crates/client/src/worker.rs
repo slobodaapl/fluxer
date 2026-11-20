@@ -1467,6 +1467,10 @@ impl Worker {
                 guild_id,
                 delete_messages,
             } => self.leave_community(guild_id, delete_messages),
+            Command::CreateInvite {
+                request_id,
+                channel_id,
+            } => self.create_invite(request_id, channel_id),
             Command::PreviewInvite { request_id, input } => self.preview_invite(request_id, input),
             Command::AcceptInvite { request_id } => self.accept_invite(request_id).await,
             Command::CancelInvite { request_id } => self.cancel_invite(request_id),

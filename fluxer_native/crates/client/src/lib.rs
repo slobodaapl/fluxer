@@ -141,6 +141,10 @@ impl CallControlHandle {
 }
 
 pub enum Command {
+    CreateInvite {
+        request_id: u64,
+        channel_id: Snowflake,
+    },
     PreviewInvite {
         request_id: u64,
         input: String,
@@ -517,6 +521,7 @@ pub enum DirectMessageStatus {
 
 #[derive(Clone, Debug)]
 pub enum InviteStatus {
+    Created(String),
     Preview(Box<fluxer_protocol::InvitePreview>),
     Opening,
     Joined,

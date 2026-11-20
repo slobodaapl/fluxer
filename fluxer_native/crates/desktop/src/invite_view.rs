@@ -11,6 +11,9 @@ enum InviteStep {
     Preview(Box<InvitePreview>),
     Joining,
     Opening,
+    Created(String),
+    CreateLoading,
+    CreateError(String),
     Error(String),
 }
 
@@ -57,6 +60,33 @@ impl InviteView {
 }
 
 impl Fluxer {
+    pub(super) fn create_community_invite(
+        &mut self,
+        channel_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.invite_ui.reset(cx);
+        self.invite_ui.previous = window.focused(cx);
+        self.invite_ui.open = true;
+        self.invite_ui.request_id = self.invite_ui.request_id.wrapping_add(1);
+        self.invite_ui.step = InviteStep::CreateLoading;
+        self.invite_ui.dialog_focus.focus(window);
+        if let Err(message) = self
+            .controller
+            .as_ref()
+            .ok_or("The native client worker is unavailable".to_owned())
+            .and_then(|controller| {
+                controller.send(Command::CreateInvite {
+                    request_id: self.invite_ui.request_id,
+                    channel_id,
+                })
+            })
+        {
+            self.invite_ui.step = InviteStep::CreateError(message);
+        }
+        cx.notify();
+    }
     pub(super) fn invite_button(&self, cx: &mut Context<Self>) -> AnyElement {
         button("join-by-invite", "Join")
             .size(px(44.))
@@ -149,9 +179,12 @@ impl Fluxer {
             return;
         }
         self.invite_ui.focus_step = true;
+        let creating = matches!(self.invite_ui.step, InviteStep::CreateLoading);
         self.invite_ui.step = match status {
+            InviteStatus::Created(url) => InviteStep::Created(url),
             InviteStatus::Preview(preview) => InviteStep::Preview(preview),
             InviteStatus::Opening => InviteStep::Opening,
+            InviteStatus::Failed(message) if creating => InviteStep::CreateError(message),
             InviteStatus::Failed(message) => InviteStep::Error(message),
             InviteStatus::Joined => {
                 self.status = "Invite accepted".into();
@@ -252,7 +285,18 @@ impl Fluxer {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .child(heading("Join by invite"))
+                    .child(heading(
+                        if matches!(
+                            step,
+                            InviteStep::CreateLoading
+                                | InviteStep::Created(_)
+                                | InviteStep::CreateError(_)
+                        ) {
+                            "Invite people"
+                        } else {
+                            "Join by invite"
+                        },
+                    ))
                     .when(!self.invite_ui.joining(), |card| {
                         card.child(
                             controls::icon_button("close-invite", controls::Icon::Close, "Close")
@@ -266,6 +310,27 @@ impl Fluxer {
             );
 
         match step {
+            InviteStep::CreateLoading => {
+                card = card.child("Creating invite…");
+            }
+            InviteStep::CreateError(message) => {
+                card = card.child(message.clone());
+            }
+            InviteStep::Created(url) => {
+                let url = url.clone();
+                card = card
+                    .child("This invite expires in 7 days and has unlimited uses.")
+                    .child(div().child(url.clone()))
+                    .child(
+                        button("copy-created-invite", "Copy invite").on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                this.status = "Invite copied".into();
+                                cx.notify();
+                            },
+                        )),
+                    );
+            }
             InviteStep::Input | InviteStep::Loading | InviteStep::Error(_) => {
                 let loading = matches!(step, InviteStep::Loading);
                 card = card.child(self.invite_ui.input.clone());
