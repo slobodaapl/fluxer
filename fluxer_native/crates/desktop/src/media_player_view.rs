@@ -196,8 +196,15 @@ fn keyboard_action(view: &PlayerView, key: &str) -> Option<PlayerAction> {
     };
     match key {
         "space" | "k" => Some(PlayerAction::PlayPause),
-        "left" | "j" => seek(position - 5.),
-        "right" | "l" => seek(position + 5.),
+        "left" => seek(position - 5.),
+        "right" => seek(position + 5.),
+        "j" => seek(position - 10.),
+        "l" => seek(position + 10.),
+        key if key.len() == 1 && key.as_bytes()[0].is_ascii_digit() => {
+            valid_duration(view.duration).map(|duration| {
+                PlayerAction::Seek(duration * f64::from(key.as_bytes()[0] - b'0') / 10.)
+            })
+        }
         "home" => seek(0.),
         "end" => seek(view.duration.unwrap_or(0.)),
         "up" if view.kind != PlayerKind::Gifv => {
@@ -312,7 +319,7 @@ fn controls(
             "Full view (F)",
             PlayerAction::OpenFullscreen,
             callback.clone(),
-            modal.map(|m| &m.original),
+            None,
         ));
     }
     if view.can_open_original {
@@ -322,7 +329,7 @@ fn controls(
             "Open original",
             PlayerAction::OpenOriginal,
             callback.clone(),
-            None,
+            modal.map(|m| &m.original),
         ));
     }
     let mut body = div().w_full().min_w_0().flex().flex_col().child(row);
@@ -676,7 +683,7 @@ pub(super) fn render_modal(
                     .text_size(px(11.))
                     .text_color(rgb(MUTED))
                     .text_center()
-                    .child("Space Play / pause · ← → Seek · ↑ ↓ Volume · M Mute · Esc Close"),
+                    .child("Space Play / pause · ← → Seek · J / L 10s · 0–9 Jump · ↑ ↓ Volume · M Mute · Esc Close"),
             ),
     )
     .with_priority(6)
@@ -732,9 +739,13 @@ mod tests {
             Some(PlayerAction::Seek(10.))
         );
         assert_eq!(keyboard_action(&view, "home"), Some(PlayerAction::Seek(0.)));
+        assert_eq!(keyboard_action(&view, "j"), Some(PlayerAction::Seek(0.)));
+        assert_eq!(keyboard_action(&view, "5"), Some(PlayerAction::Seek(5.)));
+        assert_eq!(keyboard_action(&view, "9"), Some(PlayerAction::Seek(9.)));
         assert_eq!(keyboard_action(&view, "up"), Some(PlayerAction::Volume(1.)));
         view.duration = None;
         assert_eq!(keyboard_action(&view, "left"), None);
+        assert_eq!(keyboard_action(&view, "5"), None);
         view.kind = PlayerKind::Gifv;
         assert_eq!(keyboard_action(&view, "m"), None);
         assert_eq!(keyboard_action(&view, "down"), None);
