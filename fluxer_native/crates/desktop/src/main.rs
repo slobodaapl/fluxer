@@ -1009,6 +1009,12 @@ impl Fluxer {
                 Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
+                Event::OwnBannerMutation(status) => {
+                    if matches!(status, fluxer_client::RelationshipMutationStatus::Complete) {
+                        self.retire_banner_preview(cx);
+                    }
+                    self.profile_edit.banner_status(status);
+                }
                 Event::OwnAvatarMutation(status) => {
                     if matches!(status, fluxer_client::RelationshipMutationStatus::Complete) {
                         self.retire_avatar_preview(cx);

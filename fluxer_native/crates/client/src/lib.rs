@@ -170,6 +170,10 @@ pub enum Command {
         png: Option<Vec<u8>>,
     },
     CancelOwnAvatar,
+    UpdateOwnBanner {
+        png: Option<Vec<u8>>,
+    },
+    CancelOwnBanner,
     UpdateOwnProfile {
         global_name: String,
         bio: String,
@@ -593,6 +597,7 @@ pub enum Event {
     DisplaySettingsMutation(RelationshipMutationStatus),
     OwnProfileMutation(RelationshipMutationStatus),
     OwnAvatarMutation(RelationshipMutationStatus),
+    OwnBannerMutation(RelationshipMutationStatus),
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,

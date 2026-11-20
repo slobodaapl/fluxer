@@ -15,7 +15,6 @@ use std::{
 const MAX_FILE: u64 = 10 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 8192;
 const MAX_PIXELS: u64 = 16 * 1024 * 1024;
-const OUTPUT_SIZE: u32 = 512;
 
 /// Zoom is relative to the largest centered square. Pan ranges from -1 to 1
 /// and selects the portion of the remaining image on each axis.
@@ -102,27 +101,39 @@ impl AvatarImage {
         })
     }
     pub fn crop(&self, crop: Crop) -> Result<CroppedAvatar, String> {
+        self.crop_to(crop, 512, 512)
+    }
+    pub fn crop_banner(&self, crop: Crop) -> Result<CroppedAvatar, String> {
+        self.crop_to(crop, 2048, 723)
+    }
+    fn crop_to(&self, crop: Crop, out_w: u32, out_h: u32) -> Result<CroppedAvatar, String> {
         let finite = |value: f32, fallback: f32| if value.is_finite() { value } else { fallback };
         let zoom = finite(crop.zoom, 1.).clamp(1., 5.);
         let x = finite(crop.x, 0.).clamp(-1., 1.);
         let y = finite(crop.y, 0.).clamp(-1., 1.);
         let (width, height) = self.pixels.dimensions();
-        let side = ((width.min(height) as f32 / zoom).round() as u32).clamp(1, width.min(height));
-        let left = (((width - side) as f32 * (x + 1.) / 2.).round() as u32).min(width - side);
-        let top = (((height - side) as f32 * (y + 1.) / 2.).round() as u32).min(height - side);
-        let pixels = image::imageops::crop_imm(&self.pixels, left, top, side, side).to_image();
-        let pixels = image::imageops::resize(
-            &pixels,
-            OUTPUT_SIZE,
-            OUTPUT_SIZE,
-            image::imageops::FilterType::Lanczos3,
-        );
+        let ratio = 17. / 6.;
+        let (base_w, base_h) = if out_w == out_h {
+            let side = width.min(height) as f32;
+            (side, side)
+        } else if width as f32 / height as f32 > ratio {
+            (height as f32 * ratio, height as f32)
+        } else {
+            (width as f32, width as f32 / ratio)
+        };
+        let crop_w = ((base_w / zoom).round() as u32).clamp(1, width);
+        let crop_h = ((base_h / zoom).round() as u32).clamp(1, height);
+        let left = (((width - crop_w) as f32 * (x + 1.) / 2.).round() as u32).min(width - crop_w);
+        let top = (((height - crop_h) as f32 * (y + 1.) / 2.).round() as u32).min(height - crop_h);
+        let pixels = image::imageops::crop_imm(&self.pixels, left, top, crop_w, crop_h).to_image();
+        let pixels =
+            image::imageops::resize(&pixels, out_w, out_h, image::imageops::FilterType::Lanczos3);
         let mut png = Vec::new();
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(
                 pixels.as_raw(),
-                OUTPUT_SIZE,
-                OUTPUT_SIZE,
+                out_w,
+                out_h,
                 image::ExtendedColorType::Rgba8,
             )
             .map_err(|e| format!("Could not prepare avatar: {e}"))?;
@@ -178,6 +189,22 @@ mod tests {
         assert!((110..=125).contains(&decoded.get_pixel(0, 0).0[0]));
         assert!((135..=150).contains(&decoded.get_pixel(511, 511).0[0]));
         assert!(decoded.get_pixel(511, 511).0[1] > decoded.get_pixel(0, 0).0[1]);
+    }
+    #[test]
+    fn banner_crop_has_source_dimensions_and_pans() {
+        let pixels = RgbaImage::from_fn(340, 240, |x, y| image::Rgba([x as u8, y as u8, 0, 255]));
+        let source = AvatarImage { pixels };
+        let result = source
+            .crop_banner(Crop {
+                zoom: 1.,
+                x: 0.,
+                y: 1.,
+            })
+            .unwrap();
+        let decoded = image::load_from_memory(&result.png).unwrap().into_rgba8();
+        assert_eq!(decoded.dimensions(), (2048, 723));
+        assert!(decoded.get_pixel(0, 0).0[1] > 100);
+        assert!(decoded.get_pixel(2047, 722).0[1] > decoded.get_pixel(0, 0).0[1]);
     }
     #[test]
     fn rejects_animation_and_invalid_png_chunks() {

@@ -84,6 +84,7 @@ impl super::Fluxer {
         self.community_ui.reset(cx);
         self.invite_ui.reset(cx);
         self.retire_avatar_preview(cx);
+        self.retire_banner_preview(cx);
         self.profile_edit.reset(cx);
         self.gif_picker.reset();
         self.sticker_picker_open = false;

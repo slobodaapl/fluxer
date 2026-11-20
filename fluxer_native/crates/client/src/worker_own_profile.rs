@@ -4,7 +4,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 
 struct Job {
     generation: u64,
-    avatar: bool,
+    kind: u8,
     account: Snowflake,
     task: JoinHandle<()>,
 }
@@ -45,11 +45,16 @@ impl Worker {
     pub(super) fn clear_own_profile(&mut self) {
         self.own_profile.next = self.own_profile.next.wrapping_add(1);
         if let Some(job) = self.own_profile.job.take() {
-            self.own_profile_status(job.avatar, Status::Failed("Profile save cancelled".into()));
+            self.own_profile_status(job.kind, Status::Failed("Profile save cancelled".into()));
         }
     }
     pub(super) fn cancel_own_avatar(&mut self) {
-        if self.own_profile.job.as_ref().is_some_and(|job| job.avatar) {
+        if self
+            .own_profile
+            .job
+            .as_ref()
+            .is_some_and(|job| job.kind == 1)
+        {
             self.clear_own_profile();
         }
     }
@@ -59,7 +64,7 @@ impl Worker {
         bio: String,
         pronouns: String,
     ) -> Result<()> {
-        self.update_own_profile_patch(patch(name, bio, pronouns), false)
+        self.update_own_profile_patch(patch(name, bio, pronouns), 0)
     }
     pub(super) fn update_own_avatar(&mut self, png: Option<Vec<u8>>) -> Result<()> {
         if png.as_ref().is_some_and(|data| {
@@ -68,23 +73,42 @@ impl Worker {
             return Err("Invalid or oversized avatar image".into());
         }
         let avatar = png.map(|data| format!("data:image/png;base64,{}", STANDARD.encode(data)));
-        self.update_own_profile_patch(json!({"avatar": avatar}), true)
+        self.update_own_profile_patch(json!({"avatar": avatar}), 1)
     }
-    fn own_profile_status(&self, avatar: bool, status: Status) {
-        self.emit(if avatar {
-            Event::OwnAvatarMutation(status)
-        } else {
-            Event::OwnProfileMutation(status)
+    pub(super) fn cancel_own_banner(&mut self) {
+        if self
+            .own_profile
+            .job
+            .as_ref()
+            .is_some_and(|job| job.kind == 2)
+        {
+            self.clear_own_profile();
+        }
+    }
+    pub(super) fn update_own_banner(&mut self, png: Option<Vec<u8>>) -> Result<()> {
+        if png.as_ref().is_some_and(|data| {
+            data.len() > 10 * 1024 * 1024 || !data.starts_with(b"\x89PNG\r\n\x1a\n")
+        }) {
+            return Err("Invalid or oversized banner image".into());
+        }
+        let banner = png.map(|data| format!("data:image/png;base64,{}", STANDARD.encode(data)));
+        self.update_own_profile_patch(json!({"banner": banner}), 2)
+    }
+    fn own_profile_status(&self, kind: u8, status: Status) {
+        self.emit(match kind {
+            1 => Event::OwnAvatarMutation(status),
+            2 => Event::OwnBannerMutation(status),
+            _ => Event::OwnProfileMutation(status),
         });
     }
-    fn update_own_profile_patch(&mut self, patch: Value, avatar: bool) -> Result<()> {
+    fn update_own_profile_patch(&mut self, patch: Value, kind: u8) -> Result<()> {
         let current = self.state.current_user.clone().ok_or("Sign in first")?;
         if self.own_profile.job.is_some() {
             return Err("A profile save is already pending".into());
         }
         if self.demo {
             self.project_own_profile(current.id, patch)?;
-            self.own_profile_status(avatar, Status::Complete);
+            self.own_profile_status(kind, Status::Complete);
             return Ok(());
         }
         let client = self.client.clone().ok_or("Not signed in")?;
@@ -105,11 +129,11 @@ impl Worker {
         });
         self.own_profile.job = Some(Job {
             generation,
-            avatar,
+            kind,
             account: current.id,
             task,
         });
-        self.own_profile_status(avatar, Status::Pending);
+        self.own_profile_status(kind, Status::Pending);
         Ok(())
     }
     pub(super) fn own_profile_event(&mut self, event: OwnProfileEvent) {
@@ -120,13 +144,13 @@ impl Worker {
             return;
         }
         let account = job.account;
-        let avatar = job.avatar;
+        let kind = job.kind;
         self.own_profile.job.take();
         let result = event
             .result
             .and_then(|response| self.project_own_profile(account, response));
         self.own_profile_status(
-            avatar,
+            kind,
             match result {
                 Ok(()) => Status::Complete,
                 Err(message) => Status::Failed(message),
