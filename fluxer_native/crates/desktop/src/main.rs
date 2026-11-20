@@ -4,6 +4,7 @@ mod audio_view;
 mod avatar_crop;
 mod avatar_demo;
 mod avatar_images;
+mod bans_view;
 mod call_view;
 mod camera_view;
 mod chat_helpers;
@@ -364,6 +365,7 @@ struct Fluxer {
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
     community_ui: community_view::CommunityUi,
+    bans_ui: bans_view::BansUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     overwrite_form: Option<(
         Snowflake,
@@ -540,6 +542,7 @@ impl Fluxer {
             settings_return: Pane::Chat,
             selected_guild: None,
             community_ui: community_view::CommunityUi::new(cx),
+            bans_ui: bans_view::BansUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
@@ -1030,6 +1033,11 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::BanList {
+                    request_id,
+                    guild_id,
+                    result,
+                } => self.bans_event(request_id, guild_id, result, cx),
                 Event::Invite { request_id, status } => self.invite_status(request_id, status, cx),
                 Event::AccountSessions { request_id, result } => {
                     if self.account_sessions_request == Some(request_id) {
@@ -3341,7 +3349,9 @@ impl Render for Fluxer {
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.community_ui.dialog.is_some() {
+                if this.bans_ui.guild.is_some() {
+                    this.bans_key(event, window, cx);
+                } else if this.community_ui.dialog.is_some() {
                     this.community_key_down(event, window, cx);
                 } else if this.invite_ui.open {
                     this.invite_key_down(event, window, cx);
@@ -3353,7 +3363,9 @@ impl Render for Fluxer {
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if this.community_ui.dialog.is_some() {
+                if this.bans_ui.guild.is_some() {
+                    cx.stop_propagation();
+                } else if this.community_ui.dialog.is_some() {
                     this.community_key_up(event, window, cx);
                 } else {
                     this.status_key_up(event, window, cx);
@@ -3452,6 +3464,7 @@ impl Render for Fluxer {
             }))
             .child(content)
             .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
+            .when(self.bans_ui.guild.is_some(), |view| view.child(self.bans_dialog(cx)))
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
             .child(self.role_mention.clone())

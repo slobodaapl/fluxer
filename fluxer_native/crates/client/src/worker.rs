@@ -20,6 +20,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
+#[path = "worker_bans.rs"]
+mod bans_flow;
 #[path = "worker_channels.rs"]
 mod channel_flow;
 #[path = "worker_community.rs"]
@@ -219,6 +221,7 @@ pub(crate) struct Worker {
     display_settings: display_settings_flow::DisplaySettingsState,
     system_idle: Option<(bool, bool)>,
     people: people_flow::PeopleState,
+    bans: bans_flow::BanState,
     invites: invite_flow::InviteState,
     navigation: navigation_flow::NavigationState,
     profiles: profile_flow::ProfileState,
@@ -317,6 +320,7 @@ impl Worker {
             display_settings: display_settings_flow::DisplaySettingsState::new(),
             system_idle: None,
             people: people_flow::PeopleState::new(),
+            bans: bans_flow::BanState::new(),
             invites: invite_flow::InviteState::new(),
             navigation: navigation_flow::NavigationState::new(),
             profiles: profile_flow::ProfileState::new(),
@@ -667,6 +671,7 @@ impl Worker {
                 Invite(Option<invite_flow::InviteEvent>),
                 InviteTimeout,
                 Kick(Option<people_flow::KickEvent>),
+                Bans(Option<bans_flow::BanEvent>),
                 Dm(Option<DmEvent>),
                 Sticker(Option<StickerEvent>),
                 ThreadCreated(Result<Value>),
@@ -717,6 +722,7 @@ impl Worker {
                 event=self.invites.rx.recv()=>Incoming::Invite(event),
                 _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
                 event=self.people.kick_rx.recv()=>Incoming::Kick(event),
+                event=self.bans.rx.recv()=>Incoming::Bans(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 event=self.sticker_rx.recv()=>Incoming::Sticker(event),
                 result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
@@ -779,6 +785,12 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Kick(None) => Ok(()),
+                Incoming::Bans(event) => {
+                    if let Some(event) = event {
+                        self.ban_list_event(event);
+                    }
+                    Ok(())
+                }
                 Incoming::Dm(Some(event)) => self.finish_open_dm(event).await,
                 Incoming::Dm(None) => Ok(()),
                 Incoming::Sticker(Some(event)) => {
@@ -1013,6 +1025,7 @@ impl Worker {
         self.clear_presence();
         self.clear_display_settings();
         self.clear_people();
+        self.bans.clear();
         self.clear_invites();
         self.clear_navigation();
         self.clear_own_profile();
@@ -1516,6 +1529,32 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::FetchBans {
+                request_id,
+                guild_id,
+            } => {
+                if let Err(message) = self.ban_list_request(request_id, guild_id, None) {
+                    self.emit(Event::BanList {
+                        request_id,
+                        guild_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::UnbanMember {
+                request_id,
+                guild_id,
+                user_id,
+            } => {
+                if let Err(message) = self.ban_list_request(request_id, guild_id, Some(user_id)) {
+                    self.emit(Event::BanList {
+                        request_id,
+                        guild_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::CancelBans => self.bans.clear(),
             Command::BanMember { guild_id, user_id } => {
                 if let Err(message) = self.ban_member(guild_id, user_id) {
                     self.emit(Event::Error(message));

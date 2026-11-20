@@ -150,6 +150,17 @@ pub enum Command {
         guild_id: Snowflake,
         code: String,
     },
+
+    FetchBans {
+        request_id: u64,
+        guild_id: Snowflake,
+    },
+    UnbanMember {
+        request_id: u64,
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    },
+    CancelBans,
     CreateInvite {
         request_id: u64,
         channel_id: Snowflake,
@@ -613,6 +624,11 @@ pub enum InviteStatus {
 }
 
 pub enum Event {
+    BanList {
+        request_id: u64,
+        guild_id: Snowflake,
+        result: Result<Vec<serde_json::Value>, String>,
+    },
     CommunityMutation {
         created: Option<Snowflake>,
         left: Option<Snowflake>,

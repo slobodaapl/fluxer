@@ -124,6 +124,7 @@ impl super::Fluxer {
         self.attachments.picker_open = false;
         crate::input::clear_code_highlight_cache();
         self.reset_context_menu(cx);
+        self.bans_ui.reset();
         self.context.kick_confirm = None;
         self.context.ban_confirm = false;
         self.context.channel_delete_confirm = None;

@@ -23,6 +23,27 @@ impl Client {
         Ok(())
     }
 
+    /// List community bans, including their audit reason and expiry.
+    pub async fn guild_bans(&self, guild: &str) -> Result<Value> {
+        self.request(
+            Method::GET,
+            &format!("/guilds/{}/bans", segment(guild)),
+            None,
+        )
+        .await
+    }
+
+    /// Revoke a community ban without supplying an audit-log reason.
+    pub async fn unban_member(&self, guild: &str, user: &str) -> Result<()> {
+        self.request(
+            Method::DELETE,
+            &format!("/guilds/{}/bans/{}", segment(guild), segment(user)),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Set or clear the timeout; returns the updated guild member wire object.
     pub async fn set_member_timeout(
         &self,
@@ -99,6 +120,57 @@ mod tests {
             .unwrap()
             .with_token(crate::SessionToken::new("test-session").unwrap());
         client.ban_member("42", "99").await.unwrap();
+        server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn list_and_revoke_bans_use_source_routes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let instance = crate::Instance {
+            api: base.clone(),
+            gateway: base.clone(),
+            web_app: base,
+            api_version: 1,
+            features: json!({}),
+            document: json!({}),
+        };
+        let server = tokio::spawn(async move {
+            for (method, path, body) in [
+                (
+                    "GET",
+                    "/v1/guilds/42/bans",
+                    r#"[{"user":{"id":"99","username":"user"},"reason":"test","moderator_id":"1","banned_at":"2020-01-01T00:00:00Z","expires_at":null}]"#,
+                ),
+                ("DELETE", "/v1/guilds/42/bans/99", ""),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(request).unwrap();
+                assert!(
+                    head.starts_with(&format!("{method} {path} HTTP/1.1\r\n")),
+                    "{head}"
+                );
+                assert!(
+                    head.to_ascii_lowercase()
+                        .contains("authorization: test-session\r\n")
+                );
+                let status = if method == "GET" {
+                    "200 OK"
+                } else {
+                    "204 No Content"
+                };
+                stream.write_all(format!("HTTP/1.1 {status}\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let client = Client::new(instance)
+            .unwrap()
+            .with_token(crate::SessionToken::new("test-session").unwrap());
+        let bans = client.guild_bans("42").await.unwrap();
+        assert_eq!(bans[0]["reason"], "test");
+        client.unban_member("42", "99").await.unwrap();
         server.await.unwrap();
     }
 }
