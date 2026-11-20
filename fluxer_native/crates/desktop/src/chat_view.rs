@@ -968,6 +968,25 @@ impl Render for MessageTimestampTooltip {
 }
 
 impl Fluxer {
+    fn load_more_forum(&mut self, channel_id: Snowflake, offset: usize, cx: &mut Context<Self>) {
+        let Some(forum) = self.forum.as_mut() else {
+            return;
+        };
+        if forum.loading_more || !forum.has_more || forum.next_offset != offset {
+            return;
+        }
+        forum.loading_more = true;
+        forum.error = None;
+        self.command(
+            Command::LoadForum {
+                channel_id,
+                creation_order: self.forum_creation_order,
+                offset,
+            },
+            cx,
+        );
+    }
+
     fn forum_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(channel_id) = self.state.selected_channel else {
             return div().into_any_element();
@@ -1008,7 +1027,7 @@ impl Fluxer {
             if posts.is_empty() && error.is_none() {
                 list = list.child(div().child("No posts found."));
             }
-            for (index, (post, preview)) in posts.iter().enumerate() {
+            for (post, preview) in posts {
                 let id = post.id;
                 let text = preview
                     .as_ref()
@@ -1016,11 +1035,24 @@ impl Fluxer {
                     .unwrap_or_default();
                 list = list.child(
                     div()
-                        .id(("forum-post", index))
+                        .id(("forum-post", id.0))
                         .p_3()
                         .bg(rgb(0x303136))
                         .rounded_md()
                         .cursor_pointer()
+                        .focusable()
+                        .tab_stop(true)
+                        .focus(|style| style.bg(rgb(0x484054)))
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.keystroke.modifiers.modified()
+                            {
+                                cx.stop_propagation();
+                                if !event.is_held {
+                                    this.select(id, cx);
+                                }
+                            }
+                        }))
                         .child(div().child(post.display_name()))
                         .when(!text.is_empty(), |view| {
                             view.child(div().text_sm().text_color(rgb(0xb5bac1)).child(text))
@@ -1033,22 +1065,18 @@ impl Fluxer {
                 let loading = *loading_more;
                 list = list.child(
                     quiet_button("forum-more", if loading { "Loading…" } else { "Load more" })
+                        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                            if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                && !event.keystroke.modifiers.modified()
+                            {
+                                cx.stop_propagation();
+                                if !event.is_held {
+                                    this.load_more_forum(channel_id, offset, cx);
+                                }
+                            }
+                        }))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            if loading {
-                                return;
-                            }
-                            if let Some(forum) = this.forum.as_mut() {
-                                forum.loading_more = true;
-                                forum.error = None;
-                            }
-                            this.command(
-                                Command::LoadForum {
-                                    channel_id,
-                                    creation_order: this.forum_creation_order,
-                                    offset,
-                                },
-                                cx,
-                            );
+                            this.load_more_forum(channel_id, offset, cx);
                         })),
                 );
             }

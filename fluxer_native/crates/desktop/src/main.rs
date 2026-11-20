@@ -1073,6 +1073,20 @@ impl Fluxer {
                         self.timeline.max_offset().height + self.timeline.offset().y <= px(48.);
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
+                    // A forum search installs its rows in the channel snapshot before
+                    // emitting the results. Reconcile only rows that were actually
+                    // present in the previous snapshot, so a partial snapshot cannot
+                    // erase an otherwise valid search result.
+                    if let Some(forum) = self.forum.as_mut() {
+                        forum.posts.retain_mut(|(post, _)| {
+                            if let Some(updated) = state.channels.get(&post.id) {
+                                *post = updated.clone();
+                                true
+                            } else {
+                                !self.state.channels.contains_key(&post.id)
+                            }
+                        });
+                    }
                     self.state = *state;
                     let (scope_changed, restore_composer) = self
                         .conversation_scope
