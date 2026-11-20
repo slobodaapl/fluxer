@@ -3213,7 +3213,14 @@ impl Worker {
         }
         self.voice_recovery_attempts += 1;
         self.voice_join_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(15));
-        self.update_voice().await
+        if let Err(message) = self.update_voice().await {
+            // No join was sent, so do not wait for its response timeout. Keep
+            // recovery bounded and let a restored gateway accept the next try.
+            self.voice_join_deadline = None;
+            self.emit(Event::Error(message));
+            return self.schedule_voice_retry().await;
+        }
+        Ok(())
     }
 
     async fn media_event(&mut self, event: MediaEvent) -> Result<()> {

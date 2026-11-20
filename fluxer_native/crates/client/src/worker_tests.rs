@@ -3280,6 +3280,33 @@ async fn transport_loss_preserves_intent_and_leave_cancels_rejoin() {
     assert!(rx.try_recv().is_err());
 }
 
+#[tokio::test]
+async fn failed_rejoin_send_retries_without_waiting_for_join_timeout() {
+    let (mut worker, _events) = worker();
+    worker.gateway_ready = true;
+    worker.voice_target = Some(VoiceTarget {
+        guild_id: Some(10.into()),
+        channel_id: 100.into(),
+        connection_id: None,
+    });
+    worker.voice_recovery_started = Some(tokio::time::Instant::now());
+    let (gateway, rx) = async_mpsc::channel(1);
+    drop(rx);
+    worker.gateway_commands = Some(gateway);
+
+    worker.retry_voice().await.unwrap();
+    assert_eq!(worker.voice_recovery_attempts, 1);
+    assert!(worker.voice_join_deadline.is_none());
+    assert!(worker.voice_recovery_at.is_some());
+
+    let (gateway, mut rx) = async_mpsc::channel(1);
+    worker.gateway_commands = Some(gateway);
+    worker.retry_voice().await.unwrap();
+    assert!(matches!(rx.try_recv(), Ok(GatewayCommand::VoiceState(_))));
+    assert!(worker.voice_join_deadline.is_some());
+    assert!(worker.voice_recovery_at.is_none());
+}
+
 #[test]
 fn suspend_detection_uses_boot_clock_not_wall_clock() {
     let monotonic = std::time::Instant::now();
