@@ -71,6 +71,7 @@ mod status_view;
 mod stream_grid;
 mod stream_layout;
 mod stream_view;
+mod thread_view;
 mod video_perf;
 mod visible_image;
 
@@ -337,6 +338,9 @@ struct Fluxer {
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     channel_name: Entity<TextInput>,
     composer: Entity<TextInput>,
+    thread_name: Entity<TextInput>,
+    thread_form: Option<Snowflake>,
+    creating_thread: Option<Snowflake>,
     conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
@@ -512,6 +516,9 @@ impl Fluxer {
             replies: BTreeMap::new(),
             outbox: outbox_view::OutboxUi::default(),
             conversation_scope: conversation_scope::ConversationScope::default(),
+            thread_name: cx.new(|cx| TextInput::new("Thread name", cx)),
+            thread_form: None,
+            creating_thread: None,
             attachments: AttachmentUi::new(),
             sticker_picker_open: false,
             emoji_target: None,
@@ -969,6 +976,9 @@ impl Fluxer {
                     self.status =
                         format!("Message forwarded to {}", self.channel_name(destination));
                 }
+                Event::ThreadCreated { parent_id, result } => {
+                    self.finish_thread_creation(parent_id, result, cx);
+                }
                 Event::State(state) => {
                     let old = self.state.selected_channel;
                     let was_empty = old.is_none_or(|channel| {
@@ -993,6 +1003,10 @@ impl Fluxer {
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.slowmode = composer_slowmode::Slowmode::default();
+                        self.thread_form = None;
+                        self.creating_thread = None;
+                        self.thread_name
+                            .update(cx, |input, cx| input.set(String::new(), cx));
                         self.inbox_ui.reset();
                     }
                     self.refresh_composer_completion(cx);
@@ -1760,6 +1774,12 @@ impl Fluxer {
             self.run_search(1, cx);
             return;
         }
+        if self.thread_form.is_some() && self.thread_name.focus_handle(cx).is_focused(window) {
+            if !self.thread_name.read(cx).is_composing() {
+                self.submit_public_thread(cx);
+            }
+            return;
+        }
         if self.session_restoring {
             return;
         }
@@ -2182,9 +2202,10 @@ impl Fluxer {
             .state
             .channels
             .values()
-            .filter(|c| c.guild_id == self.selected_guild)
+            .filter(|c| c.guild_id == self.selected_guild && !c.kind.is_thread())
             .collect::<Vec<_>>();
         channels.sort_by_key(|c| (c.position, c.id));
+        let threads_by_parent = self.threads_by_parent();
         div()
             .w(px(230.))
             .h_full()
@@ -2374,6 +2395,12 @@ impl Fluxer {
                                             cx,
                                         )
                                     }),
+                            )
+                            .when_some(
+                                threads_by_parent
+                                    .get(&id)
+                                    .filter(|_| channel.kind.standalone_thread_type().is_some()),
+                                |view, threads| view.children(self.sidebar_threads(threads, cx)),
                             )
                             .when(!roster.is_empty(), |view| {
                                 view.child(div().ml_5().mb_1().flex().flex_col().gap_1().children(

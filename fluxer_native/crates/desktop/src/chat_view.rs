@@ -99,7 +99,8 @@ impl Fluxer {
             .state
             .selected_channel
             .and_then(|id| self.state.channels.get(&id));
-        let has_guild_members = channel.is_some_and(|channel| channel.guild_id.is_some());
+        let has_guild_members =
+            channel.is_some_and(|channel| channel.guild_id.is_some() && !channel.kind.is_thread());
         let voice_channel = channel
             .filter(|channel| channel.kind.is_voice())
             .map(|channel| channel.id);
@@ -107,6 +108,16 @@ impl Fluxer {
             .map(|c| format!("{} {}", if c.kind.is_voice() { "◉" } else { "#" }, c.name))
             .unwrap_or("Choose a channel".into());
         let selected = self.state.selected_channel;
+        let thread_parent = channel
+            .filter(|channel| channel.kind.is_thread())
+            .and_then(|channel| channel.parent_id)
+            .and_then(|id| self.state.channels.get(&id));
+        let thread_parent = thread_parent
+            .filter(|parent| parent.kind.standalone_thread_type().is_some())
+            .map(|parent| (parent.id, parent.name.clone()));
+        let archived = channel.is_some_and(|channel| channel.thread_archived());
+        let can_create_thread = selected
+            .filter(|parent| !self.demo && self.state.public_thread_type(*parent).is_some());
         let messages = self.visible_messages();
         let layouts = message_layouts(&messages);
         self.message_actions.row_order = messages.iter().map(|message| message.id).collect();
@@ -209,6 +220,16 @@ impl Fluxer {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .when_some(thread_parent, |view, (parent, name)| view.child(
+                                icon_button("thread-parent", Icon::Back, format!("Back to #{name}")).on_click(
+                                    cx.listener(move |this, _, _, cx| this.select(parent, cx)),
+                                ),
+                            ))
+                            .when_some(can_create_thread, |view, parent| view.child(
+                                quiet_button("new-thread", "New thread").on_click(
+                                    cx.listener(move |this, _, window, cx| this.open_thread_form(parent, window, cx)),
+                                ),
+                            ))
                             .when(has_guild_members, |view| view.child(
                                 quiet_button("members-toggle", "Members").on_click(cx.listener(|this, _, _, cx| {
                                     this.members_open = !this.members_open;
@@ -235,6 +256,12 @@ impl Fluxer {
                             ),
                     ),
             )
+            .when(self.thread_form.is_some() && self.thread_form == can_create_thread, |view| {
+                view.child(self.render_thread_form(cx))
+            })
+            .when(archived, |view| {
+                view.child(div().px_5().py_2().text_color(rgb(MUTED)).child("Archived thread"))
+            })
             .when(
                 self.pane == Pane::Chat
                     && self.viewer.focused.is_some()

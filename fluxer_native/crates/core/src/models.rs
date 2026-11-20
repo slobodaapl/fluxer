@@ -121,6 +121,14 @@ impl ChannelType {
             Self::AnnouncementThread | Self::PublicThread | Self::PrivateThread
         )
     }
+    pub fn standalone_thread_type(self) -> Option<Self> {
+        match self {
+            Self::Text => Some(Self::PublicThread),
+            Self::Announcement => Some(Self::AnnouncementThread),
+            _ => None,
+        }
+    }
+
     pub fn is_voice(self) -> bool {
         self == Self::Voice
     }
@@ -190,6 +198,16 @@ pub struct Channel {
     pub extra: BTreeMap<String, Value>,
 }
 impl Channel {
+    pub fn thread_archived(&self) -> bool {
+        self.kind.is_thread()
+            && self
+                .extra
+                .get("thread_metadata")
+                .and_then(|metadata| metadata.get("archived"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    }
+
     pub fn display_name(&self) -> String {
         if !self.name.is_empty() {
             self.name.clone()

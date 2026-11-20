@@ -220,7 +220,7 @@ pub(crate) struct Worker {
     locale: String,
     expected_user_id: Option<Snowflake>,
     selected_guild: Option<Snowflake>,
-    synced_guilds: BTreeMap<Snowflake, String>,
+    synced_guilds: BTreeMap<Snowflake, (String, bool)>,
     member_list_subscription: Option<(Snowflake, Snowflake, u32)>,
     member_list_identity: Option<String>,
     member_wire_list_id: Option<String>,
@@ -1398,6 +1398,13 @@ impl Worker {
             Command::SelectChannel { channel_id } => {
                 self.cancel_open_dm();
                 self.select_channel(channel_id).await?;
+            }
+            Command::CreatePublicThread { parent_id, name } => {
+                let result = self.create_public_thread(parent_id, &name).await;
+                if result.is_ok() {
+                    self.snapshot();
+                }
+                self.emit(Event::ThreadCreated { parent_id, result });
             }
             Command::SearchMessages {
                 channel_id,
@@ -2609,6 +2616,36 @@ impl Worker {
         Ok(())
     }
 
+    async fn create_public_thread(&mut self, parent: Snowflake, name: &str) -> Result<Snowflake> {
+        let kind = self
+            .state
+            .public_thread_type(parent)
+            .ok_or("You cannot create a public thread in this channel")?;
+        let name = name.trim();
+        if !(1..=100).contains(&name.encode_utf16().count()) {
+            return Err("Use a thread name between 1 and 100 characters".into());
+        }
+        let value = self
+            .client()?
+            .create_public_thread(
+                &parent.to_string(),
+                name,
+                kind == ChannelType::AnnouncementThread,
+            )
+            .await
+            .map_err(error)?;
+        let thread: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
+        if thread.parent_id != Some(parent)
+            || thread.kind != kind
+            || thread.guild_id != self.state.channels[&parent].guild_id
+        {
+            return Err("The server returned an unexpected thread".into());
+        }
+        let id = thread.id;
+        self.state.channels.insert(id, thread);
+        Ok(id)
+    }
+
     async fn select_channel(&mut self, channel: Snowflake) -> Result<()> {
         self.require_history(channel)?;
         if !self.state.channels.contains_key(&channel) {
@@ -2651,7 +2688,14 @@ impl Worker {
         let Some(session) = self.state.session_id.clone() else {
             return Ok(());
         };
-        if self.synced_guilds.get(&guild) == Some(&session) {
+        let threads = self.state.thread_guilds.contains(&guild);
+        if self
+            .synced_guilds
+            .get(&guild)
+            .is_some_and(|(current_session, current_threads)| {
+                *current_session == session && *current_threads == threads
+            })
+        {
             return Ok(());
         }
         let Some(tx) = &self.gateway_commands else {
@@ -2659,13 +2703,17 @@ impl Worker {
         };
         // GatewayGuildSubscriptionSynchronizer.ts:43-49. The existing selected
         // guild path leaves previously synced guilds active in this session.
+        let mut options = json!({"active": true, "sync": true});
+        if threads {
+            options["threads"] = Value::Bool(true);
+        }
         tx.send(GatewayCommand::Send {
             op: 14,
-            data: json!({"subscriptions":{guild.to_string():{"active":true,"sync":true}}}),
+            data: json!({"subscriptions":{guild.to_string():options}}),
         })
         .await
         .map_err(|_| "Gateway is disconnected".to_owned())?;
-        self.synced_guilds.insert(guild, session);
+        self.synced_guilds.insert(guild, (session, threads));
         Ok(())
     }
 
@@ -3097,7 +3145,22 @@ impl Worker {
                             self.state.session_id.clone(),
                         )
                     {
-                        self.synced_guilds.insert(guild, session);
+                        // A guild projection can arrive before selection. It does
+                        // not establish a thread subscription for the session.
+                        if !self.state.thread_guilds.contains(&guild) {
+                            self.synced_guilds.insert(guild, (session, false));
+                        }
+                    }
+                    if name == "GUILD_CREATE"
+                        && self.selected_guild.is_some_and(|guild| {
+                            data.get("id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| id.parse::<Snowflake>().ok())
+                                == Some(guild)
+                                && self.state.thread_guilds.contains(&guild)
+                        })
+                    {
+                        self.sync_selected_guild().await?;
                     }
                     if name == "VOICE_STATE_UPDATE"
                         && data.get("user_id").and_then(Value::as_str)

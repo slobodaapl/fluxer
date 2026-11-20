@@ -247,6 +247,10 @@ pub enum Command {
     SelectChannel {
         channel_id: Snowflake,
     },
+    CreatePublicThread {
+        parent_id: Snowflake,
+        name: String,
+    },
     FetchMentions {
         before: Option<Snowflake>,
         filters: MentionFilters,
@@ -486,6 +490,10 @@ pub enum Event {
         status: RelationshipMutationStatus,
     },
     UserProfile(ProfileSnapshot),
+    ThreadCreated {
+        parent_id: Snowflake,
+        result: Result<Snowflake, String>,
+    },
     /// Source Notification.handleMessageAck/Delete; bound to the active account.
     ClearChannelNotifications {
         account_id: Snowflake,

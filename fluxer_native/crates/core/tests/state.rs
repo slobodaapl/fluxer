@@ -401,3 +401,48 @@ fn new_voice_member_hydrates_from_exact_dispatch_member_field() {
             .contains_key(&(500.into(), "fresh-connection".into()))
     );
 }
+
+#[test]
+fn thread_list_sync_replaces_only_active_threads_in_scope_and_routes_memberships() {
+    let mut state = ClientState::demo();
+    state.thread_guilds.insert(1.into());
+    for thread in [
+        json!({"id":"90","guild_id":"1","parent_id":"11","type":11,"name":"missing"}),
+        json!({"id":"91","guild_id":"1","parent_id":"11","type":11,"name":"archived","thread_metadata":{"archived":true}}),
+        json!({"id":"92","guild_id":"1","parent_id":"12","type":11,"name":"outside parent"}),
+        json!({"id":"93","guild_id":"2","parent_id":"11","type":11,"name":"outside guild"}),
+    ] {
+        state.apply_gateway("THREAD_CREATE", thread).unwrap();
+    }
+    state
+        .apply_gateway(
+            "THREAD_LIST_SYNC",
+            json!({
+                "guild_id":"1",
+                "channel_ids":["11"],
+                "threads":[{"id":"94","parent_id":"11","type":12,"name":"joined"}],
+                "members":[{"id":"94","user_id":"100","flags":1}]
+            }),
+        )
+        .unwrap();
+    assert!(!state.channels.contains_key(&90.into()));
+    assert!(state.channels[&91.into()].thread_archived());
+    assert!(state.channels.contains_key(&92.into()));
+    assert!(state.channels.contains_key(&93.into()));
+    let thread = &state.channels[&94.into()];
+    assert_eq!(thread.guild_id, Some(1.into()));
+    assert_eq!(thread.extra["member"]["user_id"], "100");
+    state
+        .apply_gateway(
+            "THREAD_UPDATE",
+            json!({"id":"94","thread_metadata":{"archived":true}}),
+        )
+        .unwrap();
+    assert!(state.channels[&94.into()].thread_archived());
+    assert!(state.select_channel(94.into()));
+    state
+        .apply_gateway("CHANNEL_DELETE", json!({"id":"11"}))
+        .unwrap();
+    assert!(!state.channels.contains_key(&94.into()));
+    assert!(state.selected_channel.is_none());
+}

@@ -614,7 +614,7 @@ async fn selected_guild_sync_matches_desktop_payload_and_session_deduplication()
         .await
         .unwrap();
     assert!(outgoing.try_recv().is_err(), "selection waits for READY");
-    worker.gateway(GatewayEvent::Dispatch{name:"READY".into(),data:json!({"session_id":"first","user":{"id":"1","username":"alice"},"guilds":[{"id":"10","name":"A"},{"id":"20","name":"B"}]}),sequence:Some(1)}).await.unwrap();
+    worker.gateway(GatewayEvent::Dispatch{name:"READY".into(),data:json!({"session_id":"first","user":{"id":"1","username":"alice"},"guilds":[{"id":"10","name":"A","threads":[]},{"id":"20","name":"B"}]}),sequence:Some(1)}).await.unwrap();
     worker.gateway(GatewayEvent::Connected).await.unwrap();
     let GatewayCommand::Send { op, data } = outgoing.try_recv().unwrap() else {
         panic!("expected op14");
@@ -622,7 +622,7 @@ async fn selected_guild_sync_matches_desktop_payload_and_session_deduplication()
     assert_eq!(op, 14);
     assert_eq!(
         data,
-        json!({"subscriptions":{"10":{"active":true,"sync":true}}})
+        json!({"subscriptions":{"10":{"active":true,"sync":true,"threads":true}}})
     );
     worker
         .command(Command::SelectGuild {

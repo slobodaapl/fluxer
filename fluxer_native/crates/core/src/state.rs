@@ -146,6 +146,19 @@ impl ClientState {
         channels.sort_by_key(|c| (c.position, c.id));
         channels
     }
+    pub fn public_thread_type(&self, parent: Snowflake) -> Option<ChannelType> {
+        let channel = self.channels.get(&parent)?;
+        let guild = channel.guild_id?;
+        let user = self.current_user.as_ref()?;
+        let required = Permissions::VIEW_CHANNEL | Permissions::CREATE_PUBLIC_THREADS;
+        if !self.thread_guilds.contains(&guild)
+            || !self.permissions_for(parent, user.id).contains(required)
+        {
+            return None;
+        }
+        channel.kind.standalone_thread_type()
+    }
+
     pub fn select_channel(&mut self, id: Snowflake) -> bool {
         if !self.channels.contains_key(&id) {
             return false;
@@ -714,6 +727,124 @@ impl ClientState {
                     m.reactions.retain(|r| !r.emoji.same_as(&target.emoji));
                 }
             }
+            "THREAD_LIST_SYNC" => {
+                #[derive(Deserialize)]
+                struct ThreadList {
+                    guild_id: Snowflake,
+                    channel_ids: Option<BTreeSet<Snowflake>>,
+                    threads: Vec<Channel>,
+                    #[serde(default)]
+                    members: Vec<Value>,
+                }
+                let list: ThreadList = decode(event, data)?;
+                if !self.thread_guilds.contains(&list.guild_id) {
+                    return Ok(ApplyOutcome::Ignored);
+                }
+                let scoped = |parent: Option<Snowflake>| {
+                    parent.is_some_and(|parent| {
+                        list.channel_ids
+                            .as_ref()
+                            .is_none_or(|ids| ids.contains(&parent))
+                    })
+                };
+                let incoming: BTreeSet<_> = list
+                    .threads
+                    .iter()
+                    .filter(|thread| thread.kind.is_thread() && scoped(thread.parent_id))
+                    .map(|thread| thread.id)
+                    .collect();
+                let removed: Vec<_> = self
+                    .channels
+                    .values()
+                    .filter(|thread| {
+                        thread.guild_id == Some(list.guild_id)
+                            && thread.kind.is_thread()
+                            && scoped(thread.parent_id)
+                            && !thread.thread_archived()
+                            && !incoming.contains(&thread.id)
+                    })
+                    .map(|thread| thread.id)
+                    .collect();
+                for id in removed {
+                    self.remove_channel(id);
+                }
+                let mut memberships: BTreeMap<_, _> = list
+                    .members
+                    .into_iter()
+                    .filter_map(|member| {
+                        let id = member.get("id")?.as_str()?.parse::<Snowflake>().ok()?;
+                        Some((id, member))
+                    })
+                    .collect();
+                for mut thread in list.threads {
+                    if incoming.contains(&thread.id) {
+                        thread.guild_id = Some(list.guild_id);
+                        thread.extra.remove("member");
+                        if let Some(member) = memberships.remove(&thread.id) {
+                            thread.extra.insert("member".into(), member);
+                        }
+                        self.channels.insert(thread.id, thread);
+                    }
+                }
+            }
+            "THREAD_MEMBER_UPDATE" => {
+                #[derive(Deserialize)]
+                struct Membership {
+                    id: Snowflake,
+                    user_id: Snowflake,
+                }
+                let membership: Membership = decode(event, data.clone())?;
+                if self.current_user.as_ref().map(|user| user.id) == Some(membership.user_id)
+                    && let Some(thread) = self.channels.get_mut(&membership.id)
+                    && thread.kind.is_thread()
+                {
+                    thread.extra.insert("member".into(), data);
+                }
+            }
+            "THREAD_MEMBERS_UPDATE" => {
+                #[derive(Deserialize)]
+                struct Memberships {
+                    id: Snowflake,
+                    member_count: u64,
+                    #[serde(default)]
+                    added_members: Vec<Value>,
+                    #[serde(default)]
+                    removed_member_ids: BTreeSet<Snowflake>,
+                }
+                let memberships: Memberships = decode(event, data)?;
+                let Some(user) = self.current_user.as_ref().map(|user| user.id) else {
+                    return Ok(ApplyOutcome::Ignored);
+                };
+                let removed = memberships.removed_member_ids.contains(&user);
+                let moderator = self
+                    .permissions_for(memberships.id, user)
+                    .contains(Permissions::MANAGE_THREADS);
+                let Some(thread) = self
+                    .channels
+                    .get_mut(&memberships.id)
+                    .filter(|channel| channel.kind.is_thread())
+                else {
+                    return Ok(ApplyOutcome::Ignored);
+                };
+                if removed && thread.kind == ChannelType::PrivateThread && !moderator {
+                    self.remove_channel(memberships.id);
+                    return Ok(ApplyOutcome::Applied);
+                }
+                thread
+                    .extra
+                    .insert("member_count".into(), memberships.member_count.into());
+                if removed {
+                    thread.extra.remove("member");
+                } else if let Some(member) = memberships.added_members.into_iter().find(|member| {
+                    member
+                        .get("user_id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.parse::<Snowflake>().ok())
+                        == Some(user)
+                }) {
+                    thread.extra.insert("member".into(), member);
+                }
+            }
             "CHANNEL_CREATE" | "THREAD_CREATE" => {
                 let channel: Channel = decode(event, data)?;
                 self.channels.insert(channel.id, channel);
@@ -748,6 +879,19 @@ impl ClientState {
             }
             "CHANNEL_DELETE" | "THREAD_DELETE" => {
                 let target: Id = decode(event, data)?;
+                if event == "CHANNEL_DELETE" {
+                    let children: Vec<_> = self
+                        .channels
+                        .values()
+                        .filter(|channel| {
+                            channel.kind.is_thread() && channel.parent_id == Some(target.id)
+                        })
+                        .map(|channel| channel.id)
+                        .collect();
+                    for id in children {
+                        self.remove_channel(id);
+                    }
+                }
                 self.remove_channel(target.id);
             }
             "GUILD_CREATE" | "GUILD_SYNC" => {

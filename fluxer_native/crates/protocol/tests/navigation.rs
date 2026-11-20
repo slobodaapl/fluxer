@@ -423,3 +423,35 @@ async fn mentions_use_source_filters_limit_and_before_cursor_without_mutating_re
     );
     assert!(older.body.is_empty());
 }
+
+#[tokio::test]
+async fn standalone_threads_use_text_and_announcement_types_with_session_capability() {
+    let mut server = Server::new(vec![
+        Reply::json(201, json!({"id":"51","type":11,"parent_id":"11"})),
+        Reply::json(201, json!({"id":"52","type":10,"parent_id":"12"})),
+    ])
+    .await;
+    let client = client(&server.origin);
+    for (parent, id, announcement, kind) in [("11", "51", false, 11), ("12", "52", true, 10)] {
+        let thread = client
+            .create_public_thread(parent, "Planning", announcement)
+            .await
+            .unwrap();
+        assert_eq!(thread["id"], id);
+        let request = server.next().await;
+        assert_api(&request, "POST");
+        assert_eq!(
+            request.line,
+            format!("POST /api/v1/channels/{parent}/threads HTTP/1.1")
+        );
+        assert!(
+            request.headers["x-fluxer-features"]
+                .split(',')
+                .any(|f| f == "channel_threads")
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            json!({"name":"Planning","type":kind})
+        );
+    }
+}

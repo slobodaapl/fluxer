@@ -630,6 +630,21 @@ impl Client {
         )
         .await
     }
+    /// Start a standalone public or announcement thread in a text channel.
+    pub async fn create_public_thread(
+        &self,
+        channel: &str,
+        name: &str,
+        announcement: bool,
+    ) -> Result<Value> {
+        self.request(
+            Method::POST,
+            &format!("/channels/{}/threads", segment(channel)),
+            Some(&json!({"name": name, "type": if announcement { 10 } else { 11 }})),
+        )
+        .await
+    }
+
     pub async fn messages(&self, channel: &str, before: Option<&str>, limit: u8) -> Result<Value> {
         self.messages_page(channel, before, None, None, limit).await
     }
