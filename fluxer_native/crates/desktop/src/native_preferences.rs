@@ -64,12 +64,14 @@ struct Preferences {
     reduced_motion: bool,
     shortcuts: [String; 5],
     window_behavior: WindowBehavior,
+    search_history: BTreeMap<String, Vec<String>>,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
             reduced_motion: false,
             window_behavior: WindowBehavior::default(),
+            search_history: BTreeMap::new(),
             shortcuts: ["ctrl-k", "ctrl-f", "ctrl-,", "ctrl-shift-m", "ctrl-shift-d"]
                 .map(str::to_owned),
         }
@@ -185,6 +187,30 @@ impl NativePreferences {
             server_error: None,
             font_draft: None,
         }
+    }
+    pub fn search_history(&self, key: &str) -> &[String] {
+        self.preferences
+            .search_history
+            .get(key)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+    pub fn add_search_history(&mut self, key: String, query: &str) {
+        let query = query.trim();
+        if query.is_empty() {
+            return;
+        }
+        let mut next = self.preferences.clone();
+        let entries = next.search_history.entry(key).or_default();
+        entries.retain(|entry| entry != query);
+        entries.insert(0, query.to_owned());
+        entries.truncate(10);
+        self.persist(next);
+    }
+    pub fn clear_search_history(&mut self, key: &str) {
+        let mut next = self.preferences.clone();
+        next.search_history.remove(key);
+        self.persist(next);
     }
     pub fn window_behavior(&self) -> WindowBehavior {
         self.preferences.window_behavior

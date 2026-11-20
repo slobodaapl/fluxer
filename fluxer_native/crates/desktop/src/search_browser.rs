@@ -347,6 +347,42 @@ impl Fluxer {
             self.command(command, cx);
         }
     }
+    fn search_history_key(&self, cx: &App) -> Option<String> {
+        let account = self.state.current_user.as_ref()?.id;
+        let channel = self.search_ui.context.or(self.state.selected_channel)?;
+        let context = self
+            .state
+            .channels
+            .get(&channel)
+            .and_then(|channel| channel.guild_id)
+            .unwrap_or(channel);
+        serde_json::to_string(&(
+            self.instance.read(cx).content.to_string(),
+            account.to_string(),
+            context.to_string(),
+        ))
+        .ok()
+    }
+    pub(super) fn complete_search_filter(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.search_ui.open != Some(BrowserTab::Search)
+            || !self.search.focus_handle(cx).is_focused(window)
+            || self.search.read(cx).is_composing()
+        {
+            return false;
+        }
+        let query = self.search.read(cx).content.to_string();
+        let Some(suggestion) = search_suggestions(&query).first().copied() else {
+            return false;
+        };
+        self.search.update(cx, |input, cx| {
+            input.set(apply_search_suggestion(&query, suggestion), cx)
+        });
+        true
+    }
     pub(super) fn run_search(&mut self, page: u32, cx: &mut Context<Self>) {
         self.run_search_override(page, None, cx);
     }
@@ -366,6 +402,9 @@ impl Fluxer {
             return;
         }
         self.search_ui.local_error = None;
+        if let Some(key) = self.search_history_key(cx) {
+            self.interface.add_search_history(key, &query);
+        }
         let scope = self.selected_search_scope(cx);
         let sort = match self.search_ui.sort.read(cx).selected().unwrap_or("newest") {
             "oldest" => SearchSort::Oldest,
@@ -1313,6 +1352,56 @@ impl Fluxer {
                     );
                 }
                 body = body.child(row);
+            }
+            if !search_suggestions(&query).is_empty() {
+                body = body.child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_size(px(11.))
+                        .text_color(rgb(MUTED))
+                        .child("Tab completes the first filter suggestion"),
+                );
+            }
+            if let Some(key) = self.search_history_key(cx) {
+                let term = query.trim().to_lowercase();
+                let recent: Vec<String> = self
+                    .interface
+                    .search_history(&key)
+                    .iter()
+                    .filter(|entry| entry.to_lowercase().contains(&term))
+                    .take(5)
+                    .cloned()
+                    .collect();
+                if !recent.is_empty() {
+                    let clear_key = key.clone();
+                    let mut section = div().px_3().pb_2().flex().flex_col().gap_1().child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child("Recent searches")
+                            .child(quiet_button("clear-search-history", "Clear").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.interface.clear_search_history(&clear_key);
+                                    cx.notify();
+                                }),
+                            )),
+                    );
+                    for (index, entry) in recent.into_iter().enumerate() {
+                        let label = entry.clone();
+                        section =
+                            section.child(quiet_button(("recent-search", index), label).on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.search
+                                        .update(cx, |input, cx| input.set(entry.clone(), cx));
+                                    this.search.focus_handle(cx).focus(window);
+                                    this.run_search(1, cx);
+                                }),
+                            ));
+                    }
+                    body = body.child(section);
+                }
             }
             if let Some(error) = &self.search_ui.local_error {
                 body = body.child(browse_state("Check your search", Some(error.clone())));

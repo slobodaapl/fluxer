@@ -3039,6 +3039,7 @@ impl Render for Fluxer {
             }))
             .on_key_down(cx.listener(|this,event:&KeyDownEvent,window,cx|{
                 if this.status_ui.is_open() || this.invite_ui.open { return; }
+                if event.keystroke.key == "tab" && !event.keystroke.modifiers.shift && this.complete_search_filter(window, cx) { cx.stop_propagation(); return; }
                 if matches!(event.keystroke.key.as_str(), "tab" | "escape") && this.composer.focus_handle(cx).is_focused(window) && this.composer.update(cx, |input,cx| input.completion_key(&event.keystroke.key,event.is_held,window,cx)) { cx.stop_propagation(); return; }
                 if event.keystroke.key=="escape" && this.message_links.is_open() {this.dismiss_message_link(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.role_mention.read(cx).is_open() {this.role_mention.update(cx, |popup,cx| popup.dismiss(window,cx));cx.stop_propagation();return;}
