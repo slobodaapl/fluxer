@@ -1445,6 +1445,66 @@ impl Worker {
                 });
                 self.request_pending_send(id, channel_id, content, reference, mention_author)?;
             }
+            Command::SendSticker { sticker_id } => {
+                let channel = self.selected()?;
+                let target = self
+                    .state
+                    .channels
+                    .get(&channel)
+                    .ok_or("Channel is unavailable")?;
+                let user = self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .ok_or("No current account")?;
+                if !fluxer_core::can_send_message(
+                    target.kind,
+                    self.state.permissions_for(channel, user.id),
+                ) {
+                    return Err("You cannot send messages to that channel".into());
+                }
+                let guild = target
+                    .guild_id
+                    .and_then(|id| self.state.guilds.get(&id))
+                    .ok_or("Stickers are unavailable in this channel")?;
+                let sticker = guild
+                    .extra
+                    .get("stickers")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        items.iter().find(|item| {
+                            item.get("id").and_then(Value::as_str) == Some(&sticker_id.to_string())
+                        })
+                    })
+                    .cloned()
+                    .ok_or("Sticker is unavailable")?;
+                let message = if self.demo {
+                    let mut message = Message::text(
+                        self.state.next_local_message_id(),
+                        channel,
+                        self.state
+                            .current_user
+                            .clone()
+                            .ok_or("No current account")?,
+                        "",
+                    );
+                    message.extra.insert("stickers".into(), json!([sticker]));
+                    message
+                } else {
+                    serde_json::from_value(
+                        self.client()?
+                            .send_message_body(
+                                &channel.to_string(),
+                                json!({"sticker_ids": [sticker_id.to_string()]}),
+                            )
+                            .await
+                            .map_err(error)?,
+                    )
+                    .map_err(error)?
+                };
+                self.state.insert_message(message);
+                self.snapshot();
+            }
             Command::SendMessage {
                 content,
                 reply_to,

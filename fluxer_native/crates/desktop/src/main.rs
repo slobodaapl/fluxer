@@ -363,6 +363,7 @@ struct Fluxer {
     replies: BTreeMap<Snowflake, (Message, bool)>,
     outbox: outbox_view::OutboxUi,
     attachments: AttachmentUi,
+    sticker_picker_open: bool,
     emoji_target: Option<EmojiTarget>,
     emoji_search: Entity<TextInput>,
     emoji_category: String,
@@ -503,6 +504,7 @@ impl Fluxer {
             outbox: outbox_view::OutboxUi::default(),
             conversation_scope: conversation_scope::ConversationScope::default(),
             attachments: AttachmentUi::new(),
+            sticker_picker_open: false,
             emoji_target: None,
             emoji_search: cx.new(|cx| {
                 let mut input = TextInput::new("Search emoji…", cx);

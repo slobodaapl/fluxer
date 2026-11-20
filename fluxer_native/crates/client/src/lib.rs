@@ -328,6 +328,9 @@ pub enum Command {
         channel_id: Snowflake,
         id: u64,
     },
+    SendSticker {
+        sticker_id: Snowflake,
+    },
     SendMessage {
         content: String,
         reply_to: Option<Snowflake>,

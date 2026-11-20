@@ -6,6 +6,94 @@ use crate::message_grouping::{
 };
 
 impl Fluxer {
+    fn sticker_message(&self, message: &Message) -> AnyElement {
+        let stickers = message
+            .extra
+            .get("stickers")
+            .and_then(serde_json::Value::as_array);
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .children(stickers.into_iter().flatten().filter_map(|sticker| {
+                let id = sticker.get("id")?.as_str()?;
+                let endpoint = self.media_endpoint.as_deref()?;
+                let animated = sticker
+                    .get("animated")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                    && !self.interface.reduced_motion();
+                Some(
+                    img(SharedString::from(format!(
+                        "{}/stickers/{}.webp?size=320&animated={}",
+                        endpoint.trim_end_matches('/'),
+                        id,
+                        animated
+                    )))
+                    .w(px(160.))
+                    .h(px(160.))
+                    .object_fit(ObjectFit::Contain),
+                )
+            }))
+            .into_any_element()
+    }
+
+    fn sticker_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let stickers = self
+            .state
+            .selected_channel
+            .and_then(|id| self.state.channels.get(&id))
+            .and_then(|channel| channel.guild_id)
+            .and_then(|id| self.state.guilds.get(&id))
+            .and_then(|guild| guild.extra.get("stickers"))
+            .and_then(serde_json::Value::as_array);
+        let choices: Vec<_> = stickers
+            .into_iter()
+            .flatten()
+            .filter_map(|sticker| {
+                let id = sticker.get("id")?.as_str()?.parse::<Snowflake>().ok()?;
+                let name = sticker
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Sticker")
+                    .to_owned();
+                let endpoint = self.media_endpoint.as_deref()?;
+                let url = format!(
+                    "{}/stickers/{}.webp?size=160&animated=false",
+                    endpoint.trim_end_matches('/'),
+                    id
+                );
+                Some(
+                    quiet_button(("sticker-choice", id.0), name)
+                        .child(
+                            img(SharedString::from(url))
+                                .w(px(64.))
+                                .h(px(64.))
+                                .object_fit(ObjectFit::Contain),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.sticker_picker_open = false;
+                            this.command(Command::SendSticker { sticker_id: id }, cx);
+                            cx.notify();
+                        })),
+                )
+            })
+            .collect();
+        let empty = choices.is_empty();
+        div()
+            .id("sticker-picker")
+            .p_2()
+            .bg(rgb(PANEL))
+            .max_h(px(240.))
+            .overflow_y_scroll()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .when(empty, |view| view.child("No community stickers available"))
+            .children(choices)
+            .into_any_element()
+    }
+
     pub(super) fn chat(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let channel = self
             .state
@@ -520,6 +608,7 @@ impl Fluxer {
                                                         cx,
                                                     ))
                                                 })
+                                                .child(self.sticker_message(&message))
                                                 .when(!message.reactions.is_empty(), |view| {
                                                     view.child(
                                                         div().flex().gap_1().flex_wrap().children(
@@ -725,6 +814,7 @@ impl Fluxer {
                                 )),
                         )
                     })
+                    .when(self.sticker_picker_open, |view| view.child(self.sticker_picker(cx)))
                     .child(
                         div()
                             .flex()
@@ -736,6 +826,7 @@ impl Fluxer {
                             .border_1()
                             .border_color(rgb(0x40394d))
                             .child(self.attachment_button(cx))
+                            .child(quiet_button("composer-sticker", "Stickers").on_click(cx.listener(|this, _, _, cx| { this.sticker_picker_open = !this.sticker_picker_open; cx.notify(); })))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .child(
                                 icon_button("composer-emoji", Icon::React, "Choose emoji")

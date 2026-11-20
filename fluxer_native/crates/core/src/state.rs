@@ -772,6 +772,20 @@ impl ClientState {
                 let guild: Guild = patch(event, guild, normalize_guild(data))?;
                 self.insert_guild(guild);
             }
+            "GUILD_STICKERS_UPDATE" => {
+                #[derive(Deserialize)]
+                struct Update {
+                    guild_id: Snowflake,
+                    stickers: Vec<Value>,
+                }
+                let update: Update = decode(event, data)?;
+                let Some(guild) = self.guilds.get_mut(&update.guild_id) else {
+                    return Ok(ApplyOutcome::Ignored);
+                };
+                guild
+                    .extra
+                    .insert("stickers".into(), Value::Array(update.stickers));
+            }
             "GUILD_DELETE" => {
                 #[derive(Deserialize)]
                 struct Deleted {
@@ -1396,6 +1410,34 @@ mod navigation_state_tests {
             )
             .unwrap();
         assert!(!state.has_unread_pins(channel));
+    }
+
+    #[test]
+    fn sticker_gateway_update_replaces_guild_catalog() {
+        let mut state = ClientState::default();
+        state
+            .apply_gateway(
+                "GUILD_CREATE",
+                json!({"id":"10", "name":"Community", "stickers":[{"id":"1","name":"old"}]}),
+            )
+            .unwrap();
+        state
+            .apply_gateway(
+                "GUILD_STICKERS_UPDATE",
+                json!({"guild_id":"10", "stickers":[{"id":"2","name":"new", "animated":true}]}),
+            )
+            .unwrap();
+        assert_eq!(
+            state.guilds[&10.into()].extra["stickers"],
+            json!([{"id":"2","name":"new", "animated":true}])
+        );
+        state
+            .apply_gateway(
+                "GUILD_STICKERS_UPDATE",
+                json!({"guild_id":"10", "stickers":[]}),
+            )
+            .unwrap();
+        assert_eq!(state.guilds[&10.into()].extra["stickers"], json!([]));
     }
 
     #[test]
