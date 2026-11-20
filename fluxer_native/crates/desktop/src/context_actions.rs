@@ -40,6 +40,7 @@ impl UserAudioOverride {
 pub(super) struct ContextUi {
     pub menu: Entity<ContextMenu>,
     pub kick_confirm: Option<(Snowflake, Snowflake, String, Option<Option<u64>>)>,
+    pub channel_delete_confirm: Option<(Snowflake, String, bool)>,
     pub kick_focus: FocusHandle,
     pub kick_previous: Option<FocusHandle>,
     pub kick_selected: bool,
@@ -57,6 +58,7 @@ impl ContextUi {
         Self {
             menu: cx.new(ContextMenu::new),
             kick_confirm: None,
+            channel_delete_confirm: None,
             kick_focus: cx.focus_handle(),
             kick_previous: None,
             kick_selected: false,
@@ -618,6 +620,7 @@ impl Fluxer {
                         })
                     {
                         items.push(action("channel-edit", "Rename channel", Icon::Settings));
+                        items.push(action("channel-delete", "Delete channel", Icon::Settings));
                         if channel.kind == ChannelType::Category {
                             items.push(action(
                                 "category-create-text",
@@ -710,6 +713,7 @@ impl Fluxer {
             || self.message_links.is_open()
             || self.search_ui.confirm.is_some()
             || self.context.kick_confirm.is_some()
+            || self.context.channel_delete_confirm.is_some()
             || !self.context_target_valid(&target)
         {
             return;
@@ -1029,6 +1033,16 @@ impl Fluxer {
             }
             (Target::SelfVoice(_) | Target::Channel(_), "disconnect") => {
                 self.command_if_live(Command::LeaveVoice, cx)
+            }
+            (Target::Channel(channel), "channel-delete") => {
+                if let Some(c) = self.state.channels.get(channel) {
+                    self.context.channel_delete_confirm =
+                        Some((*channel, c.name.clone(), c.kind == ChannelType::Category));
+                    self.context.kick_previous = window.focused(cx);
+                    self.context.kick_selected = false;
+                    self.context.kick_armed = false;
+                    window.focus(&self.context.kick_focus);
+                }
             }
             (Target::Channel(channel), "channel-edit") => {
                 if let Some(c) = self.state.channels.get(channel)

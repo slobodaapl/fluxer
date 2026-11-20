@@ -3097,6 +3097,7 @@ impl Render for Fluxer {
             .when(self.status_ui.is_open(), |view| view.child(self.status_surface(window,cx)))
             .when(self.friends_ui.confirm.is_some(), |view| view.child(self.relationship_confirmation(cx)))
             .when(self.context.kick_confirm.is_some(), |view| view.child(self.kick_confirmation(cx)))
+            .when(self.context.channel_delete_confirm.is_some(), |view| view.child(self.channel_delete_confirmation(cx)))
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(11))

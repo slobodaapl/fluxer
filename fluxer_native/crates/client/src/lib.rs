@@ -260,6 +260,9 @@ pub enum Command {
         kind: u16,
         name: String,
     },
+    DeleteBasicChannel {
+        channel_id: Snowflake,
+    },
     RenameBasicChannel {
         channel_id: Snowflake,
         name: String,

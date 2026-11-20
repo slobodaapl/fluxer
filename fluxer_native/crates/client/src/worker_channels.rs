@@ -7,6 +7,7 @@ struct Job {
     generation: u64,
     account: Snowflake,
     previous: Option<Channel>,
+    delete: bool,
     task: JoinHandle<()>,
 }
 impl Drop for Job {
@@ -126,6 +127,37 @@ impl Worker {
                 .map_err(error)
         })
     }
+    pub(super) fn delete_basic_channel(&mut self, channel_id: Snowflake) -> Result<()> {
+        let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Channel unavailable")?;
+        if channel.guild_id.is_none()
+            || !matches!(
+                channel.kind,
+                ChannelType::Text | ChannelType::Voice | ChannelType::Category
+            )
+            || !self
+                .state
+                .permissions_for(channel_id, account)
+                .contains(Permissions::MANAGE_CHANNELS)
+        {
+            return Err("You cannot delete this channel".into());
+        }
+        let client = self.client.clone().ok_or("Not connected")?;
+        self.start_channel_job(account, None, async move {
+            client
+                .delete_channel(&channel_id.to_string())
+                .await
+                .map_err(error)
+        })?;
+        if let Some(job) = self.channels.job.as_mut() {
+            job.delete = true;
+        }
+        Ok(())
+    }
     fn start_channel_job(
         &mut self,
         account: Snowflake,
@@ -148,6 +180,7 @@ impl Worker {
             generation,
             account,
             previous,
+            delete: false,
             task,
         });
         Ok(())
@@ -161,11 +194,15 @@ impl Worker {
         }
         let account = job.account;
         let previous = job.previous.clone();
+        let delete = job.delete;
         self.channels.job.take();
         if self.state.current_user.as_ref().map(|u| u.id) != Some(account) {
             return;
         }
         let result = event.result.and_then(|value| {
+            if delete {
+                return Ok(());
+            }
             if let Some(previous) = previous {
                 // Gateway events may have modified or deleted the channel during the request.
                 if self.state.channels.get(&previous.id) != Some(&previous) {

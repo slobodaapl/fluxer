@@ -536,6 +536,124 @@ impl Fluxer {
             )
             .into_any_element()
     }
+    fn close_channel_delete_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context.channel_delete_confirm = None;
+        self.context.kick_armed = false;
+        if let Some(focus) = self.context.kick_previous.take() {
+            window.focus(&focus);
+        }
+        cx.notify();
+    }
+    fn accept_channel_delete_confirmation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((channel_id, _, _)) = self.context.channel_delete_confirm.clone() {
+            self.close_channel_delete_confirmation(window, cx);
+            self.command(Command::DeleteBasicChannel { channel_id }, cx);
+        }
+    }
+
+    pub(super) fn channel_delete_confirmation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some((_, name, category)) = &self.context.channel_delete_confirm else {
+            return div().into_any_element();
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .bg(rgba(0x00000099))
+            .occlude()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("channel-delete-confirm-dialog")
+                    .track_focus(&self.context.kick_focus)
+                    .w(px(420.))
+                    .p_5()
+                    .rounded_lg()
+                    .bg(rgb(PANEL))
+                    .shadow_lg()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        match event.keystroke.key.as_str() {
+                            "escape" => this.close_channel_delete_confirmation(window, cx),
+                            "tab" => {
+                                this.context.kick_selected = !this.context.kick_selected;
+                                this.context.kick_armed = false;
+                                cx.notify();
+                            }
+                            "enter" | "space"
+                                if !event.is_held && !event.keystroke.modifiers.modified() =>
+                            {
+                                this.context.kick_armed = true
+                            }
+                            _ => return,
+                        }
+                        cx.stop_propagation();
+                    }))
+                    .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                            let armed = std::mem::take(&mut this.context.kick_armed);
+                            if armed && !event.keystroke.modifiers.modified() {
+                                if this.context.kick_selected {
+                                    this.accept_channel_delete_confirmation(window, cx)
+                                } else {
+                                    this.close_channel_delete_confirmation(window, cx)
+                                }
+                            }
+                            cx.stop_propagation();
+                        }
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Delete channel"),
+                    )
+                    .child(if *category {
+                        format!(
+                            "Delete category {name}? Its channels will remain without a category."
+                        )
+                    } else {
+                        format!("Delete channel {name}? This cannot be undone.")
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                crate::controls::quiet_button("channel-delete-cancel", "Cancel")
+                                    .bg(rgb(if !self.context.kick_selected {
+                                        0x535064
+                                    } else {
+                                        0x383a40
+                                    }))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.close_channel_delete_confirmation(window, cx)
+                                    })),
+                            )
+                            .child(
+                                crate::controls::quiet_button(
+                                    "channel-delete-confirm",
+                                    "Delete channel",
+                                )
+                                .bg(rgb(if self.context.kick_selected {
+                                    0xe15059
+                                } else {
+                                    0xc43b45
+                                }))
+                                .on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.accept_channel_delete_confirmation(window, cx)
+                                    },
+                                )),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 #[cfg(test)]

@@ -681,6 +681,14 @@ impl Client {
         )
         .await
     }
+    pub async fn delete_channel(&self, channel: &str) -> Result<Value> {
+        self.request(
+            Method::DELETE,
+            &format!("/channels/{}", segment(channel)),
+            None,
+        )
+        .await
+    }
     pub async fn rename_channel(&self, channel: &str, name: &str) -> Result<Value> {
         self.request(
             Method::PATCH,

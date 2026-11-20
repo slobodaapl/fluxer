@@ -1458,6 +1458,11 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::DeleteBasicChannel { channel_id } => {
+                if let Err(message) = self.delete_basic_channel(channel_id) {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::RenameBasicChannel { channel_id, name } => {
                 if let Err(message) = self.rename_basic_channel(channel_id, name) {
                     self.emit(Event::Error(message));
