@@ -1085,10 +1085,10 @@ impl Fluxer {
                 Event::ThreadManaged { channel_id, result } => {
                     if self.managing_thread == Some(channel_id) {
                         self.managing_thread = None;
-                        if self.state.selected_channel == Some(channel_id) {
-                            if let Err(error) = result {
-                                self.error = Some(error);
-                            }
+                        if self.state.selected_channel == Some(channel_id)
+                            && let Err(error) = result
+                        {
+                            self.error = Some(error);
                         }
                         cx.notify();
                     }

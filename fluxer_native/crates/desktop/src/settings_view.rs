@@ -389,13 +389,11 @@ impl Fluxer {
             body = body.child(
                 quiet_button("avatar-save", "Save avatar").on_click(cx.listener(
                     move |this, _, _, cx| {
-                        if !busy {
-                            if let Some(crop) = &this.profile_edit.cropped {
-                                let png = crop.png.clone();
-                                this.profile_edit.avatar_pending = true;
-                                this.profile_edit.avatar_feedback = Some("Saving avatar…".into());
-                                this.command(Command::UpdateOwnAvatar { png: Some(png) }, cx);
-                            }
+                        if !busy && let Some(crop) = &this.profile_edit.cropped {
+                            let png = crop.png.clone();
+                            this.profile_edit.avatar_pending = true;
+                            this.profile_edit.avatar_feedback = Some("Saving avatar…".into());
+                            this.command(Command::UpdateOwnAvatar { png: Some(png) }, cx);
                         }
                     },
                 )),
