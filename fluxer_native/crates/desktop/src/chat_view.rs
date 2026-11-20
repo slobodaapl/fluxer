@@ -145,6 +145,40 @@ impl Fluxer {
             .map(|channel| channel.id);
         let archived = channel.is_some_and(|channel| channel.thread_archived());
         let locked = channel.is_some_and(|channel| channel.thread_locked());
+        let membership_action = channel
+            .filter(|channel| {
+                !self.demo
+                    && channel.kind.is_thread()
+                    && channel.kind != ChannelType::PrivateThread
+                    && !channel.thread_archived()
+                    && self.managing_thread.is_none()
+            })
+            .and_then(|channel| self.state.current_user.as_ref().map(|user| (channel, user)))
+            .filter(|(channel, user)| {
+                let permissions = self.state.permissions_for(channel.id, user.id);
+                self.state
+                    .thread_guilds
+                    .contains(&channel.guild_id.unwrap_or_default())
+                    && permissions.contains(
+                        fluxer_core::Permissions::VIEW_CHANNEL
+                            | fluxer_core::Permissions::READ_MESSAGE_HISTORY,
+                    )
+                    && (!channel.thread_locked()
+                        || permissions.contains(fluxer_core::Permissions::MANAGE_THREADS)
+                        || channel
+                            .extra
+                            .get("member")
+                            .is_some_and(|value| !value.is_null()))
+            })
+            .map(|(channel, _)| {
+                (
+                    channel.id,
+                    channel
+                        .extra
+                        .get("member")
+                        .is_none_or(|value| value.is_null()),
+                )
+            });
         let manage_thread = channel
             .filter(|channel| !self.demo && channel.kind.is_thread())
             .filter(|channel| {
@@ -279,6 +313,10 @@ impl Fluxer {
                                 icon_button("thread-parent", Icon::Back, format!("Back to #{name}")).on_click(
                                     cx.listener(move |this, _, _, cx| this.select(parent, cx)),
                                 ),
+                            ))
+                            .when_some(membership_action, |view, (thread, join)| view.child(
+                                quiet_button("thread-membership", if join { "Join thread" } else { "Leave thread" })
+                                    .on_click(cx.listener(move |this, _, _, cx| this.set_thread_membership(thread, join, cx))),
                             ))
                             .when_some(manage_thread, |view, thread| view
                                 .child(quiet_button("archive-thread", if archived { "Unarchive thread" } else { "Archive thread" })

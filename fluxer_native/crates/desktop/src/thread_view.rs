@@ -70,6 +70,32 @@ impl Fluxer {
             .collect()
     }
 
+    pub(super) fn set_thread_membership(
+        &mut self,
+        channel_id: Snowflake,
+        join: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.managing_thread.is_some() || self.state.selected_channel != Some(channel_id) {
+            return;
+        }
+        let result = self
+            .controller
+            .as_ref()
+            .ok_or_else(|| "The native client worker is unavailable".to_owned())
+            .and_then(|controller| {
+                controller.send(Command::SetThreadMembership { channel_id, join })
+            });
+        match result {
+            Ok(()) => {
+                self.error = None;
+                self.managing_thread = Some(channel_id);
+            }
+            Err(error) => self.error = Some(error),
+        }
+        cx.notify();
+    }
+
     pub(super) fn manage_thread(
         &mut self,
         channel_id: Snowflake,

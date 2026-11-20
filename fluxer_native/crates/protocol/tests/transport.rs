@@ -627,3 +627,23 @@ async fn channel_topic_update_preserves_omission_and_empty_clear() {
         assert_eq!(body.get("topic"), topic.map(|t| json!(t)).as_ref());
     }
 }
+
+#[tokio::test]
+async fn thread_membership_uses_empty_join_and_leave_requests() {
+    let no_content =
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned();
+    let (origin, mut requests) = http_server(vec![no_content.clone(), no_content]).await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("secret").unwrap());
+    client.set_thread_membership("42", true).await.unwrap();
+    client.set_thread_membership("42", false).await.unwrap();
+    let join = requests.recv().await.unwrap();
+    let leave = requests.recv().await.unwrap();
+    assert!(join.starts_with("PUT /api/v1/channels/42/thread-members/@me HTTP/1.1"));
+    assert!(leave.starts_with("DELETE /api/v1/channels/42/thread-members/@me HTTP/1.1"));
+    assert!(join.ends_with("\r\n\r\n"));
+    assert!(leave.ends_with("\r\n\r\n"));
+}

@@ -85,6 +85,7 @@ struct ThreadManagement {
     account: Snowflake,
     channel: Snowflake,
     guild: Snowflake,
+    membership: Option<(bool, Option<Value>)>,
     task: JoinHandle<Result<Value>>,
 }
 impl Drop for ThreadManagement {
@@ -1544,6 +1545,14 @@ impl Worker {
                 if let Err(message) = self.begin_thread_creation(parent_id, &name) {
                     self.emit(Event::ThreadCreated {
                         parent_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::SetThreadMembership { channel_id, join } => {
+                if let Err(message) = self.begin_thread_membership(channel_id, join) {
+                    self.emit(Event::ThreadManaged {
+                        channel_id,
                         result: Err(message),
                     });
                 }
@@ -3020,6 +3029,56 @@ impl Worker {
         Ok(())
     }
 
+    fn begin_thread_membership(&mut self, channel: Snowflake, join: bool) -> Result<()> {
+        if self.thread_management.is_some() {
+            return Err("A thread update is already in progress".into());
+        }
+        let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+        let thread = self
+            .state
+            .channels
+            .get(&channel)
+            .filter(|c| c.kind.is_thread())
+            .ok_or("Unknown thread")?;
+        let guild = thread.guild_id.ok_or("Unknown community")?;
+        let member = thread
+            .extra
+            .get("member")
+            .filter(|value| !value.is_null())
+            .cloned();
+        let permissions = self.state.permissions_for(channel, account);
+        if !self.state.thread_guilds.contains(&guild)
+            || thread.thread_archived()
+            || member.is_some() == join
+            || (join
+                && ((thread.kind == fluxer_core::ChannelType::PrivateThread
+                    && !permissions.contains(fluxer_core::Permissions::MANAGE_THREADS))
+                    || !permissions.contains(fluxer_core::Permissions::VIEW_CHANNEL)
+                    || (thread.thread_locked()
+                        && !permissions.contains(fluxer_core::Permissions::MANAGE_THREADS))))
+        {
+            return Err("You cannot change membership in this thread".into());
+        }
+        let client = self.client()?;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                client.set_thread_membership(&channel.to_string(), join),
+            )
+            .await
+            .map_err(|_| "Thread membership update timed out".to_owned())?
+            .map_err(error)
+        });
+        self.thread_management = Some(ThreadManagement {
+            account,
+            channel,
+            guild,
+            membership: Some((join, member)),
+            task,
+        });
+        Ok(())
+    }
+
     fn begin_thread_management(
         &mut self,
         channel: Snowflake,
@@ -3066,6 +3125,7 @@ impl Worker {
             account,
             channel,
             guild,
+            membership: None,
             task,
         });
         Ok(())
@@ -3079,16 +3139,35 @@ impl Worker {
             return;
         }
         // Gateway updates own the cached state. Never overwrite a newer update or resurrect a deletion.
-        let result = result.and_then(|value| {
-            let response: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
-            if response.id != job.channel
-                || response.guild_id != Some(job.guild)
-                || !response.kind.is_thread()
-            {
-                return Err("The server returned an unexpected thread".into());
-            }
-            Ok(())
-        });
+        let result = if let Some((join, old_member)) = job.membership.clone() {
+            result.map(|_| {
+                if !join
+                    && let Some(thread) = self.state.channels.get_mut(&job.channel)
+                    && thread
+                        .extra
+                        .get("member")
+                        .filter(|value| !value.is_null())
+                        .cloned()
+                        == old_member
+                {
+                    thread.extra.remove("member");
+                }
+            })
+        } else {
+            result.and_then(|value| {
+                let response: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
+                if response.id != job.channel
+                    || response.guild_id != Some(job.guild)
+                    || !response.kind.is_thread()
+                {
+                    return Err("The server returned an unexpected thread".into());
+                }
+                Ok(())
+            })
+        };
+        if job.membership.is_some() && result.is_ok() {
+            self.snapshot();
+        }
         self.emit(Event::ThreadManaged {
             channel_id: job.channel,
             result,

@@ -729,6 +729,16 @@ impl Client {
         .await
     }
 
+    /// Join or leave the current user's thread membership.
+    pub async fn set_thread_membership(&self, channel: &str, join: bool) -> Result<Value> {
+        self.request(
+            if join { Method::PUT } else { Method::DELETE },
+            &format!("/channels/{}/thread-members/@me", segment(channel)),
+            None,
+        )
+        .await
+    }
+
     /// Update thread lifecycle fields using the channel PATCH endpoint.
     pub async fn update_thread(
         &self,

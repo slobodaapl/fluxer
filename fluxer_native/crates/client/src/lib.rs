@@ -294,6 +294,10 @@ pub enum Command {
         parent_id: Snowflake,
         name: String,
     },
+    SetThreadMembership {
+        channel_id: Snowflake,
+        join: bool,
+    },
     ManageThread {
         channel_id: Snowflake,
         archived: Option<bool>,
