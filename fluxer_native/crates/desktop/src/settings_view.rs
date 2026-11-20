@@ -6,6 +6,7 @@ use crate::controls::{Icon, icon_button, quiet_button};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
     Appearance,
+    Privacy,
     Accessibility,
     MessagesMedia,
     Keybinds,
@@ -50,7 +51,8 @@ impl Fluxer {
     pub(super) fn settings_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = match self.settings_section {
             Section::Voice => self.voice_settings(cx),
-            Section::Appearance
+            Section::Privacy
+            | Section::Appearance
             | Section::Accessibility
             | Section::MessagesMedia
             | Section::Keybinds
@@ -90,6 +92,7 @@ impl Fluxer {
                     )
                     .children(
                         [
+                            (Section::Privacy, "settings-privacy", "Privacy & safety"),
                             (Section::Appearance, "settings-appearance", "Appearance"),
                             (
                                 Section::Accessibility,
@@ -190,6 +193,83 @@ impl Fluxer {
         let pending = self.interface.server_pending;
         let mut body = div().max_w(px(720.)).flex().flex_col().gap_2();
         match self.settings_section {
+            Section::Privacy => {
+                body = body.child(settings_heading("Privacy & safety"));
+                let settings = &self.state.user_settings;
+                if let Some(flags) = settings
+                    .get("friend_source_flags")
+                    .and_then(serde_json::Value::as_u64)
+                {
+                    body = body.child(muted("Choose who can send you a friend request."));
+                    let everyone = flags & 4 != 0;
+                    for (id, title, description, flag) in [
+                        (
+                            "privacy-everyone",
+                            "Everyone",
+                            "Anyone who finds you can send a request.",
+                            4,
+                        ),
+                        (
+                            "privacy-mutual-friends",
+                            "Friends of friends",
+                            "People who share a friend with you.",
+                            1,
+                        ),
+                        (
+                            "privacy-mutual-guilds",
+                            "Community members",
+                            "People who share a community with you.",
+                            2,
+                        ),
+                    ] {
+                        let enabled = flags & flag != 0;
+                        body = body.child(setting_row(
+                            title,
+                            description,
+                            toggle(id, enabled || (flag != 4 && everyone), title).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if !pending && (flag == 4 || !everyone) {
+                                        this.save_display_setting(
+                                            DisplaySetting::FriendSource {
+                                                flag,
+                                                enabled: !enabled,
+                                            },
+                                            cx,
+                                        );
+                                    }
+                                }),
+                            ),
+                        ));
+                    }
+                } else {
+                    body = body.child(muted("Friend request settings are loading."));
+                }
+                for (id, key, title, bot) in [
+                    (
+                        "privacy-member-dms",
+                        "default_guilds_restricted",
+                        "Direct messages from community members",
+                        false,
+                    ),
+                    (
+                        "privacy-bot-dms",
+                        "bot_default_guilds_restricted",
+                        "Direct messages from bots",
+                        true,
+                    ),
+                ] {
+                    if let Some(restricted) = settings.get(key).and_then(serde_json::Value::as_bool)
+                    {
+                        body = body.child(setting_row(title, "Allow direct messages in newly joined communities. Existing community settings are unchanged.",
+                            toggle(id, !restricted, title).on_click(cx.listener(move |this, _, _, cx| {
+                                if !pending {
+                                    let setting = if bot { DisplaySetting::BotDefaultGuildsRestricted(!restricted) } else { DisplaySetting::DefaultGuildsRestricted(!restricted) };
+                                    this.save_display_setting(setting, cx);
+                                }
+                            }))));
+                    }
+                }
+            }
             Section::Appearance => {
                 let compact = fluxer_core::compact_messages(&self.state.user_settings);
                 let size = self
@@ -426,7 +506,7 @@ A preview of your message text size.",
         }
         if matches!(
             self.settings_section,
-            Section::Appearance | Section::MessagesMedia
+            Section::Privacy | Section::Appearance | Section::MessagesMedia
         ) {
             if pending {
                 body = body.child(muted("Saving account preference…"));

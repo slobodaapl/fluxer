@@ -13,6 +13,9 @@ pub enum DisplaySetting {
     GifAutoplay(bool),
     AnimateEmoji(bool),
     FontSize(f64),
+    DefaultGuildsRestricted(bool),
+    BotDefaultGuildsRestricted(bool),
+    FriendSource { flag: u64, enabled: bool },
 }
 fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
     let mut n = 0u64;
@@ -119,6 +122,18 @@ pub fn compact_messages(settings: &Value) -> bool {
 }
 pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Result<Value, String> {
     Ok(match setting {
+        DisplaySetting::DefaultGuildsRestricted(v) => json!({"default_guilds_restricted":v}),
+        DisplaySetting::BotDefaultGuildsRestricted(v) => json!({"bot_default_guilds_restricted":v}),
+        DisplaySetting::FriendSource { flag, enabled } => {
+            if !matches!(flag, 1 | 2 | 4) {
+                return Err("Invalid friend request source".into());
+            }
+            let flags = settings
+                .get("friend_source_flags")
+                .and_then(Value::as_u64)
+                .ok_or("Friend request settings are still loading")?;
+            json!({"friend_source_flags": if enabled { flags | flag } else { flags & !flag }})
+        }
         DisplaySetting::Compact(v) => json!({"message_display_compact":v}),
         DisplaySetting::GifAutoplay(v) => json!({"gif_auto_play":v}),
         DisplaySetting::AnimateEmoji(v) => json!({"animate_emoji":v}),
@@ -176,6 +191,51 @@ mod tests {
             assert!(display_settings_patch(&Value::Null, DisplaySetting::FontSize(size)).is_err());
         }
         assert_eq!(message_font_size(&Value::Null), 16.);
+    }
+    #[test]
+    fn privacy_patches_preserve_other_sources_and_omit_community_lists() {
+        let settings = json!({"friend_source_flags": 0x83, "restricted_guilds": ["123"]});
+        assert_eq!(
+            display_settings_patch(
+                &settings,
+                DisplaySetting::FriendSource {
+                    flag: 1,
+                    enabled: false
+                }
+            )
+            .unwrap(),
+            json!({"friend_source_flags": 0x82})
+        );
+        assert_eq!(
+            display_settings_patch(&settings, DisplaySetting::DefaultGuildsRestricted(true))
+                .unwrap(),
+            json!({"default_guilds_restricted": true})
+        );
+        assert_eq!(
+            display_settings_patch(&settings, DisplaySetting::BotDefaultGuildsRestricted(false))
+                .unwrap(),
+            json!({"bot_default_guilds_restricted": false})
+        );
+        assert!(
+            display_settings_patch(
+                &Value::Null,
+                DisplaySetting::FriendSource {
+                    flag: 1,
+                    enabled: true
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            display_settings_patch(
+                &settings,
+                DisplaySetting::FriendSource {
+                    flag: 8,
+                    enabled: true
+                }
+            )
+            .is_err()
+        );
     }
     #[test]
     fn server_boolean_keys_are_exact() {
