@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Debug)]
 pub enum DisplaySetting {
+    FavoriteGif { entry: FavoriteGif, add: bool },
     Compact(bool),
     GifAutoplay(bool),
     AnimateEmoji(bool),
@@ -152,6 +153,119 @@ pub fn favorite_gifs(settings: &Value) -> Option<Vec<FavoriteGif>> {
     )
 }
 
+/// Match classic's removal of attachment signature query fields.
+pub fn favorite_gif_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return None;
+    }
+    let raw = url.trim();
+    let (head, fragment) = raw
+        .split_once('#')
+        .map_or((raw, ""), |(a, _)| (a, &raw[a.len()..]));
+    let (base, query) = head.split_once('?').unwrap_or((head, ""));
+    let kept: Vec<_> = query
+        .split('&')
+        .filter(|field| {
+            !field.is_empty()
+                && *field != "="
+                && !matches!(
+                    field.split('=').next().unwrap_or(""),
+                    "ex" | "is" | "hm" | "uc"
+                )
+        })
+        .collect();
+    Some(format!(
+        "{}{}{}",
+        base,
+        if kept.is_empty() {
+            String::new()
+        } else {
+            format!("?{}", kept.join("&"))
+        },
+        fragment
+    ))
+}
+
+fn favorite_gif_patch(
+    settings: &Value,
+    mut entry: FavoriteGif,
+    add: bool,
+) -> Result<Value, String> {
+    use prost::Message;
+    let target = favorite_gif_url(&entry.url).ok_or("Invalid GIF URL")?;
+    entry.url = target.clone();
+    let bytes = decoded(settings).ok_or("Cannot read synced preferences; reload before saving")?;
+    let mut payload = Vec::new();
+    let mut outer = Vec::new();
+    for (tag, start, p, end) in fields(&bytes).ok_or("Invalid synced preferences")? {
+        if tag == (25 << 3 | 2) {
+            payload.extend_from_slice(&bytes[p..end]);
+        } else {
+            outer.extend_from_slice(&bytes[start..end]);
+        }
+    }
+    let mut updated = Vec::new();
+    let mut count = 0;
+    let mut found = false;
+    for (tag, start, p, end) in fields(&payload).ok_or("Invalid GIF preferences")? {
+        if tag == 10 {
+            let existing =
+                FavoriteGif::decode(&payload[p..end]).map_err(|_| "Invalid GIF favorite")?;
+            count += 1;
+            if favorite_gif_url(&existing.url).as_deref() == Some(&target) {
+                found = true;
+                if !add {
+                    continue;
+                }
+            }
+        }
+        updated.extend_from_slice(&payload[start..end]);
+    }
+    if add && !found {
+        if favorite_gifs_saved_media(settings).ok_or("Invalid GIF preferences")? {
+            return Err("GIF favorites are configured as saved media".into());
+        }
+        if count >= 10000 {
+            return Err("Favorite GIF limit reached".into());
+        }
+        let encoded = entry.encode_to_vec();
+        encode(10, &mut updated);
+        encode(encoded.len() as u64, &mut updated);
+        updated.extend(encoded);
+    }
+    if updated.len() > 384 * 1024 {
+        return Err("Favorite GIF settings are full".into());
+    }
+    encode((25 << 3) | 2, &mut outer);
+    encode(updated.len() as u64, &mut outer);
+    outer.extend(updated);
+    Ok(json!({"synced_preferences": STANDARD.encode(outer)}))
+}
+
+pub fn favorite_gifs_saved_media(settings: &Value) -> Option<bool> {
+    let bytes = decoded(settings)?;
+    let mut payload = Vec::new();
+    for (tag, _, p, e) in fields(&bytes)? {
+        if tag == (25 << 3 | 2) {
+            payload.extend_from_slice(&bytes[p..e]);
+        }
+    }
+    let mut enabled = false;
+    for (tag, start, _, _) in fields(&payload)? {
+        if tag == 16 {
+            let mut at = start;
+            varint(&payload, &mut at)?;
+            enabled = varint(&payload, &mut at)? != 0;
+        }
+    }
+    Some(enabled)
+}
+
 pub fn message_font_size(settings: &Value) -> f32 {
     let value = (|| {
         let bytes = decoded(settings)?;
@@ -177,6 +291,9 @@ pub fn compact_messages(settings: &Value) -> bool {
 }
 pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Result<Value, String> {
     Ok(match setting {
+        DisplaySetting::FavoriteGif { entry, add } => {
+            return favorite_gif_patch(settings, entry, add);
+        }
         DisplaySetting::DefaultGuildsRestricted(v) => json!({"default_guilds_restricted":v}),
         DisplaySetting::BotDefaultGuildsRestricted(v) => json!({"bot_default_guilds_restricted":v}),
         DisplaySetting::FriendSource { flag, enabled } => {
@@ -234,6 +351,58 @@ pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gif_mutation_preserves_other_fields_and_removes_only_target() {
+        use prost::Message;
+        let entry = FavoriteGif {
+            url: "https://example.org/a.gif?ex=old&x=1".into(),
+            ..Default::default()
+        };
+        let encoded = entry.encode_to_vec();
+        let mut payload = vec![16, 0, 24, 1, 0x78, 42];
+        encode(10, &mut payload);
+        encode(encoded.len() as u64, &mut payload);
+        payload.extend(encoded);
+        let mut original = vec![10, 2, 16, 1];
+        encode(202, &mut original);
+        encode(payload.len() as u64, &mut original);
+        original.extend(payload);
+        let settings = json!({"synced_preferences": STANDARD.encode(original)});
+        let other = FavoriteGif {
+            url: "https://example.org/b.gif".into(),
+            ..Default::default()
+        };
+        let added = display_settings_patch(
+            &settings,
+            DisplaySetting::FavoriteGif {
+                entry: other.clone(),
+                add: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(favorite_gifs(&added).unwrap().len(), 2);
+        let removed =
+            display_settings_patch(&added, DisplaySetting::FavoriteGif { entry, add: false })
+                .unwrap();
+        assert_eq!(favorite_gifs(&removed).unwrap(), vec![other]);
+        let bytes = decoded(&removed).unwrap();
+        assert!(bytes.starts_with(&[10, 2, 16, 1]));
+        assert!(bytes.windows(6).any(|w| w == [16, 0, 24, 1, 0x78, 42]));
+        assert!(favorite_gif_url("file:///tmp/a.gif").is_none());
+        assert!(favorite_gif_url("https://user:pass@example.org/a.gif").is_none());
+    }
+    #[test]
+    fn saved_media_mode_refuses_url_addition() {
+        let settings = json!({"synced_preferences":STANDARD.encode([0xca, 1, 2, 16, 1])});
+        let entry = FavoriteGif {
+            url: "https://example.org/a.gif".into(),
+            ..Default::default()
+        };
+        assert!(
+            display_settings_patch(&settings, DisplaySetting::FavoriteGif { entry, add: true })
+                .is_err()
+        );
+    }
     #[test]
     fn font_patch_preserves_unknown_fields() {
         let original = vec![10, 4, 16, 1, 112, 1, 0x82, 5, 2, 24, 1];

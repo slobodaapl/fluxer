@@ -295,6 +295,7 @@ impl Fluxer {
             .child(div().flex().flex_wrap().gap_1().children(
                 entries.into_iter().rev().enumerate().map(|(index, entry)| {
                     let url = entry.url.clone();
+                    let remove_entry = entry.clone();
                     let preview = [
                         "tinywebp",
                         "tinygif",
@@ -334,6 +335,20 @@ impl Fluxer {
                                 .autoplay(autoplay),
                             )
                         })
+                        .child(
+                            quiet_button(("remove-favorite-gif", index), "Remove").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.save_display_setting(
+                                        fluxer_core::DisplaySetting::FavoriteGif {
+                                            entry: remove_entry.clone(),
+                                            add: false,
+                                        },
+                                        cx,
+                                    );
+                                }),
+                            ),
+                        )
                         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                             cx.stop_propagation();
                             if !this.gif_picker_visible() {
@@ -411,6 +426,37 @@ impl Fluxer {
                                 })
                                 .map(SharedString::from);
                             let share = gif.share();
+                            let entry = share.as_ref().and_then(|_| {
+                                fluxer_core::favorite_gif_url(&gif.url)?;
+                                Some(fluxer_core::FavoriteGif {
+                                    url: gif.url.clone(),
+                                    proxy_url: gif.image_preview().unwrap_or("").to_owned(),
+                                    content_type: if gif.image_preview().is_some_and(|url| {
+                                        url.to_ascii_lowercase().contains(".webp")
+                                    }) {
+                                        "image/webp"
+                                    } else {
+                                        "image/gif"
+                                    }
+                                    .into(),
+                                    ..Default::default()
+                                })
+                            });
+                            let favorites = fluxer_core::favorite_gifs(&self.state.user_settings);
+                            let is_favorite = entry.as_ref().is_some_and(|entry| {
+                                favorites.as_ref().is_some_and(|entries| {
+                                    entries.iter().any(|existing| {
+                                        fluxer_core::favorite_gif_url(&existing.url)
+                                            == fluxer_core::favorite_gif_url(&entry.url)
+                                    })
+                                })
+                            });
+                            let can_favorite = entry.is_some()
+                                && favorites.is_some()
+                                && (is_favorite
+                                    || fluxer_core::favorite_gifs_saved_media(
+                                        &self.state.user_settings,
+                                    ) == Some(false));
                             let id = ("gif-preview", picker.request);
                             div()
                                 .id(("gif-result", index))
@@ -446,6 +492,32 @@ impl Fluxer {
                                         .truncate()
                                         .child(title.to_owned()),
                                 )
+                                .when(can_favorite, |view| {
+                                    view.child(
+                                        quiet_button(
+                                            ("toggle-gif-favorite", index),
+                                            if is_favorite {
+                                                "Unfavorite"
+                                            } else {
+                                                "Favorite"
+                                            },
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                cx.stop_propagation();
+                                                if let Some(entry) = &entry {
+                                                    this.save_display_setting(
+                                                        fluxer_core::DisplaySetting::FavoriteGif {
+                                                            entry: entry.clone(),
+                                                            add: !is_favorite,
+                                                        },
+                                                        cx,
+                                                    );
+                                                }
+                                            }),
+                                        ),
+                                    )
+                                })
                                 .on_click(cx.listener(
                                     move |this, event: &ClickEvent, window, cx| {
                                         cx.stop_propagation();

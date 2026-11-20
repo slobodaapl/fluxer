@@ -325,6 +325,31 @@ impl Fluxer {
         let title = media_menu_title(&media, &self.revealed_media);
         let mut items = vec![Item::Header(title)];
         if media.available() {
+            if matches!(media.kind, policy::MediaKind::Gif | policy::MediaKind::Gifv)
+                && let Some(url) = media
+                    .original_url
+                    .as_ref()
+                    .and_then(|u| fluxer_core::favorite_gif_url(u))
+                && let Some(entries) = fluxer_core::favorite_gifs(&self.state.user_settings)
+            {
+                let found = entries.iter().any(|entry| {
+                    fluxer_core::favorite_gif_url(&entry.url).as_deref() == Some(&url)
+                });
+                if found
+                    || fluxer_core::favorite_gifs_saved_media(&self.state.user_settings)
+                        == Some(false)
+                {
+                    items.push(row(
+                        "media-favorite-gif",
+                        if found {
+                            "Remove from favorite GIFs"
+                        } else {
+                            "Add to favorite GIFs"
+                        },
+                        Icon::Pin,
+                    ));
+                }
+            }
             items.push(row("media-save", "Save as…", Icon::File));
             if media.can_copy_image() {
                 items.push(row("media-copy-image", "Copy image", Icon::Copy));
@@ -416,6 +441,31 @@ impl Fluxer {
             return;
         }
         match id.as_str() {
+            "media-favorite-gif"
+                if media.available()
+                    && matches!(media.kind, policy::MediaKind::Gif | policy::MediaKind::Gifv) =>
+            {
+                if let Some(url) = media
+                    .original_url
+                    .as_ref()
+                    .and_then(|u| fluxer_core::favorite_gif_url(u))
+                    && let Some(entries) = fluxer_core::favorite_gifs(&self.state.user_settings)
+                {
+                    let found = entries.iter().any(|entry| {
+                        fluxer_core::favorite_gif_url(&entry.url).as_deref() == Some(&url)
+                    });
+                    let entry = fluxer_core::FavoriteGif {
+                        url,
+                        proxy_url: media.download_url.clone().unwrap_or_default(),
+                        content_type: "image/gif".into(),
+                        ..Default::default()
+                    };
+                    self.save_display_setting(
+                        fluxer_core::DisplaySetting::FavoriteGif { entry, add: !found },
+                        cx,
+                    );
+                }
+            }
             "media-reveal"
                 if media.concealment.is_some() && media.access != MediaAccess::Expired =>
             {
