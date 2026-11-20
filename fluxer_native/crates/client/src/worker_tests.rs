@@ -4122,3 +4122,38 @@ fn revoke_only_accepts_one_explicit_non_current_session() {
         assert!(!super::is_non_current_session(&input, "target"));
     }
 }
+
+#[tokio::test]
+async fn demo_private_call_decline_is_local_and_never_joins_voice() {
+    let (mut worker, _) = worker();
+    assert!(worker.command(Command::DemoPrivateCall).await.is_err());
+    worker.command(Command::Demo).await.unwrap();
+    worker.command(Command::DemoPrivateCall).await.unwrap();
+    assert!(
+        worker.state.private_calls[&40.into()]
+            .ringing
+            .contains(&100.into())
+    );
+    assert!(
+        worker
+            .command(Command::AcceptPrivateCall {
+                channel_id: 40.into()
+            })
+            .await
+            .is_err()
+    );
+    worker
+        .command(Command::DeclinePrivateCall {
+            channel_id: 40.into(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        !worker.state.private_calls[&40.into()]
+            .ringing
+            .contains(&100.into())
+    );
+    assert!(worker.voice_target.is_none());
+    assert!(worker.media.is_none());
+    assert!(worker.client.is_none());
+}

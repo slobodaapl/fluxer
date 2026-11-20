@@ -283,6 +283,7 @@ pub enum Command {
     Logout,
     Demo,
     DemoSearch,
+    DemoPrivateCall,
     SetLocale(String),
     CreateCommunity {
         name: String,

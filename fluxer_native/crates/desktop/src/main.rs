@@ -1423,6 +1423,9 @@ impl Fluxer {
                 Event::Demo(demo) => {
                     self.demo = demo;
                     if demo {
+                        if std::env::args().any(|arg| arg == "--demo-private-call") {
+                            self.command(Command::DemoPrivateCall, cx);
+                        }
                         self.maybe_demo_search(None, cx);
                         self.maybe_demo_messages(cx);
                         if std::env::args().any(|arg| arg == "--demo-attachments") {
@@ -3437,12 +3440,12 @@ impl Render for Fluxer {
             .children(incoming_calls.into_iter().map(|(channel, name)| {
                 div().px_4().py_2().gap_3().bg(rgb(PANEL)).flex().items_center()
                     .child(div().flex_1().child(format!("Incoming call · {name}")))
-                    .child(controls::quiet_button(("accept-call", channel.0), "Accept").on_click(cx.listener(move |this, _, _, cx| {
+                    .when(!self.demo, |view| view.child(controls::quiet_button(("accept-call", channel.0), "Accept").on_click(cx.listener(move |this, _, _, cx| {
                         this.select(channel, cx);
                         this.command(Command::AcceptPrivateCall { channel_id: channel }, cx);
                         this.pane = Pane::Call;
                         cx.notify();
-                    })))
+                    }))))
                     .child(controls::quiet_button(("decline-call", channel.0), "Decline").on_click(cx.listener(move |this, _, _, cx| {
                         this.command(Command::DeclinePrivateCall { channel_id: channel }, cx);
                     })))
@@ -3490,6 +3493,7 @@ fn main() {
                 || v == "--demo-avatars"
                 || v == "--demo-outbox"
                 || v == "--demo-media"
+                || v == "--demo-private-call"
         });
     let launch_url = std::env::args().skip(1).find(|arg| {
         arg.split_once(':')

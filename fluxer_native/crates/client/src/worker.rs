@@ -1306,6 +1306,18 @@ impl Worker {
                 self.emit(Event::Demo(true));
                 self.snapshot();
             }
+            Command::DemoPrivateCall => {
+                if !self.demo {
+                    return Err("Private call fixture requires offline demo mode".into());
+                }
+                self.state
+                    .apply_gateway(
+                        "CALL_CREATE",
+                        json!({"channel_id":"40", "message_id":"9000", "ringing":["100"]}),
+                    )
+                    .map_err(error)?;
+                self.snapshot();
+            }
             Command::FetchAccountSessions { request_id } => {
                 let client = self.client()?;
                 let events = self.events.clone();
@@ -2328,6 +2340,9 @@ impl Worker {
                     self.leave_voice(true).await?;
                 }
                 self.snapshot();
+                if self.demo {
+                    return Ok(());
+                }
                 self.client()?
                     .reject_call(&channel_id.to_string())
                     .await
