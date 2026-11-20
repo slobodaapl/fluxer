@@ -1165,6 +1165,14 @@ impl Worker {
                 self.emit(Event::Demo(true));
                 self.snapshot();
             }
+            Command::FetchAccountSessions { request_id } => {
+                let client = self.client()?;
+                let events = self.events.clone();
+                tokio::spawn(async move {
+                    let result = client.auth_sessions().await.map_err(|e| e.to_string());
+                    let _ = events.send(Event::AccountSessions { request_id, result });
+                });
+            }
             Command::SetLocale(locale) => {
                 if locale.is_empty() || locale.bytes().any(|byte| byte < 32 || byte == 127) {
                     return Err("Invalid client locale".into());

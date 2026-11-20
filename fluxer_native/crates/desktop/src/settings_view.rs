@@ -6,6 +6,7 @@ use crate::controls::{Icon, icon_button, quiet_button};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
     Profile,
+    AccountSessions,
     Appearance,
     Privacy,
     Accessibility,
@@ -85,11 +86,84 @@ impl Fluxer {
         }
         self.settings_section = section;
         self.pane = Pane::Settings;
+        if section == Section::AccountSessions && !self.demo {
+            let request_id = fluxer_client::next_pending_message_id();
+            self.account_sessions_request = Some(request_id);
+            self.account_sessions = None;
+            self.command(Command::FetchAccountSessions { request_id }, cx);
+        }
         if section == Section::Voice && !self.demo {
             self.command(Command::RefreshDevices, cx);
         }
         self.focus.focus(window);
         cx.notify();
+    }
+
+    fn account_sessions_view(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut body = div()
+            .id("account-sessions-body")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(div().text_size(px(22.)).child("Devices"))
+            .child(muted("Active sign-in sessions for your account"));
+        if self.demo {
+            body = body.child(muted("Sign in to view devices."));
+        } else if self.account_sessions_request.is_some() {
+            body = body.child(muted("Loading devices…"));
+        } else if let Some(Ok(sessions)) = &self.account_sessions {
+            if let Some(sessions) = sessions.as_array() {
+                if sessions.is_empty() {
+                    body = body.child(muted("No active sessions found."));
+                }
+                for session in sessions {
+                    let info = &session["client_info"];
+                    let title = info["os"]
+                        .as_str()
+                        .or_else(|| info["platform"].as_str())
+                        .unwrap_or("Unknown device");
+                    let current = session["current"].as_bool().unwrap_or(false);
+                    let details = [
+                        info["browser"].as_str(),
+                        session["masked_ip"].as_str(),
+                        session["approx_last_used_at"].as_str(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                    body = body.child(
+                        div()
+                            .p_4()
+                            .bg(rgb(0x25222e))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(format!(
+                                "{}{}",
+                                title,
+                                if current { " (This device)" } else { "" }
+                            ))
+                            .child(muted(details)),
+                    );
+                }
+            } else {
+                body = body.child(muted("Could not read the device list."));
+            }
+        } else {
+            body = body.child(muted("Could not load devices."));
+        }
+        body.child(
+            quiet_button("refresh-account-sessions", "Refresh").on_click(cx.listener(
+                |this, _, window, cx| this.open_settings(Section::AccountSessions, window, cx),
+            )),
+        )
+        .into_any_element()
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -177,6 +251,7 @@ impl Fluxer {
     pub(super) fn settings_shell(&self, cx: &mut Context<Self>) -> AnyElement {
         let content = match self.settings_section {
             Section::Profile => self.profile_settings(cx),
+            Section::AccountSessions => self.account_sessions_view(cx),
             Section::Voice => self.voice_settings(cx),
             Section::Privacy
             | Section::Appearance
@@ -222,6 +297,11 @@ impl Fluxer {
                         [
                             (Section::Privacy, "settings-privacy", "Privacy & safety"),
                             (Section::Profile, "settings-profile", "My profile"),
+                            (
+                                Section::AccountSessions,
+                                "settings-account-sessions",
+                                "Devices",
+                            ),
                             (Section::Appearance, "settings-appearance", "Appearance"),
                             (
                                 Section::Accessibility,

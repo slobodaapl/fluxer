@@ -148,6 +148,8 @@ pub enum Command {
         request_id: u64,
     },
     CancelInvite {
+    },
+    FetchAccountSessions {
         request_id: u64,
     },
     ControlCall {
@@ -474,6 +476,10 @@ pub enum Event {
     Invite {
         request_id: u64,
         status: InviteStatus,
+    },
+    AccountSessions {
+        request_id: u64,
+        result: Result<serde_json::Value, String>,
     },
     /// The previous screen capture stopped and needs an explicit new share.
     ShareReshareRequired,

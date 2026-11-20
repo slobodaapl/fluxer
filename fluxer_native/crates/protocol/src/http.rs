@@ -774,6 +774,10 @@ impl Client {
         self.request(Method::GET, "/users/@me/relationships", None)
             .await
     }
+    pub async fn auth_sessions(&self) -> Result<Value> {
+        self.request(Method::GET, "/auth/sessions", None).await
+    }
+
     pub async fn settings(&self) -> Result<Value> {
         self.request(Method::GET, "/users/@me/settings", None).await
     }

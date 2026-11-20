@@ -455,3 +455,24 @@ async fn standalone_threads_use_text_and_announcement_types_with_session_capabil
         );
     }
 }
+
+#[tokio::test]
+async fn account_sessions_list_uses_authenticated_source_endpoint() {
+    let sessions = json!([
+        {"id_hash":"current", "current":true, "masked_ip":"192.0.2.xxx", "approx_last_used_at":"2026-11-19T00:00:00Z", "client_info":{"os":"Linux", "device":"desktop"}},
+        {"id_hash":"other", "current":false, "masked_ip":null, "client_info":null}
+    ]);
+    let mut server = Server::new(vec![Reply::json(200, sessions.clone())]).await;
+    assert_eq!(
+        client(&server.origin).auth_sessions().await.unwrap(),
+        sessions
+    );
+    let request = server.next().await;
+    assert_eq!(request.line, "GET /api/v1/auth/sessions HTTP/1.1");
+    assert_eq!(
+        request.headers.get("authorization").unwrap(),
+        "synthetic-session"
+    );
+    assert!(request.body.is_empty());
+    server.none().await;
+}

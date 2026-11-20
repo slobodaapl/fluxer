@@ -338,6 +338,8 @@ struct Fluxer {
     session_context_loaded: bool,
     pane: Pane,
     settings_section: settings_view::Section,
+    account_sessions_request: Option<u64>,
+    account_sessions: Option<Result<serde_json::Value, String>>,
     interface: native_preferences::NativePreferences,
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
@@ -485,6 +487,8 @@ impl Fluxer {
             session_context_loaded: false,
             pane: Pane::Chat,
             settings_section: settings_view::Section::Voice,
+            account_sessions_request: None,
+            account_sessions: None,
             interface: native_preferences::NativePreferences::new(demo),
             settings_return: Pane::Chat,
             selected_guild: None,
@@ -921,6 +925,12 @@ impl Fluxer {
             changed = true;
             match event {
                 Event::Invite { request_id, status } => self.invite_status(request_id, status, cx),
+                Event::AccountSessions { request_id, result } => {
+                    if self.account_sessions_request == Some(request_id) {
+                        self.account_sessions_request = None;
+                        self.account_sessions = Some(result);
+                    }
+                }
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::OwnProfileMutation(status) => {
@@ -1011,6 +1021,8 @@ impl Fluxer {
                         self.reset_conversation_surfaces(cx);
                     }
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
+                        self.account_sessions_request = None;
+                        self.account_sessions = None;
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.thread_form = None;
                         self.creating_thread = None;
