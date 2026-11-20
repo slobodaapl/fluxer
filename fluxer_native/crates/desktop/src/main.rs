@@ -1004,6 +1004,9 @@ impl Fluxer {
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
                 Event::OwnAvatarMutation(status) => {
+                    if matches!(status, fluxer_client::RelationshipMutationStatus::Complete) {
+                        self.retire_avatar_preview(cx);
+                    }
                     self.profile_edit.avatar_status(status);
                 }
                 Event::OwnProfileMutation(status) => {

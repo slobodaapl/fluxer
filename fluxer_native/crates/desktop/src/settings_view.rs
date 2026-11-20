@@ -22,7 +22,9 @@ pub(super) struct ProfileEdit {
     name: Entity<TextInput>,
     bio: Entity<TextInput>,
     pronouns: Entity<TextInput>,
-    avatar: Option<crate::avatar_crop::AvatarImage>,
+    avatar: Option<Arc<crate::avatar_crop::AvatarImage>>,
+    crop_revision: u64,
+    crop_running: bool,
     crop: crate::avatar_crop::Crop,
     cropped: Option<crate::avatar_crop::CroppedAvatar>,
     avatar_loading: bool,
@@ -38,6 +40,7 @@ impl ProfileEdit {
             field.update(cx, |input, cx| input.set(String::new(), cx));
         }
         self.avatar_generation = self.avatar_generation.wrapping_add(1);
+        self.crop_revision = self.crop_revision.wrapping_add(1);
         self.avatar_loading = false;
         self.avatar = None;
         self.cropped = None;
@@ -69,6 +72,8 @@ impl ProfileEdit {
             }),
             pronouns: cx.new(|cx| TextInput::new("Pronouns", cx)),
             avatar: None,
+            crop_revision: 0,
+            crop_running: false,
             crop: Default::default(),
             cropped: None,
             avatar_loading: false,
@@ -226,7 +231,14 @@ impl Fluxer {
         cx.notify();
     }
 
+    pub(super) fn retire_avatar_preview(&mut self, cx: &mut Context<Self>) {
+        if let Some(cropped) = self.profile_edit.cropped.take() {
+            self.retire_image(cropped.preview, cx);
+        }
+    }
     fn clear_avatar_editor(&mut self, cx: &mut Context<Self>) {
+        self.retire_avatar_preview(cx);
+        self.profile_edit.crop_revision = self.profile_edit.crop_revision.wrapping_add(1);
         self.profile_edit.avatar_generation = self.profile_edit.avatar_generation.wrapping_add(1);
         self.profile_edit.avatar_loading = false;
         self.profile_edit.avatar = None;
@@ -276,9 +288,9 @@ impl Fluxer {
                 if let Some(result) = result {
                     match result {
                         Ok(image) => {
-                            this.profile_edit.avatar = Some(image);
+                            this.profile_edit.avatar = Some(Arc::new(image));
                             this.profile_edit.crop = Default::default();
-                            this.refresh_avatar_crop();
+                            this.refresh_avatar_crop(cx);
                         }
                         Err(e) => this.profile_edit.avatar_feedback = Some(e),
                     }
@@ -288,19 +300,44 @@ impl Fluxer {
         })
         .detach();
     }
-    fn refresh_avatar_crop(&mut self) {
-        if let Some(image) = &self.profile_edit.avatar {
-            match image.crop(self.profile_edit.crop) {
-                Ok(cropped) => {
-                    self.profile_edit.cropped = Some(cropped);
-                    self.profile_edit.avatar_feedback = None;
-                }
-                Err(error) => {
-                    self.profile_edit.cropped = None;
-                    self.profile_edit.avatar_feedback = Some(error);
-                }
-            }
+    fn refresh_avatar_crop(&mut self, cx: &mut Context<Self>) {
+        self.profile_edit.crop_revision = self.profile_edit.crop_revision.wrapping_add(1);
+        self.start_avatar_crop(cx);
+    }
+    fn start_avatar_crop(&mut self, cx: &mut Context<Self>) {
+        if self.profile_edit.crop_running {
+            return;
         }
+        let Some(image) = self.profile_edit.avatar.clone() else {
+            return;
+        };
+        let revision = self.profile_edit.crop_revision;
+        let crop = self.profile_edit.crop;
+        self.profile_edit.crop_running = true;
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            let result = executor.spawn(async move { image.crop(crop) }).await;
+            let _ = entity.update(cx, |this, cx| {
+                this.profile_edit.crop_running = false;
+                if revision != this.profile_edit.crop_revision {
+                    if let Ok(cropped) = result {
+                        this.retire_image(cropped.preview, cx);
+                    }
+                    this.start_avatar_crop(cx);
+                } else {
+                    this.retire_avatar_preview(cx);
+                    match result {
+                        Ok(cropped) => {
+                            this.profile_edit.cropped = Some(cropped);
+                            this.profile_edit.avatar_feedback = None;
+                        }
+                        Err(error) => this.profile_edit.avatar_feedback = Some(error),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
     fn avatar_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let busy = self.profile_edit.avatar_pending
@@ -358,7 +395,7 @@ impl Fluxer {
                     )),
                 ),
         );
-        if self.profile_edit.cropped.is_some() {
+        if self.profile_edit.avatar.is_some() {
             body = body.child(muted(format!(
                 "Zoom {:.1}× · horizontal {:.0}% · vertical {:.0}%",
                 self.profile_edit.crop.zoom,
@@ -380,23 +417,32 @@ impl Fluxer {
                             crop.zoom = (crop.zoom + dz).clamp(1., 5.);
                             crop.x = (crop.x + dx).clamp(-1., 1.);
                             crop.y = (crop.y + dy).clamp(-1., 1.);
-                            this.refresh_avatar_crop();
+                            this.refresh_avatar_crop(cx);
                             cx.notify();
                         }
                     },
                 )));
             }
             body = body.child(
-                quiet_button("avatar-save", "Save avatar").on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        if !busy && let Some(crop) = &this.profile_edit.cropped {
-                            let png = crop.png.clone();
-                            this.profile_edit.avatar_pending = true;
-                            this.profile_edit.avatar_feedback = Some("Saving avatar…".into());
-                            this.command(Command::UpdateOwnAvatar { png: Some(png) }, cx);
-                        }
+                quiet_button(
+                    "avatar-save",
+                    if self.profile_edit.crop_running {
+                        "Preparing…"
+                    } else {
+                        "Save avatar"
                     },
-                )),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !busy
+                        && !this.profile_edit.crop_running
+                        && let Some(crop) = &this.profile_edit.cropped
+                    {
+                        let png = crop.png.clone();
+                        this.profile_edit.avatar_pending = true;
+                        this.profile_edit.avatar_feedback = Some("Saving avatar…".into());
+                        this.command(Command::UpdateOwnAvatar { png: Some(png) }, cx);
+                    }
+                })),
             );
         }
         if self.profile_edit.avatar_pending {
