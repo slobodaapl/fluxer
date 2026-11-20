@@ -359,20 +359,6 @@ fn requested_window(current: u32, range: std::ops::Range<usize>) -> Option<u32> 
     let start = range.start.saturating_sub(30).min(99_901) as u32;
     (start != current).then_some(start)
 }
-#[cfg(test)]
-mod tests {
-    use super::requested_window;
-    #[test]
-    fn viewport_window_is_bounded_and_coalesces_measurements() {
-        assert_eq!(requested_window(0, 0..1), None);
-        assert_eq!(requested_window(0, 20..35), None);
-        assert_eq!(requested_window(0, 95..110), Some(65));
-        assert_eq!(requested_window(65, 95..110), None);
-        assert_eq!(requested_window(65, 5..20), Some(0));
-        assert_eq!(requested_window(0, 100_000..100_001), Some(99_901));
-    }
-}
-
 impl Fluxer {
     pub(super) fn can_kick_member(&self, guild: Snowflake, user: Snowflake) -> bool {
         if self.demo {
@@ -502,5 +488,19 @@ impl Fluxer {
                     ),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::requested_window;
+    #[test]
+    fn viewport_window_is_bounded_and_coalesces_measurements() {
+        assert_eq!(requested_window(0, 0..1), None);
+        assert_eq!(requested_window(0, 20..35), None);
+        assert_eq!(requested_window(0, 95..110), Some(65));
+        assert_eq!(requested_window(65, 95..110), None);
+        assert_eq!(requested_window(65, 5..20), Some(0));
+        assert_eq!(requested_window(0, 100_000..100_001), Some(99_901));
     }
 }
