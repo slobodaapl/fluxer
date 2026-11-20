@@ -7,6 +7,35 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Administration, camera receive and composer parity — 2026-11-19
+
+The second 16-worker push adds seven-day community invite creation and copy,
+home and invite desktop links, community rename, confirmed channel/category
+deletion, member timeouts, and owner thread archive and lock actions. Group DMs
+can add friends, with additions and removals applied from gateway events.
+Community notification settings can suppress everyone and role mentions.
+
+Forum text posts support a title, body, applicable tags and silent posting.
+The post browser can load more results and follows gateway updates and
+deletions. The GIF picker can browse and send synced URL favorites. Recent
+searches stay local to their instance, account and community or DM. Profile
+settings support static PNG/JPEG avatar cropping and removal.
+
+Remote cameras can be shown alongside screen shares. Each source has separate
+watch state and stale-frame protection. Camera publishing is still open.
+Embedded player and Quick Switcher keyboard controls have been extended, and
+Escape cancels an active reply while preserving the composer draft.
+
+The combined gate passes formatting, strict Clippy, parity inventory and
+720 tests with 14 opt-in tests skipped. The synthetic LiveKit audio and screen
+exchange and private Wayland keyboard smoke checks passed. The tagged dev
+build is `0da7d9f62-parity20`.
+
+Invite listing/revocation, moderator and member thread management, forum tag
+filtering and media post uploads, saved-media GIF favorites and editing,
+animated avatar input, and profile banners remain open. Device revocation has a
+source-backed sudo challenge parser and a [remaining work record](ACCOUNT_SESSIONS_SUDO.md).
+
 ## Community, expressions and account parity — 2026-11-19
 
 The Terra and Sol worktrees are integrated on `yolo/gpui`. Users can

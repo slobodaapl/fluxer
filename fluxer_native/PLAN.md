@@ -5,7 +5,8 @@ Fluxer client. The first release gate is community text channels, voice calls,
 screen sharing, and audio management. A working shell or demo does not satisfy
 that gate.
 
-Current coordinated expansion: [2026-11-15 communication parity push](PUSH_2026_11_15.md).
+The latest integrated work is tracked in [STATUS.md](STATUS.md) and the live
+acceptance queue is in [REVIEW.md](REVIEW.md).
 
 ## Client/server compatibility rule
 

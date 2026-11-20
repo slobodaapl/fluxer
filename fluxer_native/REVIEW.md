@@ -5,6 +5,25 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Administration, camera receive and composer parity — 2026-11-19
+
+| ID | Review | Expected behavior |
+|---|---|---|
+| NOV19B-1 | Create and copy a community invite, then open a `fluxer:/invite/…` link while signed in and after session restore. | The invite uses the advertised instance endpoint and a permitted channel. The link previews the invite and requires an explicit join. |
+| NOV19B-2 | Rename a test community, delete an empty test channel and a category with children, apply and clear a timeout, and archive/lock a thread as owner. | Permission gates and confirmations match the available scope. Classic and Native reflect the gateway result. Category children remain accessible. |
+| NOV19B-3 | Add friends to a group DM, then remove a member from the other client. Toggle everyone/role mention suppression for a test community. | Recipient rows and names update from gateway events. Notification delivery reflects the corresponding saved flags. |
+| NOV19B-4 | Create a forum text post with required tags, try `@silent`, load more rows, and update or delete a row from another client. | The post opens with its first message and tags, pagination retains rows, and the list respects gateway mutations. |
+| NOV19B-5 | Crop a JPEG or PNG avatar, save and remove it, switch account or instance with a crop or draft open, and restore a recent search. | Preview and upload agree. Profile text drafts survive avatar edits. Old instance mutations and editor data cannot carry into the new session. |
+| NOV19B-6 | Show a remote camera while watching the same participant's screen. Hide/re-show it and change the voice roster or reconnect. | Camera and screen coexist. Hiding the camera releases its frames without stopping the screen. Voice teardown clears both. |
+| NOV19B-7 | Use the Quick Switcher with Enter, cancel a reply with Escape while keeping draft text, and operate embedded media by keyboard. | Focused controls consume their keys and preserve the composer draft. Full view retains playback intent and seek reaches the exact endpoint. |
+
+Live review remains open for these scenarios. The aggregate media budget and
+multi-screen-stream review remain in their existing queues.
+
+The private Wayland demo confirmed Quick Switcher Enter, reply Escape with
+draft and focus retained, ordinary composer Enter, and the avatar controls
+layout. Captures and test logs are under `target/qa/parity-2026-11-19-wave2/`.
+
 ## Community, expressions and account parity — 2026-11-19
 
 The scenarios below await live acceptance. Use a disposable community and a

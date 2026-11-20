@@ -93,7 +93,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "GIFs, stickers, custom emoji, saved media, favorites, expression assets and entitlements.",
-      "evidence": "Native GIF search and community stickers. See STATUS.md and REVIEW.md."
+      "evidence": "Native GIF search, synced URL favorites, and community stickers. See STATUS.md and REVIEW.md."
     },
     {
       "id": "forum",
@@ -101,7 +101,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation.",
-      "evidence": "Read-only forum and media post lists. See STATUS.md and REVIEW.md."
+      "evidence": "Forum and media post pagination and forum text-post creation. See STATUS.md and REVIEW.md."
     },
     {
       "id": "gateway",
@@ -154,7 +154,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "Resolve/preview/accept/create/revoke invites, vanity links, guest/login continuation.",
-      "evidence": "Current-instance community and group DM invite joins. See STATUS.md and REVIEW.md."
+      "evidence": "Current-instance joins, default community invite creation, and desktop invite links. See STATUS.md and REVIEW.md."
     },
     {
       "id": "lexical",
@@ -185,7 +185,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows.",
-      "evidence": "Permission-gated member kick with confirmation. See STATUS.md and REVIEW.md."
+      "evidence": "Permission-gated member kick and timeout actions with confirmation. See STATUS.md and REVIEW.md."
     },
     {
       "id": "navigation",
@@ -297,7 +297,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels.",
-      "evidence": "Active thread discovery, standalone creation, and chat. See STATUS.md and REVIEW.md."
+      "evidence": "Active thread discovery, standalone creation, chat, and community-owner archive/lock actions. See STATUS.md and REVIEW.md."
     },
     {
       "id": "trusted_domain",
@@ -336,7 +336,7 @@
       "milestone": "M5",
       "status": "partial",
       "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications.",
-      "evidence": "Own profile text edits, privacy preferences and a device session list. See STATUS.md and REVIEW.md."
+      "evidence": "Own profile text and static avatar edits, privacy preferences, and a device session list. See STATUS.md and REVIEW.md."
     },
     {
       "id": "voice",
