@@ -758,7 +758,10 @@ impl Fluxer {
         })
         .detach();
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
-        cx.observe(&view.gif_picker.search, |this, _, cx| this.gif_search_changed(cx)).detach();
+        cx.observe(&view.gif_picker.search, |this, _, cx| {
+            this.gif_search_changed(cx)
+        })
+        .detach();
         cx.observe(&view.emoji_search, |this, _, cx| {
             this.refresh_emoji_results(cx);
         })

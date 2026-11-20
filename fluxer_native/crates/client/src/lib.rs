@@ -149,6 +149,7 @@ pub enum Command {
         request_id: u64,
     },
     CancelInvite {
+        request_id: u64,
     },
     FetchAccountSessions {
         request_id: u64,

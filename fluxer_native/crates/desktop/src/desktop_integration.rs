@@ -29,6 +29,9 @@ impl DesktopState {
 }
 impl Fluxer {
     pub(super) fn set_startup_link(&mut self, link: Option<crate::desktop_links::DesktopLink>) {
+        if link.is_some() {
+            self.desktop.startup_decided = true;
+        }
         self.desktop.pending_link = link;
     }
 

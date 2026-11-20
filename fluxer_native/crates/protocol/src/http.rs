@@ -184,7 +184,12 @@ impl Client {
         let response = request.send().await?;
         let discovery = self.instance.document.get("gif");
         let configured = |key| discovery.and_then(|value| value.get(key));
-        let header = |key| response.headers().get(key).and_then(|value| value.to_str().ok());
+        let header = |key| {
+            response
+                .headers()
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+        };
         let provider = header("x-fluxer-gif-provider")
             .or_else(|| configured("provider").and_then(Value::as_str))
             .unwrap_or("klipy");
@@ -195,7 +200,11 @@ impl Client {
                     .then(|| configured("display_name").and_then(Value::as_str))
                     .flatten()
             })
-            .unwrap_or(if provider == "tenor" { "Tenor" } else { "Klipy" });
+            .unwrap_or(if provider == "tenor" {
+                "Tenor"
+            } else {
+                "Klipy"
+            });
         let provider = crate::GifProvider {
             display_name: display_name.to_owned(),
             attribution_required: header("x-fluxer-gif-provider-attribution-required")
@@ -215,7 +224,11 @@ impl Client {
         } else {
             (serde_json::from_value(body)?, Vec::new())
         };
-        Ok(crate::GifResults { provider, gifs, categories })
+        Ok(crate::GifResults {
+            provider,
+            gifs,
+            categories,
+        })
     }
 
     pub async fn register_gif_share(&self, id: &str, query: &str, locale: &str) -> Result<()> {

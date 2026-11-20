@@ -760,8 +760,9 @@ impl Worker {
                 stage.dto.status = AttachmentStatus::Queued;
             }
         }
-        if from_composer && self.state.drafts.get(&channel)
-            == Some(&self.attachments.attempts[&nonce].fingerprint.content)
+        if from_composer
+            && self.state.drafts.get(&channel)
+                == Some(&self.attachments.attempts[&nonce].fingerprint.content)
         {
             self.state.set_draft(channel, String::new());
         }

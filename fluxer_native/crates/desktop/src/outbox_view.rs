@@ -141,7 +141,10 @@ impl Fluxer {
             return;
         }
         let attachments = if from_composer {
-            self.attachments.channels.remove(&channel).unwrap_or_default()
+            self.attachments
+                .channels
+                .remove(&channel)
+                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -164,7 +167,8 @@ impl Fluxer {
         self.replies.remove(&channel);
         if from_composer {
             self.state.drafts.remove(&channel);
-            self.composer.update(cx, |input, cx| input.set(String::new(), cx));
+            self.composer
+                .update(cx, |input, cx| input.set(String::new(), cx));
         }
         if self
             .search_ui

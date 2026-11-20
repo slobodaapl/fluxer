@@ -20,10 +20,10 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
-#[path = "worker_community.rs"]
-mod community_flow;
 #[path = "worker_channels.rs"]
 mod channel_flow;
+#[path = "worker_community.rs"]
+mod community_flow;
 #[path = "worker_settings.rs"]
 mod display_settings_flow;
 #[path = "worker_idle.rs"]
@@ -1623,7 +1623,12 @@ impl Worker {
                     kind: 0,
                 });
                 self.request_pending_submission(
-                    id, channel_id, share.url, reference, mention_author, false,
+                    id,
+                    channel_id,
+                    share.url,
+                    reference,
+                    mention_author,
+                    false,
                 )?;
                 self.register_gif_share(share.id, query);
             }
