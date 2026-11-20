@@ -706,6 +706,13 @@ impl Client {
         )
         .await
     }
+    pub async fn set_channel_overwrite(
+        &self,
+        channel: &str,
+        overwrite: &fluxer_core::PermissionOverwrite,
+    ) -> Result<Value> {
+        self.request(Method::PUT, &format!("/channels/{}/permissions/{}", segment(channel), segment(&overwrite.id.to_string())), Some(&serde_json::json!({"type": overwrite.kind, "allow": overwrite.allow, "deny": overwrite.deny}))).await
+    }
     pub async fn channel(&self, channel: &str) -> Result<Value> {
         self.request(
             Method::GET,

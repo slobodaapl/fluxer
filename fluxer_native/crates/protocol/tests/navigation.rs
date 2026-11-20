@@ -476,3 +476,28 @@ async fn account_sessions_list_uses_authenticated_source_endpoint() {
     assert!(request.body.is_empty());
     server.none().await;
 }
+
+#[tokio::test]
+async fn role_overwrite_uses_decimal_masks_and_single_target_route() {
+    let mut server = Server::new(vec![Reply::empty()]).await;
+    let client = client(&server.origin);
+    let overwrite = fluxer_core::PermissionOverwrite {
+        id: 42.into(),
+        kind: 0,
+        allow: fluxer_core::Permissions::VIEW_CHANNEL,
+        deny: fluxer_core::Permissions::SEND_MESSAGES,
+    };
+    client
+        .set_channel_overwrite("12", &overwrite)
+        .await
+        .unwrap();
+    let request = server.next().await;
+    assert_eq!(
+        request.line,
+        "PUT /api/v1/channels/12/permissions/42 HTTP/1.1"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!({"type":0,"allow":"1024","deny":"2048"})
+    );
+}

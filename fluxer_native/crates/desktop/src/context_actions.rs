@@ -652,6 +652,30 @@ impl Fluxer {
                             ));
                         }
                     }
+                    if channel.guild_id.is_some()
+                        && !channel.kind.is_thread()
+                        && self.state.current_user.as_ref().is_some_and(|u| {
+                            self.state
+                                .permissions_for(*id, u.id)
+                                .contains(fluxer_core::Permissions::MANAGE_ROLES)
+                        })
+                    {
+                        for overwrite in
+                            channel.permission_overwrites.iter().filter(|o| o.kind == 0)
+                        {
+                            if let Some(role) = channel
+                                .guild_id
+                                .and_then(|g| self.state.guilds.get(&g))
+                                .and_then(|g| g.roles.iter().find(|r| r.id == overwrite.id))
+                            {
+                                items.push(action(
+                                    &format!("overwrite-{}", overwrite.id),
+                                    &format!("Permissions: {}", role.name),
+                                    Icon::Settings,
+                                ));
+                            }
+                        }
+                    }
                     items.extend(self.navigation_items(target));
                     items.push(Item::Separator);
                     if self
@@ -1100,6 +1124,18 @@ impl Fluxer {
                     self.context.kick_selected = false;
                     self.context.kick_armed = false;
                     window.focus(&self.context.kick_focus);
+                }
+            }
+            (Target::Channel(channel), id) if id.starts_with("overwrite-") => {
+                if let Some(c) = self.state.channels.get(channel)
+                    && let Some(guild) = c.guild_id
+                    && let Some(overwrite) = c
+                        .permission_overwrites
+                        .iter()
+                        .find(|o| o.kind == 0 && format!("overwrite-{}", o.id) == id)
+                {
+                    self.selected_guild = Some(guild);
+                    self.overwrite_form = Some((*channel, overwrite.clone(), overwrite.clone()));
                 }
             }
             (Target::Channel(channel), "channel-edit") => {

@@ -99,6 +99,7 @@ impl super::Fluxer {
         self.forum_filter_tags.clear();
         self.forum_match_all = false;
         self.channel_form = None;
+        self.overwrite_form = None;
         for field in [
             &self.thread_name,
             &self.forum_body,

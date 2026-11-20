@@ -287,6 +287,11 @@ pub enum Command {
     DeleteBasicChannel {
         channel_id: Snowflake,
     },
+    SetRoleOverwrite {
+        channel_id: Snowflake,
+        overwrite: fluxer_core::PermissionOverwrite,
+        expected: fluxer_core::PermissionOverwrite,
+    },
     RenameBasicChannel {
         channel_id: Snowflake,
         name: String,

@@ -353,6 +353,11 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     community_ui: community_view::CommunityUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
+    overwrite_form: Option<(
+        Snowflake,
+        fluxer_core::PermissionOverwrite,
+        fluxer_core::PermissionOverwrite,
+    )>,
     channel_name: Entity<TextInput>,
     channel_topic: Entity<TextInput>,
     composer: Entity<TextInput>,
@@ -484,6 +489,7 @@ impl Fluxer {
         });
         let mut view = Self {
             channel_form: None,
+            overwrite_form: None,
             channel_name: cx.new(|cx| TextInput::new("Channel name", cx)),
             channel_topic: cx.new(|cx| TextInput::new("Channel topic", cx)),
             focus: cx.focus_handle(),
@@ -2451,6 +2457,7 @@ impl Fluxer {
         self.community_ui.reset(cx);
         self.invite_ui.reset(cx);
         self.selected_guild = None;
+        self.overwrite_form = None;
         self.session_context_loaded = false;
         self.session_restore_failed = false;
         self.session_restoring = false;
@@ -2583,6 +2590,94 @@ impl Fluxer {
                                         }),
                                     )),
                             ),
+                    )
+                },
+            )
+            .when_some(
+                self.overwrite_form.clone().filter(|(id, _, _)| {
+                    self.state.channels.get(id).and_then(|c| c.guild_id) == self.selected_guild
+                }),
+                |view, (channel_id, overwrite, _original)| {
+                    let role_name = self
+                        .state
+                        .channels
+                        .get(&channel_id)
+                        .and_then(|c| c.guild_id)
+                        .and_then(|g| self.state.guilds.get(&g))
+                        .and_then(|g| g.roles.iter().find(|r| r.id == overwrite.id))
+                        .map(|r| r.name.clone())
+                        .unwrap_or_else(|| "Role".into());
+                    let mut form = div()
+                        .p_2()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(muted(&format!("Permissions · {role_name}")));
+                    for (label, bit) in [
+                        ("View channel", fluxer_core::Permissions::VIEW_CHANNEL),
+                        ("Send messages", fluxer_core::Permissions::SEND_MESSAGES),
+                        (
+                            "Read history",
+                            fluxer_core::Permissions::READ_MESSAGE_HISTORY,
+                        ),
+                        ("Attach files", fluxer_core::Permissions::ATTACH_FILES),
+                        ("Connect", fluxer_core::Permissions::CONNECT),
+                        ("Speak", fluxer_core::Permissions::SPEAK),
+                    ] {
+                        let status = if overwrite.allow.contains(bit) {
+                            "Allow"
+                        } else if overwrite.deny.contains(bit) {
+                            "Deny"
+                        } else {
+                            "Inherit"
+                        };
+                        form = form.child(
+                            button(("overwrite", bit.0), &format!("{label}: {status}")).on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    if let Some((_, draft, _)) = this.overwrite_form.as_mut() {
+                                        if draft.allow.contains(bit) {
+                                            draft.allow = draft.allow.without(bit);
+                                            draft.deny |= bit;
+                                        } else if draft.deny.contains(bit) {
+                                            draft.deny = draft.deny.without(bit);
+                                        } else {
+                                            draft.allow |= bit;
+                                        }
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        );
+                    }
+                    view.child(
+                        form.child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(button("overwrite-save", "Save").on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        if let Some((channel_id, overwrite, expected)) =
+                                            this.overwrite_form.take()
+                                        {
+                                            this.command_if_live(
+                                                Command::SetRoleOverwrite {
+                                                    channel_id,
+                                                    overwrite,
+                                                    expected,
+                                                },
+                                                cx,
+                                            );
+                                        }
+                                        cx.notify();
+                                    },
+                                )))
+                                .child(button("overwrite-cancel", "Cancel").on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.overwrite_form = None;
+                                        cx.notify();
+                                    },
+                                ))),
+                        ),
                     )
                 },
             )

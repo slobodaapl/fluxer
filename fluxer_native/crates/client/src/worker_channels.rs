@@ -93,6 +93,58 @@ impl Worker {
                 .map_err(error)
         })
     }
+    pub(super) fn set_role_overwrite(
+        &mut self,
+        channel_id: Snowflake,
+        overwrite: fluxer_core::PermissionOverwrite,
+        expected: fluxer_core::PermissionOverwrite,
+    ) -> Result<()> {
+        let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Channel unavailable")?;
+        let guild_id = channel.guild_id.ok_or("Community unavailable")?;
+        let guild = self
+            .state
+            .guilds
+            .get(&guild_id)
+            .ok_or("Community unavailable")?;
+        let previous = channel
+            .permission_overwrites
+            .iter()
+            .find(|o| o.id == overwrite.id && o.kind == 0)
+            .ok_or("Role overwrite unavailable")?;
+        let perms = self.state.permissions_for(channel_id, account);
+        if *previous != expected {
+            return Err("Permissions changed; reopen the editor".into());
+        }
+        if overwrite.kind != 0
+            || !guild.roles.iter().any(|r| r.id == overwrite.id)
+            || !perms.contains(Permissions::MANAGE_ROLES)
+            || (!perms.contains(Permissions::ADMINISTRATOR)
+                && guild.owner_id != account
+                && ((overwrite.allow.0 & !previous.allow.0)
+                    | (previous.deny.0 & !overwrite.deny.0))
+                    & !perms.0
+                    != 0)
+        {
+            return Err("You cannot change these permissions".into());
+        }
+        let client = self.client.clone().ok_or("Not connected")?;
+        // This endpoint returns 204; gateway updates remain authoritative.
+        self.start_channel_job(account, None, async move {
+            client
+                .set_channel_overwrite(&channel_id.to_string(), &overwrite)
+                .await
+                .map_err(error)
+        })?;
+        if let Some(job) = self.channels.job.as_mut() {
+            job.delete = true;
+        }
+        Ok(())
+    }
     pub(super) fn rename_basic_channel(
         &mut self,
         channel_id: Snowflake,

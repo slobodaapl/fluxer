@@ -1535,6 +1535,15 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::SetRoleOverwrite {
+                channel_id,
+                overwrite,
+                expected,
+            } => {
+                if let Err(message) = self.set_role_overwrite(channel_id, overwrite, expected) {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::RenameBasicChannel {
                 channel_id,
                 name,
