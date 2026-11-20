@@ -19,7 +19,7 @@ pub use gateway::{
 pub use gifs::{Gif, GifCategory, GifFeed, GifProvider, GifResults, GifShare};
 pub use http::{
     AuthSession, Client, DesktopHandoffPoll, DesktopHandoffSession, DesktopHandoffStatus,
-    HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken,
+    HandoffPollSecret, LoginIdentifier, LoginOutcome, SessionToken, normalize_forum_content,
 };
 pub use instance::Instance;
 pub use invites::{InvitePreview, valid_invite_code};

@@ -750,13 +750,7 @@ impl Client {
         tags: &[String],
         archive: Option<u64>,
     ) -> Result<Value> {
-        let mut body = json!({"name": name, "message": {"content": content}});
-        if !tags.is_empty() {
-            body["applied_tags"] = json!(tags);
-        }
-        if let Some(archive) = archive {
-            body["auto_archive_duration"] = json!(archive);
-        }
+        let body = forum_post_body(name, content, tags, archive);
         self.request(
             Method::POST,
             &format!("/channels/{}/threads", segment(channel)),
@@ -1499,6 +1493,78 @@ mod tests {
                 .await,
             Err(Error::InvalidEndpoint(_))
         ));
+    }
+}
+
+/// Normalize the silent prefix and visible content. Native does not yet expose
+/// the classic composer’s optional emoticon and URL settings.
+pub fn normalize_forum_content(content: &str) -> (String, u32) {
+    let trimmed = content.trim_start_matches(char::is_whitespace);
+    let (content, flags) = if let Some(rest) = trimmed.strip_prefix("@silent") {
+        if rest.is_empty() {
+            (rest, 1 << 12)
+        } else if let Some(first) = rest.chars().next().filter(|c| c.is_whitespace()) {
+            (&rest[first.len_utf8()..], 1 << 12)
+        } else {
+            (content, 0)
+        }
+    } else {
+        (content, 0)
+    };
+    let visible = content.chars().any(|c| {
+        !c.is_whitespace()
+            && !matches!(c as u32,
+        0x0000 | 0x00ad | 0x034f | 0x061c | 0x115f | 0x1160 | 0x17b4 | 0x17b5 | 0x180e |
+        0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x2069 | 0x2800 | 0x3164 |
+        0xfe00..=0xfe0f | 0xfeff | 0xffa0 | 0xe0100..=0xe01ef)
+    });
+    (
+        if visible {
+            content.to_owned()
+        } else {
+            String::new()
+        },
+        flags,
+    )
+}
+
+fn forum_post_body(name: &str, content: &str, tags: &[String], archive: Option<u64>) -> Value {
+    let (content, flags) = normalize_forum_content(content);
+    let mut body = json!({"name": name, "message": {"content": content}});
+    if flags != 0 {
+        body["message"]["flags"] = json!(flags);
+    }
+    if !tags.is_empty() {
+        body["applied_tags"] = json!(tags);
+    }
+    if let Some(archive) = archive {
+        body["auto_archive_duration"] = json!(archive);
+    }
+    body
+}
+
+#[cfg(test)]
+mod forum_post_tests {
+    use super::*;
+    #[test]
+    fn forum_post_wire_body_matches_classic_defaults() {
+        assert_eq!(
+            forum_post_body(
+                "Title",
+                "  @silent hello :) ",
+                &["123".into(), "456".into()],
+                Some(1440)
+            ),
+            json!({"name":"Title", "auto_archive_duration":1440, "applied_tags":["123","456"], "message":{"content":"hello :) ", "flags":4096}})
+        );
+        assert_eq!(
+            forum_post_body("Title", "@silentish hello", &[], None),
+            json!({"name":"Title", "message":{"content":"@silentish hello"}})
+        );
+        assert_eq!(
+            normalize_forum_content("@silent \u{200b}"),
+            (String::new(), 4096)
+        );
     }
 }
 

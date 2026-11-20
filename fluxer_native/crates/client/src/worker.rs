@@ -3070,7 +3070,10 @@ impl Worker {
         if !(1..=100).contains(&name.encode_utf16().count()) {
             return Err("Use a post title between 1 and 100 characters".into());
         }
-        if content.trim().is_empty() {
+        if fluxer_protocol::normalize_forum_content(content)
+            .0
+            .is_empty()
+        {
             return Err("Enter a post body".into());
         }
         let available = channel
