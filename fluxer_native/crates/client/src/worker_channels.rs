@@ -93,6 +93,68 @@ impl Worker {
                 .map_err(error)
         })
     }
+    pub(super) fn move_guild_channel(
+        &mut self,
+        guild_id: Snowflake,
+        channel_id: Snowflake,
+        parent_id: Option<Snowflake>,
+        preceding_sibling_id: Option<Snowflake>,
+        position: usize,
+    ) -> Result<()> {
+        let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let allowed = self
+            .state
+            .guild_permissions_for(guild_id, account)
+            .contains(Permissions::MANAGE_CHANNELS);
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Channel unavailable")?;
+        if !allowed
+            || channel.guild_id != Some(guild_id)
+            || channel.kind.is_thread()
+            || (channel.kind == ChannelType::Category && parent_id.is_some())
+        {
+            return Err("You cannot manage channels here".into());
+        }
+        if let Some(parent) = parent_id {
+            if !self
+                .state
+                .channels
+                .get(&parent)
+                .is_some_and(|c| c.guild_id == Some(guild_id) && c.kind == ChannelType::Category)
+            {
+                return Err("Category unavailable".into());
+            }
+        }
+        if let Some(preceding) = preceding_sibling_id {
+            if preceding == channel_id
+                || !self.state.channels.get(&preceding).is_some_and(|c| {
+                    c.guild_id == Some(guild_id) && c.parent_id == parent_id && !c.kind.is_thread()
+                })
+            {
+                return Err("Channel order changed; try again".into());
+            }
+        }
+        let client = self.client.clone().ok_or("Not connected")?;
+        self.start_channel_job(account, None, async move {
+            client
+                .move_guild_channel(
+                    &guild_id.to_string(),
+                    &channel_id.to_string(),
+                    parent_id.map(|id| id.to_string()).as_deref(),
+                    preceding_sibling_id.map(|id| id.to_string()).as_deref(),
+                    position,
+                )
+                .await
+                .map_err(error)
+        })?;
+        if let Some(job) = self.channels.job.as_mut() {
+            job.delete = true;
+        }
+        Ok(())
+    }
     pub(super) fn set_role_overwrite(
         &mut self,
         channel_id: Snowflake,

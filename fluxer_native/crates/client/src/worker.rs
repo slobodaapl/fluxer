@@ -1715,6 +1715,23 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::MoveGuildChannel {
+                guild_id,
+                channel_id,
+                parent_id,
+                preceding_sibling_id,
+                position,
+            } => {
+                if let Err(message) = self.move_guild_channel(
+                    guild_id,
+                    channel_id,
+                    parent_id,
+                    preceding_sibling_id,
+                    position,
+                ) {
+                    self.emit(Event::Error(message));
+                }
+            }
             Command::DeleteBasicChannel { channel_id } => {
                 if let Err(message) = self.delete_basic_channel(channel_id) {
                     self.emit(Event::Error(message));

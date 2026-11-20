@@ -626,6 +626,49 @@ impl Fluxer {
                             items.push(action("channel-join", "Join voice", Icon::Headphones));
                         }
                     }
+                    if !channel.kind.is_thread()
+                        && let Some(guild_id) = channel.guild_id
+                        && self.state.current_user.as_ref().is_some_and(|u| {
+                            self.state
+                                .guild_permissions_for(guild_id, u.id)
+                                .contains(fluxer_core::Permissions::MANAGE_CHANNELS)
+                        })
+                    {
+                        items.push(Item::Separator);
+                        items.push(action("move-root", "Move to top level", Icon::Settings));
+                        items.push(action("move-end", "Move to end", Icon::Settings));
+                        let rows = channel_sidebar::guild_channel_rows(
+                            self.state
+                                .channels
+                                .values()
+                                .filter(|c| c.guild_id == Some(guild_id) && !c.kind.is_thread())
+                                .collect(),
+                        );
+                        for target in rows {
+                            if target.id == *id || target.parent_id == Some(*id) {
+                                continue;
+                            }
+                            if channel.kind != ChannelType::Category
+                                || target.kind == ChannelType::Category
+                            {
+                                items.push(action(
+                                    &format!("move-before-{}", target.id),
+                                    &format!("Move before {}", target.name),
+                                    Icon::Settings,
+                                ));
+                            }
+                            if channel.kind != ChannelType::Category
+                                && target.kind == ChannelType::Category
+                            {
+                                items.push(action(
+                                    &format!("move-inside-{}", target.id),
+                                    &format!("Move into {}", target.name),
+                                    Icon::Settings,
+                                ));
+                            }
+                        }
+                        items.push(Item::Separator);
+                    }
                     if channel.guild_id.is_some()
                         && matches!(
                             channel.kind,
@@ -1125,6 +1168,49 @@ impl Fluxer {
             }
             (Target::SelfVoice(_) | Target::Channel(_), "disconnect") => {
                 self.command_if_live(Command::LeaveVoice, cx)
+            }
+            (Target::Channel(channel), id)
+                if id == "move-root"
+                    || id == "move-end"
+                    || id.starts_with("move-before-")
+                    || id.starts_with("move-inside-") =>
+            {
+                if let Some(guild_id) = self.state.channels.get(channel).and_then(|c| c.guild_id) {
+                    let before = id
+                        .strip_prefix("move-before-")
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Snowflake);
+                    let inside = id
+                        .strip_prefix("move-inside-")
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .map(Snowflake);
+                    let channels: Vec<_> = self
+                        .state
+                        .channels
+                        .values()
+                        .filter(|c| c.guild_id == Some(guild_id) && !c.kind.is_thread())
+                        .collect();
+                    if let Some((parent_id, preceding_sibling_id, position)) =
+                        channel_sidebar::move_operation(
+                            &channels,
+                            *channel,
+                            before,
+                            inside,
+                            id == "move-end",
+                        )
+                    {
+                        self.command_if_live(
+                            Command::MoveGuildChannel {
+                                guild_id,
+                                channel_id: *channel,
+                                parent_id,
+                                preceding_sibling_id,
+                                position,
+                            },
+                            cx,
+                        );
+                    }
+                }
             }
             (Target::Channel(channel), "channel-delete") => {
                 if let Some(c) = self.state.channels.get(channel) {

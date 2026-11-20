@@ -685,6 +685,26 @@ impl Client {
         )
         .await
     }
+    /// Move a guild channel using the classic client's sibling-based ordering contract.
+    /// The gateway supplies the resulting channel updates after the 204 response.
+    pub async fn move_guild_channel(
+        &self,
+        guild: &str,
+        channel: &str,
+        parent: Option<&str>,
+        preceding_sibling: Option<&str>,
+        position: usize,
+    ) -> Result<Value> {
+        let body = serde_json::json!([{ "id": channel, "parent_id": parent,
+            "preceding_sibling_id": preceding_sibling, "lock_permissions": false,
+            "position": position }]);
+        self.request(
+            Method::PATCH,
+            &format!("/guilds/{}/channels", segment(guild)),
+            Some(&body),
+        )
+        .await
+    }
     /// Create a basic guild channel using the same payload as ChannelCommands.create.
     pub async fn create_guild_channel(
         &self,

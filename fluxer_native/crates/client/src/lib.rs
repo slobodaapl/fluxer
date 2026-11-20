@@ -321,6 +321,13 @@ pub enum Command {
         kind: u16,
         name: String,
     },
+    MoveGuildChannel {
+        guild_id: Snowflake,
+        channel_id: Snowflake,
+        parent_id: Option<Snowflake>,
+        preceding_sibling_id: Option<Snowflake>,
+        position: usize,
+    },
     DeleteBasicChannel {
         channel_id: Snowflake,
     },

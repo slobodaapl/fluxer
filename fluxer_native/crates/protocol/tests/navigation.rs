@@ -567,3 +567,33 @@ async fn connections_list_and_visibility_use_authenticated_endpoints() {
         json!({"visibility_flags": 5})
     );
 }
+
+#[tokio::test]
+async fn channel_move_uses_sibling_contract_and_accepts_empty_response() {
+    let mut server = Server::new(vec![Reply::empty(), Reply::empty()]).await;
+    let client = client(&server.origin);
+    client
+        .move_guild_channel("42", "12", Some("13"), Some("14"), 2)
+        .await
+        .unwrap();
+    let request = server.next().await;
+    assert_api(&request, "PATCH");
+    assert_eq!(request.line, "PATCH /api/v1/guilds/42/channels HTTP/1.1");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!([
+            {"id":"12", "parent_id":"13", "preceding_sibling_id":"14", "position":2, "lock_permissions":false}
+        ])
+    );
+    client
+        .move_guild_channel("42", "12", None, None, 0)
+        .await
+        .unwrap();
+    let request = server.next().await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!([
+            {"id":"12", "parent_id":null, "preceding_sibling_id":null, "position":0, "lock_permissions":false}
+        ])
+    );
+}
