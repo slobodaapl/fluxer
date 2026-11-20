@@ -124,6 +124,18 @@ pub enum LoginOutcome {
     },
 }
 
+/// Proofs are deliberately not Debug or serializable. TOTP also carries backup codes.
+pub enum SessionRevocationProof<'a> {
+    Password(&'a str),
+    Totp(&'a str),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SessionRevocationOutcome {
+    Revoked,
+    Challenge(crate::SudoChallenge),
+}
+
 #[derive(Clone)]
 pub struct Client {
     instance: Instance,
@@ -957,6 +969,50 @@ impl Client {
         self.request(Method::GET, "/users/@me/relationships", None)
             .await
     }
+    /// Submit one explicitly confirmed session revocation. This operation may
+    /// succeed without a challenge. Callers must confirm before calling it and
+    /// must not automatically retry transport failures.
+    pub async fn revoke_auth_session(
+        &self,
+        session_id_hash: &str,
+        proof: Option<SessionRevocationProof<'_>>,
+    ) -> Result<SessionRevocationOutcome> {
+        if session_id_hash.is_empty()
+            || !session_id_hash
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            || self.token.is_none()
+        {
+            return Err(Error::InvalidEndpoint("invalid session revocation".into()));
+        }
+        let mut body = json!({"session_id_hashes": [session_id_hash]});
+        match proof {
+            Some(SessionRevocationProof::Password(value)) if !value.is_empty() => {
+                body["password"] = value.into();
+            }
+            Some(SessionRevocationProof::Totp(value)) if !value.is_empty() => {
+                body["mfa_method"] = "totp".into();
+                body["mfa_code"] = value.into();
+            }
+            Some(_) => return Err(Error::InvalidEndpoint("empty verification proof".into())),
+            None => {}
+        }
+        match self
+            .request(Method::POST, "/auth/sessions/logout", Some(&body))
+            .await
+        {
+            Ok(_) => Ok(SessionRevocationOutcome::Revoked),
+            Err(Error::Api {
+                status, ref body, ..
+            }) if crate::SudoChallenge::from_response(status, body).is_some() => {
+                Ok(SessionRevocationOutcome::Challenge(
+                    crate::SudoChallenge::from_response(status, body).unwrap(),
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub async fn auth_sessions(&self) -> Result<Value> {
         self.request(Method::GET, "/auth/sessions", None).await
     }

@@ -663,3 +663,55 @@ async fn group_recipient_removal_uses_delete_route() {
         "{request}"
     );
 }
+
+#[tokio::test]
+async fn session_revocation_challenge_and_totp_use_the_same_target() {
+    use fluxer_protocol::{SessionRevocationOutcome, SessionRevocationProof};
+    let challenge = json!({"code":"SUDO_MODE_REQUIRED", "has_mfa":true,
+        "methods":{"totp":true,"webauthn":false,"backup_codes":true,
+        "email_code":false,"password":false,"sso_reauth":false}});
+    let (origin, mut requests) = http_server(vec![
+        response("403 Forbidden", challenge),
+        "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+    ])
+    .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/api"), "ws://127.0.0.1/gateway").unwrap(),
+    )
+    .unwrap()
+    .with_token(SessionToken::new("synthetic-token").unwrap());
+    assert!(matches!(
+        client
+            .revoke_auth_session("synthetic_hash", None)
+            .await
+            .unwrap(),
+        SessionRevocationOutcome::Challenge(_)
+    ));
+    assert_eq!(
+        client
+            .revoke_auth_session(
+                "synthetic_hash",
+                Some(SessionRevocationProof::Totp("123456"))
+            )
+            .await
+            .unwrap(),
+        SessionRevocationOutcome::Revoked
+    );
+    for (index, request) in [
+        requests.recv().await.unwrap(),
+        requests.recv().await.unwrap(),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(request.starts_with("POST /api/v1/auth/sessions/logout "));
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["session_id_hashes"], json!(["synthetic_hash"]));
+        if index == 0 {
+            assert!(body.get("mfa_code").is_none());
+        } else {
+            assert_eq!(body["mfa_method"], "totp");
+            assert_eq!(body["mfa_code"], "123456");
+        }
+    }
+}
