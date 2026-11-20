@@ -7,6 +7,45 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Private calling, camera publishing and administration — 2026-11-19
+
+The third 16-worker wave implements outgoing and incoming DM/group voice calls,
+including explicit accept and decline, and Linux local camera publication.
+Camera publishing uses FFmpeg with V4L2 support and advertises video only after
+publication and a current capture frame. Remote camera viewing and screen sharing
+retain independent subscriptions.
+
+Community administration adds invite listing and confirmed revocation,
+channel topics, editing six common permissions on existing role overwrites,
+and permanent bans with list and revocation. Group DM owners can remove
+members and members can leave a group. Public threads can be joined, left and
+browsed in a paginated archive. Forum lists support tags and either match mode.
+
+Profiles can crop, preview and remove static banners. URL GIF favorites can
+be saved or removed through synchronized preferences. Devices can revoke a
+single non-current session after explicit confirmation, with password, TOTP
+or backup-code proof when required. Community and channel keyboard focus is
+more visible.
+
+The two-client loopback fixture now checks authenticated discovery, message
+delivery, denied sends, gateway updates and private voice signaling without
+media access. The new [Wayland smoke driver](qa/headless-smoke.md) exercises
+sample app flows, and the [private audio driver](qa/private-audio-smoke.md)
+runs media probes without a physical sound device. The parity ledger records
+35 partial areas and 12 pending, with whole-area sign-off still open.
+
+The workspace gate passes formatting, strict Clippy, inventory, and 750
+tests with 15 opt-in tests skipped. The tagged development build is
+`0385a7a1e-parity21`. Synthetic camera and screen subscription independence
+passed over a local LiveKit server, alongside the private PipeWire capture,
+routing, screen-watch and shared-audio probes.
+
+Remaining gaps include full private thread administration, forum media
+posting, custom ban options and audit log, creating and removing permission
+overwrites, remaining verification methods and account switching, broader
+accessibility and localization, and macOS/Windows platform parity. See
+[REVIEW.md](REVIEW.md) for real-account and device acceptance.
+
 ## Administration, camera receive and composer parity — 2026-11-19
 
 The second 16-worker push adds seven-day community invite creation and copy,

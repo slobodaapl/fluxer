@@ -5,6 +5,26 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Private calling, camera publishing and administration — 2026-11-19
+
+| ID | Review | Expected behavior |
+|---|---|---|
+| NOV19C-1 | Start a DM or group call, accept on one client, decline on another, and leave while ringing or during recovery. | Ringing and call state agree with classic Fluxer. Muting and leaving remain responsive during a stalled request. |
+| NOV19C-2 | On Linux with a V4L2 webcam, choose a camera and start/stop it while screen sharing. Unplug during start or in a call, and reconnect the room. | Camera and screen are independent. Camera only advertises after a first frame, releases on stop or failure, and leaves microphone controls responsive. |
+| NOV19C-3 | List and revoke an invite, edit topic and role permissions, ban and unban a test member. Repeat with restricted permissions. | Commands match classic transport and display authoritative state and useful errors. |
+| NOV19C-4 | Join/leave a public thread, page archived threads, and change tags/match mode while loading forum pages. Try a concurrent archive or membership change from another client. | Gateway updates and deletions win, pagination remains stable and switching channels does not keep a stale dialog busy. |
+| NOV19C-5 | Set/remove a static banner and URL GIF favorite, then sign out another known device using the account's supported proof. | Crop and saved banner agree, GIF edits preserve unrelated preferences, and the device remains listed until the server confirms revocation. |
+
+Loopback HTTP/WebSocket tests use synthetic accounts. The private PipeWire and
+LiveKit probes use generated signals. The isolated Wayland smoke covers offline
+chat, media, streams, forum filters, keyboard operation and call decline. Review
+captures are under `target/qa/parity21-mock-ui/`.
+
+Camera SDK publication still awaits network work on the voice worker. Test
+responsiveness if publication stalls before capture starts. A ring request
+that completes server-side after the client's timeout, and shutdown during
+ring cleanup, also need live acceptance in a disposable account setup.
+
 ## Administration, camera receive and composer parity — 2026-11-19
 
 | ID | Review | Expected behavior |

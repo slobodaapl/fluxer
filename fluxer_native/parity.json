@@ -44,7 +44,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Community categories, text/voice channels, ordering, history, composer, context actions and settings.",
-      "evidence": "Source-defined cozy message grouping/date dividers; existing Rust Markdown parser drives selectable formatting, spoilers, mentions and bounded inline custom emoji. Replies/link navigation reuse existing commands. See STATUS.md and REVIEW.md M1\u2013M4 for partial scope and pending acceptance."
+      "evidence": "Native community and group chat includes source-backed channel create, rename, topics, and confirmed deletion. Message rendering and navigation evidence is in STATUS.md and REVIEW.md."
     },
     {
       "id": "code_highlighting",
@@ -96,7 +96,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "GIFs, stickers, custom emoji, saved media, favorites, expression assets and entitlements.",
-      "evidence": "Native GIF search, synced URL favorites, and community stickers. See STATUS.md and REVIEW.md."
+      "evidence": "Native GIF search, synchronized URL favorite edits, and community stickers. Saved-media-backed editing remains open. See STATUS.md and REVIEW.md."
     },
     {
       "id": "forum",
@@ -104,7 +104,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation.",
-      "evidence": "Forum and media post pagination and forum text-post creation. See STATUS.md and REVIEW.md."
+      "evidence": "Forum and media post pagination and tag filtering, plus forum text-post creation. See STATUS.md and REVIEW.md."
     },
     {
       "id": "gateway",
@@ -159,7 +159,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "Resolve/preview/accept/create/revoke invites, vanity links, guest/login continuation.",
-      "evidence": "Current-instance joins, default community invite creation, and desktop invite links. See STATUS.md and REVIEW.md."
+      "evidence": "Current-instance joins, community invite creation, list and confirmed revocation, and desktop invite links. See STATUS.md and REVIEW.md."
     },
     {
       "id": "lexical",
@@ -191,7 +191,7 @@
       "milestone": "M4",
       "status": "partial",
       "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows.",
-      "evidence": "Permission-gated member kick and timeout actions with confirmation. See STATUS.md and REVIEW.md."
+      "evidence": "Permission-gated kick, timeout, permanent ban, ban listing and revocation. See STATUS.md and REVIEW.md."
     },
     {
       "id": "navigation",
@@ -215,7 +215,7 @@
       "milestone": "M1",
       "status": "partial",
       "acceptance": "Owner/admin, role hierarchy, everyone/role/member overwrites, implicit permissions and live invalidation.",
-      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
+      "evidence": "Core channel and role resolution plus editing six permission bits of existing role overwrites. Full overwrite administration and release acceptance remain open."
     },
     {
       "id": "platform",
@@ -307,7 +307,7 @@
       "milestone": "M3",
       "status": "partial",
       "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels.",
-      "evidence": "Active thread discovery, standalone creation, chat, and community-owner archive/lock actions. See STATUS.md and REVIEW.md."
+      "evidence": "Active discovery, standalone creation, chat, public membership and archived browsing, and owner archive/lock actions. See STATUS.md and REVIEW.md."
     },
     {
       "id": "trusted_domain",
@@ -346,7 +346,7 @@
       "milestone": "M5",
       "status": "partial",
       "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications.",
-      "evidence": "Profile modal and own profile text edits, static avatar editing, privacy preferences and a read-only device session list. Session revocation, banners and animated avatar input remain open. See STATUS.md, REVIEW.md and ACCOUNT_SESSIONS_SUDO.md."
+      "evidence": "Profile modal, own text and static avatar/banner edits, privacy preferences, and non-current session revocation with password, TOTP or backup-code proof. See STATUS.md, REVIEW.md and ACCOUNT_SESSIONS_SUDO.md."
     },
     {
       "id": "voice",
@@ -354,7 +354,7 @@
       "milestone": "M2",
       "status": "partial",
       "acceptance": "Native calls, microphone/playout, device/gain/DSP/PTT, screen/video/audio share, encryption and reconnect.",
-      "evidence": "See STATUS.md; core/protocol/media foundations implemented, release acceptance incomplete."
+      "evidence": "Community and private calls, microphone and playout, screen and application audio sharing, and Linux camera capture and receive. Device and live interoperability acceptance remains open."
     },
     {
       "id": "webhook",
