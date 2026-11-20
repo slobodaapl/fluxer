@@ -373,7 +373,7 @@ struct Fluxer {
     overwrite_form: Option<(
         Snowflake,
         fluxer_core::PermissionOverwrite,
-        fluxer_core::PermissionOverwrite,
+        Option<fluxer_core::PermissionOverwrite>,
     )>,
     channel_name: Entity<TextInput>,
     channel_topic: Entity<TextInput>,
@@ -2752,16 +2752,17 @@ impl Fluxer {
                 self.overwrite_form.clone().filter(|(id, _, _)| {
                     self.state.channels.get(id).and_then(|c| c.guild_id) == self.selected_guild
                 }),
-                |view, (channel_id, overwrite, _original)| {
+                |view, (channel_id, overwrite, original)| {
                     let role_name = self
                         .state
                         .channels
                         .get(&channel_id)
                         .and_then(|c| c.guild_id)
                         .and_then(|g| self.state.guilds.get(&g))
-                        .and_then(|g| g.roles.iter().find(|r| r.id == overwrite.id))
+                        .and_then(|g| g.roles.iter().find(|r| overwrite.kind == 0 && r.id == overwrite.id))
                         .map(|r| r.name.clone())
-                        .unwrap_or_else(|| "Role".into());
+                        .or_else(|| self.state.users.get(&overwrite.id).map(|u| u.display_name().to_string()))
+                        .unwrap_or_else(|| overwrite.id.to_string());
                     let mut form = div()
                         .p_2()
                         .flex()
@@ -2778,6 +2779,17 @@ impl Fluxer {
                         ("Attach files", fluxer_core::Permissions::ATTACH_FILES),
                         ("Connect", fluxer_core::Permissions::CONNECT),
                         ("Speak", fluxer_core::Permissions::SPEAK),
+                        ("Create invites", fluxer_core::Permissions::CREATE_INSTANT_INVITE),
+                        ("Add reactions", fluxer_core::Permissions::ADD_REACTIONS),
+                        ("Embed links", fluxer_core::Permissions::EMBED_LINKS),
+                        ("Manage messages", fluxer_core::Permissions::MANAGE_MESSAGES),
+                        ("Mention everyone", fluxer_core::Permissions::MENTION_EVERYONE),
+                        ("Use external emoji", fluxer_core::Permissions::USE_EXTERNAL_EMOJIS),
+                        ("Stream", fluxer_core::Permissions::STREAM),
+                        ("Mute members", fluxer_core::Permissions::MUTE_MEMBERS),
+                        ("Deafen members", fluxer_core::Permissions::DEAFEN_MEMBERS),
+                        ("Move members", fluxer_core::Permissions::MOVE_MEMBERS),
+                        ("Use voice activity", fluxer_core::Permissions::USE_VAD),
                     ] {
                         let status = if overwrite.allow.contains(bit) {
                             "Allow"
@@ -2815,7 +2827,7 @@ impl Fluxer {
                                             this.overwrite_form.take()
                                         {
                                             this.command_if_live(
-                                                Command::SetRoleOverwrite {
+                                                Command::SetChannelOverwrite {
                                                     channel_id,
                                                     overwrite,
                                                     expected,
@@ -2826,6 +2838,11 @@ impl Fluxer {
                                         cx.notify();
                                     },
                                 )))
+                                .when_some(original, |row, expected| row.child(button("overwrite-remove", "Remove").on_click(cx.listener(move |this, _, _, cx| {
+                                    this.overwrite_form = None;
+                                    this.command_if_live(Command::DeleteChannelOverwrite { channel_id, expected: expected.clone() }, cx);
+                                    cx.notify();
+                                }))))
                                 .child(button("overwrite-cancel", "Cancel").on_click(cx.listener(
                                     |this, _, _, cx| {
                                         this.overwrite_form = None;

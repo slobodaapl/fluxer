@@ -757,6 +757,18 @@ impl Client {
     ) -> Result<Value> {
         self.request(Method::PUT, &format!("/channels/{}/permissions/{}", segment(channel), segment(&overwrite.id.to_string())), Some(&serde_json::json!({"type": overwrite.kind, "allow": overwrite.allow, "deny": overwrite.deny}))).await
     }
+    pub async fn delete_channel_overwrite(&self, channel: &str, target: &str) -> Result<Value> {
+        self.request(
+            Method::DELETE,
+            &format!(
+                "/channels/{}/permissions/{}",
+                segment(channel),
+                segment(target)
+            ),
+            None,
+        )
+        .await
+    }
     pub async fn channel(&self, channel: &str) -> Result<Value> {
         self.request(
             Method::GET,

@@ -155,10 +155,66 @@ impl Worker {
         }
         Ok(())
     }
-    pub(super) fn set_role_overwrite(
+    pub(super) fn set_channel_overwrite(
         &mut self,
         channel_id: Snowflake,
         overwrite: fluxer_core::PermissionOverwrite,
+        expected: Option<fluxer_core::PermissionOverwrite>,
+    ) -> Result<()> {
+        let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
+        let channel = self
+            .state
+            .channels
+            .get(&channel_id)
+            .ok_or("Channel unavailable")?;
+        let guild_id = channel.guild_id.ok_or("Community unavailable")?;
+        let guild = self
+            .state
+            .guilds
+            .get(&guild_id)
+            .ok_or("Community unavailable")?;
+        let previous = channel
+            .permission_overwrites
+            .iter()
+            .find(|o| o.id == overwrite.id);
+        let perms = self.state.permissions_for(channel_id, account);
+        if previous != expected.as_ref() {
+            return Err("Permissions changed; reopen the editor".into());
+        }
+        let valid_target = match overwrite.kind {
+            0 => guild.roles.iter().any(|r| r.id == overwrite.id),
+            1 => self.state.members.contains_key(&(guild_id, overwrite.id)),
+            _ => false,
+        };
+        let previous_allow = previous.map_or(0, |o| o.allow.0);
+        let previous_deny = previous.map_or(0, |o| o.deny.0);
+        if channel.kind.is_thread()
+            || !valid_target
+            || !perms.contains(Permissions::MANAGE_ROLES)
+            || (!perms.contains(Permissions::ADMINISTRATOR)
+                && guild.owner_id != account
+                && ((overwrite.allow.0 & !previous_allow) | (previous_deny & !overwrite.deny.0))
+                    & !perms.0
+                    != 0)
+        {
+            return Err("You cannot change these permissions".into());
+        }
+        let client = self.client.clone().ok_or("Not connected")?;
+        // This endpoint returns 204; gateway updates remain authoritative.
+        self.start_channel_job(account, None, async move {
+            client
+                .set_channel_overwrite(&channel_id.to_string(), &overwrite)
+                .await
+                .map_err(error)
+        })?;
+        if let Some(job) = self.channels.job.as_mut() {
+            job.delete = true;
+        }
+        Ok(())
+    }
+    pub(super) fn delete_channel_overwrite(
+        &mut self,
+        channel_id: Snowflake,
         expected: fluxer_core::PermissionOverwrite,
     ) -> Result<()> {
         let account = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
@@ -176,29 +232,23 @@ impl Worker {
         let previous = channel
             .permission_overwrites
             .iter()
-            .find(|o| o.id == overwrite.id && o.kind == 0)
-            .ok_or("Role overwrite unavailable")?;
-        let perms = self.state.permissions_for(channel_id, account);
-        if *previous != expected {
+            .find(|o| o.id == expected.id);
+        if previous != Some(&expected) {
             return Err("Permissions changed; reopen the editor".into());
         }
-        if overwrite.kind != 0
-            || !guild.roles.iter().any(|r| r.id == overwrite.id)
+        let perms = self.state.permissions_for(channel_id, account);
+        if channel.kind.is_thread()
             || !perms.contains(Permissions::MANAGE_ROLES)
             || (!perms.contains(Permissions::ADMINISTRATOR)
                 && guild.owner_id != account
-                && ((overwrite.allow.0 & !previous.allow.0)
-                    | (previous.deny.0 & !overwrite.deny.0))
-                    & !perms.0
-                    != 0)
+                && expected.deny.0 & !perms.0 != 0)
         {
-            return Err("You cannot change these permissions".into());
+            return Err("You cannot remove these permissions".into());
         }
         let client = self.client.clone().ok_or("Not connected")?;
-        // This endpoint returns 204; gateway updates remain authoritative.
         self.start_channel_job(account, None, async move {
             client
-                .set_channel_overwrite(&channel_id.to_string(), &overwrite)
+                .delete_channel_overwrite(&channel_id.to_string(), &expected.id.to_string())
                 .await
                 .map_err(error)
         })?;

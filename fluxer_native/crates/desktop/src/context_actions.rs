@@ -703,19 +703,40 @@ impl Fluxer {
                                 .contains(fluxer_core::Permissions::MANAGE_ROLES)
                         })
                     {
-                        for overwrite in
-                            channel.permission_overwrites.iter().filter(|o| o.kind == 0)
-                        {
-                            if let Some(role) = channel
-                                .guild_id
-                                .and_then(|g| self.state.guilds.get(&g))
-                                .and_then(|g| g.roles.iter().find(|r| r.id == overwrite.id))
-                            {
-                                items.push(action(
-                                    &format!("overwrite-{}", overwrite.id),
-                                    &format!("Permissions: {}", role.name),
-                                    Icon::Settings,
-                                ));
+                        if let Some(guild_id) = channel.guild_id {
+                            if let Some(guild) = self.state.guilds.get(&guild_id) {
+                                for role in &guild.roles {
+                                    let exists = channel
+                                        .permission_overwrites
+                                        .iter()
+                                        .any(|o| o.id == role.id);
+                                    items.push(action(
+                                        &format!("overwrite-0-{}", role.id),
+                                        &format!(
+                                            "{} permissions: {}",
+                                            if exists { "Edit" } else { "Add" },
+                                            role.name
+                                        ),
+                                        Icon::Settings,
+                                    ));
+                                }
+                            }
+                            for ((member_guild, member_id), member) in &self.state.members {
+                                if *member_guild == guild_id {
+                                    let exists = channel
+                                        .permission_overwrites
+                                        .iter()
+                                        .any(|o| o.id == *member_id);
+                                    items.push(action(
+                                        &format!("overwrite-1-{}", member_id),
+                                        &format!(
+                                            "{} permissions: {}",
+                                            if exists { "Edit" } else { "Add" },
+                                            member.user.display_name()
+                                        ),
+                                        Icon::Settings,
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1225,13 +1246,39 @@ impl Fluxer {
             (Target::Channel(channel), id) if id.starts_with("overwrite-") => {
                 if let Some(c) = self.state.channels.get(channel)
                     && let Some(guild) = c.guild_id
-                    && let Some(overwrite) = c
+                    && let Some((kind, target)) = id
+                        .strip_prefix("overwrite-")
+                        .and_then(|s| s.split_once('-'))
+                    && let Ok(kind) = kind.parse::<u8>()
+                    && let Some(target) = (if kind == 0 {
+                        self.state.guilds.get(&guild).and_then(|g| {
+                            g.roles
+                                .iter()
+                                .find(|r| r.id.to_string() == target)
+                                .map(|r| r.id)
+                        })
+                    } else {
+                        self.state
+                            .members
+                            .keys()
+                            .find(|(g, m)| *g == guild && m.to_string() == target)
+                            .map(|(_, m)| *m)
+                    })
+                {
+                    let existing = c
                         .permission_overwrites
                         .iter()
-                        .find(|o| o.kind == 0 && format!("overwrite-{}", o.id) == id)
-                {
+                        .find(|o| o.id == target && o.kind == kind)
+                        .cloned();
+                    let draft = existing
+                        .clone()
+                        .unwrap_or(fluxer_core::PermissionOverwrite {
+                            id: target,
+                            kind,
+                            ..Default::default()
+                        });
                     self.selected_guild = Some(guild);
-                    self.overwrite_form = Some((*channel, overwrite.clone(), overwrite.clone()));
+                    self.overwrite_form = Some((*channel, draft, existing));
                 }
             }
             (Target::Channel(channel), "channel-edit") => {

@@ -1737,12 +1737,20 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
-            Command::SetRoleOverwrite {
+            Command::SetChannelOverwrite {
                 channel_id,
                 overwrite,
                 expected,
             } => {
-                if let Err(message) = self.set_role_overwrite(channel_id, overwrite, expected) {
+                if let Err(message) = self.set_channel_overwrite(channel_id, overwrite, expected) {
+                    self.emit(Event::Error(message));
+                }
+            }
+            Command::DeleteChannelOverwrite {
+                channel_id,
+                expected,
+            } => {
+                if let Err(message) = self.delete_channel_overwrite(channel_id, expected) {
                     self.emit(Event::Error(message));
                 }
             }
