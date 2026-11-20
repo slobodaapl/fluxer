@@ -144,7 +144,7 @@ case "$scenario" in
         screenshot second-participant
         ;;
     forum)
-        click 134 374
+        click 134 302
         screenshot forum-activity
         click 366 369
         screenshot forum-next-page

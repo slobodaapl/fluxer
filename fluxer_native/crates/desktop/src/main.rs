@@ -7,6 +7,7 @@ mod avatar_images;
 mod bans_view;
 mod call_view;
 mod camera_view;
+mod channel_sidebar;
 mod chat_helpers;
 mod chat_view;
 mod community_view;
@@ -2572,7 +2573,11 @@ impl Fluxer {
             .values()
             .filter(|c| c.guild_id == self.selected_guild && !c.kind.is_thread())
             .collect::<Vec<_>>();
-        channels.sort_by_key(|c| (c.position, c.id));
+        if self.selected_guild.is_some() {
+            channels = channel_sidebar::guild_channel_rows(channels);
+        } else {
+            channels.sort_by_key(|c| (c.position, c.id));
+        }
         let threads_by_parent = self.threads_by_parent();
         div()
             .w(px(230.))

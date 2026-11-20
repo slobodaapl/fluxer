@@ -133,6 +133,7 @@ impl ClientState {
                     kind,
                     topic: topic.map(str::to_owned),
                     position,
+                    parent_id: (11..=15).contains(&id).then_some(10.into()),
                     ..Channel::default()
                 },
             );
