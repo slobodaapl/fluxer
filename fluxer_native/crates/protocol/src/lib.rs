@@ -10,6 +10,7 @@ mod instance;
 mod invites;
 mod moderation;
 mod navigation;
+mod sudo;
 
 pub use error::{Error, Result};
 pub use gateway::{
@@ -23,6 +24,7 @@ pub use http::{
 pub use instance::Instance;
 pub use invites::InvitePreview;
 pub use reqwest::Method;
+pub use sudo::{SudoChallenge, SudoMethods};
 pub use url::Url;
 
 pub use attachments::{
