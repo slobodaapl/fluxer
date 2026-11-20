@@ -7,6 +7,36 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Community, expressions and account parity — 2026-11-19
+
+The Terra and Sol worktrees are integrated on `yolo/gpui`. Users can
+create or leave communities, and members with channel permissions can create
+and rename text channels, voice channels and categories. The sidebar supports
+joining a community or group DM by invite, opening active threads and creating
+public or announcement threads. Friends can start group DMs. Forum and media
+channels show the first 25 posts with available first-message previews, sorted
+by activity or creation time.
+
+The composer has provider-backed GIF search and a community sticker picker.
+Native adds search filter suggestions, Linux channel and message deep links,
+profile text editing, member role assignment, confirmed kicks, privacy and
+animated emoji settings, trusted-domain removal, a read-only Devices list, and
+media seek shortcuts. A failed gateway voice rejoin send now retries promptly.
+The new write paths run off the client loop with bounded requests and account
+fencing. Protocol behavior was checked against the repository's classic client
+and server.
+
+The workspace gate passes formatting, strict Clippy, the parity inventory
+audit, and 708 tests with 14 opt-in tests skipped. The separate local LiveKit
+loopback test passed with generated audio and video. A tagged dev build
+(`02b285c50-parity`) is available under the shared Cargo target directory.
+The offline smoke check ran on a private Wayland display using sample data.
+
+Invite creation and revocation, forum pagination and posting, archived and
+private thread management, profile artwork editing, session revocation, ban
+and timeout controls, and camera sharing remain open. [REVIEW.md](REVIEW.md)
+lists the live interoperability and UI checks for this push.
+
 ## Linux tray and desktop integration — 2026-11-18
 
 Native now has a Linux StatusNotifierItem tray, default close-to-tray behavior,
@@ -726,11 +756,3 @@ Full profile modal, rich/selectable biography interactions, connected-account an
 badge presentation, relationship/DM/moderation actions, profile animation and live
 refresh of an already-open completed profile remain migration work. Source data
 is retained for later parity work; these cards do not claim full profile coverage.
-
-Forum browsing (parity19): selecting a forum or media channel loads the first
-25 posts from `GET /channels/:id/threads/search`, showing returned first-message
-text and opening a post in the existing message view. Activity and creation-time
-sorts are available. Search-index and request failures are shown in the list.
-Pagination, tag filtering, post creation, post-data fallback, forum unread state,
-and moderation are not yet implemented. Search is guarded by the same view and
-history permissions as the native message navigation; the server remains authoritative.

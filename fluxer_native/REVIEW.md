@@ -5,6 +5,32 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Community, expressions and account parity — 2026-11-19
+
+The scenarios below await live acceptance. Use a disposable community and a
+second account for changes visible to other members.
+
+The private Wayland demo rendered the community dialog, profile and device
+settings, and confirmed mutual dismissal between the emoji and sticker
+pickers. Build `02b285c50-parity` also passed community dialog Tab and
+Shift+Tab navigation, invalid-name feedback on Enter, and Escape with focus
+restoration. Invite acceptance, GIF search, and populated privacy/device
+settings need an authenticated instance. Captures and verification logs are in
+`target/qa/parity-2026-11-19/`.
+
+| ID | Review | Expected behavior |
+|---|---|---|
+| NOV19-1 | Join a community and a group DM from the sidebar invite dialog. Try an expired invite, cancel a preview, and navigate away while a join is pending. | The preview identifies the destination and shows actionable errors. A slow acceptance respects newer navigation. |
+| NOV19-2 | Create and leave a community. Start a group DM from Friends. Create and rename text/voice channels and a category. Try again with limited permissions. | Updates agree with classic Fluxer. Unauthorized actions are absent or rejected, and cancel restores focus. |
+| NOV19-3 | Open an active thread, create a public or announcement thread, send a message, and return to its parent. Open a forum/media post and switch the list sort. | Both clients show the same threads. The parent link returns to the correct list. A deleted post does not reappear after an in-flight result. |
+| NOV19-4 | Open GIFs, stickers and emoji in sequence. Search for a GIF, choose a sticker, try Escape, and switch channels with a draft and staged file. | One picker is open at a time. Sends go to the intended channel. GIF selection preserves draft text and staged files. |
+| NOV19-5 | Edit and clear profile fields, inspect Devices, change privacy/animated emoji preferences, and remove a trusted domain. Change accounts while a request is pending. | Source clients agree on saved settings. Old account responses never replace another account's data. |
+| NOV19-6 | Assign/remove a role from a member profile. Compare the allowed roles under different hierarchies. Cancel or confirm a kick and verify its result in classic Fluxer. | Tab and Enter reach role actions. Kick starts from a confirmation with Cancel focused. A newer gateway member update remains authoritative. |
+| NOV19-7 | Open an old message from a `fluxer:` link with Native closed and while it is in the tray. Try media seek shortcuts and trigger a voice reconnect. | Native follows the target after session restore, media keys seek only in player focus, and a transient rejoin send error retries without waiting for the full deadline. |
+
+The user-deferred multi-stream review and aggregate media budget remain in
+their existing queues. Thread-specific steps are in [qa/threads.md](qa/threads.md).
+
 ## Recovery/settings/profiles/desktop integration — 2026-11-15
 
 Roadmap items **1/3/4/5** and Linux external call control are integrated on

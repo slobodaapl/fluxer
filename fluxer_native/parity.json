@@ -91,15 +91,17 @@
       "id": "expressions",
       "source": "fluxer_app/src/features/expressions",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "GIFs, stickers, custom emoji, saved media, favorites, expression assets and entitlements."
+      "status": "partial",
+      "acceptance": "GIFs, stickers, custom emoji, saved media, favorites, expression assets and entitlements.",
+      "evidence": "Native GIF search and community stickers. See STATUS.md and REVIEW.md."
     },
     {
       "id": "forum",
       "source": "fluxer_app/src/features/forum",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation."
+      "status": "partial",
+      "acceptance": "Forum settings/tags, posts, sorting/filter/search, post creation, unread tracking and moderation.",
+      "evidence": "Read-only forum and media post lists. See STATUS.md and REVIEW.md."
     },
     {
       "id": "gateway",
@@ -150,8 +152,9 @@
       "id": "invite",
       "source": "fluxer_app/src/features/invite",
       "milestone": "M4",
-      "status": "pending",
-      "acceptance": "Resolve/preview/accept/create/revoke invites, vanity links, guest/login continuation."
+      "status": "partial",
+      "acceptance": "Resolve/preview/accept/create/revoke invites, vanity links, guest/login continuation.",
+      "evidence": "Current-instance community and group DM invite joins. See STATUS.md and REVIEW.md."
     },
     {
       "id": "lexical",
@@ -180,8 +183,9 @@
       "id": "moderation",
       "source": "fluxer_app/src/features/moderation",
       "milestone": "M4",
-      "status": "pending",
-      "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows."
+      "status": "partial",
+      "acceptance": "Reports, verification gates, mature content rules, bans/timeouts and safety flows.",
+      "evidence": "Permission-gated member kick with confirmation. See STATUS.md and REVIEW.md."
     },
     {
       "id": "navigation",
@@ -291,15 +295,17 @@
       "id": "threads",
       "source": "fluxer_app/src/features/threads",
       "milestone": "M3",
-      "status": "pending",
-      "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels."
+      "status": "partial",
+      "acceptance": "Create/join/leave, roster, archive/lock, notifications, unread, browsing and side panels.",
+      "evidence": "Active thread discovery, standalone creation, and chat. See STATUS.md and REVIEW.md."
     },
     {
       "id": "trusted_domain",
       "source": "fluxer_app/src/features/trusted_domain",
       "milestone": "M4",
-      "status": "pending",
-      "acceptance": "External link confirmation, trusted-domain list and deceptive link handling."
+      "status": "partial",
+      "acceptance": "External link confirmation, trusted-domain list and deceptive link handling.",
+      "evidence": "External link confirmation and trusted domain removal. See STATUS.md and REVIEW.md."
     },
     {
       "id": "typing",
@@ -328,8 +334,9 @@
       "id": "user",
       "source": "fluxer_app/src/features/user",
       "milestone": "M5",
-      "status": "pending",
-      "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications."
+      "status": "partial",
+      "acceptance": "Profiles, preferences, account/security/devices, privacy, settings registry and applications.",
+      "evidence": "Own profile text edits, privacy preferences and a device session list. See STATUS.md and REVIEW.md."
     },
     {
       "id": "voice",
