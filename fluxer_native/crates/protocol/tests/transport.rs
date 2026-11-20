@@ -791,3 +791,24 @@ async fn archived_public_threads_use_timestamp_cursor() {
     );
     assert!(requests.recv().await.unwrap().starts_with("GET /api/v1/channels/42/threads/archived/public?before=2026-01-02T03%3A04%3A05%2B00%3A00 HTTP/1.1"));
 }
+
+#[tokio::test]
+async fn forgot_password_uses_unauthenticated_instance_transport() {
+    let (origin, mut requests) =
+        http_server_with_origin_policy(vec![response("204 No Content", Value::Null)], true, None)
+            .await;
+    let client = Client::new(
+        Instance::from_endpoints(&format!("{origin}/custom/api"), "ws://127.0.0.1/gateway")
+            .unwrap(),
+    )
+    .unwrap()
+    .with_auth_locale("fr".into())
+    .unwrap();
+    client.forgot_password("user@example.test").await.unwrap();
+    let request = requests.recv().await.unwrap();
+    assert!(request.starts_with("POST /custom/api/v1/auth/forgot HTTP/1.1"));
+    assert!(!request.to_lowercase().contains("authorization:"));
+    assert!(request.to_lowercase().contains("accept-language: fr"));
+    let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+    assert_eq!(body, json!({"email":"user@example.test"}));
+}

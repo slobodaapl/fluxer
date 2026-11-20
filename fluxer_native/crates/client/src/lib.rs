@@ -270,6 +270,10 @@ pub enum Command {
         force: bool,
     },
     RestoreSession,
+    ForgotPassword {
+        instance: String,
+        email: String,
+    },
     Login {
         instance: String,
         identifier: String,
@@ -777,6 +781,10 @@ pub enum Event {
     },
     Error(String),
     Status(String),
+    PasswordResetSent,
+    PasswordResetChallenge {
+        browser_url: String,
+    },
     MfaRequired {
         ticket: String,
         totp: bool,

@@ -407,6 +407,18 @@ impl Client {
         Ok(body)
     }
 
+    /// AuthenticationCommands.forgotPassword: never includes session authorization.
+    pub async fn forgot_password(&self, email: &str) -> Result<()> {
+        self.request_inner(
+            Method::POST,
+            "/auth/forgot",
+            Some(&json!({"email": email})),
+            false,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn login(&self, identifier: LoginIdentifier, password: &str) -> Result<LoginOutcome> {
         let mut body = json!({"password": password});
         match identifier {

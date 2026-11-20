@@ -1132,6 +1132,25 @@ impl Worker {
                 let _ = reply.send(result);
             }
             Command::RestoreSession => self.begin_restore(),
+            Command::ForgotPassword { instance, email } => {
+                let client = Client::new(Instance::discover(&instance).await.map_err(error)?)
+                    .map_err(error)?
+                    .with_auth_locale(self.locale.clone())
+                    .map_err(error)?;
+                match client.forgot_password(&email).await {
+                    Ok(()) => self.emit(Event::PasswordResetSent),
+                    Err(fluxer_protocol::Error::Api { code, .. })
+                        if code.as_deref() == Some("CAPTCHA_REQUIRED")
+                            || code.as_deref() == Some("INVALID_CAPTCHA") =>
+                    {
+                        let url = client.instance().web_app.join("/forgot").map_err(error)?;
+                        self.emit(Event::PasswordResetChallenge {
+                            browser_url: url.to_string(),
+                        });
+                    }
+                    Err(_) => return Err("Failed to send reset link. Try again.".into()),
+                }
+            }
             Command::Login {
                 instance,
                 identifier,

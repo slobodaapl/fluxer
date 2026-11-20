@@ -436,6 +436,9 @@ struct Fluxer {
     ip_authorization: Option<IpAuthorization>,
     last_ip_countdown: u64,
     browser_login: Option<BrowserLogin>,
+    recovery_open: bool,
+    recovery_sent: bool,
+    recovery_browser_url: Option<String>,
     error: Option<String>,
     status: String,
     voice_status: String,
@@ -622,6 +625,9 @@ impl Fluxer {
             ip_authorization: None,
             last_ip_countdown: 0,
             browser_login: None,
+            recovery_open: false,
+            recovery_sent: false,
+            recovery_browser_url: None,
             error,
             status: if session_restoring {
                 "Checking saved session…".into()
@@ -1431,6 +1437,13 @@ impl Fluxer {
                     self.error = Some(error);
                 }
                 Event::Status(status) => self.status = status,
+                Event::PasswordResetSent => {
+                    self.recovery_sent = true;
+                    self.recovery_browser_url = None;
+                }
+                Event::PasswordResetChallenge { browser_url } => {
+                    self.recovery_browser_url = Some(browser_url);
+                }
                 Event::Demo(demo) => {
                     self.demo = demo;
                     if demo {
@@ -2319,6 +2332,27 @@ impl Fluxer {
     }
 
     fn login_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        if self.recovery_open {
+            let browser_url = self.recovery_browser_url.clone();
+            return div().flex().flex_col().items_center().justify_center().size_full().gap_4()
+                .child(heading(if self.recovery_sent { "Check your email" } else { "Forgot your password?" }))
+                .child(muted(if self.recovery_sent {
+                    "If an account uses that address, we've sent it password reset instructions. Check your inbox for the reset link."
+                } else {
+                    "Enter your email address and we'll send you a link to reset your password."
+                }))
+                .when(!self.recovery_sent, |view| view.child(div().w(px(380.)).child(self.identifier.clone()))
+                    .child(button("send-reset", "Send reset link").on_click(cx.listener(|this, _, _, cx| {
+                        this.error = None;
+                        this.command(Command::ForgotPassword { instance: this.instance.read(cx).content.to_string(), email: this.identifier.read(cx).content.to_string() }, cx);
+                    }))))
+                .when_some(browser_url, |view, url| view.child(muted("Complete the verification in your browser to request the reset link."))
+                    .child(button("open-recovery", "Open browser").on_click(move |_, _, cx| cx.open_url(&url))))
+                .child(button("back-from-recovery", "Back to sign in").on_click(cx.listener(|this, _, _, cx| {
+                    this.recovery_open = false; this.recovery_sent = false; this.recovery_browser_url = None; this.error = None; cx.notify();
+                })))
+                .child(muted(self.status.clone())).into_any_element();
+        }
         if let Some(handoff) = &self.browser_login {
             let code = handoff.code.clone();
             let url = handoff.browser_url.clone();
@@ -2443,6 +2477,13 @@ impl Fluxer {
                             .bg(rgb(0x6f56d7))
                             .on_click(cx.listener(|this, _, _, cx| this.login(cx))),
                     )
+                    .child(button("forgot-password", "Forgot your password?").on_click(
+                        cx.listener(|this, _, _, cx| {
+                            this.recovery_open = true;
+                            this.error = None;
+                            cx.notify();
+                        }),
+                    ))
                     .child(
                         button("browser-login", "Sign in with browser").on_click(cx.listener(
                             |this, _, _, cx| {
