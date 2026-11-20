@@ -179,6 +179,9 @@ impl Fluxer {
                     (self.bans_ui.selected + 1).min(self.bans_ui.rows.len() - 1);
                 cx.notify();
             }
+            "enter" if !event.is_held && !self.bans_ui.pending && self.bans_ui.error.is_some() => {
+                self.fetch_bans(cx);
+            }
             "enter" if !event.is_held && !self.bans_ui.pending && !self.bans_ui.rows.is_empty() => {
                 if self.bans_ui.confirm {
                     self.unban_selected(cx);
@@ -279,6 +282,9 @@ impl Fluxer {
         }
         if let Some(error) = &self.bans_ui.error {
             panel = panel.child(div().text_color(rgb(0xe15059)).child(error.clone()));
+            if !self.bans_ui.pending {
+                panel = panel.child("Press Enter to retry, or Escape to close.");
+            }
         }
         let mut buttons = div().flex().justify_end().gap_2().child(
             crate::controls::quiet_button(
