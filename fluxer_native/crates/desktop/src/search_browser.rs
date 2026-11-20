@@ -9,6 +9,81 @@ use fluxer_client::{
     HistorySnapshot, PinsSnapshot, SearchScope, SearchSnapshot, SearchSort, SearchStatus,
 };
 
+// Filter names and content values match the classic search autocomplete and parser.
+fn search_suggestions(query: &str) -> Vec<&'static str> {
+    const FILTERS: &[&str] = &[
+        "from:",
+        "-from:",
+        "mentions:",
+        "-mentions:",
+        "has:",
+        "-has:",
+        "before:",
+        "on:",
+        "during:",
+        "after:",
+        "in:",
+        "-in:",
+        "pinned:",
+        "author-type:",
+        "link:",
+        "-link:",
+        "filename:",
+        "-filename:",
+        "ext:",
+        "-ext:",
+    ];
+    const HAS: &[&str] = &[
+        "has:image",
+        "has:sound",
+        "has:video",
+        "has:file",
+        "has:sticker",
+        "has:embed",
+        "has:link",
+        "has:poll",
+    ];
+    const NOT_HAS: &[&str] = &[
+        "-has:image",
+        "-has:sound",
+        "-has:video",
+        "-has:file",
+        "-has:sticker",
+        "-has:embed",
+        "-has:link",
+        "-has:poll",
+    ];
+    let word = query.split_whitespace().last().unwrap_or("");
+    if word.is_empty() || query.ends_with(char::is_whitespace) {
+        return Vec::new();
+    }
+    let lower = word.to_lowercase();
+    let choices = if lower.starts_with("has:") {
+        HAS
+    } else if lower.starts_with("-has:") {
+        NOT_HAS
+    } else if lower.contains(':') {
+        return Vec::new();
+    } else {
+        FILTERS
+    };
+    choices
+        .iter()
+        .copied()
+        .filter(|choice| choice.starts_with(&lower) && *choice != lower)
+        .take(8)
+        .collect()
+}
+
+fn apply_search_suggestion(query: &str, suggestion: &str) -> String {
+    let start = query
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(index, c)| index + c.len_utf8());
+    format!("{}{suggestion}", &query[..start])
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum BrowserTab {
     Search,
@@ -1221,6 +1296,24 @@ impl Fluxer {
                         .child(div().flex_1().min_w_0().child(self.search_ui.scope.clone()))
                         .child(div().flex_1().min_w_0().child(self.search_ui.sort.clone())),
                 );
+            let query = self.search.read(cx).content.to_string();
+            let suggestions = search_suggestions(&query);
+            if !suggestions.is_empty() {
+                let mut row = div().px_3().pb_2().flex().flex_wrap().gap_1();
+                for (index, suggestion) in suggestions.into_iter().enumerate() {
+                    row = row.child(
+                        quiet_button(("search-suggestion", index), suggestion).on_click(
+                            cx.listener(move |this, _, window, cx| {
+                                let query = this.search.read(cx).content.to_string();
+                                let completed = apply_search_suggestion(&query, suggestion);
+                                this.search.update(cx, |input, cx| input.set(completed, cx));
+                                this.search.focus_handle(cx).focus(window);
+                            }),
+                        ),
+                    );
+                }
+                body = body.child(row);
+            }
             if let Some(error) = &self.search_ui.local_error {
                 body = body.child(browse_state("Check your search", Some(error.clone())));
             } else if let Some(snapshot) = &self.search_ui.result {
@@ -1755,5 +1848,23 @@ mod tests {
         assert_eq!(fallback.len(), 120);
         assert_eq!(fallback.first().unwrap().id, Snowflake(181));
         assert_eq!(fallback.last().unwrap().id, Snowflake(300));
+    }
+}
+
+#[cfg(test)]
+mod search_suggestion_tests {
+    use super::{apply_search_suggestion, search_suggestions};
+
+    #[test]
+    fn completes_filter_names_and_has_values() {
+        assert!(search_suggestions("hello fro").contains(&"from:"));
+        assert!(search_suggestions("has:i").contains(&"has:image"));
+        assert!(search_suggestions("-has:").contains(&"-has:file"));
+        assert!(search_suggestions("from:alice").is_empty());
+        assert!(search_suggestions("hello ").is_empty());
+        assert_eq!(
+            apply_search_suggestion("hello\u{3000}fro", "from:"),
+            "hello\u{3000}from:"
+        );
     }
 }
