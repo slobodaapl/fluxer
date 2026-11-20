@@ -134,14 +134,16 @@ struct MentionsJob {
     snapshot: crate::MentionsSnapshot,
     task: Option<Task>,
 }
+struct ArchivedThreadsJob {
+    token: u64,
+    _task: Task,
+    channel_changes: BTreeMap<Snowflake, Option<Value>>,
+    membership_changes: BTreeMap<Snowflake, Option<Value>>,
+}
+
 pub(super) struct NavigationState {
     forum: Option<(u64, Task, BTreeMap<Snowflake, Option<Value>>)>,
-    archived_threads: Option<(
-        u64,
-        Task,
-        BTreeMap<Snowflake, Option<Value>>,
-        BTreeMap<Snowflake, Option<Value>>,
-    )>,
+    archived_threads: Option<ArchivedThreadsJob>,
     mentions: Option<MentionsJob>,
     epoch: u64,
     next: u64,
@@ -222,8 +224,12 @@ impl Worker {
                 result,
             });
         });
-        self.navigation.archived_threads =
-            Some((token, Task(task), BTreeMap::new(), BTreeMap::new()));
+        self.navigation.archived_threads = Some(ArchivedThreadsJob {
+            token,
+            _task: Task(task),
+            channel_changes: BTreeMap::new(),
+            membership_changes: BTreeMap::new(),
+        });
         Ok(())
     }
 
@@ -362,7 +368,7 @@ impl Worker {
                 self.navigation
                     .archived_threads
                     .iter_mut()
-                    .map(|(_, _, changes, _)| changes),
+                    .map(|job| &mut job.channel_changes),
             )
         {
             if name == "THREAD_DELETE" {
@@ -383,9 +389,10 @@ impl Worker {
         let Some(user) = self.state.current_user.as_ref().map(|user| user.id) else {
             return;
         };
-        let Some((_, _, _, changes)) = self.navigation.archived_threads.as_mut() else {
+        let Some(job) = self.navigation.archived_threads.as_mut() else {
             return;
         };
+        let changes = &mut job.membership_changes;
         let Some(id) = data
             .get("id")
             .and_then(Value::as_str)
@@ -1839,12 +1846,15 @@ impl Worker {
                         .navigation
                         .archived_threads
                         .as_ref()
-                        .is_some_and(|(current, _, _, _)| *current == token)
+                        .is_some_and(|job| job.token == token)
                 {
                     return;
                 }
-                let (_, _, changes, membership_changes) =
-                    self.navigation.archived_threads.take().unwrap();
+                let ArchivedThreadsJob {
+                    channel_changes: changes,
+                    membership_changes,
+                    ..
+                } = self.navigation.archived_threads.take().unwrap();
                 let Some(guild) = self
                     .state
                     .channels

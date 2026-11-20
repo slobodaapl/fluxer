@@ -1456,12 +1456,12 @@ async fn archived_page_preserves_membership_events_and_server_cursor_after_delet
         .unwrap()
         .to_string();
     let token = worker.navigation.token();
-    worker.navigation.archived_threads = Some((
+    worker.navigation.archived_threads = Some(ArchivedThreadsJob {
         token,
-        Task(tokio::spawn(pending())),
-        BTreeMap::new(),
-        BTreeMap::new(),
-    ));
+        _task: Task(tokio::spawn(pending())),
+        channel_changes: BTreeMap::new(),
+        membership_changes: BTreeMap::new(),
+    });
     worker.navigation_archive_membership_event(
         "THREAD_MEMBERS_UPDATE",
         &json!({"id":"91", "removed_member_ids":[user.clone()]}),
@@ -1480,10 +1480,9 @@ async fn archived_page_preserves_membership_events_and_server_cursor_after_delet
         ], "members":[{"id":"91", "user_id":user}], "has_more":true}))
     });
     assert!(
-        worker.state.channels[&91.into()]
+        !worker.state.channels[&91.into()]
             .extra
-            .get("member")
-            .is_none()
+            .contains_key("member")
     );
     assert_eq!(
         worker.state.channels[&92.into()].extra["member"]["flags"],
