@@ -3745,6 +3745,7 @@ dependencies = [
 name = "fluxer-client"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "fluxer-core",
  "fluxer-media",

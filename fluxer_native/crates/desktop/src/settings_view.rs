@@ -22,10 +22,30 @@ pub(super) struct ProfileEdit {
     name: Entity<TextInput>,
     bio: Entity<TextInput>,
     pronouns: Entity<TextInput>,
+    avatar: Option<crate::avatar_crop::AvatarImage>,
+    crop: crate::avatar_crop::Crop,
+    cropped: Option<crate::avatar_crop::CroppedAvatar>,
+    avatar_loading: bool,
+    avatar_generation: u64,
+    avatar_pending: bool,
+    avatar_feedback: Option<String>,
     pub pending: bool,
     pub feedback: Option<String>,
 }
 impl ProfileEdit {
+    pub fn avatar_status(&mut self, status: fluxer_client::RelationshipMutationStatus) {
+        use fluxer_client::RelationshipMutationStatus as Status;
+        self.avatar_pending = matches!(status, Status::Pending);
+        self.avatar_feedback = Some(match status {
+            Status::Pending => "Saving avatar…".into(),
+            Status::Complete => {
+                self.avatar = None;
+                self.cropped = None;
+                "Avatar saved".into()
+            }
+            Status::Failed(message) => message,
+        });
+    }
     pub fn new(cx: &mut Context<Fluxer>) -> Self {
         Self {
             name: cx.new(|cx| TextInput::new("Display name", cx)),
@@ -35,6 +55,13 @@ impl ProfileEdit {
                 input
             }),
             pronouns: cx.new(|cx| TextInput::new("Pronouns", cx)),
+            avatar: None,
+            crop: Default::default(),
+            cropped: None,
+            avatar_loading: false,
+            avatar_generation: 0,
+            avatar_pending: false,
+            avatar_feedback: None,
             pending: false,
             feedback: None,
         }
@@ -48,6 +75,12 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.pane == Pane::Settings
+            && self.settings_section == Section::Profile
+            && section != Section::Profile
+        {
+            self.clear_avatar_editor(cx);
+        }
         // Recording belongs to the visible Keybinds page, never a hidden page
         // reached through another section or navigation shortcut.
         self.interface.recording = None;
@@ -167,6 +200,9 @@ impl Fluxer {
     }
 
     pub(super) fn close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.settings_section == Section::Profile {
+            self.clear_avatar_editor(cx);
+        }
         self.interface.recording = None;
         self.pane = self.settings_return;
         if self.pane == Pane::Chat {
@@ -177,6 +213,193 @@ impl Fluxer {
         cx.notify();
     }
 
+    fn clear_avatar_editor(&mut self, cx: &mut Context<Self>) {
+        self.profile_edit.avatar_generation = self.profile_edit.avatar_generation.wrapping_add(1);
+        self.profile_edit.avatar_loading = false;
+        self.profile_edit.avatar = None;
+        self.profile_edit.cropped = None;
+        self.profile_edit.avatar_feedback = None;
+        if self.profile_edit.avatar_pending {
+            self.command(Command::CancelOwnProfile, cx);
+        }
+    }
+    fn pick_avatar(&mut self, cx: &mut Context<Self>) {
+        if self.profile_edit.avatar_loading || self.profile_edit.avatar_pending {
+            return;
+        }
+        self.profile_edit.avatar_loading = true;
+        self.profile_edit.avatar_generation = self.profile_edit.avatar_generation.wrapping_add(1);
+        let generation = self.profile_edit.avatar_generation;
+        let account = self.state.current_user.as_ref().map(|u| u.id);
+        let picker = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose a static PNG or JPEG avatar".into()),
+        });
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |entity, cx| {
+            let picked = picker.await;
+            let result = match picked {
+                Ok(Ok(Some(paths))) => match paths.into_iter().next() {
+                    Some(path) => Some(
+                        executor
+                            .spawn(async move { crate::avatar_crop::AvatarImage::load(&path) })
+                            .await,
+                    ),
+                    None => None,
+                },
+                Ok(Ok(None)) => None,
+                Ok(Err(e)) => Some(Err(format!("Could not open file picker: {e}"))),
+                Err(_) => Some(Err("File picker closed unexpectedly".into())),
+            };
+            let _ = entity.update(cx, |this, cx| {
+                if this.profile_edit.avatar_generation != generation
+                    || this.state.current_user.as_ref().map(|u| u.id) != account
+                {
+                    return;
+                }
+                this.profile_edit.avatar_loading = false;
+                if let Some(result) = result {
+                    match result {
+                        Ok(image) => {
+                            this.profile_edit.avatar = Some(image);
+                            this.profile_edit.crop = Default::default();
+                            this.refresh_avatar_crop();
+                        }
+                        Err(e) => this.profile_edit.avatar_feedback = Some(e),
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+    fn refresh_avatar_crop(&mut self) {
+        if let Some(image) = &self.profile_edit.avatar {
+            match image.crop(self.profile_edit.crop) {
+                Ok(cropped) => {
+                    self.profile_edit.cropped = Some(cropped);
+                    self.profile_edit.avatar_feedback = None;
+                }
+                Err(error) => {
+                    self.profile_edit.cropped = None;
+                    self.profile_edit.avatar_feedback = Some(error);
+                }
+            }
+        }
+    }
+    fn avatar_settings(&self, cx: &mut Context<Self>) -> AnyElement {
+        let busy = self.profile_edit.avatar_pending
+            || self.profile_edit.avatar_loading
+            || self.profile_edit.pending;
+        let mut body = div().mt_4().flex().flex_col().gap_2().child(
+            div()
+                .text_size(px(12.))
+                .text_color(rgb(MUTED))
+                .child("AVATAR"),
+        );
+        if let Some(cropped) = &self.profile_edit.cropped {
+            body = body.child(
+                img(cropped.preview.clone())
+                    .w(px(128.))
+                    .h(px(128.))
+                    .object_fit(ObjectFit::Cover),
+            );
+        } else if let Some(user) = &self.state.current_user {
+            body = body.child(crate::avatar_images::user_avatar(
+                user,
+                self.media_endpoint.as_deref(),
+                128.,
+            ));
+        }
+        body = body.child(muted("Choose a static PNG or JPEG, up to 10 MB."));
+        body = body.child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    quiet_button(
+                        "avatar-choose",
+                        if self.profile_edit.avatar_loading {
+                            "Loading…"
+                        } else {
+                            "Choose image"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !busy {
+                            this.pick_avatar(cx);
+                        }
+                    })),
+                )
+                .child(
+                    quiet_button("avatar-remove", "Remove avatar").on_click(cx.listener(
+                        move |this, _, _, cx| {
+                            if !busy {
+                                this.profile_edit.avatar_pending = true;
+                                this.profile_edit.avatar_feedback = Some("Removing avatar…".into());
+                                this.command(Command::UpdateOwnAvatar { png: None }, cx);
+                            }
+                        },
+                    )),
+                ),
+        );
+        if self.profile_edit.cropped.is_some() {
+            body = body.child(muted(format!(
+                "Zoom {:.1}× · horizontal {:.0}% · vertical {:.0}%",
+                self.profile_edit.crop.zoom,
+                self.profile_edit.crop.x * 100.,
+                self.profile_edit.crop.y * 100.
+            )));
+            for (id, label, dz, dx, dy) in [
+                ("avatar-zoom-out", "Zoom out", -0.25, 0., 0.),
+                ("avatar-zoom-in", "Zoom in", 0.25, 0., 0.),
+                ("avatar-left", "Move crop left", 0., -0.2, 0.),
+                ("avatar-right", "Move crop right", 0., 0.2, 0.),
+                ("avatar-up", "Move crop up", 0., 0., -0.2),
+                ("avatar-down", "Move crop down", 0., 0., 0.2),
+            ] {
+                body = body.child(quiet_button(id, label).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        if !busy {
+                            let crop = &mut this.profile_edit.crop;
+                            crop.zoom = (crop.zoom + dz).clamp(1., 5.);
+                            crop.x = (crop.x + dx).clamp(-1., 1.);
+                            crop.y = (crop.y + dy).clamp(-1., 1.);
+                            this.refresh_avatar_crop();
+                            cx.notify();
+                        }
+                    },
+                )));
+            }
+            body = body.child(
+                quiet_button("avatar-save", "Save avatar").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        if !busy {
+                            if let Some(crop) = &this.profile_edit.cropped {
+                                let png = crop.png.clone();
+                                this.profile_edit.avatar_pending = true;
+                                this.profile_edit.avatar_feedback = Some("Saving avatar…".into());
+                                this.command(Command::UpdateOwnAvatar { png: Some(png) }, cx);
+                            }
+                        }
+                    },
+                )),
+            );
+        }
+        if self.profile_edit.avatar_pending {
+            body = body.child(
+                quiet_button("avatar-cancel", "Cancel avatar save").on_click(
+                    cx.listener(|this, _, _, cx| this.command(Command::CancelOwnProfile, cx)),
+                ),
+            );
+        }
+        if let Some(feedback) = &self.profile_edit.avatar_feedback {
+            body = body.child(muted(feedback));
+        }
+        body.into_any_element()
+    }
     fn profile_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let field = |title: &'static str, input: Entity<TextInput>| {
             div()
@@ -187,7 +410,7 @@ impl Fluxer {
                 .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(title))
                 .child(input)
         };
-        let pending = self.profile_edit.pending;
+        let pending = self.profile_edit.pending || self.profile_edit.avatar_pending;
         div()
             .id("profile-settings-body")
             .flex_1()
@@ -202,6 +425,7 @@ impl Fluxer {
                     .flex_col()
                     .child(settings_heading("My profile"))
                     .child(muted("Your profile is visible to others across Fluxer."))
+                    .child(self.avatar_settings(cx))
                     .child(field("DISPLAY NAME", self.profile_edit.name.clone()))
                     .child(field("PRONOUNS", self.profile_edit.pronouns.clone()))
                     .child(field("ABOUT ME", self.profile_edit.bio.clone()))

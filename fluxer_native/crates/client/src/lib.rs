@@ -166,6 +166,10 @@ pub enum Command {
         reply: tokio::sync::oneshot::Sender<Result<Option<CallControlSnapshot>, String>>,
     },
     UpdateDisplaySetting(fluxer_core::DisplaySetting),
+    UpdateOwnAvatar {
+        png: Option<Vec<u8>>,
+    },
+    CancelOwnProfile,
     UpdateOwnProfile {
         global_name: String,
         bio: String,
@@ -566,6 +570,7 @@ pub enum Event {
     PresenceMutation(RelationshipMutationStatus),
     DisplaySettingsMutation(RelationshipMutationStatus),
     OwnProfileMutation(RelationshipMutationStatus),
+    OwnAvatarMutation(RelationshipMutationStatus),
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,

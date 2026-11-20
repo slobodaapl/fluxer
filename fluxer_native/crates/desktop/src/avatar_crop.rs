@@ -126,7 +126,12 @@ impl AvatarImage {
                 image::ExtendedColorType::Rgba8,
             )
             .map_err(|e| format!("Could not prepare avatar: {e}"))?;
-        let preview = Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]));
+        // GPUI render images use BGRA, while the encoded PNG remains RGBA.
+        let mut preview_pixels = pixels;
+        for pixel in preview_pixels.pixels_mut() {
+            pixel.0.swap(0, 2);
+        }
+        let preview = Arc::new(RenderImage::new(vec![image::Frame::new(preview_pixels)]));
         Ok(CroppedAvatar { preview, png })
     }
 }

@@ -972,6 +972,9 @@ impl Fluxer {
                 Event::Gifs { request, result } => self.show_gif_results(request, result),
                 Event::ShareReshareRequired => self.reshare_required = true,
                 Event::PresenceMutation(status) => self.handle_presence_mutation(status, cx),
+                Event::OwnAvatarMutation(status) => {
+                    self.profile_edit.avatar_status(status);
+                }
                 Event::OwnProfileMutation(status) => {
                     self.profile_edit.pending =
                         matches!(status, fluxer_client::RelationshipMutationStatus::Pending);

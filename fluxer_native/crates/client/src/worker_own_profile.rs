@@ -1,8 +1,10 @@
 use super::*;
 use crate::RelationshipMutationStatus as Status;
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 struct Job {
     generation: u64,
+    avatar: bool,
     account: Snowflake,
     task: JoinHandle<()>,
 }
@@ -42,10 +44,8 @@ fn patch(global_name: String, bio: String, pronouns: String) -> Value {
 impl Worker {
     pub(super) fn clear_own_profile(&mut self) {
         self.own_profile.next = self.own_profile.next.wrapping_add(1);
-        if self.own_profile.job.take().is_some() {
-            self.emit(Event::OwnProfileMutation(Status::Failed(
-                "Profile save cancelled".into(),
-            )));
+        if let Some(job) = self.own_profile.job.take() {
+            self.own_profile_status(job.avatar, Status::Failed("Profile save cancelled".into()));
         }
     }
     pub(super) fn update_own_profile(
@@ -54,14 +54,32 @@ impl Worker {
         bio: String,
         pronouns: String,
     ) -> Result<()> {
+        self.update_own_profile_patch(patch(name, bio, pronouns), false)
+    }
+    pub(super) fn update_own_avatar(&mut self, png: Option<Vec<u8>>) -> Result<()> {
+        if png.as_ref().is_some_and(|data| {
+            data.len() > 10 * 1024 * 1024 || !data.starts_with(b"\x89PNG\r\n\x1a\n")
+        }) {
+            return Err("Invalid or oversized avatar image".into());
+        }
+        let avatar = png.map(|data| format!("data:image/png;base64,{}", STANDARD.encode(data)));
+        self.update_own_profile_patch(json!({"avatar": avatar}), true)
+    }
+    fn own_profile_status(&self, avatar: bool, status: Status) {
+        self.emit(if avatar {
+            Event::OwnAvatarMutation(status)
+        } else {
+            Event::OwnProfileMutation(status)
+        });
+    }
+    fn update_own_profile_patch(&mut self, patch: Value, avatar: bool) -> Result<()> {
         let current = self.state.current_user.clone().ok_or("Sign in first")?;
         if self.own_profile.job.is_some() {
             return Err("A profile save is already pending".into());
         }
-        let patch = patch(name, bio, pronouns);
         if self.demo {
             self.project_own_profile(current.id, patch)?;
-            self.emit(Event::OwnProfileMutation(Status::Complete));
+            self.own_profile_status(avatar, Status::Complete);
             return Ok(());
         }
         let client = self.client.clone().ok_or("Not signed in")?;
@@ -82,10 +100,11 @@ impl Worker {
         });
         self.own_profile.job = Some(Job {
             generation,
+            avatar,
             account: current.id,
             task,
         });
-        self.emit(Event::OwnProfileMutation(Status::Pending));
+        self.own_profile_status(avatar, Status::Pending);
         Ok(())
     }
     pub(super) fn own_profile_event(&mut self, event: OwnProfileEvent) {
@@ -96,14 +115,18 @@ impl Worker {
             return;
         }
         let account = job.account;
+        let avatar = job.avatar;
         self.own_profile.job.take();
         let result = event
             .result
             .and_then(|response| self.project_own_profile(account, response));
-        self.emit(Event::OwnProfileMutation(match result {
-            Ok(()) => Status::Complete,
-            Err(message) => Status::Failed(message),
-        }));
+        self.own_profile_status(
+            avatar,
+            match result {
+                Ok(()) => Status::Complete,
+                Err(message) => Status::Failed(message),
+            },
+        );
     }
     fn project_own_profile(&mut self, account: Snowflake, response: Value) -> Result<()> {
         let current = self

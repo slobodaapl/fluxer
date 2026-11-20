@@ -1328,6 +1328,14 @@ impl Worker {
                 self.persist_selection().await;
                 self.snapshot();
             }
+            Command::CancelOwnProfile => self.clear_own_profile(),
+            Command::UpdateOwnAvatar { png } => {
+                if let Err(message) = self.update_own_avatar(png) {
+                    self.emit(Event::OwnAvatarMutation(
+                        crate::RelationshipMutationStatus::Failed(message),
+                    ));
+                }
+            }
             Command::UpdateOwnProfile {
                 global_name,
                 bio,
