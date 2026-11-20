@@ -47,6 +47,8 @@ pub enum Error {
     },
     #[error("rate limited; retry after {retry_after:?}")]
     RateLimited { retry_after: Duration, global: bool },
+    #[error("an authenticated session is required")]
+    SessionRequired,
     #[error("authentication response omitted token or user ID")]
     InvalidAuthResponse,
     #[error("gateway transport failed")]

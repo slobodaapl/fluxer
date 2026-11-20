@@ -28,6 +28,8 @@ mod bans_flow;
 mod call_jobs;
 #[path = "worker_channels.rs"]
 mod channel_flow;
+#[path = "worker_commerce.rs"]
+mod commerce_flow;
 #[path = "worker_community.rs"]
 mod community_flow;
 #[path = "worker_settings.rs"]
@@ -238,6 +240,7 @@ pub(crate) struct Worker {
     profiles: profile_flow::ProfileState,
     own_profile: own_profile_flow::OwnProfileState,
     connections_task: Option<JoinHandle<()>>,
+    commerce_task: Option<JoinHandle<()>>,
     account_sessions_task: Option<JoinHandle<()>>,
     roles: role_flow::RoleState,
     community: community_flow::CommunityState,
@@ -342,6 +345,7 @@ impl Worker {
             profiles: profile_flow::ProfileState::new(),
             own_profile: own_profile_flow::OwnProfileState::new(),
             connections_task: None,
+            commerce_task: None,
             account_sessions_task: None,
             roles: role_flow::RoleState::new(),
             community: community_flow::CommunityState::new(),
@@ -1068,6 +1072,7 @@ impl Worker {
         if let Some(task) = self.connections_task.take() {
             task.abort();
         }
+        self.cancel_commerce();
         if let Some(task) = self.account_sessions_task.take() {
             task.abort();
         }
@@ -1432,6 +1437,7 @@ impl Worker {
                     let _ = events.send(Event::Connections { request_id, result });
                 }));
             }
+            Command::FetchCommerce { request_id, view } => self.fetch_commerce(request_id, view),
             Command::FetchAccountSessions { request_id } => {
                 let client = self.client()?;
                 let events = self.events.clone();

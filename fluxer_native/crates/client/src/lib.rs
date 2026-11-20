@@ -192,6 +192,10 @@ pub enum Command {
         request_id: u64,
         update: Option<(String, String, i64)>,
     },
+    FetchCommerce {
+        request_id: u64,
+        view: CommerceView,
+    },
     FetchAccountSessions {
         request_id: u64,
     },
@@ -676,6 +680,17 @@ pub enum InviteStatus {
     Failed(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommerceView {
+    Plutonium,
+    Gifts,
+}
+
+pub enum CommerceData {
+    Plutonium(fluxer_protocol::PremiumStatus),
+    Gifts(Vec<fluxer_protocol::GiftInventoryEntry>),
+}
+
 pub enum Event {
     AuditLog {
         request_id: u64,
@@ -708,6 +723,10 @@ pub enum Event {
     Connections {
         request_id: u64,
         result: Result<serde_json::Value, String>,
+    },
+    Commerce {
+        request_id: u64,
+        result: Result<CommerceData, String>,
     },
     AccountSessions {
         request_id: u64,

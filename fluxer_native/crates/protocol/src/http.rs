@@ -668,6 +668,23 @@ impl Client {
         self.request(Method::POST, "/auth/logout", None).await?;
         Ok(())
     }
+    pub async fn premium_status(&self) -> Result<crate::PremiumStatus> {
+        self.read_commerce("/premium/state").await
+    }
+
+    pub async fn gift_inventory(&self) -> Result<Vec<crate::GiftInventoryEntry>> {
+        self.read_commerce("/users/@me/gifts").await
+    }
+
+    async fn read_commerce<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T> {
+        if self.token.is_none() {
+            return Err(Error::SessionRequired);
+        }
+        Ok(serde_json::from_value(
+            self.request(Method::GET, path, None).await?,
+        )?)
+    }
+
     pub async fn current_user(&self) -> Result<Value> {
         self.request(Method::GET, "/users/@me", None).await
     }
@@ -1579,6 +1596,107 @@ mod tests {
             .with_auth_locale("fr")
             .unwrap()
     }
+    #[tokio::test]
+    async fn commerce_routes_use_the_raw_session_token_and_decode_entitlements_and_gifts() {
+        let (base, requests, server) = handoff_server(vec![
+            (
+                200,
+                json!({
+                    "actual": {
+                        "is_visionary": false,
+                        "has_active_paid_premium": true,
+                        "premium_since": "2026-01-01T00:00:00Z",
+                        "premium_until": "2027-01-01T00:00:00Z",
+                        "premium_will_cancel": true,
+                        "premium_billing_cycle": "yearly",
+                        "premium_lifetime_sequence": null,
+                        "premium_grace_ends_at": null
+                    },
+                    "effective": {
+                        "is_premium": false,
+                        "premium_perks_disabled": true,
+                        "self_hosted": false
+                    },
+                    "subscription_provider": "app_store",
+                    "billing": {"invoices": []}
+                }),
+            ),
+            (
+                200,
+                json!([
+                    {
+                        "code": "mock-unused",
+                        "duration_type": "months",
+                        "duration_quantity": 1,
+                        "created_at": "2026-02-03T00:00:00Z",
+                        "created_by": {"id": "100", "username": "sender"},
+                        "redeemed_at": null,
+                        "redeemed_by": null
+                    },
+                    {
+                        "code": "mock-used",
+                        "duration_type": "years",
+                        "duration_quantity": 1,
+                        "created_at": "2026-02-03T00:00:00Z",
+                        "created_by": {"id": "100", "username": "sender"},
+                        "redeemed_at": "2026-03-03T00:00:00Z",
+                        "redeemed_by": {"id": "200", "username": "recipient"}
+                    }
+                ]),
+            ),
+            (403, json!({"code":"ACCESS_DENIED"})),
+            (404, json!({"code":"ROUTE_NOT_FOUND"})),
+        ])
+        .await;
+        let client = handoff_test_client(&base);
+        let unsigned = Client::new(client.instance().clone()).unwrap();
+        assert!(matches!(
+            unsigned.premium_status().await,
+            Err(Error::SessionRequired)
+        ));
+        assert!(matches!(
+            unsigned.gift_inventory().await,
+            Err(Error::SessionRequired)
+        ));
+        let status = client.premium_status().await.unwrap();
+        assert!(status.actual.has_active_paid_premium);
+        assert!(!status.effective.is_premium);
+        assert!(status.effective.premium_perks_disabled);
+        assert!(matches!(
+            status.subscription_provider,
+            Some(crate::SubscriptionProvider::AppStore)
+        ));
+        let gifts = client.gift_inventory().await.unwrap();
+        assert_eq!(gifts.len(), 2);
+        assert_eq!(gifts[0].code, "mock-unused");
+        assert!(gifts[0].redeemed_at.is_none());
+        assert_eq!(gifts[1].redeemed_by.as_ref().unwrap().username, "recipient");
+        assert!(matches!(
+            client.premium_status().await,
+            Err(Error::Api { status: 403, .. })
+        ));
+        assert!(matches!(
+            client.gift_inventory().await,
+            Err(Error::Api { status: 404, .. })
+        ));
+
+        server.await.unwrap();
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        for (request, path) in requests.iter().zip([
+            "/api/v1/premium/state",
+            "/api/v1/users/@me/gifts",
+            "/api/v1/premium/state",
+            "/api/v1/users/@me/gifts",
+        ]) {
+            assert_eq!(request.path, path);
+            assert_eq!(request.method, "GET");
+            assert!(request.body.is_empty());
+            assert!(!request.headers.contains_key("origin"));
+            assert_eq!(request.headers["authorization"], "existing-account-token");
+        }
+    }
+
     fn handoff_initiate_payload() -> Value {
         json!({"code":"ABC-123","expires_at":"2099-01-01T00:00:00Z","poll_secret":"private_poll_proof","return_method":"deep_link"})
     }

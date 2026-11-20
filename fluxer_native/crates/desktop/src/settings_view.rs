@@ -2,12 +2,14 @@
 //! Source-style settings navigation, separate from ordinary channel navigation.
 use super::*;
 use crate::controls::{Icon, icon_button, quiet_button};
+use fluxer_client::CommerceView;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Section {
     Profile,
     AccountSessions,
     Connections,
+    Commerce(CommerceView),
     Appearance,
     Privacy,
     Accessibility,
@@ -189,6 +191,7 @@ impl Fluxer {
         {
             self.clear_session_revocation(cx);
         }
+        self.commerce.clear();
         self.settings_section = section;
         self.pane = Pane::Settings;
         if section == Section::Connections && !self.demo {
@@ -199,6 +202,9 @@ impl Fluxer {
             self.account_sessions_request = Some(request_id);
             self.account_sessions = None;
             self.command(Command::FetchAccountSessions { request_id }, cx);
+        }
+        if let Section::Commerce(view) = section {
+            self.load_commerce(view, cx);
         }
         if section == Section::Voice && !self.demo {
             self.command(Command::RefreshDevices, cx);
@@ -537,6 +543,7 @@ impl Fluxer {
         }
         self.interface.recording = None;
         self.clear_session_revocation(cx);
+        self.commerce.clear();
         self.pane = self.settings_return;
         if self.pane == Pane::Chat {
             self.composer.focus_handle(cx).focus(window);
@@ -1097,6 +1104,7 @@ impl Fluxer {
             Section::Profile => self.profile_settings(cx),
             Section::AccountSessions => self.account_sessions_view(cx),
             Section::Connections => self.connections_view(cx),
+            Section::Commerce(view) => self.commerce_settings(view, cx),
             Section::Voice => self.voice_settings(cx),
             Section::Privacy
             | Section::Appearance
@@ -1122,9 +1130,11 @@ impl Fluxer {
             .flex()
             .child(
                 div()
+                    .id("settings-navigation")
                     .w(px(200.))
                     .flex_shrink_0()
                     .h_full()
+                    .overflow_y_scroll()
                     .bg(rgb(self.interface.base_theme().panel()))
                     .p_4()
                     .flex()
@@ -1152,6 +1162,16 @@ impl Fluxer {
                                 "settings-account-sessions",
                                 "Devices",
                             ),
+                            (
+                                Section::Commerce(CommerceView::Plutonium),
+                                "settings-plutonium",
+                                "Plutonium",
+                            ),
+                            (
+                                Section::Commerce(CommerceView::Gifts),
+                                "settings-gifts",
+                                "Gifts & codes",
+                            ),
                             (Section::Appearance, "settings-appearance", "Appearance"),
                             (
                                 Section::Accessibility,
@@ -1178,6 +1198,9 @@ impl Fluxer {
                             ),
                         ]
                         .into_iter()
+                        .filter(|(section, _, _)| {
+                            !matches!(section, Section::Commerce(_)) || self.commerce_visible()
+                        })
                         .map(|(section, id, label)| {
                             button_base(id)
                                 .w_full()

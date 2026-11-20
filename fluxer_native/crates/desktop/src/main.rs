@@ -11,6 +11,7 @@ mod camera_view;
 mod channel_sidebar;
 mod chat_helpers;
 mod chat_view;
+mod commerce_view;
 mod community_view;
 mod composer_candidates;
 mod composer_slowmode;
@@ -365,6 +366,7 @@ struct Fluxer {
     settings_section: settings_view::Section,
     connections_request: Option<u64>,
     connections: Option<Result<serde_json::Value, String>>,
+    commerce: commerce_view::CommerceSettings,
     account_sessions_request: Option<u64>,
     account_sessions: Option<Result<serde_json::Value, String>>,
     session_revocation: Option<settings_view::SessionRevocation>,
@@ -549,6 +551,7 @@ impl Fluxer {
             settings_section: settings_view::Section::Voice,
             connections_request: None,
             connections: None,
+            commerce: commerce_view::CommerceSettings::default(),
             account_sessions_request: None,
             account_sessions: None,
             session_revocation: None,
@@ -1083,6 +1086,7 @@ impl Fluxer {
                         self.connections = Some(result);
                     }
                 }
+                Event::Commerce { request_id, result } => self.commerce.finish(request_id, result),
                 Event::AccountSessions { request_id, result } => {
                     if self.account_sessions_request == Some(request_id) {
                         self.account_sessions_request = None;
@@ -1183,6 +1187,11 @@ impl Fluxer {
                                 .and_then(serde_json::Value::as_bool)
                                 != Some(true)
                     });
+                    self.commerce.clear();
+                    self.commerce.visible = document
+                        .as_ref()
+                        .and_then(|value| value.get("features"))
+                        .is_some_and(fluxer_protocol::premium_features_visible);
                     avatar_images::configure_instance(document.as_ref());
                     emoji_sprites::configure_instance(document.as_ref());
                     if let Some(document) = document {
@@ -1252,6 +1261,7 @@ impl Fluxer {
                     if previous_user != self.state.current_user.as_ref().map(|user| user.id) {
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.inbox_ui.reset();
+                        self.commerce.clear();
                     }
                     self.refresh_composer_completion(cx);
                     if self
