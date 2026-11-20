@@ -55,6 +55,7 @@ pub(crate) struct Callbacks {
     appearance_changed: Option<Box<dyn FnMut()>>,
 }
 
+#[derive(Clone, Copy)]
 struct RawWindow {
     window: *mut c_void,
     display: *mut c_void,
@@ -104,6 +105,7 @@ pub struct WaylandWindowState {
     outputs: HashMap<ObjectId, Output>,
     display: Option<(ObjectId, Output)>,
     globals: Globals,
+    raw_window: RawWindow,
     renderer: BladeRenderer,
     bounds: Bounds<Pixels>,
     scale: f32,
@@ -144,16 +146,16 @@ impl WaylandWindowState {
         gpu_context: &BladeContext,
         options: WindowParams,
     ) -> anyhow::Result<Self> {
+        let raw_window = RawWindow {
+            window: surface.id().as_ptr().cast::<c_void>(),
+            display: surface
+                .backend()
+                .upgrade()
+                .unwrap()
+                .display_ptr()
+                .cast::<c_void>(),
+        };
         let renderer = {
-            let raw_window = RawWindow {
-                window: surface.id().as_ptr().cast::<c_void>(),
-                display: surface
-                    .backend()
-                    .upgrade()
-                    .unwrap()
-                    .display_ptr()
-                    .cast::<c_void>(),
-            };
             let config = BladeSurfaceConfig {
                 size: gpu::Extent {
                     width: options.bounds.size.width.0 as u32,
@@ -185,6 +187,7 @@ impl WaylandWindowState {
             globals,
             outputs: HashMap::default(),
             display: None,
+            raw_window,
             renderer,
             bounds: options.bounds,
             scale: 1.0,
@@ -1224,8 +1227,9 @@ impl PlatformWindow for WaylandWindow {
 
     fn draw(&self, scene: &Scene) {
         let mut state = self.borrow_mut();
-        if state.redraw.can_draw() {
-            state.renderer.draw(scene);
+        if state.redraw.can_draw() && state.surface.is_alive() {
+            let raw_window = state.raw_window;
+            state.renderer.draw(scene, &raw_window);
         }
     }
 

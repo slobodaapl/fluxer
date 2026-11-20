@@ -227,6 +227,7 @@ fn find_visuals(xcb: &XCBConnection, screen_index: usize) -> VisualSet {
     set
 }
 
+#[derive(Clone, Copy)]
 struct RawWindow {
     connection: *mut c_void,
     screen_id: usize,
@@ -257,6 +258,7 @@ pub struct X11WindowState {
     pub(crate) last_sync_counter: Option<sync::Int64>,
     bounds: Bounds<Pixels>,
     scale_factor: f32,
+    raw_window: RawWindow,
     renderer: BladeRenderer,
     display: Rc<dyn PlatformDisplay>,
     input_handler: Option<PlatformInputHandler>,
@@ -643,15 +645,14 @@ impl X11WindowState {
 
             xcb_flush(xcb);
 
+            let raw_window = RawWindow {
+                connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(xcb)
+                    as *mut _,
+                screen_id: x_screen_index,
+                window_id: x_window,
+                visual_id: visual.id,
+            };
             let renderer = {
-                let raw_window = RawWindow {
-                    connection: as_raw_xcb_connection::AsRawXcbConnection::as_raw_xcb_connection(
-                        xcb,
-                    ) as *mut _,
-                    screen_id: x_screen_index,
-                    window_id: x_window,
-                    visual_id: visual.id,
-                };
                 let config = BladeSurfaceConfig {
                     // Note: this has to be done after the GPU init, or otherwise
                     // the sizes are immediately invalidated.
@@ -674,6 +675,7 @@ impl X11WindowState {
                 x_root_window: visual_set.root,
                 bounds: bounds.to_pixels(scale_factor),
                 scale_factor,
+                raw_window,
                 renderer,
                 atoms: *atoms,
                 input_handler: None,
@@ -1544,8 +1546,9 @@ impl PlatformWindow for X11Window {
 
     fn draw(&self, scene: &Scene) {
         let mut inner = self.0.state.borrow_mut();
-        if !inner.tray_hidden {
-            inner.renderer.draw(scene);
+        if !inner.tray_hidden && !inner.destroyed {
+            let raw_window = inner.raw_window;
+            inner.renderer.draw(scene, &raw_window);
         }
     }
 

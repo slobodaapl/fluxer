@@ -74,3 +74,10 @@ under the Unlicense. Its original notice is retained in
 existing stable icon/template artwork and renders the source-style unread dot.
 The integration uses StatusNotifierItem/dbusmenu and the existing worker actions;
 it does not introduce a client/server protocol.
+
+## Blade Graphics
+
+[`compat/blade-graphics`](compat/blade-graphics) contains Blade Graphics 0.7.1
+with a Vulkan surface recovery patch. The source is from
+[Blade revision 88b6c64](https://github.com/kvark/blade/tree/88b6c64cd7a32dd933acc4e5266808a07143ce84/blade-graphics).
+The upstream [MIT license](compat/blade-graphics/LICENSE) is included.

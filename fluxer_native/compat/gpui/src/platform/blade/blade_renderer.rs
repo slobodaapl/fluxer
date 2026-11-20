@@ -12,6 +12,8 @@ use bytemuck::{Pod, Zeroable};
 #[cfg(target_os = "macos")]
 use media::core_video::CVMetalTextureCache;
 use std::sync::Arc;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+use std::time::{Duration, Instant};
 
 const MAX_FRAME_TIME_MS: u32 = 10000;
 
@@ -328,6 +330,8 @@ pub struct BladeRenderer {
     gpu: Arc<gpu::Context>,
     surface: gpu::Surface,
     surface_config: gpu::SurfaceConfig,
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    surface_retry_at: Option<Instant>,
     command_encoder: gpu::CommandEncoder,
     last_sync_point: Option<gpu::SyncPoint>,
     pipelines: BladePipelines,
@@ -414,6 +418,8 @@ impl BladeRenderer {
             gpu: Arc::clone(&context.gpu),
             surface,
             surface_config,
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            surface_retry_at: None,
             command_encoder,
             last_sync_point: None,
             pipelines,
@@ -482,10 +488,53 @@ impl BladeRenderer {
         };
 
         if always_resize || gpu_size != self.surface_config.size {
-            self.wait_for_gpu();
             self.surface_config.size = gpu_size;
-            self.gpu
-                .reconfigure_surface(&mut self.surface, self.surface_config);
+            self.reconfigure_surface(true);
+        }
+    }
+
+    pub fn update_transparency(&mut self, transparent: bool) {
+        if transparent != self.surface_config.transparent {
+            self.surface_config.transparent = transparent;
+            self.reconfigure_surface(false);
+        }
+    }
+
+    fn reconfigure_surface(&mut self, resized: bool) {
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if self.surface_retry_at.is_some() {
+            return;
+        }
+        self.wait_for_gpu();
+        let previous = self.surface.info();
+
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Err(error) = self
+            .gpu
+            .try_reconfigure_surface(&mut self.surface, self.surface_config)
+        {
+            log::warn!("Vulkan surface reconfiguration failed: {error}");
+            self.surface_retry_at = Some(Instant::now());
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        self.gpu
+            .reconfigure_surface(&mut self.surface, self.surface_config);
+
+        self.update_surface_resources(previous, resized);
+    }
+
+    fn update_surface_resources(&mut self, previous: gpu::SurfaceInfo, resized: bool) {
+        let current = self.surface.info();
+        if previous != current {
+            self.pipelines.destroy(&self.gpu);
+            self.pipelines = BladePipelines::new(
+                &self.gpu,
+                current,
+                self.rendering_parameters.path_sample_count,
+            );
+        }
+        if resized || previous.format != current.format {
             self.gpu.destroy_texture(self.path_intermediate_texture);
             self.gpu
                 .destroy_texture_view(self.path_intermediate_texture_view);
@@ -495,41 +544,27 @@ impl BladeRenderer {
             if let Some(msaa_view) = self.path_intermediate_msaa_texture_view {
                 self.gpu.destroy_texture_view(msaa_view);
             }
-            let (path_intermediate_texture, path_intermediate_texture_view) =
-                create_path_intermediate_texture(
-                    &self.gpu,
-                    self.surface.info().format,
-                    gpu_size.width,
-                    gpu_size.height,
-                );
-            self.path_intermediate_texture = path_intermediate_texture;
-            self.path_intermediate_texture_view = path_intermediate_texture_view;
-            let (path_intermediate_msaa_texture, path_intermediate_msaa_texture_view) =
-                create_msaa_texture_if_needed(
-                    &self.gpu,
-                    self.surface.info().format,
-                    gpu_size.width,
-                    gpu_size.height,
-                    self.rendering_parameters.path_sample_count,
-                )
-                .unzip();
-            self.path_intermediate_msaa_texture = path_intermediate_msaa_texture;
-            self.path_intermediate_msaa_texture_view = path_intermediate_msaa_texture_view;
-        }
-    }
-
-    pub fn update_transparency(&mut self, transparent: bool) {
-        if transparent != self.surface_config.transparent {
-            self.wait_for_gpu();
-            self.surface_config.transparent = transparent;
-            self.gpu
-                .reconfigure_surface(&mut self.surface, self.surface_config);
-            self.pipelines.destroy(&self.gpu);
-            self.pipelines = BladePipelines::new(
+            let size = self.surface_config.size;
+            (
+                self.path_intermediate_texture,
+                self.path_intermediate_texture_view,
+            ) = create_path_intermediate_texture(
                 &self.gpu,
-                self.surface.info(),
-                self.rendering_parameters.path_sample_count,
+                current.format,
+                size.width,
+                size.height,
             );
+            (
+                self.path_intermediate_msaa_texture,
+                self.path_intermediate_msaa_texture_view,
+            ) = create_msaa_texture_if_needed(
+                &self.gpu,
+                current.format,
+                size.width,
+                size.height,
+                self.rendering_parameters.path_sample_count,
+            )
+            .unzip();
         }
     }
 
@@ -647,14 +682,67 @@ impl BladeRenderer {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub fn draw(&mut self, scene: &Scene) {
-        self.command_encoder.start();
-        self.atlas.before_frame(&mut self.command_encoder, scene);
-
         let frame = {
             profiling::scope!("acquire frame");
             self.surface.acquire_frame()
         };
+        self.draw_frame(scene, frame);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub fn draw(
+        &mut self,
+        scene: &Scene,
+        window: &(impl raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle),
+    ) {
+        // An initial failure can be recovered during the same frame callback.
+        // If the window remains unavailable, throttle future recovery attempts.
+        for attempt in 0..2 {
+            if let Some(retry_at) = self.surface_retry_at {
+                if Instant::now() < retry_at {
+                    return;
+                }
+                self.wait_for_gpu();
+                let previous = self.surface.info();
+                if let Err(error) = self.gpu.recreate_surface_configured(
+                    &mut self.surface,
+                    window,
+                    self.surface_config,
+                ) {
+                    log::warn!("Could not recreate Vulkan surface: {error:?}");
+                    self.surface_retry_at = Some(Instant::now() + Duration::from_millis(250));
+                    return;
+                }
+                self.update_surface_resources(previous, true);
+                self.surface_retry_at = None;
+            }
+
+            let acquired = {
+                profiling::scope!("acquire frame");
+                self.surface.try_acquire_frame()
+            };
+            let surface_error = match acquired {
+                Ok(frame) => self.draw_frame(scene, frame).surface_error(),
+                Err(error) => Some(error),
+            };
+            let Some(error) = surface_error else {
+                return;
+            };
+            log::warn!("Vulkan surface needs recovery: {error:?}");
+            let now = Instant::now();
+            self.surface_retry_at = Some(if attempt == 0 {
+                now
+            } else {
+                now + Duration::from_millis(250)
+            });
+        }
+    }
+
+    fn draw_frame(&mut self, scene: &Scene, frame: gpu::Frame) -> &gpu::SyncPoint {
+        self.command_encoder.start();
+        self.atlas.before_frame(&mut self.command_encoder, scene);
         self.command_encoder.init_texture(frame.texture());
 
         let globals = GlobalParams {
@@ -921,7 +1009,7 @@ impl BladeRenderer {
         self.atlas.after_frame(&sync_point);
 
         self.wait_for_gpu();
-        self.last_sync_point = Some(sync_point);
+        self.last_sync_point.insert(sync_point)
     }
 }
 

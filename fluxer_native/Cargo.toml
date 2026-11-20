@@ -1,7 +1,7 @@
 [workspace]
 members = ["crates/core", "crates/protocol", "crates/desktop", "crates/media", "crates/system-audio", "crates/client", "crates/session"]
 resolver = "2"
-exclude = ["compat/xattr", "compat/livekit", "compat/gpui"]
+exclude = ["compat/xattr", "compat/livekit", "compat/gpui", "compat/blade-graphics"]
 
 [workspace.package]
 version = "0.1.0"
@@ -27,6 +27,9 @@ livekit = { path = "compat/livekit" }
 
 # Recover Wayland repainting independently of a suspended compositor callback.
 gpui = { path = "compat/gpui" }
+
+# Return Vulkan surface failures to GPUI so it can rebuild the swapchain.
+blade-graphics = { path = "compat/blade-graphics" }
 
 # Video capture, pixel handling and GPUI rendering must meet real-time budgets
 # in development builds too. Keep debug symbols/assertions and optimize only
