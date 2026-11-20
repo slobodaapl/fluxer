@@ -280,7 +280,7 @@ impl Fluxer {
             }))
             .child(
                 quiet_button("turn-off-streamer", "Turn off").on_click(cx.listener(
-                    |this, _, _, cx| {
+                    |this, _, window, cx| {
                         this.update_streamer(
                             |prefs| {
                                 prefs.manual_enabled = false;
@@ -288,7 +288,8 @@ impl Fluxer {
                                 prefs.banner_dismissed = false;
                             },
                             cx,
-                        )
+                        );
+                        this.focus.focus(window);
                     },
                 )),
             )
@@ -298,8 +299,9 @@ impl Fluxer {
                     Icon::Close,
                     "Dismiss streaming privacy banner",
                 )
-                .on_click(cx.listener(|this, _, _, cx| {
+                .on_click(cx.listener(|this, _, window, cx| {
                     this.update_streamer(|prefs| prefs.banner_dismissed = true, cx);
+                    this.focus.focus(window);
                 })),
             )
             .into_any_element()

@@ -122,7 +122,7 @@ case "$scenario" in
         screenshot selected-channel
         click 290 684
         screenshot settings
-        click 90 282
+        click 90 324
         screenshot accessibility
         click 934 182
         screenshot reduced-motion

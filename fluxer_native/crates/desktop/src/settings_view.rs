@@ -1291,7 +1291,7 @@ impl Fluxer {
                                 .bg(rgb(if self.settings_section == section {
                                     0x433d52
                                 } else {
-                                    0x25222e
+                                    self.interface.base_theme().panel()
                                 }))
                                 .child(label)
                                 .on_click(cx.listener(move |this, _, window, cx| {
