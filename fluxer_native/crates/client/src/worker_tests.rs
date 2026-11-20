@@ -3116,6 +3116,7 @@ async fn display_settings_exact_transport_rollback_and_pending_scope() {
         for (index, expected) in [
             json!({"message_display_compact":true}),
             json!({"gif_auto_play":false}),
+            json!({"animate_emoji":false}),
         ]
         .into_iter()
         .enumerate()
@@ -3179,6 +3180,16 @@ async fn display_settings_exact_transport_rollback_and_pending_scope() {
         .unwrap();
     worker.display_settings_event(result).await;
     assert_eq!(worker.state.user_settings["gif_auto_play"], false);
+    worker
+        .set_display_setting(DisplaySetting::AnimateEmoji(false))
+        .await
+        .unwrap();
+    let result = timeout(Duration::from_secs(5), worker.display_settings.rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    worker.display_settings_event(result).await;
+    assert_eq!(worker.state.user_settings["animate_emoji"], false);
     server.await.unwrap();
 }
 

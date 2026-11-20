@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 pub enum DisplaySetting {
     Compact(bool),
     GifAutoplay(bool),
+    AnimateEmoji(bool),
     FontSize(f64),
 }
 fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
@@ -120,6 +121,7 @@ pub fn display_settings_patch(settings: &Value, setting: DisplaySetting) -> Resu
     Ok(match setting {
         DisplaySetting::Compact(v) => json!({"message_display_compact":v}),
         DisplaySetting::GifAutoplay(v) => json!({"gif_auto_play":v}),
+        DisplaySetting::AnimateEmoji(v) => json!({"animate_emoji":v}),
         DisplaySetting::FontSize(size) => {
             if !size.is_finite() || !(8. ..=48.).contains(&size) {
                 return Err("Text size must be between 8 and 48 pixels".into());
@@ -180,6 +182,10 @@ mod tests {
         assert_eq!(
             display_settings_patch(&Value::Null, DisplaySetting::Compact(true)).unwrap(),
             json!({"message_display_compact":true})
+        );
+        assert_eq!(
+            display_settings_patch(&Value::Null, DisplaySetting::AnimateEmoji(false)).unwrap(),
+            json!({"animate_emoji":false})
         );
         assert_eq!(
             display_settings_patch(&Value::Null, DisplaySetting::GifAutoplay(false)).unwrap(),

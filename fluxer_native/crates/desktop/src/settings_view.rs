@@ -296,8 +296,10 @@ A preview of your message text size.",
             }
             Section::MessagesMedia => {
                 let autoplay = media_animation::gif_autoplay(&self.state.user_settings);
+                let animate_emoji = crate::emoji_presentation::autoplay(&self.state.user_settings, false);
                 body=body.child(settings_heading("Messages & media")).child(muted("Animation preferences · saved to your account"))
-                    .child(setting_row("Automatically play GIFs", "Play animated images without hovering. Reduced motion takes priority on this device.",toggle("settings-gif-autoplay",autoplay,"Automatically play GIFs").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::GifAutoplay(!autoplay),cx);}}))));
+                    .child(setting_row("Automatically play GIFs", "Play animated images without hovering. Reduced motion takes priority on this device.",toggle("settings-gif-autoplay",autoplay,"Automatically play GIFs").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::GifAutoplay(!autoplay),cx);}}))))
+                    .child(setting_row("Animate custom emoji", "Play animated custom emoji automatically. Reduced motion takes priority on this device.",toggle("settings-animate-emoji",animate_emoji,"Animate custom emoji").on_click(cx.listener(move|this,_,_,cx|{if !pending{this.save_display_setting(DisplaySetting::AnimateEmoji(!animate_emoji),cx);}}))));
             }
             Section::Desktop => {
                 use crate::native_preferences::WindowSetting;
