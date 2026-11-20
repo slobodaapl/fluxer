@@ -6,9 +6,14 @@ use fluxer_core::Channel;
 struct Job {
     generation: u64,
     account: Snowflake,
-    previous: Option<Channel>,
-    delete: bool,
+    response: ChannelResponse,
     task: JoinHandle<()>,
+}
+#[derive(Clone)]
+enum ChannelResponse {
+    Created,
+    Updated(Channel),
+    GatewayOnly,
 }
 impl Drop for Job {
     fn drop(&mut self) {
@@ -81,7 +86,7 @@ impl Worker {
             return Err("You cannot manage channels here".into());
         }
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, None, async move {
+        self.start_channel_job(account, ChannelResponse::Created, async move {
             client
                 .create_guild_channel(
                     &guild_id.to_string(),
@@ -138,7 +143,7 @@ impl Worker {
             }
         }
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, None, async move {
+        self.start_channel_job(account, ChannelResponse::GatewayOnly, async move {
             client
                 .move_guild_channel(
                     &guild_id.to_string(),
@@ -149,11 +154,7 @@ impl Worker {
                 )
                 .await
                 .map_err(error)
-        })?;
-        if let Some(job) = self.channels.job.as_mut() {
-            job.delete = true;
-        }
-        Ok(())
+        })
     }
     pub(super) fn set_channel_overwrite(
         &mut self,
@@ -201,16 +202,12 @@ impl Worker {
         }
         let client = self.client.clone().ok_or("Not connected")?;
         // This endpoint returns 204; gateway updates remain authoritative.
-        self.start_channel_job(account, None, async move {
+        self.start_channel_job(account, ChannelResponse::GatewayOnly, async move {
             client
                 .set_channel_overwrite(&channel_id.to_string(), &overwrite)
                 .await
                 .map_err(error)
-        })?;
-        if let Some(job) = self.channels.job.as_mut() {
-            job.delete = true;
-        }
-        Ok(())
+        })
     }
     pub(super) fn delete_channel_overwrite(
         &mut self,
@@ -246,16 +243,12 @@ impl Worker {
             return Err("You cannot remove these permissions".into());
         }
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, None, async move {
+        self.start_channel_job(account, ChannelResponse::GatewayOnly, async move {
             client
                 .delete_channel_overwrite(&channel_id.to_string(), &expected.id.to_string())
                 .await
                 .map_err(error)
-        })?;
-        if let Some(job) = self.channels.job.as_mut() {
-            job.delete = true;
-        }
-        Ok(())
+        })
     }
     pub(super) fn rename_basic_channel(
         &mut self,
@@ -288,7 +281,7 @@ impl Worker {
         }
         let previous = channel.clone();
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, Some(previous), async move {
+        self.start_channel_job(account, ChannelResponse::Updated(previous), async move {
             client
                 .update_basic_channel(&channel_id.to_string(), name.trim(), topic.as_deref())
                 .await
@@ -315,21 +308,17 @@ impl Worker {
             return Err("You cannot delete this channel".into());
         }
         let client = self.client.clone().ok_or("Not connected")?;
-        self.start_channel_job(account, None, async move {
+        self.start_channel_job(account, ChannelResponse::GatewayOnly, async move {
             client
                 .delete_channel(&channel_id.to_string())
                 .await
                 .map_err(error)
-        })?;
-        if let Some(job) = self.channels.job.as_mut() {
-            job.delete = true;
-        }
-        Ok(())
+        })
     }
     fn start_channel_job(
         &mut self,
         account: Snowflake,
-        previous: Option<Channel>,
+        response: ChannelResponse,
         request: impl std::future::Future<Output = Result<Value>> + Send + 'static,
     ) -> Result<()> {
         if self.channels.job.is_some() {
@@ -347,8 +336,7 @@ impl Worker {
         self.channels.job = Some(Job {
             generation,
             account,
-            previous,
-            delete: false,
+            response,
             task,
         });
         Ok(())
@@ -361,17 +349,16 @@ impl Worker {
             return;
         }
         let account = job.account;
-        let previous = job.previous.clone();
-        let delete = job.delete;
+        let response = job.response.clone();
         self.channels.job.take();
         if self.state.current_user.as_ref().map(|u| u.id) != Some(account) {
             return;
         }
         let result = event.result.and_then(|value| {
-            if delete {
+            if matches!(response, ChannelResponse::GatewayOnly) {
                 return Ok(());
             }
-            if let Some(previous) = previous {
+            if let ChannelResponse::Updated(previous) = response {
                 // Gateway events may have modified or deleted the channel during the request.
                 if self.state.channels.get(&previous.id) != Some(&previous) {
                     return Ok(());
@@ -429,7 +416,7 @@ mod tests {
         let previous = channel();
         worker.state.channels.insert(previous.id, previous.clone());
         worker
-            .start_channel_job(1.into(), Some(previous), async {
+            .start_channel_job(1.into(), ChannelResponse::Updated(previous), async {
                 Ok(json!({"id":"2", "name":"rest"}))
             })
             .unwrap();
@@ -445,7 +432,7 @@ mod tests {
         let previous = channel();
         worker.state.channels.insert(previous.id, previous.clone());
         worker
-            .start_channel_job(1.into(), Some(previous), async {
+            .start_channel_job(1.into(), ChannelResponse::Updated(previous), async {
                 Ok(json!({"id":"2", "topic":"rest"}))
             })
             .unwrap();
@@ -462,7 +449,7 @@ mod tests {
         let mut worker = worker();
         worker.state.current_user = Some(user());
         worker
-            .start_channel_job(1.into(), None, async {
+            .start_channel_job(1.into(), ChannelResponse::Created, async {
                 Ok(json!({"id":"2", "guild_id":"3", "type":0, "name":"created"}))
             })
             .unwrap();

@@ -1,8 +1,8 @@
 //! Native Fluxer REST and gateway transport. Wire responses remain JSON so newly
 //! introduced server fields can be consumed without upgrading this crate.
 mod attachments;
-mod discovery;
 mod commerce;
+mod discovery;
 mod error;
 mod gateway;
 mod gifs;
@@ -15,11 +15,11 @@ mod navigation;
 mod sudo;
 mod webhooks;
 
-pub use discovery::DiscoverySearch;
 pub use commerce::{
     BillingCycle, GiftDurationType, GiftInventoryEntry, GiftRecipient, PremiumEntitlement,
     PremiumPerks, PremiumStatus, SubscriptionProvider, premium_features_visible,
 };
+pub use discovery::DiscoverySearch;
 pub use error::{Error, Result};
 pub use gateway::{
     Gateway, GatewayCommand, GatewayEvent, ResumeSession, VoiceServerUpdate, VoiceStateUpdate,

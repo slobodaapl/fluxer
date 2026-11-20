@@ -802,7 +802,7 @@ async fn forgot_password_uses_unauthenticated_instance_transport() {
             .unwrap(),
     )
     .unwrap()
-    .with_auth_locale("fr".into())
+    .with_auth_locale("fr")
     .unwrap();
     client.forgot_password("user@example.test").await.unwrap();
     let request = requests.recv().await.unwrap();
