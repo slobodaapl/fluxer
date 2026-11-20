@@ -142,6 +142,7 @@ mod tests {
         let mut events = MediaEvents::new(receiver, video.clone());
         sender
             .send(MediaEvent::VideoEnded {
+                source: crate::VideoSource::ScreenShare,
                 track_id: "screen".into(),
                 participant: "alice".into(),
                 watch_generation: 1,

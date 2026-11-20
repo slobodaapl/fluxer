@@ -506,6 +506,10 @@ pub enum Command {
         identity: String,
         watch: bool,
     },
+    WatchCamera {
+        identity: String,
+        watch: bool,
+    },
     StartMicrophoneTest,
     StopMicrophoneTest,
     RefreshScreenSources,
@@ -720,6 +724,15 @@ pub enum Event {
     SharedAudioStatus(bool),
     VoiceStatus(VoiceStatus),
     WatchedStreams(Vec<String>),
+    CameraAvailable {
+        identity: String,
+        available: bool,
+    },
+    WatchedCameras(Vec<String>),
+    CameraWatchFailed {
+        identity: String,
+        error: String,
+    },
     Media(MediaEvent),
     Video(VideoFrame),
     Demo(bool),
@@ -799,7 +812,18 @@ impl Controller {
             if let Event::WatchedStreams(watched) = &event
                 && let Ok(mut frames) = self.frames.lock()
             {
-                frames.retain(|_, frame| watched.contains(&frame.participant));
+                frames.retain(|_, frame| {
+                    frame.source != fluxer_media::VideoSource::ScreenShare
+                        || watched.contains(&frame.participant)
+                });
+            }
+            if let Event::WatchedCameras(watched) = &event
+                && let Ok(mut frames) = self.frames.lock()
+            {
+                frames.retain(|_, frame| {
+                    frame.source != fluxer_media::VideoSource::Camera
+                        || watched.contains(&frame.participant)
+                });
             }
             return Some(event);
         }

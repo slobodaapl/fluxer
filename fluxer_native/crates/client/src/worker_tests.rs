@@ -572,6 +572,7 @@ async fn watch_stop_rewatch_rejects_old_same_sid_frames_and_end_notifications() 
     assert_eq!(worker.frames.lock().unwrap().len(), 1);
     worker
         .media_event(MediaEvent::VideoEnded {
+            source: fluxer_media::VideoSource::ScreenShare,
             track_id: "same-screen-sid".into(),
             participant: identity.clone(),
             watch_generation: old,
@@ -589,6 +590,7 @@ async fn watch_stop_rewatch_rejects_old_same_sid_frames_and_end_notifications() 
     );
     worker
         .media_event(MediaEvent::VideoEnded {
+            source: fluxer_media::VideoSource::ScreenShare,
             track_id: "same-screen-sid".into(),
             participant: identity,
             watch_generation: current,
@@ -3831,4 +3833,64 @@ async fn own_profile_wire_patch_and_account_reset_fence() {
     let _ = reply_tx.send(());
     server.await.unwrap();
     assert_eq!(worker.state.current_user, original);
+}
+
+#[tokio::test]
+async fn camera_watch_is_explicit_roster_bound_and_independent_of_screen() {
+    let (mut worker, events, mut outgoing) = watch_worker();
+    let identity = "user_123_live".to_owned();
+    gateway_voice(&mut worker, json!({"guild_id":"10","channel_id":"100","user_id":"123","connection_id":"live","self_stream":true,"self_video":true})).await;
+    assert!(worker.available_cameras.contains(&identity));
+    assert!(worker.watched_cameras.is_empty());
+    worker
+        .set_watch(identity.clone(), true, true)
+        .await
+        .unwrap();
+    outgoing.try_recv().unwrap();
+    worker
+        .set_camera_watch(identity.clone(), true, true)
+        .unwrap();
+    assert!(
+        outgoing.try_recv().is_err(),
+        "camera watch must not change screen viewer signaling"
+    );
+    let generation = worker.camera_generations[&identity];
+    let mut camera = watch_frame(&identity, generation);
+    camera.source = fluxer_media::VideoSource::Camera;
+    camera.track_id = "camera-sid".into();
+    worker
+        .media_event(MediaEvent::Video(camera.clone()))
+        .await
+        .unwrap();
+    worker
+        .media_event(MediaEvent::Video(watch_frame(
+            &identity,
+            worker.video_generations[&identity],
+        )))
+        .await
+        .unwrap();
+    assert_eq!(worker.frames.lock().unwrap().len(), 2);
+    worker
+        .set_camera_watch(identity.clone(), false, false)
+        .unwrap();
+    assert_eq!(worker.frames.lock().unwrap().len(), 1);
+    assert!(worker.watched_streams.contains(&identity));
+    worker
+        .set_camera_watch(identity.clone(), true, true)
+        .unwrap();
+    worker.media_event(MediaEvent::Video(camera)).await.unwrap();
+    assert_eq!(
+        worker.frames.lock().unwrap().len(),
+        1,
+        "old camera generation rejected after rewatch"
+    );
+    gateway_voice(
+        &mut worker,
+        json!({"user_id":"123","connection_id":"live","self_video":false}),
+    )
+    .await;
+    assert!(!worker.watched_cameras.contains(&identity));
+    assert!(worker.watched_streams.contains(&identity));
+    assert!(events.try_iter().any(|event| matches!(event, Event::CameraAvailable { identity: ref id, available: false } if id == &identity)));
+    assert!(outgoing.try_recv().is_err());
 }

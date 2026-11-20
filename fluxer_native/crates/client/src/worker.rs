@@ -273,6 +273,9 @@ pub(crate) struct Worker {
     member_query: Option<(Snowflake, String)>,
     available_streams: BTreeSet<String>,
     watched_streams: BTreeSet<String>,
+    available_cameras: BTreeSet<String>,
+    watched_cameras: BTreeSet<String>,
+    camera_generations: BTreeMap<String, u64>,
     participant_audio_intents: BTreeMap<String, fluxer_media::ParticipantAudioSettings>,
     stream_audio_intents: BTreeMap<String, fluxer_media::ParticipantAudioSettings>,
     /// Media watch epochs fence frames and lifecycle notifications queued before
@@ -364,6 +367,9 @@ impl Worker {
             member_query: None,
             available_streams: BTreeSet::new(),
             watched_streams: BTreeSet::new(),
+            available_cameras: BTreeSet::new(),
+            watched_cameras: BTreeSet::new(),
+            camera_generations: BTreeMap::new(),
             participant_audio_intents: BTreeMap::new(),
             stream_audio_intents: BTreeMap::new(),
             video_generations: BTreeMap::new(),
@@ -2235,6 +2241,12 @@ impl Worker {
                 let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
                 self.set_watch(identity, watch, connected).await?;
             }
+            Command::WatchCamera { identity, watch } => {
+                let connected = self.media.as_ref().is_some_and(MediaEngine::is_connected);
+                if let Err(error) = self.set_camera_watch(identity.clone(), watch, connected) {
+                    self.emit(Event::CameraWatchFailed { identity, error });
+                }
+            }
             Command::StartMicrophoneTest => {
                 if self.voice_target.is_some() {
                     return Err("Leave voice before testing the microphone".into());
@@ -3317,6 +3329,15 @@ impl Worker {
             }));
         }
         self.watched_streams.clear();
+        for identity in std::mem::take(&mut self.available_cameras) {
+            self.emit(Event::CameraAvailable {
+                identity,
+                available: false,
+            });
+        }
+        self.watched_cameras.clear();
+        self.camera_generations.clear();
+        self.emit(Event::WatchedCameras(Vec::new()));
         self.participant_audio_intents.clear();
         self.stream_audio_intents.clear();
         self.video_generations.clear();
@@ -3325,8 +3346,9 @@ impl Worker {
         // Stop capture before awaiting any network writes, including failures.
         let disconnected = if let Some(media) = &mut self.media {
             let watch = media.set_watched_participants(Vec::new()).map_err(error);
+            let camera = media.set_watched_cameras(Vec::new()).map_err(error);
             let disconnect = media.disconnect().await.map_err(error);
-            watch.and(disconnect)
+            watch.and(camera).and(disconnect)
         } else {
             Ok(())
         };
@@ -3932,6 +3954,7 @@ impl Worker {
         self.media_events = None;
         self.state.voice.disconnect();
         self.available_streams.clear();
+        self.available_cameras.clear();
         if let Ok(mut frames) = self.frames.lock() {
             frames.clear();
         }
@@ -4045,6 +4068,9 @@ impl Worker {
                         media.set_watched_participants(
                             self.watched_streams.iter().cloned().collect(),
                         )
+                    })
+                    .and_then(|()| {
+                        media.set_watched_cameras(self.watched_cameras.iter().cloned().collect())
                     });
                 if let Err(failure) = configure {
                     self.media = Some(media);
@@ -4059,6 +4085,11 @@ impl Worker {
                     .watched_streams
                     .iter()
                     .map(|identity| (identity.clone(), media.watch_generation(identity)))
+                    .collect();
+                self.camera_generations = self
+                    .watched_cameras
+                    .iter()
+                    .map(|identity| (identity.clone(), media.camera_watch_generation(identity)))
                     .collect();
                 self.media = Some(media);
                 self.media_events = Some(events);
@@ -4153,9 +4184,16 @@ impl Worker {
                 self.emit(Event::Media(MediaEvent::ParticipantLeft { identity }));
             }
             MediaEvent::Video(frame) => {
-                if !self.watched_streams.contains(&frame.participant)
-                    || self.video_generations.get(&frame.participant)
-                        != Some(&frame.watch_generation)
+                let (watched, generations) = match frame.source {
+                    fluxer_media::VideoSource::Camera => {
+                        (&self.watched_cameras, &self.camera_generations)
+                    }
+                    fluxer_media::VideoSource::ScreenShare => {
+                        (&self.watched_streams, &self.video_generations)
+                    }
+                };
+                if !watched.contains(&frame.participant)
+                    || generations.get(&frame.participant) != Some(&frame.watch_generation)
                 {
                     return Ok(());
                 }
@@ -4164,11 +4202,16 @@ impl Worker {
                 }
             }
             MediaEvent::VideoEnded {
+                source,
                 ref track_id,
                 ref participant,
                 watch_generation,
             } => {
-                if self.video_generations.get(participant) != Some(&watch_generation) {
+                let generations = match source {
+                    fluxer_media::VideoSource::Camera => &self.camera_generations,
+                    fluxer_media::VideoSource::ScreenShare => &self.video_generations,
+                };
+                if generations.get(participant) != Some(&watch_generation) {
                     return Ok(());
                 }
                 if let Ok(mut frames) = self.frames.lock() {
@@ -4229,6 +4272,7 @@ impl Worker {
                         target.connection_id = None;
                     }
                     self.available_streams.clear();
+                    self.available_cameras.clear();
                     if let Ok(mut frames) = self.frames.lock() {
                         frames.clear();
                     }
@@ -4313,6 +4357,57 @@ impl Worker {
                 })
             })
             .collect();
+        let cameras: BTreeSet<_> = self
+            .voice_target
+            .as_ref()
+            .filter(|target| self.state.voice.channel_id == Some(target.channel_id))
+            .into_iter()
+            .flat_map(|target| {
+                state.voice_states.values().filter_map(move |voice| {
+                    let guild = voice.guild_id.or_else(|| {
+                        state
+                            .channels
+                            .get(&target.channel_id)
+                            .and_then(|c| c.guild_id)
+                    });
+                    let connection = voice.connection_id.as_deref().filter(|id| !id.is_empty())?;
+                    let is_local = state.current_user.as_ref().is_some_and(|me| {
+                        me.id == voice.user_id
+                            && target.connection_id.as_deref() == Some(connection)
+                    });
+                    if !voice.self_video
+                        || voice.channel_id != Some(target.channel_id)
+                        || guild != target.guild_id
+                        || is_local
+                    {
+                        return None;
+                    }
+                    let identity = format!("user_{}_{connection}", voice.user_id);
+                    parse_participant_identity(&identity).map(|_| identity.clone())
+                })
+            })
+            .collect();
+        let old_cameras = std::mem::replace(&mut self.available_cameras, cameras);
+        for identity in old_cameras.difference(&self.available_cameras) {
+            self.emit(Event::CameraAvailable {
+                identity: identity.clone(),
+                available: false,
+            });
+        }
+        for identity in self.available_cameras.difference(&old_cameras) {
+            self.emit(Event::CameraAvailable {
+                identity: identity.clone(),
+                available: true,
+            });
+        }
+        let stopped_cameras: Vec<_> = self
+            .watched_cameras
+            .difference(&self.available_cameras)
+            .cloned()
+            .collect();
+        for identity in stopped_cameras {
+            self.set_camera_watch(identity, false, false)?;
+        }
         let previous = std::mem::replace(&mut self.available_streams, next);
         for identity in previous.difference(&self.available_streams) {
             self.emit(Event::Media(MediaEvent::ScreenStreamAvailable {
@@ -4361,7 +4456,10 @@ impl Worker {
             // Stop is a local presentation operation first. Neither synchronous
             // native/SDK teardown nor a full gateway send queue may delay it.
             if let Ok(mut frames) = self.frames.lock() {
-                frames.retain(|_, frame| frame.participant != identity);
+                frames.retain(|_, frame| {
+                    frame.source != fluxer_media::VideoSource::ScreenShare
+                        || frame.participant != identity
+                });
             }
         }
         if next == self.watched_streams {
@@ -4402,6 +4500,69 @@ impl Worker {
         }
         let gateway_result = self.update_voice().await;
         media_result.and(gateway_result)
+    }
+
+    fn set_camera_watch(&mut self, identity: String, watch: bool, connected: bool) -> Result<()> {
+        if parse_participant_identity(&identity).is_none() {
+            return Err("Invalid voice participant identity".into());
+        }
+        if watch
+            && (!connected
+                || self
+                    .voice_target
+                    .as_ref()
+                    .is_none_or(|target| self.state.voice.channel_id != Some(target.channel_id)))
+        {
+            return Err("Join a voice channel before watching a camera".into());
+        }
+        if watch && !self.available_cameras.contains(&identity) {
+            return Err("This participant is not sharing a camera".into());
+        }
+        let mut next = self.watched_cameras.clone();
+        if watch {
+            next.insert(identity.clone());
+        } else {
+            next.remove(&identity);
+            if let Ok(mut frames) = self.frames.lock() {
+                frames.retain(|_, frame| {
+                    frame.source != fluxer_media::VideoSource::Camera
+                        || frame.participant != identity
+                });
+            }
+        }
+        if next == self.watched_cameras {
+            return Ok(());
+        }
+        if !watch {
+            self.watched_cameras = next.clone();
+            self.emit(Event::WatchedCameras(next.iter().cloned().collect()));
+        }
+        let result = self.media.as_mut().map_or(Ok(()), |media| {
+            media
+                .set_watched_cameras(next.iter().cloned().collect())
+                .map_err(error)
+        });
+        if watch {
+            result.as_ref().map_err(Clone::clone)?;
+            self.watched_cameras = next;
+        }
+        let generation = self.media.as_ref().map_or_else(
+            || {
+                self.camera_generations
+                    .get(&identity)
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1)
+            },
+            |media| media.camera_watch_generation(&identity),
+        );
+        self.camera_generations.insert(identity, generation);
+        if watch {
+            self.emit(Event::WatchedCameras(
+                self.watched_cameras.iter().cloned().collect(),
+            ));
+        }
+        result
     }
 
     // Capture-session liveness is supplied separately so lifecycle races can be

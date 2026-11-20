@@ -157,6 +157,7 @@ pub enum MediaEvent {
     Speakers(Vec<String>),
     Video(VideoFrame),
     VideoEnded {
+        source: VideoSource,
         track_id: String,
         participant: String,
         watch_generation: u64,
@@ -174,6 +175,7 @@ pub enum MediaEvent {
 }
 
 struct VideoRenderer {
+    source: VideoSource,
     task: JoinHandle<()>,
     participant: String,
     watch_generation: u64,
@@ -1213,6 +1215,7 @@ impl MediaEngine {
                             && let Some(old) = tasks.insert(
                                 id,
                                 VideoRenderer {
+                                    source,
                                     task,
                                     participant: renderer_identity,
                                     watch_generation,
@@ -1871,6 +1874,7 @@ fn end_video_renderer(
     let sender = mixer.lock().ok().and_then(|mixer| mixer.events.clone());
     let Some(sender) = sender else { return };
     let event = MediaEvent::VideoEnded {
+        source: task.source,
         track_id: sid.into(),
         participant: task.participant,
         watch_generation: task.watch_generation,
@@ -1955,6 +1959,7 @@ mod video_lifecycle_tests {
         let tasks = Arc::new(Mutex::new(HashMap::from([(
             "screen-sid".into(),
             VideoRenderer {
+                source: VideoSource::ScreenShare,
                 task,
                 participant: "alice".into(),
                 watch_generation: 1,
@@ -1997,6 +2002,7 @@ mod video_lifecycle_tests {
         let tasks = Arc::new(Mutex::new(HashMap::from([(
             "screen-sid".into(),
             VideoRenderer {
+                source: VideoSource::ScreenShare,
                 task,
                 participant: "alice".into(),
                 watch_generation: 1,
