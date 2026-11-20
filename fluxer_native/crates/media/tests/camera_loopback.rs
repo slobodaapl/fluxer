@@ -187,10 +187,10 @@ async fn camera_and_screen_subscriptions_are_independent() {
         .unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
-            if let RoomEvent::TrackUnpublished { publication, .. } = events.recv().await.unwrap() {
-                if publication.sid() == camera.sid() {
-                    break;
-                }
+            if let RoomEvent::TrackUnpublished { publication, .. } = events.recv().await.unwrap()
+                && publication.sid() == camera.sid()
+            {
+                break;
             }
         }
     })
