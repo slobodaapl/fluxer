@@ -836,7 +836,7 @@ async fn webhook_management_requests_and_secrets_are_scoped() {
     assert!(!format!("{rows:?}").contains("synthetic-secret"));
     assert_eq!(
         rows[0].copy_url("https://example.test/api/v1").unwrap(),
-        "https://example.test/api/v1/webhooks/42/synthetic-secret"
+        "https://example.test/api/v1/webhooks/42/synthetic%2Dsecret"
     );
     assert!(rows[1].copy_url("https://example.test/api/v1").is_none());
     client.create_webhook("2", "Example").await.unwrap();
