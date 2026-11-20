@@ -2977,8 +2977,25 @@ impl Render for Fluxer {
         };
         let rendered = div().size_full().flex().flex_col().bg(rgb(BG)).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {if this.community_ui.dialog.is_some() { this.community_key_down(event, window, cx); return; } if this.invite_ui.open { this.invite_key_down(event, window, cx); return; } this.interface_key_down(event, window, cx); if this.interface.recording.is_none() {this.status_key_down(event, window, cx);}}))
-            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| { if this.community_ui.dialog.is_some() { this.community_key_up(event, window, cx); } else { this.status_key_up(event, window, cx); } }))
+            .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.community_ui.dialog.is_some() {
+                    this.community_key_down(event, window, cx);
+                } else if this.invite_ui.open {
+                    this.invite_key_down(event, window, cx);
+                } else {
+                    this.interface_key_down(event, window, cx);
+                    if this.interface.recording.is_none() {
+                        this.status_key_down(event, window, cx);
+                    }
+                }
+            }))
+            .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
+                if this.community_ui.dialog.is_some() {
+                    this.community_key_up(event, window, cx);
+                } else {
+                    this.status_key_up(event, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &PickerLeft, window, cx| this.picker_key("left", window, cx)))
             .on_action(cx.listener(|this, _: &PickerRight, window, cx| this.picker_key("right", window, cx)))
             .on_action(cx.listener(|this, _: &PickerUp, window, cx| this.picker_key("up", window, cx)))

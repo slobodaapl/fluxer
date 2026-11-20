@@ -111,12 +111,12 @@ impl Fluxer {
                 cx.notify();
             }
             "enter" | "space" if !event.is_held && !event.keystroke.modifiers.modified() => {
-                if matches!(dialog, Dialog::Create) && self.community_ui.selected == 0 {
-                    if event.keystroke.key == "space"
-                        || self.community_ui.name.read(cx).is_composing()
-                    {
-                        return;
-                    }
+                if matches!(dialog, Dialog::Create)
+                    && self.community_ui.selected == 0
+                    && (event.keystroke.key == "space"
+                        || self.community_ui.name.read(cx).is_composing())
+                {
+                    return;
                 }
                 self.community_ui.armed = true;
             }
