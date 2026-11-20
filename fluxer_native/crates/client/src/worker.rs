@@ -1,4 +1,4 @@
-use crate::{Command, Event, VoiceStatus};
+use crate::{Command, Event, VoiceStatus, WebhookAction};
 use fluxer_core::{
     ChannelType, ClientState, Emoji, Message, MessageReference, Permissions, Snowflake, User,
 };
@@ -1660,7 +1660,22 @@ impl Worker {
                 request_id,
                 channel_id,
             } => {
-                if let Err(message) = self.webhook_list_request(request_id, channel_id) {
+                if let Err(message) = self.webhook_list_request(request_id, channel_id, None) {
+                    self.emit(Event::WebhookList {
+                        request_id,
+                        channel_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::MutateWebhook {
+                request_id,
+                channel_id,
+                action,
+            } => {
+                if let Err(message) =
+                    self.webhook_list_request(request_id, channel_id, Some(action))
+                {
                     self.emit(Event::WebhookList {
                         request_id,
                         channel_id,

@@ -20,8 +20,23 @@ impl WebhookState {
         }
     }
 }
+fn scoped_hook<'a>(
+    hooks: &'a [fluxer_protocol::Webhook],
+    channel: Snowflake,
+    id: &str,
+) -> Option<&'a fluxer_protocol::Webhook> {
+    hooks
+        .iter()
+        .find(|hook| hook.id == id && hook.channel_id == channel.to_string())
+}
+
 impl Worker {
-    pub(super) fn webhook_list_request(&mut self, request: u64, channel: Snowflake) -> Result<()> {
+    pub(super) fn webhook_list_request(
+        &mut self,
+        request: u64,
+        channel: Snowflake,
+        action: Option<WebhookAction>,
+    ) -> Result<()> {
         let actor = self.state.current_user.as_ref().ok_or("Not signed in")?.id;
         if self.demo
             || self
@@ -41,13 +56,51 @@ impl Worker {
         self.webhooks.clear();
         let tx = self.webhooks.tx.clone();
         let task = tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                Duration::from_secs(15),
-                client.channel_webhooks(&channel.to_string()),
-            )
-            .await
-            .map_err(|_| "Webhook request timed out".to_owned())
-            .and_then(|r| r.map_err(error));
+            let future = async {
+                if let Some(action) = action {
+                    match action {
+                        WebhookAction::Create { name } => {
+                            client
+                                .create_webhook(&channel.to_string(), &name)
+                                .await
+                                .map_err(error)?;
+                        }
+                        WebhookAction::Rename { id, name } => {
+                            let hooks = client
+                                .channel_webhooks(&channel.to_string())
+                                .await
+                                .map_err(error)?;
+                            let hook = scoped_hook(&hooks, channel, &id)
+                                .ok_or("Webhook is no longer in this channel")?;
+                            client
+                                .update_webhook(&id, &name, hook.avatar.as_deref())
+                                .await
+                                .map_err(error)?;
+                        }
+                        WebhookAction::Delete { id } => {
+                            let hooks = client
+                                .channel_webhooks(&channel.to_string())
+                                .await
+                                .map_err(error)?;
+                            if scoped_hook(&hooks, channel, &id).is_none() {
+                                return Err("Webhook is no longer in this channel".into());
+                            }
+                            client.delete_webhook(&id).await.map_err(error)?;
+                        }
+                    }
+                    client
+                        .channel_webhooks(&channel.to_string())
+                        .await
+                        .map_err(|e| format!("Change succeeded, but refresh failed: {}", error(e)))
+                } else {
+                    client
+                        .channel_webhooks(&channel.to_string())
+                        .await
+                        .map_err(error)
+                }
+            };
+            let result = tokio::time::timeout(Duration::from_secs(15), future).await
+                .unwrap_or_else(|_| Err("Request timed out. Refresh the list before trying again; the change may have succeeded.".into()));
             let _ = tx.send(WebhookEvent {
                 channel,
                 request,
@@ -88,5 +141,29 @@ impl Worker {
             channel_id: event.channel,
             result,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn mutations_only_target_the_requested_channel() {
+        let hooks: Vec<fluxer_protocol::Webhook> = serde_json::from_value(json!([
+            {"id":"1", "guild_id":"3", "channel_id":"4", "name":"hook", "avatar":"keep", "type":1, "token":"synthetic-secret"},
+            {"id":"2", "guild_id":"3", "channel_id":"5", "name":"other", "avatar":null, "type":1}
+        ])).unwrap();
+        assert_eq!(
+            scoped_hook(&hooks, Snowflake(4), "1")
+                .unwrap()
+                .avatar
+                .as_deref(),
+            Some("keep")
+        );
+        assert!(scoped_hook(&hooks, Snowflake(4), "2").is_none());
+        assert!(scoped_hook(&hooks, Snowflake(4), "missing").is_none());
+        assert!(
+            !format!("{:?}", scoped_hook(&hooks, Snowflake(4), "1")).contains("synthetic-secret")
+        );
     }
 }

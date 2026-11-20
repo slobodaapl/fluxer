@@ -142,10 +142,22 @@ impl CallControlHandle {
     }
 }
 
+#[derive(Clone)]
+pub enum WebhookAction {
+    Create { name: String },
+    Rename { id: String, name: String },
+    Delete { id: String },
+}
+
 pub enum Command {
     FetchWebhooks {
         request_id: u64,
         channel_id: Snowflake,
+    },
+    MutateWebhook {
+        request_id: u64,
+        channel_id: Snowflake,
+        action: WebhookAction,
     },
     CancelWebhooks,
     ListCommunityInvites {
