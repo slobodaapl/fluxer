@@ -281,6 +281,11 @@ pub enum Command {
         parent_id: Snowflake,
         name: String,
     },
+    ManageThread {
+        channel_id: Snowflake,
+        archived: Option<bool>,
+        locked: Option<bool>,
+    },
     LoadForum {
         channel_id: Snowflake,
         creation_order: bool,
@@ -562,6 +567,10 @@ pub enum Event {
     ThreadCreated {
         parent_id: Snowflake,
         result: Result<Snowflake, String>,
+    },
+    ThreadManaged {
+        channel_id: Snowflake,
+        result: Result<(), String>,
     },
     /// Source Notification.handleMessageAck/Delete; bound to the active account.
     ClearChannelNotifications {

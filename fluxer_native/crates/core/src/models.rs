@@ -208,6 +208,16 @@ impl Channel {
                 .unwrap_or(false)
     }
 
+    pub fn thread_locked(&self) -> bool {
+        self.kind.is_thread()
+            && self
+                .extra
+                .get("thread_metadata")
+                .and_then(|metadata| metadata.get("locked"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+    }
+
     pub fn display_name(&self) -> String {
         if !self.name.is_empty() {
             self.name.clone()

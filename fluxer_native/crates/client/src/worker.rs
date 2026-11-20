@@ -81,6 +81,18 @@ impl Drop for ThreadCreation {
     }
 }
 
+struct ThreadManagement {
+    account: Snowflake,
+    channel: Snowflake,
+    guild: Snowflake,
+    task: JoinHandle<Result<Value>>,
+}
+impl Drop for ThreadManagement {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 struct PendingIpAuthorization {
     client: Client,
     ticket: String,
@@ -198,6 +210,7 @@ pub(crate) struct Worker {
     dm_generation: u64,
     dm_job: Option<DmJob>,
     thread_creation: Option<ThreadCreation>,
+    thread_management: Option<ThreadManagement>,
     presence: presence_flow::PresenceState,
     display_settings: display_settings_flow::DisplaySettingsState,
     system_idle: Option<(bool, bool)>,
@@ -288,6 +301,7 @@ impl Worker {
             dm_generation: 0,
             dm_job: None,
             thread_creation: None,
+            thread_management: None,
             presence: presence_flow::PresenceState::new(),
             display_settings: display_settings_flow::DisplaySettingsState::new(),
             system_idle: None,
@@ -640,6 +654,7 @@ impl Worker {
                 Dm(Option<DmEvent>),
                 Sticker(Option<StickerEvent>),
                 ThreadCreated(Result<Value>),
+                ThreadManaged(Result<Value>),
                 DevicePoll,
                 PresencePoll,
                 SystemIdle(Option<Option<(bool, bool)>>),
@@ -689,6 +704,7 @@ impl Worker {
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 event=self.sticker_rx.recv()=>Incoming::Sticker(event),
                 result=thread_creation_result(&mut self.thread_creation)=>Incoming::ThreadCreated(result),
+                result=thread_management_result(&mut self.thread_management)=>Incoming::ThreadManaged(result),
                 _ = presence_poll.tick() => Incoming::PresencePoll,
                 event = idle_rx.recv() => Incoming::SystemIdle(event),
                 _ = device_poll.tick() => Incoming::DevicePoll,
@@ -767,6 +783,10 @@ impl Worker {
                 Incoming::Sticker(None) => Ok(()),
                 Incoming::ThreadCreated(result) => {
                     self.finish_thread_creation(result);
+                    Ok(())
+                }
+                Incoming::ThreadManaged(result) => {
+                    self.finish_thread_management(result);
                     Ok(())
                 }
                 Incoming::SystemIdle(Some(idle)) => {
@@ -970,6 +990,7 @@ impl Worker {
             task.abort();
         }
         self.thread_creation = None;
+        self.thread_management = None;
         self.cancel_open_dm();
         self.clear_presence();
         self.clear_display_settings();
@@ -1488,6 +1509,18 @@ impl Worker {
                 if let Err(message) = self.begin_thread_creation(parent_id, &name) {
                     self.emit(Event::ThreadCreated {
                         parent_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::ManageThread {
+                channel_id,
+                archived,
+                locked,
+            } => {
+                if let Err(message) = self.begin_thread_management(channel_id, archived, locked) {
+                    self.emit(Event::ThreadManaged {
+                        channel_id,
                         result: Err(message),
                     });
                 }
@@ -2851,6 +2884,81 @@ impl Worker {
             });
         }
         Ok(())
+    }
+
+    fn begin_thread_management(
+        &mut self,
+        channel: Snowflake,
+        archived: Option<bool>,
+        locked: Option<bool>,
+    ) -> Result<()> {
+        if self.thread_management.is_some() {
+            return Err("A thread update is already in progress".into());
+        }
+        let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+        let thread = self
+            .state
+            .channels
+            .get(&channel)
+            .filter(|c| c.kind.is_thread())
+            .ok_or("Unknown thread")?;
+        let guild = thread.guild_id.ok_or("Unknown community")?;
+        if self
+            .state
+            .guilds
+            .get(&guild)
+            .is_none_or(|g| g.owner_id != account)
+        {
+            return Err("You cannot manage this thread".into());
+        }
+        // Match the classic menu: a lock change on an archived thread also reopens it.
+        if locked.is_some() && thread.thread_archived() && archived != Some(false) {
+            return Err("Reopen the thread before changing its lock".into());
+        }
+        if archived.is_none() && locked.is_none() {
+            return Err("No thread change requested".into());
+        }
+        let client = self.client()?;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                client.update_thread(&channel.to_string(), archived, locked),
+            )
+            .await
+            .map_err(|_| "Thread update timed out".to_owned())?
+            .map_err(error)
+        });
+        self.thread_management = Some(ThreadManagement {
+            account,
+            channel,
+            guild,
+            task,
+        });
+        Ok(())
+    }
+
+    fn finish_thread_management(&mut self, result: Result<Value>) {
+        let Some(job) = self.thread_management.take() else {
+            return;
+        };
+        if self.state.current_user.as_ref().map(|u| u.id) != Some(job.account) {
+            return;
+        }
+        // Gateway updates own the cached state. Never overwrite a newer update or resurrect a deletion.
+        let result = result.and_then(|value| {
+            let response: fluxer_core::Channel = self.state.decode_api(value).map_err(error)?;
+            if response.id != job.channel
+                || response.guild_id != Some(job.guild)
+                || !response.kind.is_thread()
+            {
+                return Err("The server returned an unexpected thread".into());
+            }
+            Ok(())
+        });
+        self.emit(Event::ThreadManaged {
+            channel_id: job.channel,
+            result,
+        });
     }
 
     fn begin_thread_creation(&mut self, parent: Snowflake, name: &str) -> Result<()> {
@@ -4270,6 +4378,14 @@ async fn receive_optional<T>(receiver: &mut Option<async_mpsc::Receiver<T>>) -> 
 async fn receive_media(receiver: &mut Option<MediaEvents>) -> Option<MediaEvent> {
     match receiver {
         Some(receiver) => receiver.recv().await,
+        None => pending().await,
+    }
+}
+async fn thread_management_result(task: &mut Option<ThreadManagement>) -> Result<Value> {
+    match task {
+        Some(job) => (&mut job.task)
+            .await
+            .map_err(|_| "Thread update stopped".to_owned())?,
         None => pending().await,
     }
 }

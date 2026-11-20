@@ -17,11 +17,17 @@ Open the thread on the second account, send a message, and confirm both
 accounts see it in the thread timeline. Delete the thread from an authorized
 client and confirm it disappears from the sidebar.
 
-This slice includes active thread discovery, standalone public and
-announcement thread creation, history, sending, and navigation to the parent.
-Archived browsing, explicit membership actions, the thread roster, private
-and message-started creation, archive and lock controls, and forum and media
-post browsing are outside this slice.
+Community owners can use the thread header buttons to archive or unarchive,
+and lock or unlock, including with keyboard navigation. Changing a lock on an
+archived thread also reopens it, as in the classic client. The buttons remain
+unavailable to other users until native state can enforce the classic client's
+moderator, MFA, timeout, ownership and membership rules. State updates come
+from the gateway; the HTTP response never overwrites a newer gateway update or
+restores a deleted thread. Verify these controls across clients with an owner
+account; no real-account verification was performed for this change.
+
+Archived browsing, explicit membership actions, the thread roster, and private
+and message-started creation remain outside this slice.
 
 The wire contracts are in the repository's HTTP API and Gateway thread
 documentation and the server's `ThreadController.ts`.

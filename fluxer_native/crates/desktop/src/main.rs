@@ -354,6 +354,7 @@ struct Fluxer {
     thread_name: Entity<TextInput>,
     thread_form: Option<Snowflake>,
     creating_thread: Option<Snowflake>,
+    managing_thread: Option<Snowflake>,
     conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
@@ -537,6 +538,7 @@ impl Fluxer {
             thread_name: cx.new(|cx| TextInput::new("Thread name", cx)),
             thread_form: None,
             creating_thread: None,
+            managing_thread: None,
             attachments: AttachmentUi::new(),
             sticker_picker_open: false,
             emoji_target: None,
@@ -1037,6 +1039,17 @@ impl Fluxer {
                 Event::ThreadCreated { parent_id, result } => {
                     self.finish_thread_creation(parent_id, result, cx);
                 }
+                Event::ThreadManaged { channel_id, result } => {
+                    if self.managing_thread == Some(channel_id) {
+                        self.managing_thread = None;
+                        if self.state.selected_channel == Some(channel_id) {
+                            if let Err(error) = result {
+                                self.error = Some(error);
+                            }
+                        }
+                        cx.notify();
+                    }
+                }
                 Event::State(state) => {
                     let old = self.state.selected_channel;
                     let was_empty = old.is_none_or(|channel| {
@@ -1065,6 +1078,7 @@ impl Fluxer {
                         self.slowmode = composer_slowmode::Slowmode::default();
                         self.thread_form = None;
                         self.creating_thread = None;
+                        self.managing_thread = None;
                         self.thread_name
                             .update(cx, |input, cx| input.set(String::new(), cx));
                         self.inbox_ui.reset();

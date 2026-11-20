@@ -137,6 +137,18 @@ impl Fluxer {
             })
             .map(|channel| channel.id);
         let archived = channel.is_some_and(|channel| channel.thread_archived());
+        let locked = channel.is_some_and(|channel| channel.thread_locked());
+        let manage_thread = channel
+            .filter(|channel| !self.demo && channel.kind.is_thread())
+            .filter(|channel| {
+                channel
+                    .guild_id
+                    .and_then(|id| self.state.guilds.get(&id))
+                    .zip(self.state.current_user.as_ref())
+                    .is_some_and(|(guild, user)| guild.owner_id == user.id)
+            })
+            .map(|channel| channel.id)
+            .filter(|_| self.managing_thread.is_none());
         let can_create_thread = selected
             .filter(|parent| !self.demo && self.state.public_thread_type(*parent).is_some());
         let messages = self.visible_messages();
@@ -251,6 +263,12 @@ impl Fluxer {
                                     cx.listener(move |this, _, _, cx| this.select(parent, cx)),
                                 ),
                             ))
+                            .when_some(manage_thread, |view, thread| view
+                                .child(quiet_button("archive-thread", if archived { "Unarchive thread" } else { "Archive thread" })
+                                    .on_click(cx.listener(move |this, _, _, cx| this.manage_thread(thread, Some(!archived), None, cx))))
+                                .child(quiet_button("lock-thread", if locked { "Unlock thread" } else { "Lock thread" })
+                                    .on_click(cx.listener(move |this, _, _, cx| this.manage_thread(thread, if archived { Some(false) } else { None }, Some(!locked), cx))))
+                            )
                             .when_some(can_create_thread, |view, parent| view.child(
                                 quiet_button("new-thread", "New thread").on_click(
                                     cx.listener(move |this, _, window, cx| this.open_thread_form(parent, window, cx)),

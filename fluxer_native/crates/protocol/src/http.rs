@@ -720,6 +720,28 @@ impl Client {
         .await
     }
 
+    /// Update thread lifecycle fields using the channel PATCH endpoint.
+    pub async fn update_thread(
+        &self,
+        channel: &str,
+        archived: Option<bool>,
+        locked: Option<bool>,
+    ) -> Result<Value> {
+        let mut body = serde_json::Map::new();
+        if let Some(value) = archived {
+            body.insert("archived".into(), json!(value));
+        }
+        if let Some(value) = locked {
+            body.insert("locked".into(), json!(value));
+        }
+        self.request(
+            Method::PATCH,
+            &format!("/channels/{}", segment(channel)),
+            Some(&Value::Object(body)),
+        )
+        .await
+    }
+
     pub async fn messages(&self, channel: &str, before: Option<&str>, limit: u8) -> Result<Value> {
         self.messages_page(channel, before, None, None, limit).await
     }
