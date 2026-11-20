@@ -1246,6 +1246,66 @@ impl Worker {
                     ));
                 }
             }
+            Command::SetMemberRole {
+                guild_id,
+                user_id,
+                role_id,
+                add,
+            } => {
+                let allowed = self
+                    .state
+                    .guilds
+                    .get(&guild_id)
+                    .and_then(|g| {
+                        let current = self.state.current_user.as_ref()?;
+                        let actor = self.state.members.get(&(guild_id, current.id))?;
+                        let role = g.roles.iter().find(|r| r.id == role_id)?;
+                        self.state.members.get(&(guild_id, user_id))?;
+                        Some(fluxer_core::can_assign_role(g, actor, role))
+                    })
+                    .unwrap_or(false);
+                let result = if !allowed {
+                    Err("You cannot manage this role".to_string())
+                } else if self.demo {
+                    Err("Role changes are disabled in the offline demo".to_string())
+                } else if let Some(client) = self.client.clone() {
+                    let path = format!("/guilds/{guild_id}/members/{user_id}/roles/{role_id}");
+                    match tokio::time::timeout(
+                        Duration::from_secs(15),
+                        client.request(
+                            if add {
+                                fluxer_protocol::Method::PUT
+                            } else {
+                                fluxer_protocol::Method::DELETE
+                            },
+                            &path,
+                            None,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(result) => result.map(|_| ()).map_err(error),
+                        Err(_) => Err("Role update timed out".into()),
+                    }
+                } else {
+                    Err("Not signed in".into())
+                };
+                if result.is_ok() {
+                    if let Some(member) = self.state.members.get_mut(&(guild_id, user_id)) {
+                        member.roles.retain(|id| *id != role_id);
+                        if add {
+                            member.roles.push(role_id);
+                        }
+                    }
+                }
+                self.emit(Event::MemberRoleMutation {
+                    guild_id,
+                    user_id,
+                    role_id,
+                    add,
+                    error: result.err(),
+                });
+            }
             Command::ChangeRelationship { user_id, action } => {
                 if let Err(message) = self.change_relationship(user_id, action) {
                     self.emit(Event::RelationshipMutation {

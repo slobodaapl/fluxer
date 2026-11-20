@@ -14,6 +14,7 @@ pub(super) struct ProfileOpen {
     pub guild_id: Option<Snowflake>,
     pub member: Option<Member>,
     pub roles: Vec<Role>,
+    pub manageable_roles: Vec<Snowflake>,
     pub media_endpoint: Option<String>,
     pub community_name: Option<String>,
     pub anchor: Point<Pixels>,
@@ -61,6 +62,12 @@ pub(super) enum ProfileAction {
         user_id: Snowflake,
         action: RelationshipAction,
     },
+    SetRole {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_id: Snowflake,
+        add: bool,
+    },
     Link(String),
     Closed,
 }
@@ -79,6 +86,9 @@ pub(super) struct ProfilePopup {
     bio_links: Vec<String>,
     confirm_blocked_dm: bool,
     confirm_block: bool,
+    role_picker: bool,
+    role_pending: bool,
+    role_error: Option<String>,
     dm_status: Option<DirectMessageStatus>,
     relationship_status: Option<RelationshipMutationStatus>,
 }
@@ -100,6 +110,9 @@ impl ProfilePopup {
             bio_links: Vec::new(),
             confirm_blocked_dm: false,
             confirm_block: false,
+            role_picker: false,
+            role_pending: false,
+            role_error: None,
             dm_status: None,
             relationship_status: None,
         }
@@ -126,9 +139,47 @@ impl ProfilePopup {
         self.copied = false;
         self.confirm_blocked_dm = false;
         self.confirm_block = false;
+        self.role_picker = false;
+        self.role_pending = false;
+        self.role_error = None;
         self.dm_status = None;
         self.relationship_status = None;
         window.focus(&self.focus);
+        cx.notify();
+    }
+    pub fn apply_role_result(
+        &mut self,
+        guild: Snowflake,
+        user: Snowflake,
+        role: Snowflake,
+        add: bool,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.current_scope() != Some((user, Some(guild))) {
+            return;
+        }
+        self.role_pending = false;
+        self.role_error = error.clone();
+        if error.is_none() {
+            let update = |member: &mut Member| {
+                member.roles.retain(|id| *id != role);
+                if add {
+                    member.roles.push(role);
+                }
+            };
+            if let Some(member) = self.open.as_mut().and_then(|o| o.member.as_mut()) {
+                update(member);
+            }
+            if let Some(member) = self
+                .snapshot
+                .as_mut()
+                .and_then(|s| s.profile.as_mut())
+                .and_then(|p| p.guild_member.as_mut())
+            {
+                update(member);
+            }
+        }
         cx.notify();
     }
     pub fn set_trigger_bounds(&mut self, bounds: Option<Bounds<Pixels>>) {
@@ -954,6 +1005,67 @@ impl Render for ProfilePopup {
                 .filter(|role| member.roles.contains(&role.id))
                 .collect();
             roles.sort_by_key(|role| std::cmp::Reverse(role.position));
+            if !open.manageable_roles.is_empty() {
+                let guild_id = open.guild_id.unwrap();
+                let user_id = open.user.id;
+                content = content.child(
+                    div()
+                        .id("profile-manage-roles")
+                        .mt_2()
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(rgb(0x9baaff))
+                        .child(if self.role_picker {
+                            "Close roles"
+                        } else {
+                            "Manage roles"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.role_picker = !this.role_picker;
+                            cx.notify();
+                        })),
+                );
+                if self.role_picker {
+                    for role in open
+                        .roles
+                        .iter()
+                        .filter(|r| open.manageable_roles.contains(&r.id))
+                    {
+                        let role_id = role.id;
+                        let add = !member.roles.contains(&role_id);
+                        content = content.child(
+                            div()
+                                .id(SharedString::from(format!("profile-role-{role_id}")))
+                                .px_2()
+                                .py_1()
+                                .text_size(px(12.))
+                                .cursor_pointer()
+                                .child(format!("{} {}", if add { "○" } else { "●" }, role.name))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.role_pending {
+                                        this.role_pending = true;
+                                        this.role_error = None;
+                                        cx.emit(ProfileAction::SetRole {
+                                            guild_id,
+                                            user_id,
+                                            role_id,
+                                            add,
+                                        });
+                                        cx.notify();
+                                    }
+                                })),
+                        );
+                    }
+                }
+                if let Some(error) = &self.role_error {
+                    content = content.child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(0xf38ba8))
+                            .child(format!("Couldn't update role: {error}")),
+                    );
+                }
+            }
             if !roles.is_empty() {
                 content = content
                     .child(

@@ -648,6 +648,23 @@ impl Fluxer {
             &view.profile_ui.popup,
             window,
             |this, _, event: &profile_view::ProfileAction, window, cx| {
+                if let profile_view::ProfileAction::SetRole {
+                    guild_id,
+                    user_id,
+                    role_id,
+                    add,
+                } = event
+                {
+                    this.command(
+                        Command::SetMemberRole {
+                            guild_id: *guild_id,
+                            user_id: *user_id,
+                            role_id: *role_id,
+                            add: *add,
+                        },
+                        cx,
+                    );
+                }
                 if let profile_view::ProfileAction::Link(url) = event {
                     let target = message_markup::MessageTarget::Link(url.clone());
                     this.activate_message_target(&target, window, cx);
@@ -961,6 +978,17 @@ impl Fluxer {
                     self.profile_ui
                         .popup
                         .update(cx, |popup, cx| popup.apply_dm_status(user_id, status, cx));
+                }
+                Event::MemberRoleMutation {
+                    guild_id,
+                    user_id,
+                    role_id,
+                    add,
+                    error,
+                } => {
+                    self.profile_ui.popup.update(cx, |popup, cx| {
+                        popup.apply_role_result(guild_id, user_id, role_id, add, error, cx)
+                    });
                 }
                 Event::RelationshipMutation { user_id, status } => {
                     self.friends_ui.status.insert(user_id, status.clone());

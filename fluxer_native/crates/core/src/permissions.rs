@@ -203,6 +203,24 @@ pub fn role_is_higher(a_position: i32, a_id: Snowflake, b_position: i32, b_id: S
     a_position > b_position || (a_position == b_position && a_id < b_id)
 }
 
+/// Roles the actor may assign or remove, matching guild_members_roles.erl.
+pub fn can_assign_role(guild: &Guild, actor: &Member, role: &crate::Role) -> bool {
+    if role.id == guild.id {
+        return false;
+    }
+    if actor.user.id == guild.owner_id {
+        return true;
+    }
+    if !resolve_permissions(guild, actor, &[]).contains(Permissions::MANAGE_ROLES) {
+        return false;
+    }
+    guild
+        .roles
+        .iter()
+        .filter(|r| actor.roles.contains(&r.id))
+        .any(|r| role_is_higher(r.position, r.id, role.position, role.id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,6 +298,22 @@ mod tests {
                 ..Member::default()
             },
         )
+    }
+    #[test]
+    fn role_assignment_obeys_permission_hierarchy_and_everyone() {
+        let (mut guild, mut actor) = fixture();
+        guild.roles[1].position = 10;
+        guild.roles[1].permissions = Permissions::MANAGE_ROLES;
+        guild.roles[2].position = 5;
+        actor.roles = vec![guild.roles[1].id];
+        assert!(can_assign_role(&guild, &actor, &guild.roles[2]));
+        assert!(!can_assign_role(&guild, &actor, &guild.roles[1]));
+        assert!(!can_assign_role(&guild, &actor, &guild.roles[0]));
+        guild.roles[1].permissions = Permissions::NONE;
+        assert!(!can_assign_role(&guild, &actor, &guild.roles[2]));
+        guild.owner_id = actor.user.id;
+        assert!(can_assign_role(&guild, &actor, &guild.roles[1]));
+        assert!(!can_assign_role(&guild, &actor, &guild.roles[0]));
     }
     #[test]
     fn overwrite_order_is_aggregated_and_member_is_last() {

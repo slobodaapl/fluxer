@@ -81,6 +81,7 @@ impl Fluxer {
                         guild_id: None,
                         member: None,
                         roles: vec![],
+                        manageable_roles: vec![],
                         media_endpoint: Some(endpoint),
                         community_name: None,
                         anchor: point(px(330.), px(100.)),

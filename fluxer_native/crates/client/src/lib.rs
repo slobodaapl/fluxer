@@ -176,6 +176,12 @@ pub enum Command {
         expires_at: Option<String>,
     },
     ClearCustomStatus,
+    SetMemberRole {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_id: Snowflake,
+        add: bool,
+    },
     ChangeRelationship {
         user_id: Snowflake,
         action: RelationshipAction,
@@ -494,6 +500,13 @@ pub enum Event {
     DirectMessageOpen {
         user_id: Snowflake,
         status: DirectMessageStatus,
+    },
+    MemberRoleMutation {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+        role_id: Snowflake,
+        add: bool,
+        error: Option<String>,
     },
     RelationshipMutation {
         user_id: Snowflake,

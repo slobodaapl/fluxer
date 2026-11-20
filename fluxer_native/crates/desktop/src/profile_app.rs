@@ -49,6 +49,24 @@ impl Fluxer {
             .and_then(|guild| self.state.guilds.get(&guild))
             .map(|guild| guild.roles.clone())
             .unwrap_or_default();
+        let manageable_roles = guild
+            .and_then(|id| {
+                let g = self.state.guilds.get(&id)?;
+                let actor = self
+                    .state
+                    .current_user
+                    .as_ref()
+                    .and_then(|u| self.state.members.get(&(id, u.id)))?;
+                member.as_ref()?;
+                Some(
+                    g.roles
+                        .iter()
+                        .filter(|r| fluxer_core::can_assign_role(g, actor, r))
+                        .map(|r| r.id)
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
         let community_name = guild
             .and_then(|guild| self.state.guilds.get(&guild))
             .map(|guild| guild.name.clone());
@@ -71,6 +89,7 @@ impl Fluxer {
             guild_id: guild,
             member,
             roles,
+            manageable_roles,
             media_endpoint: self.media_endpoint.clone(),
             community_name,
             anchor,
