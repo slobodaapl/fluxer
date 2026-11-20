@@ -327,36 +327,35 @@ impl Fluxer {
                     if !current
                         && session["current"].as_bool() == Some(false)
                         && self.session_revocation.is_none()
-                    {
-                        if let (Some(hash), Some(account)) = (
+                        && let (Some(hash), Some(account)) = (
                             session["id_hash"].as_str(),
                             self.state.current_user.as_ref(),
-                        ) {
-                            let target = hash.to_owned();
-                            let label = if details.is_empty() {
-                                title.to_owned()
-                            } else {
-                                format!("{title} · {details}")
-                            };
-                            let account = account.id;
-                            let instance = self.instance.read(cx).content.to_string();
-                            row = row.child(
-                                quiet_button(("revoke-device", index), "Sign out device").on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.session_revocation = Some(SessionRevocation {
-                                            target: target.clone(),
-                                            title: label.clone(),
-                                            account,
-                                            instance: instance.clone(),
-                                            request: None,
-                                            challenge: None,
-                                            error: None,
-                                        });
-                                        cx.notify();
-                                    }),
-                                ),
-                            );
-                        }
+                        )
+                    {
+                        let target = hash.to_owned();
+                        let label = if details.is_empty() {
+                            title.to_owned()
+                        } else {
+                            format!("{title} · {details}")
+                        };
+                        let account = account.id;
+                        let instance = self.instance.read(cx).content.to_string();
+                        row = row.child(
+                            quiet_button(("revoke-device", index), "Sign out device").on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.session_revocation = Some(SessionRevocation {
+                                        target: target.clone(),
+                                        title: label.clone(),
+                                        account,
+                                        instance: instance.clone(),
+                                        request: None,
+                                        challenge: None,
+                                        error: None,
+                                    });
+                                    cx.notify();
+                                }),
+                            ),
+                        );
                     }
                     body = body.child(row);
                 }

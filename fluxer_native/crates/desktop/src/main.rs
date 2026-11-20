@@ -2693,7 +2693,7 @@ impl Fluxer {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(muted(&format!("Permissions · {role_name}")));
+                        .child(muted(format!("Permissions · {role_name}")));
                     for (label, bit) in [
                         ("View channel", fluxer_core::Permissions::VIEW_CHANNEL),
                         ("Send messages", fluxer_core::Permissions::SEND_MESSAGES),
@@ -2713,7 +2713,7 @@ impl Fluxer {
                             "Inherit"
                         };
                         form = form.child(
-                            button(("overwrite", bit.0), &format!("{label}: {status}")).on_click(
+                            button(("overwrite", bit.0), format!("{label}: {status}")).on_click(
                                 cx.listener(move |this, _, _, cx| {
                                     if let Some((_, draft, _)) = this.overwrite_form.as_mut() {
                                         if draft.allow.contains(bit) {

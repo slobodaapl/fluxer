@@ -344,26 +344,26 @@ impl Fluxer {
             }
             "escape" => self.close_invite(window, cx),
             "up" | "down" if matches!(self.invite_ui.step, InviteStep::ManageList(..)) => {
-                if let InviteStep::ManageList(_, invites) = &self.invite_ui.step {
-                    if !invites.is_empty() {
-                        self.invite_ui.selected = if event.keystroke.key == "up" {
-                            (self.invite_ui.selected + invites.len() - 1) % invites.len()
-                        } else {
-                            (self.invite_ui.selected + 1) % invites.len()
-                        };
-                        cx.notify();
-                    }
+                if let InviteStep::ManageList(_, invites) = &self.invite_ui.step
+                    && !invites.is_empty()
+                {
+                    self.invite_ui.selected = if event.keystroke.key == "up" {
+                        (self.invite_ui.selected + invites.len() - 1) % invites.len()
+                    } else {
+                        (self.invite_ui.selected + 1) % invites.len()
+                    };
+                    cx.notify();
                 }
             }
             "enter"
                 if !event.is_held && matches!(self.invite_ui.step, InviteStep::ManageList(..)) =>
             {
-                if let InviteStep::ManageList(guild, invites) = &self.invite_ui.step {
-                    if let Some(invite) = invites.get(self.invite_ui.selected) {
-                        self.invite_ui.step =
-                            InviteStep::ConfirmRevoke(*guild, invites.clone(), invite.code.clone());
-                        cx.notify();
-                    }
+                if let InviteStep::ManageList(guild, invites) = &self.invite_ui.step
+                    && let Some(invite) = invites.get(self.invite_ui.selected)
+                {
+                    self.invite_ui.step =
+                        InviteStep::ConfirmRevoke(*guild, invites.clone(), invite.code.clone());
+                    cx.notify();
                 }
             }
             "enter"

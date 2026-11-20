@@ -153,7 +153,7 @@ impl Fluxer {
                     && !channel.thread_archived()
                     && self.managing_thread.is_none()
             })
-            .and_then(|channel| self.state.current_user.as_ref().map(|user| (channel, user)))
+            .zip(self.state.current_user.as_ref())
             .filter(|(channel, user)| {
                 let permissions = self.state.permissions_for(channel.id, user.id);
                 self.state
@@ -192,7 +192,7 @@ impl Fluxer {
             .filter(|_| self.managing_thread.is_none());
         let can_browse_archived = channel
             .filter(|channel| !self.demo && channel.kind.standalone_thread_type().is_some())
-            .and_then(|channel| self.state.current_user.as_ref().map(|user| (channel, user)))
+            .zip(self.state.current_user.as_ref())
             .filter(|(channel, user)| {
                 channel
                     .guild_id

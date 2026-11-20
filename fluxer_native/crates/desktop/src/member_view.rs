@@ -25,23 +25,23 @@ impl Fluxer {
                 .flex_col()
                 .p_3()
                 .child(div().child("Group members"));
-            if let Some(id) = me {
-                if !self.demo {
-                    panel = panel.child(
-                        crate::controls::quiet_button("leave-group", "Leave group").on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                this.confirm_group_removal(
-                                    channel,
-                                    id,
-                                    String::new(),
-                                    true,
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ),
-                    );
-                }
+            if let Some(id) = me
+                && !self.demo
+            {
+                panel = panel.child(
+                    crate::controls::quiet_button("leave-group", "Leave group").on_click(
+                        cx.listener(move |this, _, window, cx| {
+                            this.confirm_group_removal(
+                                channel,
+                                id,
+                                String::new(),
+                                true,
+                                window,
+                                cx,
+                            );
+                        }),
+                    ),
+                );
             }
             for user in users {
                 let id = user.id;

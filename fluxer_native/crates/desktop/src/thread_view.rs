@@ -107,11 +107,11 @@ impl Fluxer {
                     before,
                 })
             });
-        if let Err(error) = result {
-            if let Some(results) = self.archived_threads.as_mut() {
-                results.loading = false;
-                results.error = Some(error);
-            }
+        if let Err(error) = result
+            && let Some(results) = self.archived_threads.as_mut()
+        {
+            results.loading = false;
+            results.error = Some(error);
         }
         cx.notify();
     }
