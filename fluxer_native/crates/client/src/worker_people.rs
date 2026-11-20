@@ -19,6 +19,11 @@ pub(super) struct KickEvent {
     result: Result<()>,
 }
 
+struct RoleJob {
+    job: Job,
+    original_roles: Vec<Snowflake>,
+}
+
 pub(super) struct PeopleEvent {
     role: Option<(Snowflake, Snowflake, bool)>,
     user: Snowflake,
@@ -28,7 +33,7 @@ pub(super) struct PeopleEvent {
 pub(super) struct PeopleState {
     next: u64,
     jobs: BTreeMap<Snowflake, Job>,
-    role_jobs: BTreeMap<(Snowflake, Snowflake), Job>,
+    role_jobs: BTreeMap<(Snowflake, Snowflake), RoleJob>,
     tx: async_mpsc::UnboundedSender<PeopleEvent>,
     pub rx: async_mpsc::UnboundedReceiver<PeopleEvent>,
     kicks: BTreeMap<(Snowflake, Snowflake), Job>,
@@ -219,6 +224,7 @@ impl Worker {
             return Err("A role update is already pending".into());
         }
         let client = self.client.clone().ok_or("Not signed in")?;
+        let original_roles = self.state.members[&(guild, user)].roles.clone();
         self.people.next = self.people.next.wrapping_add(1);
         let generation = self.people.next;
         let tx = self.people.tx.clone();
@@ -240,9 +246,13 @@ impl Worker {
                 result,
             });
         });
-        self.people
-            .role_jobs
-            .insert((guild, user), Job { generation, task });
+        self.people.role_jobs.insert(
+            (guild, user),
+            RoleJob {
+                job: Job { generation, task },
+                original_roles,
+            },
+        );
         Ok(())
     }
     pub(super) fn people_event(&mut self, event: PeopleEvent) {
@@ -252,17 +262,14 @@ impl Worker {
                 .people
                 .role_jobs
                 .get(&key)
-                .is_none_or(|job| job.generation != event.generation)
+                .is_none_or(|job| job.job.generation != event.generation)
             {
                 return;
             }
-            self.people.role_jobs.remove(&key);
+            let job = self.people.role_jobs.remove(&key).unwrap();
             if event.result.is_ok() {
                 if let Some(member) = self.state.members.get_mut(&key) {
-                    member.roles.retain(|id| *id != role);
-                    if add {
-                        member.roles.push(role);
-                    }
+                    project_role_if_unchanged(&mut member.roles, &job.original_roles, role, add);
                 }
             }
             self.emit(Event::MemberRoleMutation {
@@ -292,5 +299,39 @@ impl Worker {
             user_id: event.user,
             status,
         });
+    }
+}
+
+// Gateway member state may have changed while the request was in flight.
+// Only project the response over the exact role list it was based on.
+fn project_role_if_unchanged(
+    roles: &mut Vec<Snowflake>,
+    original: &[Snowflake],
+    role: Snowflake,
+    add: bool,
+) {
+    if roles != original {
+        return;
+    }
+    roles.retain(|id| *id != role);
+    if add {
+        roles.push(role);
+    }
+}
+
+#[cfg(test)]
+mod role_projection_tests {
+    use super::*;
+
+    #[test]
+    fn response_does_not_overwrite_newer_member_roles() {
+        let original = vec![1.into()];
+        let mut unchanged = original.clone();
+        project_role_if_unchanged(&mut unchanged, &original, 2.into(), true);
+        assert_eq!(unchanged, vec![1.into(), 2.into()]);
+
+        let mut updated = vec![1.into(), 3.into()];
+        project_role_if_unchanged(&mut updated, &original, 2.into(), true);
+        assert_eq!(updated, vec![1.into(), 3.into()]);
     }
 }
