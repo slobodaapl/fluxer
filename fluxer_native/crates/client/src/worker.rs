@@ -44,6 +44,8 @@ mod people_flow;
 mod presence_flow;
 #[path = "worker_profile.rs"]
 mod profile_flow;
+#[path = "worker_roles.rs"]
+mod role_flow;
 
 type Result<T> = std::result::Result<T, String>;
 const IP_POLL_INTERVAL: Duration = Duration::from_millis(2000);
@@ -231,6 +233,7 @@ pub(crate) struct Worker {
     own_profile: own_profile_flow::OwnProfileState,
     connections_task: Option<JoinHandle<()>>,
     account_sessions_task: Option<JoinHandle<()>>,
+    roles: role_flow::RoleState,
     community: community_flow::CommunityState,
     channels: channel_flow::ChannelJobs,
     attachments: attachment_flow::AttachmentState,
@@ -332,6 +335,7 @@ impl Worker {
             own_profile: own_profile_flow::OwnProfileState::new(),
             connections_task: None,
             account_sessions_task: None,
+            roles: role_flow::RoleState::new(),
             community: community_flow::CommunityState::new(),
             channels: channel_flow::ChannelJobs::new(),
             attachments: attachment_flow::AttachmentState::new(),
@@ -696,6 +700,7 @@ impl Worker {
                 Navigation(Option<navigation_flow::NavigationEvent>),
                 Profile(Option<profile_flow::ProfileEvent>),
                 OwnProfile(Option<own_profile_flow::OwnProfileEvent>),
+                Roles(Option<role_flow::RoleEvent>),
                 Community(Option<community_flow::CommunityEvent>),
                 Channel(Option<channel_flow::ChannelEvent>),
                 Attachment(Option<attachment_flow::AttachmentEvent>),
@@ -743,6 +748,7 @@ impl Worker {
                 event=self.navigation.rx.recv()=>Incoming::Navigation(event),
                 event=self.profiles.rx.recv()=>Incoming::Profile(event),
                 event=self.own_profile.rx.recv()=>Incoming::OwnProfile(event),
+                event=self.roles.rx.recv()=>Incoming::Roles(event),
                 event=self.community.rx.recv()=>Incoming::Community(event),
                 event=self.channels.rx.recv()=>Incoming::Channel(event),
                 event=self.attachments.rx.recv()=>Incoming::Attachment(event),
@@ -909,6 +915,11 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Profile(None) => Ok(()),
+                Incoming::Roles(Some(event)) => {
+                    self.role_event(event);
+                    Ok(())
+                }
+                Incoming::Roles(None) => Ok(()),
                 Incoming::Community(Some(event)) => {
                     self.community_event(event).await;
                     Ok(())
@@ -1050,6 +1061,7 @@ impl Worker {
         self.clear_own_profile();
         self.clear_channel_jobs();
         self.clear_profiles();
+        self.clear_roles();
         self.clear_community();
         self.clear_attachments();
         for (_, job) in std::mem::take(&mut self.sticker_jobs) {
@@ -1683,6 +1695,27 @@ impl Worker {
                 guild_id,
                 force,
             } => self.load_user_profile(user_id, guild_id, force),
+            Command::ManageRole {
+                guild_id,
+                role_id,
+                original,
+                name,
+                color,
+                permissions,
+                hoist,
+                mentionable,
+                delete,
+            } => self.manage_role(
+                guild_id,
+                role_id,
+                original,
+                name,
+                color,
+                permissions,
+                hoist,
+                mentionable,
+                delete,
+            ),
             Command::CreateCommunity { name } => self.create_community(name),
             Command::RenameCommunity { guild_id, name } => self.rename_community(guild_id, name),
             Command::LeaveCommunity {

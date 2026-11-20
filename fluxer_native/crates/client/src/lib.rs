@@ -304,6 +304,17 @@ pub enum Command {
     DemoSearch,
     DemoPrivateCall,
     SetLocale(String),
+    ManageRole {
+        guild_id: Snowflake,
+        role_id: Option<Snowflake>,
+        original: Option<fluxer_core::Role>,
+        name: String,
+        color: u32,
+        permissions: u64,
+        hoist: bool,
+        mentionable: bool,
+        delete: bool,
+    },
     CreateCommunity {
         name: String,
     },
@@ -653,6 +664,10 @@ pub enum Event {
         request_id: u64,
         guild_id: Snowflake,
         result: Result<Vec<serde_json::Value>, String>,
+    },
+    RoleMutation {
+        guild_id: Snowflake,
+        error: Option<String>,
     },
     CommunityMutation {
         created: Option<Snowflake>,

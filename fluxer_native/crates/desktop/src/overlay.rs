@@ -82,6 +82,7 @@ impl super::Fluxer {
     pub(super) fn reset_conversation_surfaces(&mut self, cx: &mut gpui::Context<Self>) {
         self.conversation_scope.synchronize("");
         self.community_ui.reset(cx);
+        self.roles_ui = super::roles_view::RolesUi::new(cx);
         self.invite_ui.reset(cx);
         self.retire_avatar_preview(cx);
         self.retire_banner_preview(cx);

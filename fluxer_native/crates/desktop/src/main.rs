@@ -69,6 +69,7 @@ mod profile_view;
 mod quick_switcher;
 mod rich_message;
 mod role_mention;
+mod roles_view;
 mod scrollbar;
 mod search_browser;
 mod settings_view;
@@ -368,6 +369,7 @@ struct Fluxer {
     settings_return: Pane,
     selected_guild: Option<Snowflake>,
     community_ui: community_view::CommunityUi,
+    roles_ui: roles_view::RolesUi,
     bans_ui: bans_view::BansUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     overwrite_form: Option<(
@@ -552,6 +554,7 @@ impl Fluxer {
             settings_return: Pane::Chat,
             selected_guild: None,
             community_ui: community_view::CommunityUi::new(cx),
+            roles_ui: roles_view::RolesUi::new(cx),
             bans_ui: bans_view::BansUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
@@ -1405,6 +1408,7 @@ impl Fluxer {
                     self.session_context_loaded = true;
                     self.pane = Pane::Chat;
                 }
+                Event::RoleMutation { guild_id, error } => self.role_result(guild_id, error, cx),
                 Event::CommunityMutation {
                     created,
                     left,
@@ -3441,7 +3445,9 @@ impl Render for Fluxer {
         let rendered = div().size_full().flex().flex_col().bg(rgb(self.interface.base_theme().background())).text_color(rgb(TEXT)).font_family("Fluxer Sans").text_size(px(14.))
             .track_focus(&self.focus)
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                if this.bans_ui.guild.is_some() {
+                if this.roles_ui.guild.is_some() {
+                    this.roles_key(event, window, cx);
+                } else if this.bans_ui.guild.is_some() {
                     this.bans_key(event, window, cx);
                 } else if this.community_ui.dialog.is_some() {
                     this.community_key_down(event, window, cx);
@@ -3455,7 +3461,7 @@ impl Render for Fluxer {
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if this.bans_ui.guild.is_some() {
+                if this.roles_ui.guild.is_some() || this.bans_ui.guild.is_some() {
                     cx.stop_propagation();
                 } else if this.community_ui.dialog.is_some() {
                     this.community_key_up(event, window, cx);
@@ -3557,6 +3563,7 @@ impl Render for Fluxer {
             .child(content)
             .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
             .when(self.bans_ui.guild.is_some(), |view| view.child(self.bans_dialog(cx)))
+            .when(self.roles_ui.guild.is_some(), |view| view.child(self.roles_dialog(cx)))
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
             .child(self.role_mention.clone())

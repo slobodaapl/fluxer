@@ -763,6 +763,9 @@ impl Fluxer {
                     Item::Header(name),
                     action("community-open", "Open community", Icon::Home),
                 ]);
+                if self.can_manage_roles(*id) {
+                    items.push(action("community-roles", "Manage roles", Icon::Settings));
+                }
                 if self.can_manage_bans(*id) {
                     items.push(action("community-bans", "Manage bans", Icon::Settings));
                 }
@@ -1354,6 +1357,7 @@ impl Fluxer {
                 }
             }
 
+            (Target::Community(guild), "community-roles") => self.open_roles(*guild, window, cx),
             (Target::Community(guild), "community-bans") => self.open_bans(*guild, window, cx),
             (Target::Community(guild), "community-invite") => {
                 if let Some(channel) = self.invite_channel_for_community(*guild) {
