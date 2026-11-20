@@ -532,3 +532,36 @@ fn private_call_gateway_projection_tracks_ringing_and_call_instances() {
         .unwrap();
     assert!(!state.private_calls.contains_key(&channel));
 }
+
+#[test]
+fn thread_creation_gates_track_capability_parent_and_timeout() {
+    let mut state = ClientState::default();
+    let mut data = ready();
+    let bits = (Permissions::VIEW_CHANNEL
+        | Permissions::CREATE_PUBLIC_THREADS
+        | Permissions::CREATE_PRIVATE_THREADS
+        | Permissions::READ_MESSAGE_HISTORY)
+        .0;
+    data["guilds"][0]["roles"][0]["permissions"] = json!(bits.to_string());
+    data["guilds"][0]["channels"][1]["type"] = json!(5);
+    state.apply_gateway("READY", data).unwrap();
+    assert!(!state.private_thread_allowed(11.into()));
+    state.thread_guilds.insert(1.into());
+    assert!(state.private_thread_allowed(11.into()));
+    assert_eq!(
+        state.message_thread_type(11.into()),
+        Some(ChannelType::PublicThread)
+    );
+    assert!(!state.private_thread_allowed(14.into()));
+    assert_eq!(
+        state.message_thread_type(14.into()),
+        Some(ChannelType::AnnouncementThread)
+    );
+    state
+        .members
+        .get_mut(&(1.into(), 100.into()))
+        .unwrap()
+        .communication_disabled_until = Some("2999-01-01T00:00:00Z".into());
+    assert!(!state.private_thread_allowed(11.into()));
+    assert_eq!(state.message_thread_type(11.into()), None);
+}

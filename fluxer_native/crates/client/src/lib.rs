@@ -344,6 +344,12 @@ pub enum Command {
         parent_id: Snowflake,
         name: String,
     },
+    CreateThread {
+        parent_id: Snowflake,
+        name: String,
+        private: bool,
+        message_id: Option<Snowflake>,
+    },
     SetThreadMembership {
         channel_id: Snowflake,
         join: bool,

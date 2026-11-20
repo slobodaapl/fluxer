@@ -1754,7 +1754,22 @@ impl Worker {
                 self.select_channel(channel_id).await?;
             }
             Command::CreatePublicThread { parent_id, name } => {
-                if let Err(message) = self.begin_thread_creation(parent_id, &name) {
+                if let Err(message) = self.begin_thread_creation(parent_id, &name, false, None) {
+                    self.emit(Event::ThreadCreated {
+                        parent_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::CreateThread {
+                parent_id,
+                name,
+                private,
+                message_id,
+            } => {
+                if let Err(message) =
+                    self.begin_thread_creation(parent_id, &name, private, message_id)
+                {
                     self.emit(Event::ThreadCreated {
                         parent_id,
                         result: Err(message),
@@ -3545,14 +3560,45 @@ impl Worker {
         });
     }
 
-    fn begin_thread_creation(&mut self, parent: Snowflake, name: &str) -> Result<()> {
+    fn begin_thread_creation(
+        &mut self,
+        parent: Snowflake,
+        name: &str,
+        private: bool,
+        message: Option<Snowflake>,
+    ) -> Result<()> {
         if self.thread_creation.is_some() {
             return Err("A thread is already being created".into());
         }
-        let kind = self
-            .state
-            .public_thread_type(parent)
-            .ok_or("You cannot create a public thread in this channel")?;
+        let kind = if private && message.is_none() && self.state.private_thread_allowed(parent) {
+            ChannelType::PrivateThread
+        } else if !private {
+            if message.is_some() {
+                self.state.message_thread_type(parent)
+            } else {
+                self.state.public_thread_type(parent)
+            }
+            .ok_or("You cannot create a thread in this channel")?
+        } else {
+            return Err("You cannot create a private thread in this channel".into());
+        };
+        if let Some(id) = message {
+            if !self
+                .state
+                .messages
+                .get(&parent)
+                .and_then(|messages| messages.get(&id))
+                .is_some_and(|message| {
+                    matches!(message.kind, 0 | 19) && message.flags & (1 << 5) == 0
+                })
+            {
+                return Err("The message is no longer available".into());
+            }
+        }
+        let archive = self.state.channels[&parent]
+            .extra
+            .get("default_auto_archive_duration")
+            .and_then(Value::as_u64);
         let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
         let guild = self.state.channels[&parent]
             .guild_id
@@ -3565,10 +3611,12 @@ impl Worker {
         let task = tokio::spawn(async move {
             tokio::time::timeout(
                 Duration::from_secs(15),
-                client.create_public_thread(
+                client.create_thread(
                     &parent.to_string(),
                     &name,
-                    kind == ChannelType::AnnouncementThread,
+                    kind.code(),
+                    message.map(|id| id.to_string()).as_deref(),
+                    archive,
                 ),
             )
             .await

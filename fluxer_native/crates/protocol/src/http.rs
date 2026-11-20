@@ -760,6 +760,32 @@ impl Client {
         .await
     }
 
+    pub async fn create_thread(
+        &self,
+        channel: &str,
+        name: &str,
+        kind: u16,
+        message: Option<&str>,
+        archive: Option<u64>,
+    ) -> Result<Value> {
+        let path = match message {
+            Some(message) => format!(
+                "/channels/{}/messages/{}/threads",
+                segment(channel),
+                segment(message)
+            ),
+            None => format!("/channels/{}/threads", segment(channel)),
+        };
+        let mut body = json!({"name": name});
+        if message.is_none() {
+            body["type"] = json!(kind);
+        }
+        if let Some(archive) = archive {
+            body["auto_archive_duration"] = json!(archive);
+        }
+        self.request(Method::POST, &path, Some(&body)).await
+    }
+
     /// List archived public threads, optionally before an archive timestamp.
     pub async fn archived_public_threads(
         &self,

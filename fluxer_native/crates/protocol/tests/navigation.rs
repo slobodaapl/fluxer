@@ -457,6 +457,41 @@ async fn standalone_threads_use_text_and_announcement_types_with_session_capabil
 }
 
 #[tokio::test]
+async fn private_and_message_threads_use_classic_routes_and_payloads() {
+    let mut server = Server::new(vec![
+        Reply::json(201, json!({})),
+        Reply::json(201, json!({})),
+    ])
+    .await;
+    let client = client(&server.origin);
+    client
+        .create_thread("11", "Private", 12, None, Some(1440))
+        .await
+        .unwrap();
+    client
+        .create_thread("11", "From message", 11, Some("42"), None)
+        .await
+        .unwrap();
+    let private = server.next().await;
+    assert_api(&private, "POST");
+    assert_eq!(private.line, "POST /api/v1/channels/11/threads HTTP/1.1");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&private.body).unwrap(),
+        json!({"name":"Private","type":12,"auto_archive_duration":1440})
+    );
+    let message = server.next().await;
+    assert_api(&message, "POST");
+    assert_eq!(
+        message.line,
+        "POST /api/v1/channels/11/messages/42/threads HTTP/1.1"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&message.body).unwrap(),
+        json!({"name":"From message"})
+    );
+}
+
+#[tokio::test]
 async fn account_sessions_list_uses_authenticated_source_endpoint() {
     let sessions = json!([
         {"id_hash":"current", "current":true, "masked_ip":"192.0.2.xxx", "approx_last_used_at":"2026-11-19T00:00:00Z", "client_info":{"os":"Linux", "device":"desktop"}},

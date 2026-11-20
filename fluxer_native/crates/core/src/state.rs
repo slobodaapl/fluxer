@@ -160,11 +160,55 @@ impl ClientState {
         let user = self.current_user.as_ref()?;
         let required = Permissions::VIEW_CHANNEL | Permissions::CREATE_PUBLIC_THREADS;
         if !self.thread_guilds.contains(&guild)
+            || self.thread_creation_timed_out(parent, guild, user.id)
             || !self.permissions_for(parent, user.id).contains(required)
         {
             return None;
         }
         channel.kind.standalone_thread_type()
+    }
+
+    fn thread_creation_timed_out(
+        &self,
+        parent: Snowflake,
+        guild: Snowflake,
+        user: Snowflake,
+    ) -> bool {
+        if self.guilds.get(&guild).is_some_and(|g| g.owner_id == user)
+            || self
+                .permissions_for(parent, user)
+                .contains(Permissions::ADMINISTRATOR)
+        {
+            return false;
+        }
+        self.members
+            .get(&(guild, user))
+            .and_then(|m| m.communication_disabled_until.as_deref())
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .is_some_and(|until| until > chrono::Utc::now())
+    }
+
+    pub fn private_thread_allowed(&self, parent: Snowflake) -> bool {
+        let Some(channel) = self.channels.get(&parent) else {
+            return false;
+        };
+        let (Some(guild), Some(user)) = (channel.guild_id, self.current_user.as_ref()) else {
+            return false;
+        };
+        channel.kind == ChannelType::Text
+            && self.thread_guilds.contains(&guild)
+            && !self.thread_creation_timed_out(parent, guild, user.id)
+            && self
+                .permissions_for(parent, user.id)
+                .contains(Permissions::VIEW_CHANNEL | Permissions::CREATE_PRIVATE_THREADS)
+    }
+
+    pub fn message_thread_type(&self, parent: Snowflake) -> Option<ChannelType> {
+        let kind = self.public_thread_type(parent)?;
+        let user = self.current_user.as_ref()?;
+        self.permissions_for(parent, user.id)
+            .contains(Permissions::READ_MESSAGE_HISTORY)
+            .then_some(kind)
     }
 
     pub fn select_channel(&mut self, id: Snowflake) -> bool {

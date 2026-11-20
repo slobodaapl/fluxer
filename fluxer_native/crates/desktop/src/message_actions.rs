@@ -14,6 +14,7 @@ pub(super) enum MessageMenuContext {
 pub(super) enum MessageAction {
     React,
     Reply,
+    StartThread,
     Forward,
     Copy,
     CopyLink,
@@ -28,6 +29,7 @@ impl MessageAction {
         match self {
             Self::React => "Add reaction",
             Self::Reply => "Reply",
+            Self::StartThread => "Start thread",
             Self::Forward => "Forward",
             Self::Copy => "Copy text",
             Self::CopyLink => "Copy link to message",
@@ -48,6 +50,7 @@ impl MessageAction {
         match self {
             Self::React => Icon::React,
             Self::Reply => Icon::Reply,
+            Self::StartThread => Icon::Reply,
             Self::Forward => Icon::Forward,
             Self::Copy => Icon::Copy,
             Self::CopyLink => Icon::Copy,
@@ -246,6 +249,14 @@ impl Fluxer {
             {
                 actions.push(MessageAction::Reply);
             }
+            if !self.demo
+                && matches!(message.kind, 0 | 19)
+                && message.flags & (1 << 5) == 0
+                && self.state.selected_channel == Some(message.channel_id)
+                && self.state.message_thread_type(message.channel_id).is_some()
+            {
+                actions.push(MessageAction::StartThread);
+            }
             actions.push(MessageAction::Forward);
         }
         actions.push(MessageAction::Copy);
@@ -353,6 +364,11 @@ impl Fluxer {
                 self.replies.insert(message.channel_id, (message, false));
                 self.cancel_edit(cx);
                 self.composer.focus_handle(cx).focus(window);
+            }
+            MessageAction::StartThread => {
+                self.open_thread_form(message.channel_id, window, cx);
+                self.thread_private = false;
+                self.thread_message = Some(message.id);
             }
             MessageAction::Forward => {
                 self.forwarding = Some(message);

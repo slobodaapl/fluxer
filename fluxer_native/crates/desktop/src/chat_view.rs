@@ -203,8 +203,11 @@ impl Fluxer {
                     )
             })
             .map(|(channel, _)| channel.id);
-        let can_create_thread = selected
-            .filter(|parent| !self.demo && self.state.public_thread_type(*parent).is_some());
+        let can_create_thread = selected.filter(|parent| {
+            !self.demo
+                && (self.state.public_thread_type(*parent).is_some()
+                    || self.state.private_thread_allowed(*parent))
+        });
         let messages = self.visible_messages();
         let layouts = message_layouts(&messages);
         self.message_actions.row_order = messages.iter().map(|message| message.id).collect();

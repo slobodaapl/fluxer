@@ -251,6 +251,8 @@ impl Fluxer {
                 .update(cx, |input, cx| input.set(String::new(), cx));
         }
         self.thread_form = Some(parent);
+        self.thread_private = self.state.public_thread_type(parent).is_none();
+        self.thread_message = None;
         self.thread_name.focus_handle(cx).focus(window);
         cx.notify();
     }
@@ -264,6 +266,31 @@ impl Fluxer {
             .items_center()
             .gap_2()
             .child(div().flex_1().min_w_0().child(self.thread_name.clone()))
+            .when(
+                self.thread_message.is_none()
+                    && self
+                        .thread_form
+                        .is_some_and(|id| self.state.private_thread_allowed(id))
+                    && self
+                        .thread_form
+                        .is_some_and(|id| self.state.public_thread_type(id).is_some()),
+                |view| {
+                    view.child(
+                        quiet_button(
+                            "thread-privacy",
+                            if self.thread_private {
+                                "Private"
+                            } else {
+                                "Public"
+                            },
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.thread_private = !this.thread_private;
+                            cx.notify();
+                        })),
+                    )
+                },
+            )
             .when(!creating, |view| {
                 view.child(
                     quiet_button("create-thread", "Create")
@@ -293,7 +320,12 @@ impl Fluxer {
             cx.notify();
             return;
         }
-        let command = Command::CreatePublicThread { parent_id, name };
+        let command = Command::CreateThread {
+            parent_id,
+            name,
+            private: self.thread_private,
+            message_id: self.thread_message,
+        };
         let result = self
             .controller
             .as_ref()
