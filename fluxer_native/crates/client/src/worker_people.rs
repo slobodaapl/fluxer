@@ -267,10 +267,10 @@ impl Worker {
                 return;
             }
             let job = self.people.role_jobs.remove(&key).unwrap();
-            if event.result.is_ok() {
-                if let Some(member) = self.state.members.get_mut(&key) {
-                    project_role_if_unchanged(&mut member.roles, &job.original_roles, role, add);
-                }
+            if event.result.is_ok()
+                && let Some(member) = self.state.members.get_mut(&key)
+            {
+                project_role_if_unchanged(&mut member.roles, &job.original_roles, role, add);
             }
             self.emit(Event::MemberRoleMutation {
                 guild_id: guild,
