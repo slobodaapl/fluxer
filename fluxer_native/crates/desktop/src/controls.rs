@@ -344,6 +344,9 @@ fn quantize(value: f32, min: f32, max: f32, step: f32) -> f32 {
     if !value.is_finite() || !min.is_finite() || !max.is_finite() || max <= min {
         return min;
     }
+    if value >= max {
+        return max;
+    }
     let step = if step.is_finite() && step > 0. {
         step
     } else {
@@ -487,6 +490,8 @@ mod tests {
     fn slider_clamps_and_rounds_to_the_control_step() {
         assert_eq!(quantize(-200., 0., 200., 1.), 0.);
         assert_eq!(quantize(345., 0., 200., 1.), 200.);
+        assert_eq!(quantize(10.25, 0., 10.25, 1.), 10.25);
+        assert_eq!(quantize(11., 0., 10.25, 1.), 10.25);
         assert_eq!(quantize(32.7, 0., 200., 1.), 33.);
         assert!((quantize(-37.4, -60., 0., 0.5) + 37.5).abs() < 0.001);
     }

@@ -513,7 +513,10 @@ impl MediaPlayer {
             PlayerAction::OpenOriginal => cx.emit(PlayerEvent::Original),
             PlayerAction::OpenFullscreen => {
                 self.modal = true;
-                self.wanted = self.is_playing() || self.source.kind == PlayableKind::Gifv;
+                if self.source.kind == PlayableKind::Gifv && !self.user_paused {
+                    self.wanted = true;
+                    self.ensure_loaded();
+                }
                 cx.emit(PlayerEvent::Open);
             }
             PlayerAction::Close => {

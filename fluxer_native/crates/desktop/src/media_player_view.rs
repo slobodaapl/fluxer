@@ -96,20 +96,17 @@ impl PlayerModal {
         self.previous_focus = None;
     }
     fn controls(&self, view: &PlayerView) -> Vec<FocusHandle> {
-        let mut controls = vec![self.play.clone()];
-        if view.error.is_none() {
-            if view.kind != PlayerKind::Gifv {
-                controls.push(self.mute.clone());
-                controls.push(self.volume.clone());
-            }
-            if valid_duration(view.duration).is_some() {
-                controls.push(self.seek.clone());
-            }
+        let mut controls = vec![self.close.clone(), self.play.clone()];
+        if view.error.is_none() && view.kind != PlayerKind::Gifv {
+            controls.push(self.mute.clone());
+            controls.push(self.volume.clone());
         }
         if view.can_open_original {
             controls.push(self.original.clone());
         }
-        controls.push(self.close.clone());
+        if view.error.is_none() && valid_duration(view.duration).is_some() {
+            controls.push(self.seek.clone());
+        }
         controls
     }
 }
@@ -186,7 +183,14 @@ fn action_button(
         })
 }
 
-fn keyboard_action(view: &PlayerView, key: &str) -> Option<PlayerAction> {
+fn keyboard_action(view: &PlayerView, key: &str, modal: bool) -> Option<PlayerAction> {
+    if key == "f" && view.kind != PlayerKind::Audio {
+        return Some(if modal {
+            PlayerAction::Close
+        } else {
+            PlayerAction::OpenFullscreen
+        });
+    }
     if view.error.is_some() {
         return (key == "space" || key == "k").then_some(PlayerAction::Retry);
     }
@@ -214,9 +218,20 @@ fn keyboard_action(view: &PlayerView, key: &str) -> Option<PlayerAction> {
             Some(PlayerAction::Volume((view.volume - 0.05).clamp(0., 1.)))
         }
         "m" if view.kind != PlayerKind::Gifv => Some(PlayerAction::Mute),
-        "f" if view.kind != PlayerKind::Audio => Some(PlayerAction::OpenFullscreen),
         _ => None,
     }
+}
+
+fn player_shortcut(event: &KeyDownEvent, view: &PlayerView, modal: bool) -> Option<PlayerAction> {
+    let modifiers = event.keystroke.modifiers;
+    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+        return None;
+    }
+    keyboard_action(view, &event.keystroke.key, modal)
+}
+
+fn repeats(action: PlayerAction) -> bool {
+    matches!(action, PlayerAction::Seek(_) | PlayerAction::Volume(_))
 }
 
 fn controls(
@@ -412,7 +427,23 @@ fn video_surface(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .when(!modal, |s| s.focusable().tab_stop(true))
+        .when(!modal, |s| {
+            s.focusable()
+                .tab_stop(true)
+                .border_1()
+                .border_color(transparent_black())
+                .focus(|style| style.border_color(rgb(ACCENT)))
+                .on_key_down(move |event, window, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                        && !event.keystroke.modifiers.modified()
+                    {
+                        cx.stop_propagation();
+                        if !event.is_held {
+                            callback(click_action, window, cx);
+                        }
+                    }
+                })
+        })
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             click(click_action, window, cx);
@@ -503,13 +534,9 @@ pub(super) fn render_inline(
         .flex_col()
         .on_click(|_, _, cx| cx.stop_propagation())
         .on_key_down(move |event, window, cx| {
-            if !event.keystroke.modifiers.modified()
-                && let Some(action) = keyboard_action(&key_view, &event.keystroke.key)
-            {
+            if let Some(action) = player_shortcut(event, &key_view, false) {
                 cx.stop_propagation();
-                if !event.is_held
-                    || matches!(action, PlayerAction::Seek(_) | PlayerAction::Volume(_))
-                {
+                if !event.is_held || repeats(action) {
                     keyboard(action, window, cx);
                 }
             }
@@ -581,7 +608,9 @@ pub(super) fn render_modal(
                 move |event, window, cx| match event.keystroke.key.as_str() {
                     "escape" => {
                         cx.stop_propagation();
-                        close(PlayerAction::Close, window, cx);
+                        if !event.is_held {
+                            close(PlayerAction::Close, window, cx);
+                        }
                     }
                     "tab" => {
                         cx.stop_propagation();
@@ -596,11 +625,8 @@ pub(super) fn render_modal(
             )
             .on_key_down(move |event, window, cx| {
                 cx.stop_propagation();
-                if !event.keystroke.modifiers.modified()
-                    && let Some(action) = keyboard_action(&key_view, &event.keystroke.key)
-                    && action != PlayerAction::OpenFullscreen
-                    && (!event.is_held
-                        || matches!(action, PlayerAction::Seek(_) | PlayerAction::Volume(_)))
+                if let Some(action) = player_shortcut(event, &key_view, true)
+                    && (!event.is_held || repeats(action))
                 {
                     keys(action, window, cx);
                 }
@@ -627,7 +653,7 @@ pub(super) fn render_modal(
                     .child(action_button(
                         "media-player-close".into(),
                         Icon::Close,
-                        "Close media (Esc)",
+                        "Close media (F or Esc)",
                         PlayerAction::Close,
                         callback.clone(),
                         Some(&modal.close),
@@ -683,7 +709,7 @@ pub(super) fn render_modal(
                     .text_size(px(11.))
                     .text_color(rgb(MUTED))
                     .text_center()
-                    .child("Space Play / pause · ← → Seek · J / L 10s · 0–9 Jump · ↑ ↓ Volume · M Mute · Esc Close"),
+                    .child("Space Play / pause · ← → Seek · J / L 10s · 0–9 Jump · ↑ ↓ Volume · M Mute · F / Esc Close"),
             ),
     )
     .with_priority(6)
@@ -735,25 +761,50 @@ mod tests {
             can_open_original: false,
         };
         assert_eq!(
-            keyboard_action(&view, "right"),
+            keyboard_action(&view, "right", false),
             Some(PlayerAction::Seek(10.))
         );
-        assert_eq!(keyboard_action(&view, "home"), Some(PlayerAction::Seek(0.)));
-        assert_eq!(keyboard_action(&view, "j"), Some(PlayerAction::Seek(0.)));
-        assert_eq!(keyboard_action(&view, "5"), Some(PlayerAction::Seek(5.)));
-        assert_eq!(keyboard_action(&view, "9"), Some(PlayerAction::Seek(9.)));
-        assert_eq!(keyboard_action(&view, "up"), Some(PlayerAction::Volume(1.)));
-        view.duration = None;
-        assert_eq!(keyboard_action(&view, "left"), None);
-        assert_eq!(keyboard_action(&view, "5"), None);
-        view.kind = PlayerKind::Gifv;
-        assert_eq!(keyboard_action(&view, "m"), None);
-        assert_eq!(keyboard_action(&view, "down"), None);
         assert_eq!(
-            keyboard_action(&view, "space"),
+            keyboard_action(&view, "home", false),
+            Some(PlayerAction::Seek(0.))
+        );
+        assert_eq!(
+            keyboard_action(&view, "j", false),
+            Some(PlayerAction::Seek(0.))
+        );
+        assert_eq!(
+            keyboard_action(&view, "5", false),
+            Some(PlayerAction::Seek(5.))
+        );
+        assert_eq!(
+            keyboard_action(&view, "9", false),
+            Some(PlayerAction::Seek(9.))
+        );
+        assert_eq!(
+            keyboard_action(&view, "up", false),
+            Some(PlayerAction::Volume(1.))
+        );
+        assert_eq!(
+            keyboard_action(&view, "f", false),
+            Some(PlayerAction::OpenFullscreen)
+        );
+        assert_eq!(keyboard_action(&view, "f", true), Some(PlayerAction::Close));
+        view.kind = PlayerKind::Audio;
+        assert_eq!(keyboard_action(&view, "f", true), None);
+        view.duration = None;
+        assert_eq!(keyboard_action(&view, "left", false), None);
+        assert_eq!(keyboard_action(&view, "5", false), None);
+        view.kind = PlayerKind::Gifv;
+        assert_eq!(keyboard_action(&view, "m", false), None);
+        assert_eq!(keyboard_action(&view, "down", false), None);
+        assert_eq!(
+            keyboard_action(&view, "space", false),
             Some(PlayerAction::PlayPause)
         );
         view.error = Some("decoder unavailable".into());
-        assert_eq!(keyboard_action(&view, "space"), Some(PlayerAction::Retry));
+        assert_eq!(
+            keyboard_action(&view, "space", false),
+            Some(PlayerAction::Retry)
+        );
     }
 }
