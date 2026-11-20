@@ -151,6 +151,12 @@ pub enum Command {
         code: String,
     },
 
+    FetchAuditLog {
+        request_id: u64,
+        guild_id: Snowflake,
+        before: Option<String>,
+    },
+    CancelAuditLog,
     FetchBans {
         request_id: u64,
         guild_id: Snowflake,
@@ -660,6 +666,11 @@ pub enum InviteStatus {
 }
 
 pub enum Event {
+    AuditLog {
+        request_id: u64,
+        guild_id: Snowflake,
+        result: Result<serde_json::Value, String>,
+    },
     BanList {
         request_id: u64,
         guild_id: Snowflake,

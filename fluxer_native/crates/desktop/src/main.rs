@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod attachment_composer;
 mod audio_view;
+mod audit_view;
 mod avatar_crop;
 mod avatar_demo;
 mod avatar_images;
@@ -370,6 +371,7 @@ struct Fluxer {
     selected_guild: Option<Snowflake>,
     community_ui: community_view::CommunityUi,
     roles_ui: roles_view::RolesUi,
+    audit_ui: audit_view::AuditUi,
     bans_ui: bans_view::BansUi,
     channel_form: Option<(Snowflake, Option<Snowflake>, u16, Option<Snowflake>)>,
     overwrite_form: Option<(
@@ -555,6 +557,7 @@ impl Fluxer {
             selected_guild: None,
             community_ui: community_view::CommunityUi::new(cx),
             roles_ui: roles_view::RolesUi::new(cx),
+            audit_ui: audit_view::AuditUi::new(cx),
             bans_ui: bans_view::BansUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
@@ -1051,6 +1054,11 @@ impl Fluxer {
             };
             changed = true;
             match event {
+                Event::AuditLog {
+                    request_id,
+                    guild_id,
+                    result,
+                } => self.audit_event(request_id, guild_id, result, cx),
                 Event::BanList {
                     request_id,
                     guild_id,
@@ -3447,6 +3455,8 @@ impl Render for Fluxer {
             .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if this.roles_ui.guild.is_some() {
                     this.roles_key(event, window, cx);
+                } else if this.audit_ui.guild.is_some() {
+                    this.audit_key(event, window, cx);
                 } else if this.bans_ui.guild.is_some() {
                     this.bans_key(event, window, cx);
                 } else if this.community_ui.dialog.is_some() {
@@ -3461,7 +3471,7 @@ impl Render for Fluxer {
                 }
             }))
             .capture_key_up(cx.listener(|this, event: &KeyUpEvent, window, cx| {
-                if this.roles_ui.guild.is_some() || this.bans_ui.guild.is_some() {
+                if this.roles_ui.guild.is_some() || this.audit_ui.guild.is_some() || this.bans_ui.guild.is_some() {
                     cx.stop_propagation();
                 } else if this.community_ui.dialog.is_some() {
                     this.community_key_up(event, window, cx);
@@ -3564,6 +3574,7 @@ impl Render for Fluxer {
             .when(self.community_ui.dialog.is_some(), |view| view.child(self.community_dialog(cx)))
             .when(self.bans_ui.guild.is_some(), |view| view.child(self.bans_dialog(cx)))
             .when(self.roles_ui.guild.is_some(), |view| view.child(self.roles_dialog(cx)))
+            .when(self.audit_ui.guild.is_some(), |view| view.child(self.audit_dialog(cx)))
             .child(self.media_transfer_overlay(cx))
             .child(self.profile_ui.popup.clone())
             .child(self.role_mention.clone())

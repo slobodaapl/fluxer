@@ -766,6 +766,9 @@ impl Fluxer {
                 if self.can_manage_roles(*id) {
                     items.push(action("community-roles", "Manage roles", Icon::Settings));
                 }
+                if self.can_view_audit(*id) {
+                    items.push(action("community-audit", "Audit log", Icon::Settings));
+                }
                 if self.can_manage_bans(*id) {
                     items.push(action("community-bans", "Manage bans", Icon::Settings));
                 }
@@ -1358,6 +1361,7 @@ impl Fluxer {
             }
 
             (Target::Community(guild), "community-roles") => self.open_roles(*guild, window, cx),
+            (Target::Community(guild), "community-audit") => self.open_audit(*guild, window, cx),
             (Target::Community(guild), "community-bans") => self.open_bans(*guild, window, cx),
             (Target::Community(guild), "community-invite") => {
                 if let Some(channel) = self.invite_channel_for_community(*guild) {

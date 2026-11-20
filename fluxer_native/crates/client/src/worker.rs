@@ -20,6 +20,8 @@ use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
+#[path = "worker_audit.rs"]
+mod audit_flow;
 #[path = "worker_bans.rs"]
 mod bans_flow;
 #[path = "worker_call_jobs.rs"]
@@ -226,6 +228,7 @@ pub(crate) struct Worker {
     display_settings: display_settings_flow::DisplaySettingsState,
     system_idle: Option<(bool, bool)>,
     people: people_flow::PeopleState,
+    audit: audit_flow::AuditState,
     bans: bans_flow::BanState,
     invites: invite_flow::InviteState,
     navigation: navigation_flow::NavigationState,
@@ -328,6 +331,7 @@ impl Worker {
             display_settings: display_settings_flow::DisplaySettingsState::new(),
             system_idle: None,
             people: people_flow::PeopleState::new(),
+            audit: audit_flow::AuditState::new(),
             bans: bans_flow::BanState::new(),
             invites: invite_flow::InviteState::new(),
             navigation: navigation_flow::NavigationState::new(),
@@ -683,6 +687,7 @@ impl Worker {
                 Invite(Option<invite_flow::InviteEvent>),
                 InviteTimeout,
                 Kick(Option<people_flow::KickEvent>),
+                Audit(Option<audit_flow::AuditEvent>),
                 Bans(Option<bans_flow::BanEvent>),
                 Dm(Option<DmEvent>),
                 Sticker(Option<StickerEvent>),
@@ -736,6 +741,7 @@ impl Worker {
                 event=self.invites.rx.recv()=>Incoming::Invite(event),
                 _ = voice_timeout(self.invites.deadline)=>Incoming::InviteTimeout,
                 event=self.people.kick_rx.recv()=>Incoming::Kick(event),
+                event=self.audit.rx.recv()=>Incoming::Audit(event),
                 event=self.bans.rx.recv()=>Incoming::Bans(event),
                 event=self.dm_rx.recv()=>Incoming::Dm(event),
                 event=self.sticker_rx.recv()=>Incoming::Sticker(event),
@@ -800,6 +806,12 @@ impl Worker {
                     Ok(())
                 }
                 Incoming::Kick(None) => Ok(()),
+                Incoming::Audit(event) => {
+                    if let Some(event) = event {
+                        self.audit_event(event);
+                    }
+                    Ok(())
+                }
                 Incoming::Bans(event) => {
                     if let Some(event) = event {
                         self.ban_list_event(event);
@@ -1055,6 +1067,7 @@ impl Worker {
         self.clear_presence();
         self.clear_display_settings();
         self.clear_people();
+        self.audit.clear();
         self.bans.clear();
         self.clear_invites();
         self.clear_navigation();
@@ -1604,6 +1617,20 @@ impl Worker {
                     self.emit(Event::Error(message));
                 }
             }
+            Command::FetchAuditLog {
+                request_id,
+                guild_id,
+                before,
+            } => {
+                if let Err(message) = self.audit_request(request_id, guild_id, before) {
+                    self.emit(Event::AuditLog {
+                        request_id,
+                        guild_id,
+                        result: Err(message),
+                    });
+                }
+            }
+            Command::CancelAuditLog => self.audit.clear(),
             Command::FetchBans {
                 request_id,
                 guild_id,

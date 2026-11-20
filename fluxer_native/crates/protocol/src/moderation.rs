@@ -33,6 +33,24 @@ impl Client {
         .await
     }
 
+    /// Fetch one page of the guild audit log.
+    pub async fn guild_audit_log(&self, guild: &str, before: Option<&str>) -> Result<Value> {
+        let query = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("limit", "50");
+            if let Some(before) = before {
+                query.append_pair("before", before);
+            }
+            query.finish()
+        };
+        self.request(
+            Method::GET,
+            &format!("/guilds/{}/audit-logs?{}", segment(guild), query),
+            None,
+        )
+        .await
+    }
+
     /// Revoke a community ban without supplying an audit-log reason.
     pub async fn unban_member(&self, guild: &str, user: &str) -> Result<()> {
         self.request(
@@ -120,6 +138,49 @@ mod tests {
             .unwrap()
             .with_token(crate::SessionToken::new("test-session").unwrap());
         client.ban_member("42", "99").await.unwrap();
+        server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn audit_log_pages_use_cursor_and_session() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let instance = crate::Instance {
+            api: base.clone(),
+            gateway: base.clone(),
+            web_app: base,
+            api_version: 1,
+            features: json!({}),
+            document: json!({}),
+        };
+        let server = tokio::spawn(async move {
+            for path in [
+                "/v1/guilds/42/audit-logs?limit=50",
+                "/v1/guilds/42/audit-logs?limit=50&before=123",
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(request).unwrap();
+                assert!(
+                    head.starts_with(&format!("GET {path} HTTP/1.1\r\n")),
+                    "{head}"
+                );
+                assert!(
+                    head.to_ascii_lowercase()
+                        .contains("authorization: test-session\r\n")
+                );
+                let body = r#"{"audit_log_entries":[{"id":"123","action_type":22,"user_id":"1","target_id":"2"}],"users":[{"id":"1","username":"mod"}],"webhooks":[]}"#;
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let client = Client::new(instance)
+            .unwrap()
+            .with_token(crate::SessionToken::new("test-session").unwrap());
+        let page = client.guild_audit_log("42", None).await.unwrap();
+        assert_eq!(page["audit_log_entries"][0]["action_type"], 22);
+        client.guild_audit_log("42", Some("123")).await.unwrap();
         server.await.unwrap();
     }
     #[tokio::test]
