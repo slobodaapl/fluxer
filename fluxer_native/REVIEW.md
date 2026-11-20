@@ -5,6 +5,30 @@ scope; real-account, device and subjective UI checks stay pending until reviewed
 Some checks were prepared while the user was away on 2026-11-12. Record later
 feedback against its specific scenario without treating it as broader acceptance.
 
+## Linux and shared-client parity — 2026-11-20
+
+| ID | Review | Expected behavior |
+|---|---|---|
+| NOV20-1 | Move text and voice channels within and between categories with a second client watching. Create, edit and delete a disposable role, then add and remove role and member overwrites. | Classic and Native agree on final position and effective permissions. A restricted account sees only actions it can use. |
+| NOV20-2 | Page a populated audit log, then create, rename, copy the URL for, and delete a disposable channel webhook. | History pages preserve order, rename retains the avatar, and writes refresh the scoped list. A copied URL is available only after the explicit action. |
+| NOV20-3 | Filter and page Explore, cancel a join, then confirm an eligible community join. Test revoked eligibility and a slow response. | The account stays on the selected instance. Membership follows the gateway and errors explain whether to retry or refresh. |
+| NOV20-4 | Start a private thread and a message-started thread. Create a forum or media post with a file, including an induced upload failure and retry. | The thread opens in the intended parent. The first post contains the right attachment. Rejected creation retains the staged files. |
+| NOV20-5 | Request a password recovery email, test CAPTCHA handoff, edit account connection visibility, then cancel and confirm an unlink. | Reset links and browser sign-in use the correct instance. Account mutations refresh server state and stale results stay out of a newer session. |
+| NOV20-6 | Visit a link with the trusted-host option, repeat after removing trust, and exercise mature-channel consent with eligible and restricted accounts. | Warnings and saved host scope agree with classic. Only eligible accounts can proceed into gated chat or forums. |
+| NOV20-7 | Switch appearance, restart, and toggle each Streamer Mode control during notifications and capture. | Device settings restore. Name and invite masking and notification and sound controls follow their separate toggles. |
+| NOV20-8 | Inspect Plutonium and gift inventory on supported accounts and instances. | Entitlement and gift state match classic. Code copy is available only for eligible unused gifts. |
+
+Use a disposable community and accounts for actions visible to other people.
+Regional content gates, separate content entry points and visitor previews
+still need implementation. Account switching also needs logout and
+invalidation handling before stored sessions can participate.
+
+The integrated build passed private Wayland smoke for chat, media, streams,
+forum filters and private call dismissal. Additional offline checks exercised
+Coal palette switching, the Streamer Mode toggle and Escape after turning it
+off from the banner, and opening the channel permission picker and selecting
+a role with Enter. Admin writes used synthetic fixtures.
+
 ## Private calling, camera publishing and administration — 2026-11-19
 
 | ID | Review | Expected behavior |

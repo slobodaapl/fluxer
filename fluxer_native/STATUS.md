@@ -7,6 +7,42 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Linux and shared-client parity — 2026-11-20
+
+The Linux-focused 16-worktree wave extends community administration with
+keyboard-accessible channel moves, role creation/editing/deletion, a compact
+role/member picker for channel permission overwrites, paginated audit history,
+and channel webhook creation, renaming, URL copy and confirmed deletion.
+Explore supports authenticated directory filters, paging and an explicit join.
+
+Private and message-started threads can be created. Forum and media posts can
+carry staged files on their first message. Chat and forum screens now show
+scoped consent for mature or warning-gated channels. External link warnings can
+save an exact trusted host after confirmation, and linked accounts can be
+listed, edited for visibility, and unlinked after confirmation.
+
+Sign-in can request a password reset with browser continuation for CAPTCHA and
+the email reset link. Native settings add Plutonium status, gift inventory and
+code copy, device-local Dark and Coal presets, and Streamer Mode with manual
+enable, Linux process detection, name/invite masking and independent notification
+and sound controls. TeX fences keep readable source and exact Copy behavior.
+
+Integrated build `288b8f65c-parity22` passes the inventory audit, formatting,
+strict Clippy and 782 workspace tests, with 15 opt-in tests skipped. Loopback
+fixtures cover the new HTTP contracts and both forum upload paths. The private
+Linux audio run passed loopback, microphone, output routing, screen watch and
+application-audio sharing. A separate LiveKit run verified independent camera
+and screen subscriptions with synthetic sources.
+
+Account switching needs a coordinated authenticated session lifecycle. An
+isolated vault inventory prototype is available on its worktree for follow-up.
+Remaining work includes registration and native reset/MFA continuation, visitor
+previews, private thread administration, full role and audit controls, report and
+regional consent flows, authorized apps, theme import and full palette coverage,
+TeX typesetting, voice messages, billing/redeeming and signed updates. Windows
+and macOS ports are deferred for dedicated hardware. The ledger records 42
+partial areas and five pending areas, with whole-area acceptance still open.
+
 ## Private calling, camera publishing and administration — 2026-11-19
 
 The third 16-worker wave implements outgoing and incoming DM/group voice calls,
