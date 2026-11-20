@@ -353,6 +353,8 @@ struct Fluxer {
     composer: Entity<TextInput>,
     thread_name: Entity<TextInput>,
     thread_form: Option<Snowflake>,
+    forum_body: Entity<TextInput>,
+    forum_tags: Vec<String>,
     creating_thread: Option<Snowflake>,
     managing_thread: Option<Snowflake>,
     conversation_scope: conversation_scope::ConversationScope,
@@ -537,6 +539,12 @@ impl Fluxer {
             conversation_scope: conversation_scope::ConversationScope::default(),
             thread_name: cx.new(|cx| TextInput::new("Thread name", cx)),
             thread_form: None,
+            forum_body: cx.new(|cx| {
+                let mut input = TextInput::new("Post body", cx);
+                input.multiline = true;
+                input
+            }),
+            forum_tags: Vec::new(),
             creating_thread: None,
             managing_thread: None,
             attachments: AttachmentUi::new(),

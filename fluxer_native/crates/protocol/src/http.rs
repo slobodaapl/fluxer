@@ -742,6 +742,29 @@ impl Client {
         .await
     }
 
+    pub async fn create_forum_post(
+        &self,
+        channel: &str,
+        name: &str,
+        content: &str,
+        tags: &[String],
+        archive: Option<u64>,
+    ) -> Result<Value> {
+        let mut body = json!({"name": name, "message": {"content": content}});
+        if !tags.is_empty() {
+            body["applied_tags"] = json!(tags);
+        }
+        if let Some(archive) = archive {
+            body["auto_archive_duration"] = json!(archive);
+        }
+        self.request(
+            Method::POST,
+            &format!("/channels/{}/threads", segment(channel)),
+            Some(&body),
+        )
+        .await
+    }
+
     pub async fn messages(&self, channel: &str, before: Option<&str>, limit: u8) -> Result<Value> {
         self.messages_page(channel, before, None, None, limit).await
     }

@@ -198,4 +198,106 @@ impl Fluxer {
             Err(error) => self.error = Some(error),
         }
     }
+    pub(super) fn render_forum_form(
+        &self,
+        parent: Snowflake,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut form = div()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().child("Post title").child(self.thread_name.clone()))
+            .child(div().child("Post body").child(self.forum_body.clone()));
+        if let Some(channel) = self.state.channels.get(&parent) {
+            let moderator = self.state.current_user.as_ref().is_some_and(|user| {
+                self.state
+                    .permissions_for(parent, user.id)
+                    .contains(fluxer_core::Permissions::MANAGE_THREADS)
+            });
+            if let Some(tags) = channel
+                .extra
+                .get("available_tags")
+                .and_then(serde_json::Value::as_array)
+            {
+                for (index, tag) in tags.iter().enumerate() {
+                    let Some(id) = tag.get("id").and_then(serde_json::Value::as_str) else {
+                        continue;
+                    };
+                    if tag
+                        .get("moderated")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                        && !moderator
+                    {
+                        continue;
+                    }
+                    let id = id.to_owned();
+                    let name = tag
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Tag");
+                    let label = format!(
+                        "{} {}",
+                        if self.forum_tags.contains(&id) {
+                            "☑"
+                        } else {
+                            "☐"
+                        },
+                        name
+                    );
+                    form = form.child(quiet_button(("forum-tag", index), label).on_click(
+                        cx.listener(move |this, _, _, cx| {
+                            if this.forum_tags.contains(&id) {
+                                this.forum_tags.retain(|tag| tag != &id);
+                            } else {
+                                this.forum_tags.push(id.clone());
+                            }
+                            cx.notify();
+                        }),
+                    ));
+                }
+            }
+        }
+        if self.creating_thread.is_some() {
+            return form.child("Creating post…");
+        }
+        form.child(
+            quiet_button("submit-forum-post", "Create post").on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if this.state.selected_channel != Some(parent) {
+                        return;
+                    }
+                    let name = this.thread_name.read(cx).content.trim().to_owned();
+                    let content = this.forum_body.read(cx).content.to_string();
+                    let command = Command::CreateForumPost {
+                        parent_id: parent,
+                        name,
+                        content,
+                        tags: this.forum_tags.clone(),
+                    };
+                    match this
+                        .controller
+                        .as_ref()
+                        .ok_or_else(|| "The native client worker is unavailable".to_owned())
+                        .and_then(|controller| controller.send(command))
+                    {
+                        Ok(()) => {
+                            this.error = None;
+                            this.creating_thread = Some(parent);
+                        }
+                        Err(error) => this.error = Some(error),
+                    }
+                    cx.notify();
+                },
+            )),
+        )
+        .child(
+            quiet_button("cancel-forum-post", "Cancel").on_click(cx.listener(|this, _, _, cx| {
+                this.thread_form = None;
+                cx.notify();
+            })),
+        )
+    }
 }

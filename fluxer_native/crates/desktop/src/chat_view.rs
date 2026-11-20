@@ -973,6 +973,19 @@ impl Fluxer {
             return div().into_any_element();
         };
         let title = self.channel_name(channel_id);
+        let can_post = !self.demo
+            && self.state.channels.get(&channel_id).is_some_and(|channel| {
+                channel.kind == ChannelType::Forum
+                    && channel
+                        .guild_id
+                        .is_some_and(|guild| self.state.thread_guilds.contains(&guild))
+                    && self.state.current_user.as_ref().is_some_and(|user| {
+                        self.state.permissions_for(channel_id, user.id).contains(
+                            fluxer_core::Permissions::VIEW_CHANNEL
+                                | fluxer_core::Permissions::CREATE_PUBLIC_THREADS,
+                        )
+                    })
+            });
         let mut list = div()
             .id("forum-posts")
             .flex_1()
@@ -1073,6 +1086,21 @@ impl Fluxer {
                     })),
                 ),
             )
+            .when(can_post && self.thread_form != Some(channel_id), |view| {
+                view.child(
+                    quiet_button("new-forum-post", "New post").on_click(cx.listener(
+                        move |this, _, window, cx| {
+                            this.forum_tags.clear();
+                            this.forum_body
+                                .update(cx, |input, cx| input.set(String::new(), cx));
+                            this.open_thread_form(channel_id, window, cx);
+                        },
+                    )),
+                )
+            })
+            .when(can_post && self.thread_form == Some(channel_id), |view| {
+                view.child(self.render_forum_form(channel_id, cx))
+            })
             .child(list)
             .into_any_element()
     }

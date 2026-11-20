@@ -290,6 +290,12 @@ pub enum Command {
         archived: Option<bool>,
         locked: Option<bool>,
     },
+    CreateForumPost {
+        parent_id: Snowflake,
+        name: String,
+        content: String,
+        tags: Vec<String>,
+    },
     LoadForum {
         channel_id: Snowflake,
         creation_order: bool,

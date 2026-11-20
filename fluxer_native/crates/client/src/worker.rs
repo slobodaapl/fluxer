@@ -1529,6 +1529,19 @@ impl Worker {
                     });
                 }
             }
+            Command::CreateForumPost {
+                parent_id,
+                name,
+                content,
+                tags,
+            } => {
+                if let Err(message) = self.begin_forum_post(parent_id, &name, &content, tags) {
+                    self.emit(Event::ThreadCreated {
+                        parent_id,
+                        result: Err(message),
+                    });
+                }
+            }
             Command::LoadForum {
                 channel_id,
                 creation_order,
@@ -3000,6 +3013,94 @@ impl Worker {
             guild,
             parent,
             kind,
+            removed: BTreeSet::new(),
+            task,
+        });
+        Ok(())
+    }
+
+    fn begin_forum_post(
+        &mut self,
+        parent: Snowflake,
+        name: &str,
+        content: &str,
+        tags: Vec<String>,
+    ) -> Result<()> {
+        if self.thread_creation.is_some() {
+            return Err("A thread is already being created".into());
+        }
+        let channel = self.state.channels.get(&parent).ok_or("Unknown forum")?;
+        if channel.kind != ChannelType::Forum {
+            return Err("Choose a forum that supports text posts".into());
+        }
+        let guild = channel.guild_id.ok_or("Unknown community")?;
+        let account = self.state.current_user.as_ref().ok_or("Sign in first")?.id;
+        let perms = self.state.permissions_for(parent, account);
+        if !self.state.thread_guilds.contains(&guild)
+            || !perms.contains(
+                fluxer_core::Permissions::VIEW_CHANNEL
+                    | fluxer_core::Permissions::CREATE_PUBLIC_THREADS,
+            )
+        {
+            return Err("You cannot create a post in this forum".into());
+        }
+        let name = name.trim().to_owned();
+        if !(1..=100).contains(&name.encode_utf16().count()) {
+            return Err("Use a post title between 1 and 100 characters".into());
+        }
+        if content.trim().is_empty() {
+            return Err("Enter a post body".into());
+        }
+        let available = channel
+            .extra
+            .get("available_tags")
+            .and_then(Value::as_array);
+        let moderator = perms.contains(fluxer_core::Permissions::MANAGE_THREADS);
+        if tags.iter().any(|id| {
+            !available.is_some_and(|items| {
+                items.iter().any(|tag| {
+                    tag.get("id").and_then(Value::as_str) == Some(id)
+                        && (moderator
+                            || !tag
+                                .get("moderated")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false))
+                })
+            })
+        }) {
+            return Err("A selected tag is unavailable".into());
+        }
+        if channel
+            .extra
+            .get("flags")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            & 16
+            != 0
+            && tags.is_empty()
+        {
+            return Err("Choose at least one tag".into());
+        }
+        let archive = channel
+            .extra
+            .get("default_auto_archive_duration")
+            .and_then(Value::as_u64);
+        let content = content.to_owned();
+        let client = self.client()?;
+        let task = tokio::spawn(async move {
+            tokio::time::timeout(
+                Duration::from_secs(15),
+                client.create_forum_post(&parent.to_string(), &name, &content, &tags, archive),
+            )
+            .await
+            .map_err(|_| "Post creation timed out".to_owned())?
+            .map_err(error)
+        });
+        self.thread_creation = Some(ThreadCreation {
+            account,
+            guild,
+            parent,
+            kind: ChannelType::PublicThread,
             removed: BTreeSet::new(),
             task,
         });
