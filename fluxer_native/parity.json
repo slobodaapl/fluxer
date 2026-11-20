@@ -276,8 +276,9 @@
       "id": "streamer_mode",
       "source": "fluxer_app/src/features/streamer_mode",
       "milestone": "M6",
-      "status": "pending",
-      "acceptance": "Sensitive-info hiding, notification suppression, automatic process detection and shortcuts."
+      "status": "partial",
+      "acceptance": "Sensitive-info hiding, notification suppression, automatic process detection and shortcuts.",
+      "evidence": "Device-local manual mode and independent privacy toggles, Linux capture-process detection, a dismissible status banner, name and invite masking in native views, and separate desktop notification and sound suppression. The shortcut in the acceptance inventory has no identified classic binding. Live desktop acceptance remains open."
     },
     {
       "id": "terms",

@@ -5,7 +5,18 @@ use super::*;
 mod transport;
 use fluxer_core::{MessageSound, NotificationContext, notification_sound_volume};
 use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, sync::mpsc};
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        mpsc,
+    },
+};
+const PAUSE_NOTIFICATIONS: u8 = 1;
+const MUTE_SOUNDS: u8 = 2;
+const MASK_NAMES: u8 = 4;
+const MASK_INVITES: u8 = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Target {
     account: Snowflake,
@@ -32,8 +43,14 @@ enum Delivery {
 #[derive(Clone, Debug)]
 struct Alert {
     target: Target,
+    privacy: u8,
     title: String,
     body: String,
+}
+impl Alert {
+    fn allowed(&self, flags: u8) -> bool {
+        flags & PAUSE_NOTIFICATIONS == 0 && self.privacy == flags & (MASK_NAMES | MASK_INVITES)
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -41,6 +58,7 @@ struct Preferences {
     desktop: bool,
     sound: bool,
     hide_preview: bool,
+    // Retained for migration from the original combined setting.
     streamer: bool,
 }
 impl Default for Preferences {
@@ -64,6 +82,7 @@ enum Feedback {
 }
 pub(super) struct DesktopNotifications {
     preferences: Preferences,
+    streaming: Arc<AtomicU8>,
     tx: mpsc::SyncSender<Delivery>,
     feedback: mpsc::Receiver<Feedback>,
     status: Option<String>,
@@ -93,15 +112,45 @@ fn path() -> Option<std::path::PathBuf> {
     )
 }
 
+pub(super) fn legacy_streamer_enabled() -> bool {
+    path()
+        .and_then(|path| load_preferences(&path).ok())
+        .is_some_and(|prefs| prefs.streamer)
+}
+
+fn streaming_flags(effects: streamer_mode::Effects) -> u8 {
+    let mut flags = 0;
+    if effects.pause_notifications {
+        flags |= PAUSE_NOTIFICATIONS;
+    }
+    if effects.mute_sounds {
+        flags |= MUTE_SOUNDS;
+    }
+    if effects.hide_names {
+        flags |= MASK_NAMES;
+    }
+    if effects.hide_invites {
+        flags |= MASK_INVITES;
+    }
+    flags
+}
+
 impl DesktopNotifications {
+    pub fn set_streaming(&self, effects: streamer_mode::Effects) {
+        self.streaming
+            .store(streaming_flags(effects), Ordering::Release);
+    }
     pub fn new(demo: bool) -> Self {
         let path = (!demo).then(path).flatten();
         let preferences = Preferences::default();
         let (tx, alerts) = mpsc::sync_channel::<Delivery>(32);
         let (feedback_tx, feedback) = mpsc::sync_channel(256);
-        std::thread::spawn(move || delivery(alerts, feedback_tx, path));
+        let streaming = Arc::new(AtomicU8::new(0));
+        let worker_streaming = streaming.clone();
+        std::thread::spawn(move || delivery(alerts, feedback_tx, path, worker_streaming));
         Self {
             preferences,
+            streaming,
             tx,
             feedback,
             status: None,
@@ -223,6 +272,7 @@ fn delivery(
     alerts: mpsc::Receiver<Delivery>,
     feedback: mpsc::SyncSender<Feedback>,
     path: Option<std::path::PathBuf>,
+    streaming: Arc<AtomicU8>,
 ) {
     let mut preferences = Preferences::default();
     if let Some(path) = &path {
@@ -238,23 +288,28 @@ fn delivery(
     }
     let mut playing: Vec<Playing> = vec![];
     let mut last_sound: Option<std::time::Instant> = None;
-    let mut service = transport::Transport::new(feedback.clone());
+    let mut service = transport::Transport::new(feedback.clone(), streaming.clone());
+    let mut previous_flags = 0;
     loop {
         let request = match alerts.recv_timeout(Duration::from_millis(250)) {
-            Ok(request) => request,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                reap_sounds(&mut playing, &feedback);
-                continue;
-            }
+            Ok(request) => Some(request),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         reap_sounds(&mut playing, &feedback);
+        let flags = streaming.load(Ordering::Acquire);
+        let newly_enabled = flags & !previous_flags;
+        if newly_enabled & (PAUSE_NOTIFICATIONS | MASK_NAMES | MASK_INVITES) != 0 {
+            service.clear_all();
+        }
+        if newly_enabled & MUTE_SOUNDS != 0 {
+            playing.clear();
+        }
+        previous_flags = flags;
+        let Some(request) = request else { continue };
         match &request {
             Delivery::Save(saved) => {
-                if !saved.desktop
-                    || saved.streamer
-                    || saved.hide_preview != preferences.hide_preview
-                {
+                if !saved.desktop || saved.hide_preview != preferences.hide_preview {
                     service.clear_all();
                 }
                 preferences = saved.clone();
@@ -263,7 +318,7 @@ fn delivery(
                 {
                     let _ = feedback.try_send(Feedback::Failure(error));
                 }
-                if !saved.sound || saved.streamer {
+                if !saved.sound {
                     playing.clear();
                 }
                 continue;
@@ -273,7 +328,7 @@ fn delivery(
                 volume,
                 output,
             } => {
-                if !preferences.sound || preferences.streamer || playing.len() >= 4 {
+                if !preferences.sound || flags & MUTE_SOUNDS != 0 || playing.len() >= 4 {
                     continue;
                 }
                 let now = std::time::Instant::now();
@@ -306,7 +361,7 @@ fn delivery(
                 }
                 service.clear(account, channel);
             }
-            Delivery::Alert(alert) if preferences.desktop && !preferences.streamer => {
+            Delivery::Alert(alert) if preferences.desktop && alert.allowed(flags) => {
                 service.show(alert)
             }
             _ => {}
@@ -410,6 +465,7 @@ impl Fluxer {
         if self.native_notifications.seen.len() > 2048 {
             self.native_notifications.seen.pop_front();
         }
+        let streaming = self.streaming();
         let context = NotificationContext {
             focused: self.native_notifications.focused
                 && (self.pane == Pane::Chat || (self.pane == Pane::Call && self.viewer.chat_open)),
@@ -418,11 +474,14 @@ impl Fluxer {
                 || self.message_actions.is_blocking()
                 || self.image_viewer.is_open()
                 || self.playback.modal.is_open(),
-            streamer: self.native_notifications.preferences.streamer,
+            streamer: streaming.pause_notifications && streaming.mute_sounds,
             now_ms: chrono::Utc::now().timestamp_millis(),
         };
         let decision = self.state.live_message_notification(message, context);
-        if decision.desktop && self.native_notifications.preferences.desktop {
+        if decision.desktop
+            && !streaming.pause_notifications
+            && self.native_notifications.preferences.desktop
+        {
             let Some(channel) = self.state.channels.get(&message.channel_id) else {
                 return;
             };
@@ -432,17 +491,19 @@ impl Fluxer {
                 .and_then(|member| member.nick.as_deref())
                 .unwrap_or(message.author.display_name());
             let title = if channel.guild_id.is_some() {
-                format!("{} (#{})", message.author.display_name(), channel.name)
+                format!(
+                    "{} (#{})",
+                    streaming.name(message.author.display_name()),
+                    channel.name
+                )
             } else {
-                name.into()
+                streaming.name(name).into_owned()
             };
             let body = if self.native_notifications.preferences.hide_preview {
                 "New message".into()
             } else {
-                let document = crate::message_markup::document(
+                let document = self.streamer_document(
                     message,
-                    &self.state,
-                    None,
                     crate::message_markup::MessageContext::InlinePreview,
                 );
                 let body = document.copy_range(0..document.text.len(), &BTreeSet::new());
@@ -458,6 +519,7 @@ impl Fluxer {
                 .native_notifications
                 .tx
                 .try_send(Delivery::Alert(Alert {
+                    privacy: streaming_flags(streaming) & (MASK_NAMES | MASK_INVITES),
                     target: Target {
                         account,
                         epoch: self.native_notifications.epoch,
@@ -481,6 +543,7 @@ impl Fluxer {
             }
         }
         if let Some(kind) = decision.sound
+            && !streaming.mute_sounds
             && self.native_notifications.preferences.sound
             && let Some(volume) = notification_sound_volume(&self.state.user_settings, kind)
         {
@@ -525,16 +588,18 @@ impl Fluxer {
             }
         }
         for target in targets {
-            if !click_allowed(
-                &self.state,
-                self.native_notifications.epoch,
-                self.native_notifications
-                    .channel_epochs
-                    .get(&target.channel)
-                    .copied()
-                    .unwrap_or_default(),
-                target,
-            ) {
+            if self.streaming().pause_notifications
+                || !click_allowed(
+                    &self.state,
+                    self.native_notifications.epoch,
+                    self.native_notifications
+                        .channel_epochs
+                        .get(&target.channel)
+                        .copied()
+                        .unwrap_or_default(),
+                    target,
+                )
+            {
                 continue;
             }
             self.select(target.channel, cx);
@@ -588,7 +653,7 @@ impl Fluxer {
     pub(super) fn notification_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         use crate::controls::toggle;
         div().flex().flex_col().gap_3().child(heading("Notifications"))
-            .children([("desktop","Desktop notifications",self.native_notifications.preferences.desktop),("sound","Message sounds",self.native_notifications.preferences.sound),("privacy","Hide notification message previews",self.native_notifications.preferences.hide_preview),("streamer","Streamer mode · suppress notifications and sounds",self.native_notifications.preferences.streamer)].into_iter().map(|(id,label,enabled)|div().flex().items_center().gap_3().child(div().flex_1().child(label)).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match id{"desktop"=>this.native_notifications.preferences.desktop= !enabled,"sound"=>this.native_notifications.preferences.sound= !enabled,"privacy"=>this.native_notifications.preferences.hide_preview= !enabled,_=>this.native_notifications.preferences.streamer= !enabled};this.native_notifications.save();cx.notify();})))))
+            .children([("desktop","Desktop notifications",self.native_notifications.preferences.desktop),("sound","Message sounds",self.native_notifications.preferences.sound),("privacy","Hide notification message previews",self.native_notifications.preferences.hide_preview)].into_iter().map(|(id,label,enabled)|div().flex().items_center().gap_3().child(div().flex_1().child(label)).child(toggle(id,enabled,label).on_click(cx.listener(move|this,_,_,cx|{match id{"desktop"=>this.native_notifications.preferences.desktop= !enabled,"sound"=>this.native_notifications.preferences.sound= !enabled ,_=>this.native_notifications.preferences.hide_preview= !enabled};this.native_notifications.save();cx.notify();})))))
             .when_some(self.native_notifications.status.clone(),|view,error|view.child(div().text_size(px(12.)).text_color(rgb(0xf0a1b5)).child(error)))
             .child(muted("Only new messages notify. Do Not Disturb, muted channels and message notification settings apply.")).into_any_element()
     }
@@ -600,6 +665,43 @@ mod tests {
         escaped, load_preferences, save_preferences, show_alert,
     };
     use fluxer_core::Snowflake;
+    #[test]
+    fn streamer_delivery_flags_keep_sound_and_desktop_suppression_independent() {
+        use super::{MASK_NAMES, MUTE_SOUNDS, PAUSE_NOTIFICATIONS, streamer_mode, streaming_flags};
+        let alert = Alert {
+            target: Target {
+                account: 1.into(),
+                epoch: 0,
+                channel_epoch: 0,
+                channel: 2.into(),
+                message: 3.into(),
+            },
+            privacy: 0,
+            title: String::new(),
+            body: String::new(),
+        };
+        let mute = streaming_flags(streamer_mode::Effects {
+            mute_sounds: true,
+            ..Default::default()
+        });
+        assert_eq!(mute, MUTE_SOUNDS);
+        assert!(alert.allowed(mute));
+        let pause = streaming_flags(streamer_mode::Effects {
+            pause_notifications: true,
+            ..Default::default()
+        });
+        assert_eq!(pause, PAUSE_NOTIFICATIONS);
+        assert!(!alert.allowed(pause));
+        assert!(!alert.allowed(MASK_NAMES));
+        assert!(
+            Alert {
+                privacy: MASK_NAMES,
+                ..alert
+            }
+            .allowed(MASK_NAMES)
+        );
+    }
+
     #[test]
     fn private_sink_receives_safe_plaintext_and_exact_click_identity() {
         struct Fake(std::cell::RefCell<Vec<Alert>>);
@@ -618,6 +720,7 @@ mod tests {
             message: Snowflake(3),
         };
         let alert = Alert {
+            privacy: 0,
             target,
             title: escaped("<b>$(secret)</b>"),
             body: escaped("&\u{1b}body"),
@@ -647,6 +750,7 @@ mod tests {
             show_alert(
                 &Failed,
                 &Alert {
+                    privacy: 0,
                     target,
                     title: "test".into(),
                     body: "test".into()

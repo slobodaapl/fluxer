@@ -18,6 +18,7 @@ pub(super) enum Section {
     Keybinds,
     Voice,
     Notifications,
+    StreamerMode,
     Desktop,
 }
 
@@ -411,7 +412,9 @@ impl Fluxer {
                     let current = session["current"].as_bool().unwrap_or(false);
                     let details = [
                         info["browser"].as_str(),
-                        session["masked_ip"].as_str(),
+                        session["masked_ip"]
+                            .as_str()
+                            .filter(|_| !self.streaming().hide_names),
                         session["approx_last_used_at"].as_str(),
                     ]
                     .into_iter()
@@ -478,7 +481,11 @@ impl Fluxer {
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(format!("Sign out {}?", pending.title));
+                .child(if self.streaming().hide_names {
+                    "Sign out this device?".to_owned()
+                } else {
+                    format!("Sign out {}?", pending.title)
+                });
             if pending.request.is_some() {
                 dialog = dialog.child(muted("Signing out device…"));
             } else if pending
@@ -1113,6 +1120,7 @@ impl Fluxer {
             | Section::TrustedDomains
             | Section::Keybinds
             | Section::Desktop => self.expanded_settings(cx),
+            Section::StreamerMode => self.streamer_settings(cx),
             Section::Notifications => div()
                 .id("notification-settings-body")
                 .flex_1()
@@ -1188,6 +1196,7 @@ impl Fluxer {
                                 "settings-trusted-domains",
                                 "Trusted domains",
                             ),
+                            (Section::StreamerMode, "settings-streamer", "Streamer Mode"),
                             (Section::Desktop, "settings-desktop", "Desktop"),
                             (Section::Keybinds, "settings-keybinds", "Keybinds"),
                             (Section::Voice, "settings-voice", "Voice & audio"),
@@ -1244,7 +1253,7 @@ impl Fluxer {
     }
 }
 
-fn setting_row(title: &str, description: &str, control: impl IntoElement) -> Div {
+pub(super) fn setting_row(title: &str, description: &str, control: impl IntoElement) -> Div {
     div()
         .w_full()
         .py_4()

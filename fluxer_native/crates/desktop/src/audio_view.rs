@@ -21,7 +21,7 @@ impl Fluxer {
             .state
             .current_user
             .as_ref()
-            .map(|user| user.display_name().to_owned())
+            .map(|user| self.streaming().name(user.display_name()).into_owned())
             .unwrap_or_else(|| "Your account".into());
         let account_avatar = self
             .state
@@ -539,7 +539,8 @@ impl Fluxer {
                                                     .text_ellipsis()
                                                     .child(format!(
                                                         "{}{}",
-                                                        participant.display_name,
+                                                        self.streaming()
+                                                            .name(&participant.display_name),
                                                         if participant.is_current_user {
                                                             " (you)"
                                                         } else {

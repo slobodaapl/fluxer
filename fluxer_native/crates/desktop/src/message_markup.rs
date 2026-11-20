@@ -132,8 +132,11 @@ pub struct MessageDocument {
 impl MessageDocument {
     /// A compact author's name shares the first text line and wrapping. Keep
     /// source intact for Copy Message and shift all projected byte ranges.
+    #[cfg(test)]
     pub fn with_author(&self, message: &Message) -> Self {
-        let name = message.author.display_name();
+        self.with_author_name(message, message.author.display_name())
+    }
+    pub fn with_author_name(&self, message: &Message, name: &str) -> Self {
         // Block content starts on its own line, preserving code/quote/list
         // indentation and backgrounds instead of absorbing it into the author.
         let separator = if self.blocks.iter().any(|block| block.range.start == 0) {
@@ -297,6 +300,7 @@ struct Resolver<'a> {
     message: &'a Message,
     state: &'a ClientState,
     media: Option<&'a str>,
+    redaction: crate::streamer_mode::Redaction<'a>,
 }
 impl Resolver<'_> {
     fn guild(&self) -> Option<Snowflake> {
@@ -355,7 +359,7 @@ impl Resolver<'_> {
         {
             name = nick.into();
         }
-        format!("@{name}")
+        format!("@{}", self.redaction.effects.name(&name))
     }
     fn mention(&self, kind: &MentionKind) -> (String, Option<MessageTarget>) {
         match kind {
@@ -549,7 +553,10 @@ impl Projector<'_> {
                 ..
             } => {
                 let label = text.as_ref().map(|n| link_text(n)).unwrap_or_default();
-                if let Some(url) = clean_link(raw_url, &label) {
+                if self.resolver.redaction.hides_link(raw_url) {
+                    self.doc
+                        .push(crate::streamer_mode::HIDDEN_INVITE, run, None);
+                } else if let Some(url) = clean_link(raw_url, &label) {
                     nested.target = Some(MessageTarget::Link(url.clone()));
                     if let Some(text) = text {
                         self.node(text, &nested);
@@ -877,21 +884,42 @@ pub fn document(
     media: Option<&str>,
     context: MessageContext,
 ) -> MessageDocument {
+    document_with_redaction(message, state, media, context, Default::default())
+}
+
+pub fn document_with_redaction(
+    message: &Message,
+    state: &ClientState,
+    media: Option<&str>,
+    context: MessageContext,
+    redaction: crate::streamer_mode::Redaction<'_>,
+) -> MessageDocument {
     match parse_nodes(&message.content, context) {
-        Ok(nodes) => project(message, state, media, &nodes, context),
+        Ok(nodes) => project(message, state, media, &nodes, context, redaction),
         Err(_) => {
-            let mut doc = MessageDocument::plain(&message.content);
+            let mut doc = fallback_document(&message.content, redaction);
             doc.note("Parser error: literal source fallback");
             doc
         }
     }
 }
+fn fallback_document(
+    content: &str,
+    redaction: crate::streamer_mode::Redaction<'_>,
+) -> MessageDocument {
+    if redaction.effects.hide_invites {
+        return MessageDocument::plain("Message preview hidden while sharing");
+    }
+    MessageDocument::plain(content)
+}
+
 fn project(
     message: &Message,
     state: &ClientState,
     media: Option<&str>,
     nodes: &[Node],
     context: MessageContext,
+    redaction: crate::streamer_mode::Redaction<'_>,
 ) -> MessageDocument {
     let mut projector = Projector {
         doc: MessageDocument {
@@ -910,6 +938,7 @@ fn project(
             message,
             state,
             media,
+            redaction,
         },
         next_spoiler: 0,
     };
@@ -935,12 +964,24 @@ pub struct MessageCache {
     bytes: usize,
 }
 impl MessageCache {
+    #[cfg(test)]
     pub fn get(
         &mut self,
         message: &Message,
         state: &ClientState,
         media: Option<&str>,
         context: MessageContext,
+    ) -> Arc<MessageDocument> {
+        self.get_with_redaction(message, state, media, context, Default::default())
+    }
+
+    pub fn get_with_redaction(
+        &mut self,
+        message: &Message,
+        state: &ClientState,
+        media: Option<&str>,
+        context: MessageContext,
+        redaction: crate::streamer_mode::Redaction<'_>,
     ) -> Arc<MessageDocument> {
         let position = self
             .parsed
@@ -953,7 +994,7 @@ impl MessageCache {
             nodes
         } else {
             let Ok(nodes) = parse_nodes(&message.content, context) else {
-                let mut doc = MessageDocument::plain(&message.content);
+                let mut doc = fallback_document(&message.content, redaction);
                 doc.note("Parser error: literal source fallback");
                 return Arc::new(doc);
             };
@@ -974,10 +1015,12 @@ impl MessageCache {
             message,
             state,
             media,
+            redaction,
         };
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         message.content.hash(&mut hash);
         media.hash(&mut hash);
+        redaction.hash(&mut hash);
         let time_preferences =
             crate::message_timestamp::Preferences::from_settings(&state.user_settings);
         time_preferences.locale.hash(&mut hash);
@@ -992,7 +1035,7 @@ impl MessageCache {
         {
             return doc.clone();
         }
-        let doc = Arc::new(project(message, state, media, &nodes, context));
+        let doc = Arc::new(project(message, state, media, &nodes, context, redaction));
         self.documents.insert(key, (fingerprint, doc.clone()));
         while self.documents.len() > 256 {
             let key = *self.documents.keys().next().unwrap();

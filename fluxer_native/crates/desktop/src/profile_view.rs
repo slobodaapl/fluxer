@@ -84,6 +84,8 @@ pub(super) struct ProfilePopup {
     full: bool,
     trigger_bounds: Option<Bounds<Pixels>>,
     bio_links: Vec<String>,
+    streaming: super::streamer_mode::Effects,
+    invite_endpoint: Option<super::streamer_mode::InviteEndpoint>,
     confirm_blocked_dm: bool,
     confirm_block: bool,
     role_picker: bool,
@@ -108,6 +110,8 @@ impl ProfilePopup {
             full: false,
             trigger_bounds: None,
             bio_links: Vec::new(),
+            streaming: Default::default(),
+            invite_endpoint: None,
             confirm_blocked_dm: false,
             confirm_block: false,
             role_picker: false,
@@ -115,6 +119,19 @@ impl ProfilePopup {
             role_error: None,
             dm_status: None,
             relationship_status: None,
+        }
+    }
+    pub fn set_streaming(
+        &mut self,
+        effects: super::streamer_mode::Effects,
+        invite: Option<super::streamer_mode::InviteEndpoint>,
+        cx: &mut Context<Self>,
+    ) {
+        if effects != self.streaming || invite != self.invite_endpoint {
+            self.streaming = effects;
+            self.invite_endpoint = invite;
+            self.bio_links.clear();
+            cx.notify();
         }
     }
     pub fn is_open(&self) -> bool {
@@ -759,7 +776,7 @@ impl Render for ProfilePopup {
         if self.confirm_blocked_dm || self.confirm_block {
             let is_block = self.confirm_block;
             let title = if is_block { "Block user" } else { "Open DM" };
-            let name = open.user.display_name().to_owned();
+            let name = self.streaming.name(open.user.display_name()).into_owned();
             return div()
                 .absolute()
                 .inset_0()
@@ -934,11 +951,11 @@ impl Render for ProfilePopup {
                 div()
                     .text_size(px(20.))
                     .font_weight(FontWeight::BOLD)
-                    .child(label(name, 20., cx)),
+                    .child(label(&self.streaming.name(name), 20., cx)),
             );
         if name != user.display_name() {
             content = content.child(div().text_size(px(14.)).child(label(
-                user.display_name(),
+                &self.streaming.name(user.display_name()),
                 14.,
                 cx,
             )));
@@ -947,7 +964,7 @@ impl Render for ProfilePopup {
             div()
                 .text_size(px(13.))
                 .text_color(rgb(0xb5bac1))
-                .child(label(&user.username, 13., cx)),
+                .child(label(&self.streaming.name(&user.username), 13., cx)),
         );
         if !pronouns.is_empty() {
             content = content.child(div().text_size(px(12.)).child(label(pronouns, 12., cx)));
@@ -966,11 +983,15 @@ impl Render for ProfilePopup {
                 content: bio.to_owned(),
                 ..Default::default()
             };
-            let document = crate::message_markup::document(
+            let document = crate::message_markup::document_with_redaction(
                 &message,
                 &Default::default(),
                 open.media_endpoint.as_deref(),
                 crate::message_markup::MessageContext::InlinePreview,
+                super::streamer_mode::Redaction {
+                    effects: self.streaming,
+                    invite: self.invite_endpoint.as_ref(),
+                },
             );
             let mut biography = div().mt_2().text_size(px(13.)).flex().flex_wrap();
             for (index, span) in document.spans.iter().enumerate() {

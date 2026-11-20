@@ -246,7 +246,7 @@ impl Fluxer {
             };
             results.push(ResultRow {
                 target: Target::Channel(channel.id),
-                title,
+                title: self.display_channel_name(channel),
                 subtitle,
                 kind,
                 score: rank,
@@ -311,8 +311,8 @@ impl Fluxer {
                     {
                         results.push(ResultRow {
                             target: Target::User(user.id),
-                            title: user.display_name().into(),
-                            subtitle: format!("@{}", user.username),
+                            title: self.streaming().name(user.display_name()).into_owned(),
+                            subtitle: format!("@{}", self.streaming().name(&user.username)),
                             kind: RowKind::User(user.clone()),
                             score: rank + 10,
                             mentions: 0,

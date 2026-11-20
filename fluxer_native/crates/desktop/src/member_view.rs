@@ -45,7 +45,7 @@ impl Fluxer {
             }
             for user in users {
                 let id = user.id;
-                let name = user.username.clone();
+                let name = self.streaming().name(&user.username).into_owned();
                 let label = name.clone();
                 panel = panel.child(
                     div()
@@ -298,10 +298,15 @@ impl Fluxer {
             .get(&(guild, row_member.user.id))
             .cloned()
             .unwrap_or(row_member);
-        let name = member
-            .nick
-            .clone()
-            .unwrap_or_else(|| member.user.display_name().to_owned());
+        let name = self
+            .streaming()
+            .name(
+                member
+                    .nick
+                    .as_deref()
+                    .unwrap_or_else(|| member.user.display_name()),
+            )
+            .into_owned();
         let status = self
             .state
             .presences
@@ -524,6 +529,7 @@ impl Fluxer {
         let Some((_, _, name, timeout)) = &self.context.kick_confirm else {
             return div().into_any_element();
         };
+        let name = self.streaming().name(name);
         let (title, description) = match timeout {
             None if self.context.ban_confirm => (
                 "Ban member",

@@ -31,7 +31,7 @@ pub use http::{
     SessionRevocationProof, SessionToken, forum_post_body, normalize_forum_content,
 };
 pub use instance::Instance;
-pub use invites::{CommunityInvite, InvitePreview, valid_invite_code};
+pub use invites::{CommunityInvite, InvitePreview, is_invite_link, valid_invite_code};
 pub use reqwest::Method;
 pub use sudo::{SudoChallenge, SudoMethods};
 pub use url::Url;

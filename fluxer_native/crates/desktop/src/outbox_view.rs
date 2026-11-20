@@ -314,7 +314,7 @@ impl Fluxer {
                             .gap_1()
                             .child(div().font_weight(FontWeight::SEMIBOLD).child(
                                 emoji_sprites::unicode_text(
-                                    author.display_name(),
+                                    &self.streaming().name(author.display_name()),
                                     14.,
                                     window.scale_factor() > 1.,
                                     cx,

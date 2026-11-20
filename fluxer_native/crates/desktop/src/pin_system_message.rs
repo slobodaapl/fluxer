@@ -80,8 +80,12 @@ impl Fluxer {
         }
         let jump = jump_action(message);
         let pins = pins_action(message);
-        let author =
-            emoji_sprites::unicode_text(&author_name(&self.state, message), 14., false, cx);
+        let author = emoji_sprites::unicode_text(
+            &self.streaming().name(&author_name(&self.state, message)),
+            14.,
+            false,
+            cx,
+        );
         let link = |suffix: &'static str, label: &'static str, action: Option<PinAction>| {
             div()
                 .id((suffix, message.id.0))

@@ -525,21 +525,7 @@ pub fn preview(message: &Message) -> String {
         None,
         crate::message_markup::MessageContext::InlinePreview,
     );
-    let text = document.copy_range(0..document.text.len(), &std::collections::BTreeSet::new());
-    let result = if text.is_empty() {
-        if !message.attachments.is_empty() {
-            "[Attachment]".into()
-        } else {
-            "[Message]".into()
-        }
-    } else {
-        text.lines()
-            .next()
-            .unwrap_or_default()
-            .chars()
-            .take(160)
-            .collect::<String>()
-    };
+    let result = preview_text(message, &document);
     // Keys retain source bytes, so cap both entry count and total size.
     if key.len() <= 64 * 1024 {
         cache.push_back((key, result.clone()));
@@ -554,6 +540,27 @@ pub fn preview(message: &Message) -> String {
         cache.pop_front();
     }
     result
+}
+
+pub(super) fn preview_text(
+    message: &Message,
+    document: &crate::message_markup::MessageDocument,
+) -> String {
+    let text = document.copy_range(0..document.text.len(), &std::collections::BTreeSet::new());
+    if text.is_empty() {
+        if !message.attachments.is_empty() {
+            "[Attachment]".into()
+        } else {
+            "[Message]".into()
+        }
+    } else {
+        text.lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(160)
+            .collect::<String>()
+    }
 }
 
 /// Forward snapshots are flat objects on the Fluxer wire, without an author

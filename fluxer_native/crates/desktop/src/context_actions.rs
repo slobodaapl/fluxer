@@ -440,7 +440,7 @@ impl Fluxer {
                             .unwrap_or_else(|| m.user.display_name().to_owned())
                     })
                     .unwrap_or_else(|| user.to_string());
-                items.push(Item::Header(name));
+                items.push(Item::Header(self.streaming().name(&name).into_owned()));
                 if self.can_timeout_member(*guild, *user) {
                     for (id, label) in [
                         ("timeout-60", "Time out for 60 seconds"),
@@ -539,7 +539,7 @@ impl Fluxer {
                     .find(|p| p.user_id == *user)
                     .map(|p| p.display_name)
                     .unwrap_or_else(|| user.to_string());
-                items.push(Item::Header(name));
+                items.push(Item::Header(self.streaming().name(&name).into_owned()));
                 items.push(action("view-profile", "View profile", Icon::Eye));
                 let identities = audio_identities(self.participants.keys(), *user);
                 if self.state.voice.channel_id == Some(*channel) && !identities.is_empty() {
@@ -611,7 +611,7 @@ impl Fluxer {
             }
             Target::Channel(id) => {
                 if let Some(channel) = self.state.channels.get(id) {
-                    items.push(Item::Header(channel.display_name()));
+                    items.push(Item::Header(self.display_channel_name(channel)));
                     if channel.kind != ChannelType::Category {
                         items.push(action("channel-open", "Open chat", Icon::Chat));
                     }

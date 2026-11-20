@@ -51,6 +51,15 @@ impl InviteView {
         }
     }
 
+    pub fn set_hide_invites(&mut self, hide: bool, cx: &mut Context<Fluxer>) {
+        self.input.update(cx, |input, cx| {
+            if hide != input.secret {
+                input.secret = hide;
+                input.reset_context_menu(cx);
+                cx.notify();
+            }
+        });
+    }
     pub fn reset(&mut self, cx: &mut Context<Fluxer>) {
         self.open = false;
         self.step = InviteStep::Input;
@@ -422,6 +431,7 @@ impl Fluxer {
                 self.invite_ui.dialog_focus.focus(window);
             }
         }
+        let streaming = self.streaming();
         let step = &self.invite_ui.step;
         let width = px(440.);
         let mut card = div()
@@ -508,13 +518,17 @@ impl Fluxer {
                     let list = invites.clone();
                     let details = format!(
                         "{} · #{} · by {} · {} uses · expires {}",
-                        code,
+                        if streaming.hide_invites {
+                            "Invite code hidden"
+                        } else {
+                            &code
+                        },
                         invite.channel.name.as_deref().unwrap_or("unknown"),
                         invite
                             .inviter
                             .as_ref()
-                            .map(|user| user.username.as_str())
-                            .unwrap_or("unknown"),
+                            .map(|user| streaming.name(&user.username))
+                            .unwrap_or(std::borrow::Cow::Borrowed("unknown")),
                         invite.uses,
                         invite.expires_at.as_deref().unwrap_or("never")
                     );
@@ -551,9 +565,11 @@ impl Fluxer {
             InviteStep::ConfirmRevoke(guild, invites, code) => {
                 let (guild, invites) = (*guild, invites.clone());
                 card = card
-                    .child(format!(
-                        "Revoke invite {code}? People will no longer be able to use it."
-                    ))
+                    .child(if streaming.hide_invites {
+                        "Revoke this invite? People will no longer be able to use it.".to_owned()
+                    } else {
+                        format!("Revoke invite {code}? People will no longer be able to use it.")
+                    })
                     .child(
                         div()
                             .flex()
@@ -585,16 +601,22 @@ impl Fluxer {
                 let url = url.clone();
                 card = card
                     .child("This invite expires in 7 days and has unlimited uses.")
-                    .child(div().child(url.clone()))
-                    .child(
-                        button("copy-created-invite", "Copy invite").on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                this.status = "Invite copied".into();
-                                cx.notify();
-                            },
-                        )),
-                    );
+                    .child(div().child(if streaming.hide_invites {
+                        streamer_mode::HIDDEN_INVITE.to_owned()
+                    } else {
+                        url.clone()
+                    }))
+                    .when(!streaming.hide_invites, |card| {
+                        card.child(button("copy-created-invite", "Copy invite").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                if !this.streaming().hide_invites {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                                    this.status = "Invite copied".into();
+                                    cx.notify();
+                                }
+                            }),
+                        ))
+                    });
             }
             InviteStep::Input | InviteStep::Loading | InviteStep::Error(_) => {
                 let loading = matches!(step, InviteStep::Loading);
@@ -661,7 +683,9 @@ impl Fluxer {
                                     .channel
                                     .recipients
                                     .iter()
-                                    .map(|recipient| recipient.username.as_str())
+                                    .map(|recipient| {
+                                        streaming.name(&recipient.username).into_owned()
+                                    })
                                     .collect::<Vec<_>>()
                                     .join(", ");
                                 if names.is_empty() {

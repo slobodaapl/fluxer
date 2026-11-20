@@ -685,7 +685,7 @@ pub(super) fn context_embed_spoiler(
 
 pub fn media(
     message: &Message,
-    motion: MediaMotion,
+    motion: MediaMotion<'_>,
     revealed: &BTreeSet<String>,
     players: &mut crate::media_player::PlaybackUi,
     window: &Window,
@@ -784,17 +784,18 @@ fn attachment_gallery(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct MediaMotion {
+pub(super) struct MediaMotion<'a> {
     pub enabled: bool,
     pub autoplay: bool,
     pub surface: &'static str,
+    pub redaction: crate::streamer_mode::Redaction<'a>,
     pub hide_downloads: bool,
 }
 
 fn media_parts(
     message: &Message,
     scope: MediaScope,
-    motion: MediaMotion,
+    motion: MediaMotion<'_>,
     revealed: &BTreeSet<String>,
     players: &mut crate::media_player::PlaybackUi,
     window: &Window,
@@ -977,7 +978,10 @@ fn media_parts(
         .into_iter()
         .flatten()
         .enumerate()
-        .filter(|_| !crate::playable_media::embeds_suppressed(message.flags))
+        .filter(|(_, embed)| {
+            !crate::playable_media::embeds_suppressed(message.flags)
+                && !string_at(embed, "url").is_some_and(|url| motion.redaction.hides_link(url))
+        })
         .map(|(index, embed)| {
             let reference = scope.reference(
                 crate::media_context_policy::MediaAsset::Embed(index),
@@ -1340,7 +1344,7 @@ fn render_embed(
     index: usize,
     embed: &Value,
     context: crate::media_actions::MediaReference,
-    motion: MediaMotion,
+    motion: MediaMotion<'_>,
     privacy: MediaPrivacy<'_>,
     cx: &mut Context<Fluxer>,
 ) -> AnyElement {

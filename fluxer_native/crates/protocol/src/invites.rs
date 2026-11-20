@@ -116,6 +116,12 @@ fn code_from_link(input: &str, invite_base: &str, self_hosted: bool) -> Option<S
         })
 }
 
+/// Tests invite URLs against the same endpoint rules used by join-by-invite.
+pub fn is_invite_link(input: &str, invite_base: &str, self_hosted: bool) -> bool {
+    let input = input.trim();
+    !valid_invite_code(input) && code_from_link(input, invite_base, self_hosted).is_some()
+}
+
 impl Client {
     pub fn resolve_invite_code(&self, input: &str) -> Option<String> {
         let base = self.instance().document["endpoints"]["invite"]

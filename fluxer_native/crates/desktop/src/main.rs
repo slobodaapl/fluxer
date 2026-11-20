@@ -80,6 +80,7 @@ mod status_view;
 mod stream_grid;
 mod stream_layout;
 mod stream_view;
+mod streamer_mode;
 mod thread_view;
 mod video_perf;
 mod visible_image;
@@ -399,6 +400,7 @@ struct Fluxer {
     conversation_scope: conversation_scope::ConversationScope,
     slowmode: composer_slowmode::Slowmode,
     native_notifications: desktop_notifications::DesktopNotifications,
+    streamer_detection: streamer_mode::Detection,
     quick_switcher: quick_switcher::QuickSwitcher,
     invite_ui: invite_view::InviteView,
     inbox_ui: inbox_view::InboxUi,
@@ -570,6 +572,7 @@ impl Fluxer {
             webhooks_ui: webhooks_view::WebhooksUi::new(cx),
             slowmode: composer_slowmode::Slowmode::default(),
             native_notifications: desktop_notifications::DesktopNotifications::new(demo),
+            streamer_detection: streamer_mode::Detection::default(),
             quick_switcher: quick_switcher::QuickSwitcher::new(cx),
             invite_ui: invite_view::InviteView::new(cx),
             inbox_ui: inbox_view::InboxUi::new(cx),
@@ -929,11 +932,14 @@ impl Fluxer {
             view.interface
                 .set_window_behavior(native_preferences::WindowSetting::StartMinimized, true);
         }
+        view.refresh_streaming(cx);
+        view.poll_streamer(cx);
         cx.spawn(async move |entity, cx| {
             let mut cadence = Duration::from_millis(33);
             loop {
                 Timer::after(cadence).await;
                 match entity.update(cx, |view, cx| {
+                    view.poll_streamer(cx);
                     view.poll(cx);
                     view.poll_notifications(cx);
                     view.poll_desktop(cx);
@@ -1199,6 +1205,7 @@ impl Fluxer {
                     } else {
                         self.message_links.reset();
                     }
+                    self.refresh_streaming(cx);
                 }
                 Event::MessageForwarded { destination } => {
                     self.forward_search
@@ -2276,7 +2283,7 @@ impl Fluxer {
         self.state
             .channels
             .get(&id)
-            .map(|c| c.name.clone())
+            .map(|c| self.display_channel_name(c))
             .unwrap_or_else(|| "voice channel".into())
     }
 
@@ -2472,10 +2479,14 @@ impl Fluxer {
                 } else {
                     "Check your email"
                 }))
-                .child(muted(format!(
-                    "Check your inbox at {} for the authorization link.",
-                    challenge.email
-                )))
+                .child(muted(if self.streaming().hide_names {
+                    "Check your inbox for the authorization link.".to_owned()
+                } else {
+                    format!(
+                        "Check your inbox at {} for the authorization link.",
+                        challenge.email
+                    )
+                }))
                 .child(muted(
                     "Sign-in will continue here after you authorize the email link.",
                 ))
@@ -2964,7 +2975,7 @@ impl Fluxer {
                                 .into_any_element();
                         }
                         let notifications_muted = self.channel_notifications_muted(channel);
-                        let label = format!("{}  {}", if voice { "◉" } else { "#" }, channel.name);
+                        let label = format!("{}  {}", if voice { "◉" } else { "#" }, self.display_channel_name(channel));
                         let roster = if voice {
                             self.voice_sidebar_participants(id)
                         } else {
@@ -3111,7 +3122,7 @@ impl Fluxer {
                                                                 ))
                                                                 .child(
                                                                     emoji_sprites::unicode_text(
-                                                                        &participant.display_name,
+                                                                        &self.streaming().name(&participant.display_name),
                                                                         12.,
                                                                         false,
                                                                         cx,
@@ -3309,8 +3320,8 @@ impl Fluxer {
             )
             .child(muted(format!(
                 "{}: {}",
-                source.author.display_name(),
-                chat_helpers::preview(source)
+                self.streaming().name(source.author.display_name()),
+                self.streamer_preview(source)
             )))
             .child(self.forward_search.clone())
             .child(muted("Choose a destination to forward this message"))
@@ -3339,7 +3350,7 @@ impl Fluxer {
                                     .unwrap_or_default();
                                 button(
                                     ("forward-destination", destination.0),
-                                    format!("{community}{}", channel.display_name()),
+                                    format!("{community}{}", self.display_channel_name(channel)),
                                 )
                                 .when(index == self.forward_index, |view| view.bg(rgb(0x56438b)))
                                 .on_click(cx.listener(
@@ -3494,7 +3505,7 @@ impl Render for Fluxer {
                     (call.ringing.contains(&me.id)
                         && channel.guild_id.is_none()
                         && matches!(channel.kind, ChannelType::Dm | ChannelType::GroupDm))
-                    .then(|| (*id, channel.name.clone()))
+                    .then(|| (*id, self.display_channel_name(channel)))
                 })
             })
             .collect();
@@ -3607,6 +3618,7 @@ impl Render for Fluxer {
             }))
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
+            .child(self.streamer_banner(cx))
             .children(incoming_calls.into_iter().map(|(channel, name)| {
                 div().px_4().py_2().gap_3().bg(rgb(PANEL)).flex().items_center()
                     .child(div().flex_1().child(format!("Incoming call · {name}")))

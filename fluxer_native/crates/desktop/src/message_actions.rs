@@ -607,7 +607,7 @@ impl Fluxer {
                                 .text_sm()
                                 .max_h(px(120.))
                                 .overflow_hidden()
-                                .child(chat_helpers::preview(&message)),
+                                .child(self.streamer_preview(&message)),
                         )
                         .child(
                             div()

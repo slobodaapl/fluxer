@@ -92,6 +92,22 @@ impl MessageLinks {
     pub fn configure_instance(&mut self, document: &serde_json::Value) {
         self.policy = instance_policy(document);
     }
+    pub fn hide_pending_invite(&mut self, effects: streamer_mode::Effects) {
+        let redaction = streamer_mode::Redaction {
+            effects,
+            invite: self.invite_endpoint(),
+        };
+        if self
+            .destination
+            .as_ref()
+            .is_some_and(|url| redaction.hides_link(url.as_str()))
+        {
+            self.clear_prompt();
+        }
+    }
+    pub fn invite_endpoint(&self) -> Option<&streamer_mode::InviteEndpoint> {
+        self.policy.invite.as_ref()
+    }
     pub fn channel_link(&self, guild: Option<Snowflake>, channel: Snowflake) -> Option<String> {
         channel_url(self.policy.web_app.as_ref()?, guild, channel)
     }
@@ -135,6 +151,7 @@ fn message_url(
 struct InstanceLinkPolicy {
     web_app: Option<Url>,
     marketing: Option<Url>,
+    invite: Option<streamer_mode::InviteEndpoint>,
     self_hosted: Option<bool>,
     trusted: Vec<String>,
     product_name: Option<String>,
@@ -173,6 +190,13 @@ fn instance_policy(document: &serde_json::Value) -> InstanceLinkPolicy {
     InstanceLinkPolicy {
         web_app: endpoint("webapp"),
         marketing: endpoint("marketing"),
+        invite: Some(streamer_mode::InviteEndpoint {
+            base: endpoint("invite").map(Into::into).unwrap_or_default(),
+            self_hosted: document
+                .pointer("/features/self_hosted")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
+        }),
         self_hosted: document
             .pointer("/features/self_hosted")
             .and_then(|value| value.as_bool()),
@@ -373,6 +397,9 @@ impl Fluxer {
                 self.follow_message_channel(*channel, None, None, cx)
             }
             MessageTarget::Link(raw) => {
+                if self.streamer_redaction().hides_link(raw) {
+                    return;
+                }
                 let Some(url) = safe_url(raw) else {
                     self.error = Some("This link is not a valid HTTP or HTTPS address.".into());
                     cx.notify();

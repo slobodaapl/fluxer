@@ -63,11 +63,16 @@ impl Fluxer {
             .update_mentions(message.channel_id, message.id, &message.mentions);
         let mut rendering = message.clone();
         rendering.content = chat_helpers::display_text(message);
-        self.message_content.cache.get(
+        let redaction = streamer_mode::Redaction {
+            effects: self.streaming(),
+            invite: self.message_links.invite_endpoint(),
+        };
+        self.message_content.cache.get_with_redaction(
             &rendering,
             &self.state,
             self.media_endpoint.as_deref(),
             context,
+            redaction,
         )
     }
     pub(super) fn message_text_input(
@@ -199,7 +204,10 @@ impl Fluxer {
             self.message_content.replies.insert(key, input.clone());
             input
         };
-        let name = source.author.display_name().to_owned();
+        let name = self
+            .streaming()
+            .name(source.author.display_name())
+            .into_owned();
         Some(
             div()
                 .flex()

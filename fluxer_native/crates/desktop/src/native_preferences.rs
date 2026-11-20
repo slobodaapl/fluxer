@@ -82,6 +82,7 @@ impl BaseTheme {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
+    streamer: Option<streamer_mode::Preferences>,
     reduced_motion: bool,
     base_theme: BaseTheme,
     shortcuts: [String; 5],
@@ -91,6 +92,7 @@ struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            streamer: None,
             reduced_motion: false,
             base_theme: BaseTheme::Dark,
             window_behavior: WindowBehavior::default(),
@@ -182,7 +184,7 @@ impl NativePreferences {
     pub fn new(demo: bool) -> Self {
         let path = (!demo).then(path).flatten();
         let mut error = None;
-        let preferences = path
+        let mut preferences = path
             .as_ref()
             .and_then(|p| match std::fs::read(p) {
                 Ok(bytes) => match serde_json::from_slice::<Preferences>(&bytes) {
@@ -201,6 +203,11 @@ impl NativePreferences {
                 }
             })
             .unwrap_or_default();
+        if preferences.streamer.is_none() {
+            preferences.streamer = Some(streamer_mode::Preferences::from_legacy(
+                !demo && desktop_notifications::legacy_streamer_enabled(),
+            ));
+        }
         Self {
             preferences,
             path,
@@ -210,6 +217,14 @@ impl NativePreferences {
             server_error: None,
             font_draft: None,
         }
+    }
+    pub fn streamer(&self) -> streamer_mode::Preferences {
+        self.preferences.streamer.unwrap_or_default()
+    }
+    pub fn update_streamer(&mut self, update: impl FnOnce(&mut streamer_mode::Preferences)) {
+        let mut next = self.preferences.clone();
+        update(next.streamer.get_or_insert_with(Default::default));
+        self.persist(next);
     }
     pub fn search_history(&self, key: &str) -> &[String] {
         self.preferences
@@ -607,6 +622,22 @@ mod tests {
             bytes
         );
     }
+    #[test]
+    fn streamer_preferences_use_device_defaults_and_persist_with_other_settings() {
+        let p: Preferences = serde_json::from_str("{}").unwrap();
+        assert!(p.streamer.is_none());
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("interface.json");
+        let mut prefs = NativePreferences::new(true);
+        prefs.path = Some(path.clone());
+        prefs.toggle_motion();
+        let enabled = super::streamer_mode::Preferences::from_legacy(true);
+        prefs.update_streamer(|prefs| *prefs = enabled);
+        let saved: Preferences = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.streamer, Some(enabled));
+        assert!(saved.reduced_motion);
+    }
+
     #[test]
     fn preference_serialization_round_trips() {
         let p = Preferences {

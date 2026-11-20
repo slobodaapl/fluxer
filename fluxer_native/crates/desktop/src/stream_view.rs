@@ -92,7 +92,7 @@ impl Fluxer {
         let user = self
             .cached_stream_user(identity)
             .and_then(|id| self.state.users.get(&id));
-        user.map(|user| user.display_name().to_owned())
+        user.map(|user| self.streaming().name(user.display_name()).into_owned())
     }
 
     fn cached_stream_user(&self, identity: &str) -> Option<Snowflake> {
@@ -369,7 +369,9 @@ impl Fluxer {
                 .map(|participant| {
                     let speaking = self.participant_speaking(&participant, channel);
                     (
-                        participant.display_name,
+                        self.streaming()
+                            .name(&participant.display_name)
+                            .into_owned(),
                         Some(participant.user_id),
                         speaking,
                         participant.livekit_identity,
@@ -381,7 +383,7 @@ impl Fluxer {
                 .iter()
                 .map(|(identity, (name, _))| {
                     (
-                        name.clone(),
+                        self.streaming().name(name).into_owned(),
                         self.cached_stream_user(identity),
                         self.active_speakers.contains(identity),
                         Some(identity.clone()),

@@ -227,7 +227,7 @@ impl Fluxer {
                         0x303138
                     }))
                     .cursor_pointer()
-                    .child(name)
+                    .child(self.streaming().name(&name).into_owned())
                     .child(
                         div()
                             .text_color(rgb(0xaaaab3))
@@ -251,6 +251,7 @@ impl Fluxer {
                     .or_else(|| row["user"]["username"].as_str())
             })
             .unwrap_or("this user");
+        let selected_name = self.streaming().name(selected_name);
         let mut panel = div()
             .id("bans-dialog")
             .track_focus(&self.bans_ui.focus)

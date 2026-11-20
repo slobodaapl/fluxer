@@ -146,10 +146,11 @@ impl Fluxer {
                 } else {
                     (
                         "Remove member",
-                        format!("Remove {name} from this group DM?"),
+                        format!("Remove {} from this group DM?", self.streaming().name(name)),
                     )
                 }
             } else if let Some((_, action, name)) = &self.friends_ui.confirm {
+                let name = self.streaming().name(name);
                 match action {
                     RelationshipAction::Block => (
                         "Block user",
@@ -297,7 +298,7 @@ impl Fluxer {
                 continue;
             };
             let id = user.id;
-            let name = user.display_name().to_owned();
+            let name = self.streaming().name(user.display_name()).into_owned();
             let status = self.friends_ui.status.get(&id).cloned();
             let pending = matches!(status, Some(RelationshipMutationStatus::Pending));
             let label = match relationship.kind {

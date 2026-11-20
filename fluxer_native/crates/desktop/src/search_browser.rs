@@ -964,7 +964,7 @@ impl Fluxer {
             .state
             .channels
             .get(&message.channel_id)
-            .map(|channel| channel.display_name())
+            .map(|channel| self.display_channel_name(channel))
             .unwrap_or_else(|| "Conversation".into());
         div()
             .id(("browse-message", message.id.0))
@@ -1042,7 +1042,7 @@ impl Fluxer {
                                     .text_size(px(12.))
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(crate::emoji_sprites::unicode_text(
-                                        message.author.display_name(),
+                                        &self.streaming().name(message.author.display_name()),
                                         12.,
                                         window.scale_factor() > 1.,
                                         cx,
@@ -1104,6 +1104,10 @@ impl Fluxer {
                                 self.interface.reduced_motion(),
                             ),
                             surface: "browser",
+                            redaction: streamer_mode::Redaction {
+                                effects: self.streaming(),
+                                invite: self.message_links.invite_endpoint(),
+                            },
                             hide_downloads: crate::media_context_policy::hide_media_downloads(
                                 message.channel_id,
                                 crate::media_context_policy::MediaKind::Image,
@@ -1667,8 +1671,8 @@ impl Fluxer {
                             .rounded_md()
                             .child(format!(
                                 "{}: {}",
-                                confirm.message.author.display_name(),
-                                chat_helpers::preview(&confirm.message)
+                                self.streaming().name(confirm.message.author.display_name()),
+                                self.streamer_preview(&confirm.message)
                             )),
                     )
                     .child(

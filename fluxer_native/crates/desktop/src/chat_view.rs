@@ -303,7 +303,10 @@ impl Fluxer {
             let document = if fluxer_core::compact_messages(&self.state.user_settings)
                 && !document.text.is_empty()
             {
-                Arc::new(document.with_author(message))
+                Arc::new(document.with_author_name(
+                    message,
+                    &self.streaming().name(message.author.display_name()),
+                ))
             } else {
                 document
             };
@@ -736,7 +739,7 @@ impl Fluxer {
                                                 .items_center()
                                                 .child(
                                                     div().id(("profile-name",id.0)).font_weight(FontWeight::SEMIBOLD).child(
-                                                        crate::emoji_sprites::unicode_text(message.author.display_name(), 14., window.scale_factor() > 1., cx),
+                                                        crate::emoji_sprites::unicode_text(&self.streaming().name(message.author.display_name()), 14., window.scale_factor() > 1., cx),
                                                     ).map(|view|self.profile_trigger(view,message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx)),
                                                 )
                                                 .child(
@@ -807,6 +810,7 @@ impl Fluxer {
                                                             enabled: !(self.image_viewer.is_open() || self.playback.modal.is_open()),
                                                             autoplay: media_animation::effective_gif_autoplay(&self.state.user_settings, self.interface.reduced_motion()),
                                                             surface: "timeline",
+                                                            redaction: streamer_mode::Redaction { effects: self.streaming(), invite: self.message_links.invite_endpoint() },
  hide_downloads: crate::media_context_policy::hide_media_downloads(message.channel_id, crate::media_context_policy::MediaKind::Image, &self.state.channels),
                                                         },
                                                         &self.revealed_media,
@@ -963,7 +967,7 @@ impl Fluxer {
                                                 .min_w_0()
                                                 .overflow_hidden()
                                                 .child(crate::emoji_sprites::unicode_text(
-                                                    &format!("Replying to {} · {}", message.author.display_name(), chat_helpers::preview(message)),
+                                                    &format!("Replying to {} · {}", self.streaming().name(message.author.display_name()), self.streamer_preview(message)),
                                                     12., window.scale_factor() > 1., cx,
                                                 )),
                                         )

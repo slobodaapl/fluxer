@@ -8,7 +8,11 @@ use futures::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::mpsc as sync,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+        mpsc as sync,
+    },
     thread,
     time::Duration,
 };
@@ -31,19 +35,29 @@ pub(super) struct Transport {
     task: Option<thread::JoinHandle<()>>,
     feedback: sync::SyncSender<Feedback>,
     address: Option<String>,
+    streaming: Arc<AtomicU8>,
 }
 impl Transport {
-    pub fn new(feedback: sync::SyncSender<Feedback>) -> Self {
-        Self::at(feedback, None)
+    pub fn new(feedback: sync::SyncSender<Feedback>, streaming: Arc<AtomicU8>) -> Self {
+        Self::start(feedback, None, streaming)
     }
+    #[cfg(test)]
     fn at(feedback: sync::SyncSender<Feedback>, address: Option<String>) -> Self {
+        Self::start(feedback, address, Arc::default())
+    }
+    fn start(
+        feedback: sync::SyncSender<Feedback>,
+        address: Option<String>,
+        streaming: Arc<AtomicU8>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(32);
         let (stop, stopped) = oneshot::channel();
         let events = feedback.clone();
         let worker_address = address.clone();
+        let worker_streaming = streaming.clone();
         let task = thread::spawn(move || {
             futures::executor::block_on(async move {
-                let work = run(rx, events, worker_address).fuse();
+                let work = run(rx, events, worker_address, worker_streaming).fuse();
                 let stopped = stopped.fuse();
                 futures::pin_mut!(work, stopped);
                 futures::select_biased! { _ = stopped => {}, _ = work => {} }
@@ -55,6 +69,7 @@ impl Transport {
             task: Some(task),
             feedback,
             address,
+            streaming,
         }
     }
     fn send(&mut self, command: Command) {
@@ -65,7 +80,11 @@ impl Transport {
             ) {
                 // A flooded/stalled daemon must not retain actionable old IDs.
                 // Replacing the worker cancels in-flight calls and drops its map.
-                let replacement = Self::at(self.feedback.clone(), self.address.clone());
+                let replacement = Self::start(
+                    self.feedback.clone(),
+                    self.address.clone(),
+                    self.streaming.clone(),
+                );
                 *self = replacement;
                 failure(&self.feedback, "Desktop notification dismissal queue is unavailable; old callbacks were discarded, but the daemon may still display old notifications".into());
             } else {
@@ -224,6 +243,7 @@ impl Session {
         &mut self,
         alert: Alert,
         feedback: &sync::SyncSender<Feedback>,
+        streaming: &AtomicU8,
     ) -> Result<(), String> {
         self.refresh_owner().await?;
         if self.owner.is_none() {
@@ -249,6 +269,9 @@ impl Session {
                 zbus::zvariant::Value::from("app.fluxer.Native"),
             ),
         ]);
+        if !alert.allowed(streaming.load(Ordering::Acquire)) {
+            return Ok(());
+        }
         let id: u32 = proxy
             .call(
                 "Notify",
@@ -265,6 +288,10 @@ impl Session {
             )
             .await
             .map_err(|e| e.to_string())?;
+        if !alert.allowed(streaming.load(Ordering::Acquire)) {
+            let _ = self.close(&owner, id).await;
+            return Ok(());
+        }
         self.refresh_owner().await?;
         if self.owner.as_deref() != Some(owner.as_str()) {
             let _ = self.close(&owner, id).await;
@@ -370,6 +397,7 @@ async fn run(
     mut commands: mpsc::Receiver<Command>,
     feedback: sync::SyncSender<Feedback>,
     address: Option<String>,
+    streaming: Arc<AtomicU8>,
 ) {
     let mut session: Option<Session> = None;
     loop {
@@ -389,6 +417,9 @@ async fn run(
         match input {
             Input::Command(None) => break,
             Input::Command(Some(Command::Show(alert))) => {
+                if !alert.allowed(streaming.load(Ordering::Acquire)) {
+                    continue;
+                }
                 if session.is_none() {
                     match Session::connect(address.as_deref()).await {
                         Ok(connected) => session = Some(connected),
@@ -402,7 +433,7 @@ async fn run(
                     }
                 }
                 if let Some(session) = &mut session
-                    && let Err(error) = session.show(alert, &feedback).await
+                    && let Err(error) = session.show(alert, &feedback, &streaming).await
                 {
                     failure(
                         &feedback,

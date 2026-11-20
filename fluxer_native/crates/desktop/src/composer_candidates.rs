@@ -121,12 +121,13 @@ impl Fluxer {
 
     pub(super) fn refresh_composer_completion(&mut self, cx: &mut Context<Self>) {
         let content = self.composer.read(cx).content.to_string();
+        let streaming = self.streaming();
         let mut labels = BTreeMap::new();
         if content.contains('<') {
             for user in self.state.users.values() {
                 for wire in [format!("<@{}>", user.id), format!("<@!{}>", user.id)] {
                     if content.contains(&wire) {
-                        labels.insert(wire, format!("@{}", user.display_name()));
+                        labels.insert(wire, format!("@{}", streaming.name(user.display_name())));
                     }
                 }
             }
@@ -147,10 +148,12 @@ impl Fluxer {
                                     wire,
                                     format!(
                                         "@{}",
-                                        member
-                                            .nick
-                                            .as_deref()
-                                            .unwrap_or(member.user.display_name())
+                                        streaming.name(
+                                            member
+                                                .nick
+                                                .as_deref()
+                                                .unwrap_or(member.user.display_name())
+                                        )
                                     ),
                                 );
                             }
@@ -175,7 +178,7 @@ impl Fluxer {
                             .contains(Permissions::VIEW_CHANNEL)
                     })
                 {
-                    labels.insert(wire, format!("#{}", channel.display_name()));
+                    labels.insert(wire, format!("#{}", self.display_channel_name(channel)));
                 }
             }
         }
@@ -220,8 +223,8 @@ impl Fluxer {
                                 || rank(&member.user.username, &trigger.query).is_some()
                             {
                                 choices.push(Choice {
-                                    label: label.into(),
-                                    detail: format!("@{}", member.user.username),
+                                    label: streaming.name(label).into_owned(),
+                                    detail: format!("@{}", streaming.name(&member.user.username)),
                                     glyph: "@".into(),
                                     insert: format!("<@{}>", member.user.id),
                                     user: Some(member.user.clone()),
@@ -263,8 +266,8 @@ impl Fluxer {
                                 || rank(&user.username, &trigger.query).is_some()
                             {
                                 choices.push(Choice {
-                                    label: user.display_name().into(),
-                                    detail: format!("@{}", user.username),
+                                    label: streaming.name(user.display_name()).into_owned(),
+                                    detail: format!("@{}", streaming.name(&user.username)),
                                     glyph: "@".into(),
                                     insert: format!("<@{}>", user.id),
                                     user: Some(user.clone()),

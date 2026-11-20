@@ -170,6 +170,7 @@ fn target(message: u64) -> Target {
 }
 fn alert(message: u64) -> Alert {
     Alert {
+        privacy: 0,
         target: target(message),
         title: "Private fixture title".into(),
         body: "Safe &amp; body".into(),
