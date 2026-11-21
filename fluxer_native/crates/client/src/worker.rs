@@ -429,18 +429,26 @@ impl Worker {
             return;
         };
         self.emit(Event::SessionRestoring(true));
-        self.emit(Event::Status("Restoring your saved session…".into()));
+        self.emit(Event::Status(
+            "Checking your saved session. Unlock your keyring if prompted.".into(),
+        ));
         // Keep vault and discovery I/O cancellable by a new login/demo/cancel.
         // Neither operation sends the stored token to any endpoint.
         self.restore_task = Some(tokio::spawn(async move {
-            let saved = tokio::time::timeout(Duration::from_secs(15), store.load())
+            // Opening the OS vault can wait for a person to enter a password.
+            let saved = tokio::time::timeout(Duration::from_secs(120), store.load())
                 .await
-                .map_err(|_| "Session restore timed out waiting for the keyring")?
-                .map_err(|_| "Could not read your saved session; unlock the keyring and retry")?;
+                .map_err(|_| "Session restore timed out waiting for the keyring. Retry saved sign-in to try again.")?
+                .map_err(|error| match error {
+                    fluxer_session::StoreError::UnlockDismissed =>
+                        "The keyring unlock prompt was dismissed. Retry saved sign-in to try again.",
+                    _ => "Could not read your saved session from the keyring. Retry saved sign-in or sign in again.",
+                })?;
             let Some(mut saved) = saved else {
                 return Ok(None);
             };
             if saved.valid {
+                // The unlock prompt has finished. Resume the normal cold restore.
                 saved.instance = saved.instance.refresh_saved().await.map_err(|_| {
                     "Could not safely restore this instance; your saved session has been retained".to_owned()
                 })?;

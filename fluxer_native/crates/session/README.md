@@ -10,9 +10,10 @@ On Linux, `OsSessionStore` uses oo7 0.5 with `async-std` and `native_crypto`.
 It explicitly requests encrypted Secret Service negotiation; it does not use
 oo7's automatic plaintext D-Bus negotiation fallback. The vault provider manages
 storage at rest. The application writes no plaintext session file and does not
-fall back to memory when OS storage fails. Locked/unavailable vaults return an
-error without attempting a collection-wide unlock prompt. Other platforms return
-`Unsupported` until a native credential backend is implemented.
+fall back to memory when OS storage fails. Startup looks for the saved session
+in the default collection and lets Secret Service prompt to unlock the matching
+item if required. Dismissing the prompt preserves the record for a later retry.
+Other platforms return `Unsupported` until a native credential backend is implemented.
 
 The production item is scoped by **application = app.fluxer.Native** and
 **kind = active-session**. Only matching items are searched, replaced, or

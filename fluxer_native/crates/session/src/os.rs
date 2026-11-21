@@ -34,13 +34,17 @@ impl OsSessionStore {
         ])
     }
     #[cfg(target_os = "linux")]
-    async fn collection(&self) -> Result<oo7::dbus::Collection<'static>, StoreError> {
+    async fn service() -> Result<oo7::dbus::Service<'static>, StoreError> {
         // Keyring::new / Service::new can fall back to an unencrypted D-Bus
         // session. Request encrypted negotiation explicitly and fail closed.
-        let service = oo7::dbus::Service::encrypted()
+        oo7::dbus::Service::encrypted()
             .await
-            .map_err(|_| StoreError::Unavailable)?;
-        let collection = service
+            .map_err(|_| StoreError::Unavailable)
+    }
+    #[cfg(target_os = "linux")]
+    async fn collection(&self) -> Result<oo7::dbus::Collection<'static>, StoreError> {
+        let collection = Self::service()
+            .await?
             .default_collection()
             .await
             .map_err(|_| StoreError::Unavailable)?;
@@ -64,7 +68,16 @@ impl SessionStore for OsSessionStore {
         Box::pin(async move {
             #[cfg(target_os = "linux")]
             {
-                let collection = self.collection().await?;
+                // Lookup attributes are available on locked items. Request
+                // the OS unlock prompt only for the matching session item.
+                let service = Self::service().await?;
+                let Some(collection) = service
+                    .with_alias(oo7::dbus::Service::DEFAULT_COLLECTION)
+                    .await
+                    .map_err(|_| StoreError::Unavailable)?
+                else {
+                    return Ok(None);
+                };
                 let items = collection
                     .search_items(&self.attributes())
                     .await
@@ -75,6 +88,16 @@ impl SessionStore for OsSessionStore {
                 let Some(item) = items.first() else {
                     return Ok(None);
                 };
+                if item
+                    .is_locked()
+                    .await
+                    .map_err(|_| StoreError::Unavailable)?
+                {
+                    item.unlock(None).await.map_err(|error| match error {
+                        oo7::dbus::Error::Dismissed => StoreError::UnlockDismissed,
+                        _ => StoreError::Unavailable,
+                    })?;
+                }
                 let secret = item.secret().await.map_err(|_| StoreError::Unavailable)?;
                 codec::decode(secret.as_bytes()).map(Some)
             }

@@ -54,6 +54,8 @@ pub enum StoreError {
     InvalidRecord,
     #[error("The operating system credential vault is unavailable or locked")]
     Unavailable,
+    #[error("The keyring unlock prompt was dismissed")]
+    UnlockDismissed,
     #[error("Secure session storage is unsupported on this platform")]
     Unsupported,
 }
