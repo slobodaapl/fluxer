@@ -350,7 +350,7 @@ impl Worker {
             .collect();
         let previews: Vec<_> = threads
             .iter()
-            .filter_map(|post| self.state.messages.get(&post.id)?.values().next())
+            .filter_map(|post| self.state.channel_messages(post.id).next())
             .collect();
         json!({"threads": threads, "first_messages": previews, "has_more": has_more})
     }

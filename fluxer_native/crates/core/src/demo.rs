@@ -287,8 +287,10 @@ impl ClientState {
         });
         reply.extra.insert(
             "referenced_message".into(),
-            serde_json::to_value(&state.messages[&Snowflake::from(11)][&Snowflake::from(1004)])
-                .expect("serialize offline reply target"),
+            serde_json::to_value(
+                state.messages[&Snowflake::from(11)][&Snowflake::from(1004)].as_ref(),
+            )
+            .expect("serialize offline reply target"),
         );
         state.insert_message(reply);
         let mut forwarded = Message::text(1006.into(), 11.into(), alex.clone(), "");
