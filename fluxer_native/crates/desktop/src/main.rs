@@ -740,7 +740,7 @@ impl Fluxer {
             available_streams: BTreeSet::new(),
             applications: Vec::new(),
             shared_audio: false,
-            share_audio_enabled: cfg!(target_os = "linux"),
+            share_audio_enabled: fluxer_media::MediaEngine::shared_audio_supported(),
             shared_audio_settings: SharedAudioSettings::default(),
             testing_microphone: false,
             levels: (0., 0.),
@@ -3408,16 +3408,17 @@ impl Fluxer {
     }
 
     fn start_screen_share(&mut self, source: ScreenSource, cx: &mut Context<Self>) {
-        let audio = if self.share_audio_enabled {
-            let Some(selection) = self.selected_share_audio(cx) else {
-                self.error = Some("Choose an available audio source before sharing.".into());
-                cx.notify();
-                return;
+        let audio =
+            if self.share_audio_enabled && fluxer_media::MediaEngine::shared_audio_supported() {
+                let Some(selection) = self.selected_share_audio(cx) else {
+                    self.error = Some("Choose an available audio source before sharing.".into());
+                    cx.notify();
+                    return;
+                };
+                Some(selection)
+            } else {
+                None
             };
-            Some(selection)
-        } else {
-            None
-        };
         self.command(
             Command::StartShare {
                 options: ScreenShareOptions {

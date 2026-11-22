@@ -119,7 +119,9 @@ impl Fluxer {
                                         } else {
                                             this.pane = Pane::Screens;
                                             this.command(Command::RefreshScreenSources, cx);
-                                            this.command(Command::RefreshAudioApplications, cx);
+                                            if fluxer_media::MediaEngine::shared_audio_supported() {
+                                                this.command(Command::RefreshAudioApplications, cx);
+                                            }
                                         }
                                     },
                                 )),
@@ -683,8 +685,9 @@ impl Fluxer {
     }
 
     pub(super) fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
+        let supported = fluxer_media::MediaEngine::shared_audio_supported();
         audio_section("Audio")
-            .when(cfg!(target_os = "linux"), |view| {
+            .when(supported, |view| {
                 view.child(
                     audio_setting_row(
                         "Include audio",
@@ -703,12 +706,12 @@ impl Fluxer {
                     ),
                 )
             })
-            .when(!cfg!(target_os = "linux"), |view| {
+            .when(!supported, |view| {
                 view.child(audio_description(
                     "Audio sharing is unavailable on this platform.",
                 ))
             })
-            .when(self.share_audio_enabled, |view| {
+            .when(supported && self.share_audio_enabled, |view| {
                 view.child(self.share_audio_picker.clone())
                     .child(
                         div()
@@ -787,18 +790,105 @@ impl Fluxer {
                 })
             })
             .cloned();
-        div().id("screen-sources").flex_1().min_w_0().h_full().overflow_y_scroll().p_6()
-            .child(div().w_full().max_w(px(720.)).flex().flex_col().gap_5()
-                .child(div().flex().items_center().gap_3().child(heading("Share your screen")).child(div().flex_1())
-                    .child(icon_button("cancel-share",Icon::Back,"Back to chat").on_click(cx.listener(|this,_,_,cx|{this.pane=Pane::Chat;cx.notify();}))))
-                .child(audio_description(if system_picker.is_some(){"Choose your quality and audio, then select a display or window in the system dialog."}else{"Choose a display or window, then set the quality and audio you want to share."}))
-                .when(system_picker.is_none(),|view|view.child(self.screen_picker.clone()))
-                .child(audio_section("Video quality").child(self.fps_picker.clone()).child(self.resolution_picker.clone()))
-                .child(self.shared_audio_controls(cx))
-                .child(div().flex().items_center().gap_2()
-                    .when_some(system_picker,|view,source|view.child(quiet_button("choose-screen-source","Choose display or window…").bg(rgb(ACCENT)).text_color(rgb(TEXT)).on_click(cx.listener(move|this,_,_,cx|this.start_screen_share(source.clone(),cx)))))
-                    .when_some(selected,|view,source|view.child(quiet_button("start-screen-share","Share screen").bg(rgb(ACCENT)).text_color(rgb(TEXT)).on_click(cx.listener(move|this,_,_,cx|this.start_screen_share(source.clone(),cx)))))
-                    .child(icon_button("refresh-sources",Icon::Refresh,"Refresh available sources").on_click(cx.listener(|this,_,_,cx|this.command(Command::RefreshScreenSources,cx))))))
+        let instruction = match (
+            system_picker.is_some(),
+            fluxer_media::MediaEngine::shared_audio_supported(),
+        ) {
+            (true, true) => {
+                "Choose your quality and audio, then select a display or window in the system dialog."
+            }
+            (true, false) => {
+                "Choose your video quality, then select a display or window in the system dialog."
+            }
+            (false, true) => {
+                "Choose a display or window, then set the quality and audio you want to share."
+            }
+            (false, false) => "Choose a display or window and set the video quality.",
+        };
+        div()
+            .id("screen-sources")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .p_6()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(720.))
+                    .flex()
+                    .flex_col()
+                    .gap_5()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(heading("Share your screen"))
+                            .child(div().flex_1())
+                            .child(
+                                icon_button("cancel-share", Icon::Back, "Back to chat").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.pane = Pane::Chat;
+                                        cx.notify();
+                                    }),
+                                ),
+                            ),
+                    )
+                    .child(audio_description(instruction))
+                    .when(system_picker.is_none(), |view| {
+                        view.child(self.screen_picker.clone())
+                    })
+                    .child(
+                        audio_section("Video quality")
+                            .child(self.fps_picker.clone())
+                            .child(self.resolution_picker.clone()),
+                    )
+                    .child(self.shared_audio_controls(cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .when_some(system_picker, |view, source| {
+                                view.child(
+                                    quiet_button(
+                                        "choose-screen-source",
+                                        "Choose display or window…",
+                                    )
+                                    .bg(rgb(ACCENT))
+                                    .text_color(rgb(TEXT))
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.start_screen_share(source.clone(), cx)
+                                        },
+                                    )),
+                                )
+                            })
+                            .when_some(selected, |view, source| {
+                                view.child(
+                                    quiet_button("start-screen-share", "Share screen")
+                                        .bg(rgb(ACCENT))
+                                        .text_color(rgb(TEXT))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.start_screen_share(source.clone(), cx)
+                                        })),
+                                )
+                            })
+                            .child(
+                                icon_button(
+                                    "refresh-sources",
+                                    Icon::Refresh,
+                                    "Refresh available sources",
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.command(Command::RefreshScreenSources, cx)
+                                    },
+                                )),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 }

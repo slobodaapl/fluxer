@@ -1525,6 +1525,9 @@ impl MediaEngine {
     pub fn is_sharing_audio(&self) -> bool {
         self.shared_audio_running.load(Ordering::Acquire)
     }
+    pub const fn shared_audio_supported() -> bool {
+        fluxer_system_audio::SystemAudio::supported()
+    }
     pub fn shared_audio_available() -> bool {
         if pipewire_runtime::ensure().is_err() {
             return false;
@@ -1532,6 +1535,9 @@ impl MediaEngine {
         fluxer_system_audio::SystemAudio::available()
     }
     pub fn audio_applications() -> Result<Vec<AudioApplication>> {
+        if !Self::shared_audio_supported() {
+            return Ok(Vec::new());
+        }
         pipewire_runtime::ensure()?;
         fluxer_system_audio::SystemAudio::applications()
             .map_err(|e| MediaError::Audio(e.to_string()))

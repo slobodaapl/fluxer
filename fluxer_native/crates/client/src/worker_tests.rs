@@ -1273,6 +1273,42 @@ async fn unified_share_success_and_stop_keep_audio_video_status_and_self_stream_
     assert_eq!(audio, [true, false]);
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn macos_share_setup_exposes_the_screen_picker_without_audio() {
+    let (mut worker, events, mut gateway) = watch_worker();
+    worker.command(Command::RefreshScreenSources).await.unwrap();
+    worker
+        .command(Command::RefreshAudioApplications)
+        .await
+        .unwrap();
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        Event::ScreenSources(sources)
+            if sources.len() == 1 && sources[0].kind == fluxer_media::ScreenSourceKind::SystemPicker
+    ));
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        Event::AudioApplications(applications) if applications.is_empty()
+    ));
+
+    worker.complete_share_start(false, Ok(())).await.unwrap();
+    assert!(matches!(
+        gateway.try_recv().unwrap(),
+        GatewayCommand::VoiceState(payload) if payload.self_stream
+    ));
+    let result = worker
+        .command(Command::StartShare {
+            options: fluxer_media::ScreenShareOptions::default(),
+            audio: Some(SharedAudioSelection::System),
+        })
+        .await;
+    assert!(result.unwrap_err().contains("video only"));
+    assert!(worker.pending_share.is_none());
+    assert!(worker.state.voice.screen_share && !worker.active_share_audio);
+    assert!(gateway.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn disabling_audio_while_picker_is_pending_preserves_video_only_consent() {
     let (mut worker, events, mut gateway) = watch_worker();

@@ -99,6 +99,12 @@ fn native_identity() -> routing::SelfIdentity {
 }
 
 impl SystemAudio {
+    /// Whether this build has a system-audio backend, regardless of whether
+    /// the device audio service is currently reachable.
+    pub const fn supported() -> bool {
+        cfg!(target_os = "linux")
+    }
+
     pub fn available() -> bool {
         #[cfg(target_os = "linux")]
         {

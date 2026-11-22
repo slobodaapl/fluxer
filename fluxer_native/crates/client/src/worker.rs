@@ -2957,6 +2957,9 @@ impl Worker {
                 if self.state.voice.channel_id.is_none() {
                     return Err("Join a voice channel first".into());
                 }
+                if audio.is_some() && !MediaEngine::shared_audio_supported() {
+                    return Err("Screen sharing on this platform supports video only".into());
+                }
                 options.validate().map_err(error)?;
                 self.pending_share = Some(PendingShare { audio });
                 self.active_share_audio = false;
