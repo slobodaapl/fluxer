@@ -7,6 +7,7 @@ fn main() {
     deep_filter_model();
     println!("cargo:rerun-if-changed=native/pipewire_runtime.cpp");
     println!("cargo:rerun-if-changed=native/file_playback.c");
+    println!("cargo:rerun-if-changed=native/camera_macos.m");
     println!("cargo:rustc-check-cfg=cfg(ffmpeg_file_playback)");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         cc::Build::new()
@@ -52,6 +53,15 @@ fn main() {
             println!(
                 "cargo:warning=FFmpeg development packages missing; native file playback is unavailable"
             );
+        }
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        cc::Build::new()
+            .file("native/camera_macos.m")
+            .flag("-fobjc-arc")
+            .compile("fluxer_camera_macos");
+        for framework in ["AVFoundation", "CoreMedia", "CoreVideo", "Foundation"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
         }
     }
 }

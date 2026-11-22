@@ -1,27 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! Linux V4L2 capture. Device discovery reads sysfs only; opening a device is
-//! deferred until an explicit start request. ffmpeg is an optional runtime tool.
+//! Camera discovery is passive. Linux uses V4L2 through ffmpeg and macOS uses
+//! AVFoundation, with capture starting only for an explicitly selected device.
 use crate::{MediaError, MediaEvent, Result};
-use livekit::webrtc::{
-    video_frame::{I420Buffer, VideoFrame, VideoRotation},
-    video_source::{VideoResolution, native::NativeVideoSource},
-};
+#[cfg(any(target_os = "linux", test))]
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
+use livekit::webrtc::video_source::{VideoResolution, native::NativeVideoSource};
 use serde::{Deserialize, Serialize};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+use std::time::Duration;
+#[cfg(any(target_os = "linux", test))]
 use std::{
     io::Read,
-    process::{Child, Command, Stdio},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    process::{Command, Stdio},
+    sync::Mutex,
     thread,
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::sync::mpsc;
 
+#[cfg(target_os = "macos")]
+#[path = "camera_macos.rs"]
+mod macos;
+
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
+#[cfg(any(target_os = "linux", test))]
 const FRAME_BYTES: usize = WIDTH as usize * HEIGHT as usize * 3 / 2;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +78,11 @@ pub fn devices() -> Result<Vec<CameraDevice>> {
         result.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(result)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        Ok(macos::devices())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Ok(Vec::new())
     }
@@ -88,14 +101,12 @@ pub(crate) fn source() -> NativeVideoSource {
 #[derive(Clone)]
 pub(crate) struct StopHandle {
     stopped: Arc<AtomicBool>,
-    child: Arc<Mutex<Child>>,
+    interrupt: Arc<dyn Fn() + Send + Sync>,
 }
 impl StopHandle {
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
-        if let Ok(mut child) = self.child.lock() {
-            let _ = child.kill();
-        }
+        (self.interrupt)();
     }
 }
 pub(crate) struct Session {
@@ -129,35 +140,50 @@ pub(crate) fn start(
     if !devices()?.iter().any(|d| d.id == id) {
         return Err(MediaError::UnknownDevice("camera"));
     }
-    let mut command = Command::new("ffmpeg");
-    command.args([
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-f",
-        "v4l2",
-        "-i",
-        id,
-        "-vf",
-        "scale=640:480",
-        "-r",
-        "30",
-        "-pix_fmt",
-        "yuv420p",
-        "-f",
-        "rawvideo",
-        "pipe:1",
-    ]);
-    start_process(
-        command,
-        source,
-        tx,
-        call_stopped,
-        generation,
-        FIRST_FRAME_TIMEOUT,
-    )
+    #[cfg(target_os = "linux")]
+    {
+        let mut command = Command::new("ffmpeg");
+        command.args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-f",
+            "v4l2",
+            "-i",
+            id,
+            "-vf",
+            "scale=640:480",
+            "-r",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ]);
+        start_process(
+            command,
+            source,
+            tx,
+            call_stopped,
+            generation,
+            FIRST_FRAME_TIMEOUT,
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::start(id, source, tx, call_stopped, generation)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (source, tx, call_stopped, generation);
+        Err(MediaError::Camera(
+            "Camera capture is unavailable on this platform".into(),
+        ))
+    }
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn start_process(
     mut command: Command,
     source: NativeVideoSource,
@@ -176,10 +202,17 @@ fn start_process(
         .stdout
         .take()
         .ok_or_else(|| MediaError::Camera("capture output unavailable".into()))?;
+    let child = Arc::new(Mutex::new(child));
+    let stop_child = child.clone();
     let handle = StopHandle {
         stopped: Arc::new(AtomicBool::new(false)),
-        child: Arc::new(Mutex::new(child)),
+        interrupt: Arc::new(move || {
+            if let Ok(mut child) = stop_child.lock() {
+                let _ = child.kill();
+            }
+        }),
     };
+    let capture_child = child.clone();
     let capture = handle.clone();
     let frame = Arc::new(AtomicBool::new(false));
     let received = frame.clone();
@@ -217,7 +250,7 @@ fn start_process(
                 }
             }
             let was_stopped = capture.stopped.swap(true, Ordering::AcqRel);
-            if let Ok(mut child) = capture.child.lock() {
+            if let Ok(mut child) = capture_child.lock() {
                 let _ = child.kill();
                 let _ = child.wait();
             }
@@ -230,7 +263,7 @@ fn start_process(
         })
         .map_err(|e| {
             handle.stop();
-            if let Ok(mut child) = handle.child.lock() {
+            if let Ok(mut child) = child.lock() {
                 let _ = child.wait();
             }
             MediaError::Camera(e.to_string())
@@ -248,9 +281,7 @@ fn start_process(
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             {
-                if let Ok(mut child) = deadline_handle.child.lock() {
-                    let _ = child.kill();
-                }
+                deadline_handle.stop();
                 let _ = deadline_tx.blocking_send(MediaEvent::CameraStopped(generation));
             }
         })
@@ -261,6 +292,7 @@ fn start_process(
     Ok(Session { handle, frame })
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn copy_i420(bytes: &[u8], buffer: &mut I420Buffer) {
     let (sy, su, sv) = buffer.strides();
     let (y, u, v) = buffer.data_mut();

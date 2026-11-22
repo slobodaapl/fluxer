@@ -65,11 +65,11 @@ open -n "$app" --args --demo
 ```
 
 The script builds an ad-hoc-signed app with its own bundle identifier and
-microphone usage description. It writes to `fluxer_native/target/macos` by
+microphone and camera usage descriptions. It writes to `fluxer_native/target/macos` by
 default, or the `macos` subdirectory of `CARGO_TARGET_DIR`. Use
 `FLUXER_MACOS_SIGN_IDENTITY` to select a local signing identity. macOS prompts
-for microphone access when you start capture. Camera publishing, system audio
-sharing, desktop notifications, tray integration, and in-app audio/video
+for microphone or camera access when you start the corresponding capture.
+System audio sharing, desktop notifications, tray integration, and in-app audio/video
 attachment playback are still Linux-only.
 
 Voice & audio settings offer Off, WebRTC, noise gate, Speex, RNNoise, GTCRN, and
@@ -136,6 +136,10 @@ Linux camera publishing requires the `ffmpeg` executable with V4L2 support. The
 camera is opened only after selecting a device and starting video; stopping video
 or leaving the call terminates the capture process. If ffmpeg is unavailable or
 the camera cannot be opened, video does not start.
+
+On macOS, AVFoundation lists built-in, external, and Continuity cameras.
+Choosing a camera in a voice call starts capture after macOS grants access.
+Stopping video or leaving the call releases the capture session.
 
 On Linux, the sharing pane enables **Include audio** by default and lets you
 choose system audio or one playback application before opening the system
@@ -267,7 +271,7 @@ layout review. These rows do not perform uploads or send account messages.
 Native file playback on Linux uses FFmpeg libraries (libavformat, libavcodec,
 libavutil, libswscale and libswresample) discovered through pkg-config at build
 time, plus the existing PipeWire output engine. Install their development headers
-to enable the backend. Camera capture uses a separate ffmpeg process as described above.
+to enable the backend. Linux camera capture uses a separate ffmpeg process as described above.
 Other platforms and missing-library builds show an unavailable-player error and
 retain Open original. Audio and video start on Play; MP4-backed GIFV loops muted
 when visible and allowed by GIF autoplay. Player volume/mute, seeking and full

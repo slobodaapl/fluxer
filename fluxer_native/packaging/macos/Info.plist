@@ -18,6 +18,10 @@
     <string>1</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Fluxer uses your microphone for voice calls and the microphone test.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Fluxer uses your camera when you turn on video in a voice call.</string>
+    <key>NSCameraUseContinuityCameraDeviceType</key>
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

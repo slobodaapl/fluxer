@@ -317,7 +317,7 @@ pub(crate) fn start(
     })
 }
 
-fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+pub(crate) fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let scale = (max_w as f64 / w as f64)
         .min(max_h as f64 / h as f64)
         .min(1.0);
