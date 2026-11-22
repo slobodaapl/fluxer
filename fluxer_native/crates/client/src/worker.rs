@@ -964,7 +964,8 @@ impl Worker {
                 }
                 Incoming::DeviceRecovery(result) => {
                     recovery = None;
-                    if recovery_requested
+                    let requested = std::mem::take(&mut recovery_requested);
+                    if requested
                         && let Err(message) = result
                             .as_ref()
                             .map_err(|e| e.to_string())
@@ -976,7 +977,7 @@ impl Worker {
                         && let Some(devices) = media.finish_device_recovery(result)
                     {
                         self.remember_device_labels(&devices);
-                        if last_devices.as_ref() != Some(&devices) {
+                        if requested || last_devices.as_ref() != Some(&devices) {
                             last_devices = Some(devices.clone());
                             self.emit(Event::Devices(devices));
                         }

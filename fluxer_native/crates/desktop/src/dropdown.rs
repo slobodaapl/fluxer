@@ -12,6 +12,7 @@ pub struct Selected(pub String);
 pub struct Dropdown {
     label: &'static str,
     options: Vec<(String, String)>,
+    device_inventory: Option<Vec<(String, String)>>,
     selected: Option<String>,
     open: bool,
     popup_priority: usize,
@@ -42,6 +43,7 @@ impl Dropdown {
         Self {
             label,
             options,
+            device_inventory: None,
             selected,
             open: false,
             popup_priority: 0,
@@ -96,7 +98,7 @@ impl Dropdown {
 
     pub fn set_device_options(
         &mut self,
-        mut options: Vec<(String, String)>,
+        options: Vec<(String, String)>,
         preferred: &str,
         cx: &mut Context<Self>,
     ) -> String {
@@ -111,12 +113,32 @@ impl Dropdown {
                     .map(|(_, label)| label.trim_end_matches(" (unavailable)").to_owned())
             })
             .unwrap_or_else(|| "Selected device".into());
-        if !options.iter().any(|(id, _)| id == preferred) {
-            options.push((preferred.into(), format!("{label} (unavailable)")));
-        }
-        self.set_selected(preferred, cx);
-        self.set_options(options, cx);
+        self.device_inventory = Some(options);
+        self.restore_device_preference(preferred.into(), label.clone(), cx);
         label
+    }
+
+    /// Loading account preferences changes the choice, while the list of
+    /// hardware belongs to the machine and survives a gateway reconnect.
+    pub fn restore_device_preference(
+        &mut self,
+        preferred: String,
+        label: String,
+        cx: &mut Context<Self>,
+    ) {
+        let mut options = self.device_inventory.clone().unwrap_or_default();
+        if !options.iter().any(|(id, _)| *id == preferred) {
+            let label = if self.device_inventory.is_some() {
+                format!("{label} (unavailable)")
+            } else {
+                label
+            };
+            options.push((preferred.clone(), label));
+        }
+        self.set_selected(&preferred, cx);
+        if self.options != options {
+            self.set_options(options, cx);
+        }
     }
 
     pub fn set_options(&mut self, options: Vec<(String, String)>, cx: &mut Context<Self>) {

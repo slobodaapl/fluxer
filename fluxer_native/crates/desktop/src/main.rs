@@ -1722,12 +1722,10 @@ impl Fluxer {
                     self.mode_picker
                         .update(cx, |picker, cx| picker.set_selected(mode, cx));
                     self.input_picker.update(cx, |picker, cx| {
-                        picker.set_options(vec![input.clone()], cx);
-                        picker.set_selected(&input.0, cx);
+                        picker.restore_device_preference(input.0, input.1, cx);
                     });
                     self.output_picker.update(cx, |picker, cx| {
-                        picker.set_options(vec![output.clone()], cx);
-                        picker.set_selected(&output.0, cx);
+                        picker.restore_device_preference(output.0, output.1, cx);
                     });
                 }
                 Event::CameraDevices(devices) => {

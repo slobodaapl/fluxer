@@ -37,6 +37,43 @@ fn worker() -> (Worker, mpsc::Receiver<Event>) {
     (Worker::new(tx, Arc::new(Mutex::new(BTreeMap::new()))), rx)
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn explicit_audio_refresh_republishes_the_current_inventory() {
+    let controller = crate::Controller::spawn_with_store(Arc::new(
+        fluxer_session::MemorySessionStore::default(),
+    ))
+    .unwrap();
+    let refresh = || {
+        controller.send(Command::RefreshDevices).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match controller.try_recv_control() {
+                Some(Event::Devices(devices)) => return devices,
+                Some(Event::Error(message)) => panic!("{message}"),
+                Some(_) => {}
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        panic!("explicit refresh did not publish an audio device inventory");
+    };
+    for _ in 0..2 {
+        let inventory = refresh();
+        assert!(
+            inventory
+                .inputs
+                .iter()
+                .any(|device| device.id == "input:default")
+        );
+        assert!(
+            inventory
+                .outputs
+                .iter()
+                .any(|device| device.id == "output:default")
+        );
+    }
+}
+
 async fn finish_attachment_send(worker: &mut Worker, channel: Snowflake) {
     timeout(Duration::from_secs(5), async {
         loop {
