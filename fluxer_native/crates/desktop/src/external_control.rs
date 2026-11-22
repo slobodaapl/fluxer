@@ -281,6 +281,7 @@ mod tests {
             account_id: 1.into(),
             generation: 7,
             channel_id: 10.into(),
+            connection_id: None,
             status: VoiceStatus::Connected {
                 channel_id: 10.into(),
             },

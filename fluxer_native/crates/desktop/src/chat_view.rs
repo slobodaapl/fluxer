@@ -977,11 +977,14 @@ impl Fluxer {
                 },
             )
             .when_some(
-                voice_channel.filter(|_| self.pane != Pane::Call),
+                voice_channel
+                    .or(private_call
+                        .filter(|channel| self.state.voice.channel_id == Some(*channel)))
+                    .filter(|_| self.pane != Pane::Call),
                 |view, channel| view.child(self.voice_participant_pane(channel, cx)),
             )
             .when(
-                self.pane != Pane::Call && !self.available_cameras.is_empty(),
+                self.pane != Pane::Call && self.camera_strip_visible(),
                 |view| view.child(self.camera_strip(cx)),
             )
             .when(

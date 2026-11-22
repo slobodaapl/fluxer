@@ -92,6 +92,7 @@ pub struct CallControlSnapshot {
     pub account_id: Snowflake,
     pub generation: u64,
     pub channel_id: Snowflake,
+    pub connection_id: Option<String>,
     pub status: VoiceStatus,
     pub muted: bool,
     pub deafened: bool,
@@ -957,6 +958,7 @@ pub struct Controller {
     commands: tokio::sync::mpsc::UnboundedSender<Command>,
     events: mpsc::Receiver<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
+    local_previews: fluxer_media::LocalVideoPreviews,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     call_snapshot: Arc<Mutex<Option<CallControlSnapshot>>>,
 }
@@ -972,6 +974,8 @@ impl Controller {
         let (tx, events) = mpsc::channel();
         let frames = Arc::new(Mutex::new(BTreeMap::new()));
         let worker_frames = frames.clone();
+        let local_previews = fluxer_media::LocalVideoPreviews::default();
+        let worker_previews = local_previews.clone();
         let call_snapshot = Arc::new(Mutex::new(None));
         let worker_call_snapshot = call_snapshot.clone();
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -985,6 +989,7 @@ impl Controller {
                     Ok(runtime) => runtime.block_on(async move {
                         let mut worker = worker::Worker::new(tx, worker_frames)
                             .with_call_snapshot(worker_call_snapshot)
+                            .with_local_previews(worker_previews)
                             .with_session_store(store);
                         tokio::select! {
                             biased;
@@ -1007,6 +1012,7 @@ impl Controller {
             commands,
             events,
             frames,
+            local_previews,
             shutdown: Some(shutdown),
             call_snapshot,
         })
@@ -1017,6 +1023,10 @@ impl Controller {
             commands: self.commands.clone(),
             snapshot: self.call_snapshot.clone(),
         }
+    }
+
+    pub fn local_previews(&self) -> &fluxer_media::LocalVideoPreviews {
+        &self.local_previews
     }
 
     pub fn send(&self, command: Command) -> Result<(), String> {
@@ -1114,6 +1124,7 @@ mod controller_tests {
             commands,
             events,
             frames: frames.clone(),
+            local_previews: Default::default(),
             shutdown: None,
             call_snapshot: Arc::new(Mutex::new(None)),
         };
@@ -1136,6 +1147,7 @@ mod controller_tests {
             commands,
             events,
             frames: frames.clone(),
+            local_previews: Default::default(),
             shutdown: None,
             call_snapshot: Arc::new(Mutex::new(None)),
         };

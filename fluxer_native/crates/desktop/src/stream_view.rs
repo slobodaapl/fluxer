@@ -654,7 +654,7 @@ impl Fluxer {
                             .flex()
                             .flex_col()
                             .child(stage)
-                            .when(!self.available_cameras.is_empty(), |view| {
+                            .when(self.camera_strip_visible(), |view| {
                                 view.child(self.camera_strip(cx))
                             })
                             .when(!strip_streams.is_empty() || !members.is_empty(), |view| {

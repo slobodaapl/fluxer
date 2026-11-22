@@ -498,6 +498,7 @@ mod linux {
                 account_id: 1.into(),
                 generation: 7,
                 channel_id: 2.into(),
+                connection_id: None,
                 status: fluxer_client::VoiceStatus::Connected {
                     channel_id: 2.into(),
                 },

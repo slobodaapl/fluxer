@@ -486,6 +486,7 @@ struct Fluxer {
     editing: Option<Snowflake>,
     viewer: Viewer<Arc<RenderImage>>,
     camera_viewer: Viewer<Arc<RenderImage>>,
+    local_preview_images: BTreeMap<VideoSource, Arc<RenderImage>>,
     available_cameras: BTreeSet<String>,
     pending_camera_starts: BTreeSet<String>,
     demo_stream: bool,
@@ -726,6 +727,7 @@ impl Fluxer {
             editing: None,
             viewer: Viewer::default(),
             camera_viewer: Viewer::default(),
+            local_preview_images: BTreeMap::new(),
             available_cameras: BTreeSet::new(),
             pending_camera_starts: BTreeSet::new(),
             demo_stream,
@@ -1004,6 +1006,7 @@ impl Fluxer {
         }
     }
     fn clear_viewer(&mut self, cx: &mut Context<Self>) {
+        self.clear_local_previews(cx);
         for frame in self
             .viewer
             .frames
@@ -1018,6 +1021,7 @@ impl Fluxer {
         self.pending_camera_starts.clear();
     }
     fn reset_viewer_transport(&mut self, cx: &mut Context<Self>) {
+        self.clear_local_previews(cx);
         for frame in self
             .viewer
             .frames
@@ -2043,14 +2047,21 @@ impl Fluxer {
                 }
                 Event::Video(_) => unreachable!("control queue cannot contain video frames"),
                 Event::Media(event) => match event {
-                    MediaEvent::CameraStarted(_) | MediaEvent::CameraStopped(_) => {
+                    MediaEvent::CameraStarted(_) => {
                         self.camera_starting = false;
+                    }
+                    MediaEvent::CameraStopped(_) => {
+                        self.camera_starting = false;
+                        self.retire_local_preview(VideoSource::Camera, cx);
                     }
                     MediaEvent::ScreenShareStarted => {
                         self.sharing = true;
                         self.reshare_required = false;
                     }
-                    MediaEvent::ScreenShareStopped => self.sharing = false,
+                    MediaEvent::ScreenShareStopped => {
+                        self.sharing = false;
+                        self.retire_local_preview(VideoSource::ScreenShare, cx);
+                    }
                     MediaEvent::VideoEnded {
                         track_id,
                         watch_generation,
@@ -2170,6 +2181,7 @@ impl Fluxer {
             self.display_video(frame, cx);
             changed = true;
         }
+        changed |= self.poll_local_previews(cx);
         if let Some(frame) = self
             .animation
             .as_ref()

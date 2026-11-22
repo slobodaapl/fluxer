@@ -267,6 +267,7 @@ pub(crate) struct Worker {
     browser_poll_task: Option<BrowserPollTask>,
     events: mpsc::Sender<Event>,
     frames: Arc<Mutex<BTreeMap<String, VideoFrame>>>,
+    local_previews: fluxer_media::LocalVideoPreviews,
     gateway_commands: Option<async_mpsc::Sender<GatewayCommand>>,
     gateway_events: Option<async_mpsc::Receiver<GatewayEvent>>,
     gateway_task: Option<JoinHandle<()>>,
@@ -374,6 +375,7 @@ impl Worker {
             browser_poll_task: None,
             events,
             frames,
+            local_previews: Default::default(),
             gateway_commands: None,
             gateway_events: None,
             gateway_task: None,
@@ -651,11 +653,19 @@ impl Worker {
         self.call_snapshot = snapshot;
         self
     }
+    pub(crate) fn with_local_previews(
+        mut self,
+        previews: fluxer_media::LocalVideoPreviews,
+    ) -> Self {
+        self.local_previews = previews;
+        self
+    }
     fn call_control_snapshot(&self) -> Option<crate::CallControlSnapshot> {
         Some(crate::CallControlSnapshot {
             account_id: self.state.current_user.as_ref()?.id,
             generation: self.call_generation,
             channel_id: self.voice_target.as_ref()?.channel_id,
+            connection_id: self.voice_target.as_ref()?.connection_id.clone(),
             status: self
                 .call_snapshot
                 .lock()
@@ -704,7 +714,9 @@ impl Worker {
             return Err("Audio settings are unavailable while voice is connecting".into());
         }
         if self.media.is_none() {
-            let mut media = MediaEngine::new().map_err(error)?;
+            let mut media = MediaEngine::new()
+                .map_err(error)?
+                .with_local_previews(self.local_previews.clone());
             media.restore_device_preferences(
                 &self.audio_preferences.input,
                 &self.audio_preferences.output,

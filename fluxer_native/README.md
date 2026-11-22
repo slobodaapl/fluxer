@@ -141,6 +141,10 @@ On macOS, AVFoundation lists built-in, external, and Continuity cameras.
 Choosing a camera in a voice call starts capture after macOS grants access.
 Stopping video or leaving the call releases the capture session.
 
+Your camera and screen share appear as previews in the call. Right-click your
+own participant row to show or hide each preview independently while capture
+continues.
+
 On Linux, the sharing pane enables **Include audio** by default and lets you
 choose system audio or one playback application before opening the system
 screen/window picker. Video and the selected audio start together after screen

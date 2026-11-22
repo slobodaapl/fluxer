@@ -200,10 +200,14 @@ fn participant_target(
     user: Option<Snowflake>,
     identity: Option<String>,
     current_user: Option<Snowflake>,
+    local_identity: Option<&str>,
     remote: bool,
 ) -> Option<Target> {
-    // Gateway account identity alone never proves which device is local.
-    // Only the explicit account dock offers this device's microphone controls.
+    if let (Some(channel), Some(identity)) = (channel, identity.as_deref())
+        && local_identity == Some(identity)
+    {
+        return Some(Target::SelfVoice(channel));
+    }
     if user.is_some() && user == current_user && remote {
         return identity.map(Target::Connection);
     }
@@ -452,11 +456,30 @@ impl Fluxer {
         user: Option<Snowflake>,
         identity: Option<String>,
     ) -> Option<Target> {
+        let current_user = self.state.current_user.as_ref().map(|me| me.id);
+        // Match the exact gateway connection. Another device on the same account
+        // is still a remote participant.
+        let local_identity =
+            if user.is_some() && user == current_user && channel == self.state.voice.channel_id {
+                self.controller
+                    .as_ref()
+                    .and_then(|controller| controller.call_control().snapshot())
+                    .filter(|call| {
+                        channel == Some(call.channel_id) && Some(call.account_id) == current_user
+                    })
+                    .and_then(|call| {
+                        let connection = call.connection_id?;
+                        Some(format!("user_{}_{connection}", call.account_id))
+                    })
+            } else {
+                None
+            };
         participant_target(
             channel,
             user,
             identity.clone(),
-            self.state.current_user.as_ref().map(|me| me.id),
+            current_user,
+            local_identity.as_deref(),
             identity
                 .as_ref()
                 .is_some_and(|id| self.participants.contains_key(id)),
@@ -682,6 +705,20 @@ impl Fluxer {
                     toggle("self-mute", "Mute microphone", self.state.voice.muted),
                     toggle("self-deaf", "Deafen", self.state.voice.deafened),
                 ]);
+                if self.controller.is_some() {
+                    items.extend([
+                        toggle(
+                            "self-preview-camera",
+                            "Show my camera preview",
+                            self.local_preview_visible(VideoSource::Camera),
+                        ),
+                        toggle(
+                            "self-preview-screen",
+                            "Show my screen share preview",
+                            self.local_preview_visible(VideoSource::ScreenShare),
+                        ),
+                    ]);
+                }
                 if self.sharing {
                     items.push(action("stop-share", "Stop sharing", Icon::Stop));
                 }
@@ -1246,6 +1283,16 @@ impl Fluxer {
                     self.command_if_live(Command::SetDeaf(deaf), cx);
                 }
             }
+            (Target::SelfVoice(_), "self-preview-camera" | "self-preview-screen") => {
+                if let Some(visible) = muted {
+                    let source = if id == "self-preview-camera" {
+                        VideoSource::Camera
+                    } else {
+                        VideoSource::ScreenShare
+                    };
+                    self.set_local_preview_visible(source, visible, cx);
+                }
+            }
             (Target::SelfVoice(_), "stop-share") => self.command_if_live(Command::StopShare, cx),
             (Target::SelfVoice(_), "voice-settings") => {
                 self.open_settings(settings_view::Section::Voice, window, cx);
@@ -1502,22 +1549,27 @@ mod tests {
         ));
     }
     #[test]
-    fn own_remote_or_unresolved_gateway_device_never_controls_this_device() {
+    fn own_local_row_opens_self_menu_and_other_devices_keep_their_own_menu() {
         let channel = Some(Snowflake(14));
         let me = Some(Snowflake(100));
+        let local = Some("user_100_mac");
         assert_eq!(
-            participant_target(channel, me, Some("user_100_phone".into()), me, true),
+            participant_target(channel, me, Some("user_100_mac".into()), me, local, false),
+            Some(Target::SelfVoice(Snowflake(14)))
+        );
+        assert_eq!(
+            participant_target(channel, me, Some("user_100_phone".into()), me, local, true),
             Some(Target::Connection("user_100_phone".into()))
         );
         assert_eq!(
-            participant_target(channel, me, Some("user_100_phone".into()), me, false),
+            participant_target(channel, me, Some("user_100_phone".into()), me, local, false),
             Some(Target::User {
                 channel: Snowflake(14),
                 user: Snowflake(100)
             })
         );
         assert_eq!(
-            participant_target(channel, me, None, me, false),
+            participant_target(channel, me, None, me, local, false),
             Some(Target::User {
                 channel: Snowflake(14),
                 user: Snowflake(100)

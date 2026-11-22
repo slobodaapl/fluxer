@@ -10,6 +10,8 @@ pub use file_playback::{
     FilePlaybackFrame, FilePlaybackOptions, FilePlaybackSnapshot, FilePlaybackStatus, FilePlayer,
     PlaybackSource,
 };
+mod local_preview;
+pub use local_preview::{LocalVideoPreviews, PreviewFrame};
 mod microphone;
 mod microphone_device;
 mod noise_suppression;
@@ -116,7 +118,7 @@ impl AudioSettings {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum VideoSource {
     Camera,
     ScreenShare,
@@ -337,6 +339,9 @@ pub struct MediaEngine {
     camera: Option<camera::Session>,
     camera_publication: Option<TrackSid>,
     camera_generation: u64,
+    local_previews: Option<LocalVideoPreviews>,
+    camera_preview: Option<local_preview::Renderer>,
+    screen_preview: Option<local_preview::Renderer>,
     video_tasks: Arc<Mutex<HashMap<String, VideoRenderer>>>,
     video_frames: Arc<video_events::VideoMailbox>,
     stop: Arc<AtomicBool>,
@@ -427,6 +432,9 @@ impl MediaEngine {
             camera: None,
             camera_publication: None,
             camera_generation: 0,
+            local_previews: None,
+            camera_preview: None,
+            screen_preview: None,
             video_tasks: Arc::new(Mutex::new(HashMap::new())),
             video_frames,
             stop: Arc::new(AtomicBool::new(false)),
@@ -442,6 +450,11 @@ impl MediaEngine {
             audio_tasks: Arc::new(Mutex::new(HashMap::new())),
             subscriptions,
         })
+    }
+
+    pub fn with_local_previews(mut self, previews: LocalVideoPreviews) -> Self {
+        self.local_previews = Some(previews);
+        self
     }
 
     pub fn devices(&self) -> DeviceInventory {
@@ -1706,6 +1719,7 @@ impl MediaEngine {
             "Fluxer camera",
             livekit::webrtc::video_source::RtcVideoSource::Native(source.clone()),
         );
+        let rtc_track = track.rtc_track();
         let publication = room
             .local_participant()
             .publish_track(
@@ -1729,6 +1743,10 @@ impl MediaEngine {
                         session.stop();
                     }
                 }
+                self.camera_preview = self
+                    .local_previews
+                    .as_ref()
+                    .and_then(|previews| previews.attach(VideoSource::Camera, rtc_track));
                 self.camera = Some(session);
                 Ok(generation)
             }
@@ -1740,6 +1758,7 @@ impl MediaEngine {
     }
 
     pub async fn stop_camera(&mut self) -> Result<()> {
+        self.camera_preview.take();
         if let Ok(mut handles) = self.share_capture_handles.lock() {
             handles.camera = None;
         }
@@ -1767,6 +1786,7 @@ impl MediaEngine {
             "Fluxer screen",
             livekit::webrtc::video_source::RtcVideoSource::Native(source.clone()),
         );
+        let rtc_track = track.rtc_track();
         let publication = room
             .local_participant()
             .publish_track(LocalTrack::Video(track), options.publish_options())
@@ -1782,6 +1802,10 @@ impl MediaEngine {
                         session.stop();
                     }
                 }
+                self.screen_preview = self
+                    .local_previews
+                    .as_ref()
+                    .and_then(|previews| previews.attach(VideoSource::ScreenShare, rtc_track));
                 self.screen = Some(session);
                 Ok(())
             }
@@ -1792,6 +1816,7 @@ impl MediaEngine {
         }
     }
     pub async fn stop_screen_share(&mut self) -> Result<()> {
+        self.screen_preview.take();
         let had_video = self.screen.is_some() || self.screen_publication.is_some();
         // Stop hardware first even when either network unpublish fails.
         if let Ok(mut handles) = self.share_capture_handles.lock() {
@@ -1819,6 +1844,8 @@ impl MediaEngine {
     /// Stop locally captured media before announcing a transport replacement.
     /// Network teardown remains asynchronous; no capture is restarted here.
     pub fn stop_capture_for_recovery(&mut self) {
+        self.camera_preview.take();
+        self.screen_preview.take();
         if let Ok(mut handles) = self.share_capture_handles.lock() {
             handles.stop();
         }
@@ -1846,6 +1873,8 @@ impl MediaEngine {
 
     pub async fn disconnect(&mut self) -> Result<()> {
         self.cancel_device_recovery();
+        self.camera_preview.take();
+        self.screen_preview.take();
         // Release capture before network operations, including failed teardown.
         if let Ok(mut registry) = self.subscriptions.lock() {
             registry.clear_publications();
@@ -1993,6 +2022,8 @@ fn end_video_renderer(
 impl Drop for MediaEngine {
     fn drop(&mut self) {
         self.cancel_device_recovery();
+        self.camera_preview.take();
+        self.screen_preview.take();
         self.stop.store(true, Ordering::Release);
         self.video_frames.clear();
         self.input_capture.take();
