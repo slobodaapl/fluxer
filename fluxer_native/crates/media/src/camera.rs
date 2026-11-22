@@ -30,6 +30,7 @@ pub struct CameraDevice {
     pub label: String,
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn video_name(name: &str) -> bool {
     name.strip_prefix("video")
         .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|c| c.is_ascii_digit()))

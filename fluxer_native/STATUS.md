@@ -7,6 +7,26 @@ not individual types or controls.
 Pending real-account, device and usability checks are tracked in
 [REVIEW.md](REVIEW.md), separately from automated verification.
 
+## Apple silicon macOS bring-up — 2026-11-21
+
+The development bundle builds and launches on macOS 26.5 with Xcode 26.6 and
+Rust 1.99.1. Saved sessions use Keychain. The native Edit menu and Command
+shortcuts work with the GPUI composer, timestamps use the system ICU, and device
+discovery lists CoreAudio inputs and outputs without starting capture. A GPUI
+redraw fix lets asynchronous startup finish painting without window input.
+
+On the MacBook Air, offline chat submission and CoreAudio device refresh passed
+in the bundled app. A synthetic Keychain record survived replacement and reload
+and was removed by the test. A loopback LiveKit server verified encoded audio and
+video exchange, independent camera and screen subscriptions, and muted
+join/leave/rejoin through the real CoreAudio output path.
+The workspace gate passed inventory, formatting, strict Clippy, and 735 tests
+with 11 opt-in tests skipped by the default run.
+
+See [README.md](README.md#macos) for app bundle and loopback test commands.
+Live account acceptance, physical microphone and screen capture, Intel macOS,
+and the Linux-only desktop and media integrations remain open.
+
 ## Linux and shared-client parity — 2026-11-20
 
 The Linux-focused 16-worktree wave extends community administration with

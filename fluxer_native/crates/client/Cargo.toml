@@ -3,6 +3,7 @@ name = "fluxer-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "../link_webrtc.rs"
 
 [dependencies]
 fluxer-core.workspace = true

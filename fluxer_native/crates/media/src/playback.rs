@@ -238,7 +238,7 @@ mod platform {
                 .flatten()
                 .enumerate()
                 .filter_map(|(index, device)| {
-                    let label = device.name().ok()?;
+                    let label = device.description().ok()?.name().to_owned();
                     Some(AudioDevice {
                         id: format!("output:{index}:{label}"),
                         label,
@@ -255,8 +255,8 @@ mod platform {
                 .map_err(|e| MediaError::Audio(e.to_string()))?
                 .enumerate()
                 .find_map(|(index, device)| {
-                    let label = device.name().ok()?;
-                    (format!("output:{index}:{label}") == id).then_some(device)
+                    let description = device.description().ok()?;
+                    (format!("output:{index}:{}", description.name()) == id).then_some(device)
                 })
                 .ok_or(MediaError::UnknownDevice("output"));
         }
@@ -270,9 +270,9 @@ mod platform {
         let format = default.sample_format();
         let config: cpal::StreamConfig = default.into();
         let stream = match format {
-            cpal::SampleFormat::F32 => typed_stream::<f32>(device, &config, mixer),
-            cpal::SampleFormat::I16 => typed_stream::<i16>(device, &config, mixer),
-            cpal::SampleFormat::U16 => typed_stream::<u16>(device, &config, mixer),
+            cpal::SampleFormat::F32 => typed_stream::<f32>(device, config, mixer),
+            cpal::SampleFormat::I16 => typed_stream::<i16>(device, config, mixer),
+            cpal::SampleFormat::U16 => typed_stream::<u16>(device, config, mixer),
             _ => {
                 return Err(MediaError::Audio(format!(
                     "Unsupported output sample format: {format:?}"
@@ -287,11 +287,11 @@ mod platform {
     }
     fn typed_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
         device: &cpal::Device,
-        config: &cpal::StreamConfig,
+        config: cpal::StreamConfig,
         mixer: Arc<Mutex<PlaybackMixer>>,
-    ) -> std::result::Result<cpal::Stream, cpal::BuildStreamError> {
+    ) -> std::result::Result<cpal::Stream, cpal::Error> {
         let channels = config.channels as usize;
-        let rate = config.sample_rate.0;
+        let rate = config.sample_rate;
         let errors = mixer.clone();
         device.build_output_stream(
             config,

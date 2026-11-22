@@ -2937,6 +2937,34 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", ActivateInline, Some("SelectableText")),
         KeyBinding::new("space", ActivateInline, Some("SelectableText")),
     ]);
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([
+        KeyBinding::new("cmd-up", DocumentHome, Some("TextInput")),
+        KeyBinding::new("cmd-down", DocumentEnd, Some("TextInput")),
+        KeyBinding::new("cmd-shift-up", SelectDocumentHome, Some("TextInput")),
+        KeyBinding::new("cmd-shift-down", SelectDocumentEnd, Some("TextInput")),
+        KeyBinding::new("cmd-left", Home, Some("TextInput")),
+        KeyBinding::new("cmd-right", End, Some("TextInput")),
+        KeyBinding::new("cmd-shift-left", SelectHome, Some("TextInput")),
+        KeyBinding::new("cmd-shift-right", SelectEnd, Some("TextInput")),
+    ]);
+}
+
+#[cfg(target_os = "macos")]
+pub fn edit_menu() -> gpui::Menu {
+    use gpui::{Menu, MenuItem, OsAction};
+    Menu {
+        name: "Edit".into(),
+        items: vec![
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ],
+    }
 }
 
 fn word_offset(text: &str, offset: usize, forward: bool) -> usize {

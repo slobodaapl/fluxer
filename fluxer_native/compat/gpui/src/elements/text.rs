@@ -316,6 +316,7 @@ struct TextLayoutInner {
     lines: SmallVec<[WrappedLine; 1]>,
     line_height: Pixels,
     wrap_width: Option<Pixels>,
+    truncate_width: Option<Pixels>,
     size: Option<Size<Pixels>>,
     bounds: Option<Bounds<Pixels>>,
 }
@@ -334,7 +335,7 @@ impl TextLayout {
             .line_height
             .to_pixels(font_size.into(), window.rem_size());
 
-        let mut runs = if let Some(runs) = runs {
+        let runs = if let Some(runs) = runs {
             runs
         } else {
             vec![text_style.to_run(text.len())]
@@ -373,20 +374,27 @@ impl TextLayout {
                 if let Some(text_layout) = element_state.0.borrow().as_ref()
                     && text_layout.size.is_some()
                     && (wrap_width.is_none() || wrap_width == text_layout.wrap_width)
+                    && truncate_width == text_layout.truncate_width
                 {
                     return text_layout.size.unwrap();
                 }
 
-                let mut line_wrapper = cx.text_system().line_wrapper(text_style.font(), font_size);
-                let text = if let Some(truncate_width) = truncate_width {
-                    line_wrapper.truncate_line(
+                let mut truncated_runs;
+                let (text, runs) = if let Some(truncate_width) = truncate_width {
+                    // A flex item may first be measured at its minimum width.
+                    // Keep the full runs for subsequent, wider measurements.
+                    truncated_runs = runs.clone();
+                    let mut line_wrapper =
+                        cx.text_system().line_wrapper(text_style.font(), font_size);
+                    let text = line_wrapper.truncate_line(
                         text.clone(),
                         truncate_width,
                         &truncation_suffix,
-                        &mut runs,
-                    )
+                        &mut truncated_runs,
+                    );
+                    (text, &truncated_runs)
                 } else {
-                    text.clone()
+                    (text.clone(), &runs)
                 };
                 let len = text.len();
 
@@ -395,7 +403,7 @@ impl TextLayout {
                     .shape_text(
                         text,
                         font_size,
-                        &runs,
+                        runs,
                         wrap_width,            // Wrap if we know the width.
                         text_style.line_clamp, // Limit the number of lines if line_clamp is set.
                     )
@@ -406,6 +414,7 @@ impl TextLayout {
                         len: 0,
                         line_height,
                         wrap_width,
+                        truncate_width,
                         size: Some(Size::default()),
                         bounds: None,
                     });
@@ -424,6 +433,7 @@ impl TextLayout {
                     len,
                     line_height,
                     wrap_width,
+                    truncate_width,
                     size: Some(size),
                     bounds: None,
                 });

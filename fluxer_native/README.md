@@ -28,12 +28,13 @@ cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-s
 cargo run --manifest-path fluxer_native/Cargo.toml -p fluxer-desktop -- --demo-stream --demo-stream-main
 ```
 
-Normal launch restores the saved account on Linux using the OS Secret Service.
+Normal launch restores the saved account through Secret Service on Linux and
+Keychain on macOS.
 New sign-ins save the token, pinned instance, locale and last community/channel
 as one encrypted credential record. Closing the app keeps the session; Sign out
 removes it. A locked or unavailable vault is reported explicitly. Demo mode uses
-local fixtures and does not restore or overwrite a saved account. macOS/Windows
-credential backends and the account switcher remain migration work.
+local fixtures and does not restore or overwrite a saved account. The Windows
+credential backend and the account switcher remain migration work.
 
 Keep Cargo build output on disk rather than a RAM-backed `/tmp`. Cargo's default
 `fluxer_native/target` location already does this; custom `CARGO_TARGET_DIR`
@@ -47,6 +48,29 @@ CMake, and Clang 21 or later for the current LiveKit WebRTC artifact. The first
 build downloads GPUI/Rust dependencies and LiveKit's native WebRTC library.
 The client uses the OS portal for Wayland screen selection. Application/system
 audio capture currently uses the existing Linux PipeWire engine.
+
+### macOS
+
+Use native Rust 1.97 or later, full Xcode selected by `xcode-select`, and the
+Xcode Metal Toolchain. If the Metal component is missing, install it with
+`xcodebuild -downloadComponent metalToolchain`. See
+[Apple’s Xcode component instructions](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components).
+
+From the repository root, build and launch the development app:
+
+```sh
+app="$(fluxer_native/scripts/build_macos_app.sh)"
+open "$app"
+open -n "$app" --args --demo
+```
+
+The script builds an ad-hoc-signed app with its own bundle identifier and
+microphone usage description. It writes to `fluxer_native/target/macos` by
+default, or the `macos` subdirectory of `CARGO_TARGET_DIR`. Use
+`FLUXER_MACOS_SIGN_IDENTITY` to select a local signing identity. macOS prompts
+for microphone access when you start capture. Camera publishing, system audio
+sharing, desktop notifications, tray integration, and in-app audio/video
+attachment playback are still Linux-only.
 
 Voice & audio settings offer Off, WebRTC, noise gate, Speex, RNNoise, GTCRN, and
 DeepFilterNet3 noise suppression. The models are bundled and run locally; selection applies to
@@ -75,9 +99,8 @@ and selection autoscroll remain open. Attachment upload interoperability
 still needs real-client acceptance. Embed text is currently plain and is not selectable. These features do not
 establish complete messaging parity with the existing client.
 
-macOS and Windows require their native Rust toolchain and GPUI/LiveKit platform
-prerequisites; their builds and capture behavior have not yet been validated by
-this migration. Full cross-platform parity remains a release gate.
+Windows build and capture validation and full cross-platform parity remain
+release gates.
 
 Visible chat GIFs and animated-image embeds play automatically, with clipped
 images paused. The account GIF autoplay setting is respected; disabled autoplay
@@ -156,6 +179,11 @@ media. The test server command is documented in that script. This validates
 transport separately from OS permissions and hardware; it does not replace
 two-account Fluxer call and screen-sharing acceptance tests.
 
+On macOS, run a native LiveKit development server with
+`livekit-server --dev --bind 127.0.0.1 --node-ip 127.0.0.1`. Use
+`test_media_loopback.py --audio-lifecycle` to exercise the real audio devices
+while joining, leaving, and rejoining a local call with the microphone muted.
+
 With that local server running, Linux can also test the complete physical-input
 API through DSP/controls, publication and remote PCM decoding:
 
@@ -197,7 +225,8 @@ This fixture stays offline and does not restore an account or open capture.
 Development builds optimize the frame/rendering crates while retaining debug
 symbols and assertions.
 
-With the disposable local server running, validate actual encoded transport:
+On Linux, with the disposable local server running, validate actual encoded
+transport using an isolated PipeWire sink:
 
 ```sh
 python3 fluxer_native/scripts/test_output_routing.py --screen-watch

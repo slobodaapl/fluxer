@@ -13,7 +13,9 @@ storage at rest. The application writes no plaintext session file and does not
 fall back to memory when OS storage fails. Startup looks for the saved session
 in the default collection and lets Secret Service prompt to unlock the matching
 item if required. Dismissing the prompt preserves the record for a later retry.
-Other platforms return `Unsupported` until a native credential backend is implemented.
+On macOS, the store uses a local, non-synchronizing Keychain generic password
+with service `app.fluxer.Native` and account `active-session`. macOS controls
+access prompts and storage encryption. Other platforms return `Unsupported`.
 
 The production item is scoped by **application = app.fluxer.Native** and
 **kind = active-session**. Only matching items are searched, replaced, or

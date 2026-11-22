@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>app.fluxer.Native</string>
+    <key>CFBundleName</key>
+    <string>Fluxer Native</string>
+    <key>CFBundleDisplayName</key>
+    <string>Fluxer Native</string>
+    <key>CFBundleExecutable</key>
+    <string>fluxer-desktop</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Fluxer uses your microphone for voice calls and the microphone test.</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>

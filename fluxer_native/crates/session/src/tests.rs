@@ -222,7 +222,7 @@ async fn malformed_memory_record_is_reported_without_deleting_or_replacing_it() 
     assert!(store.load().await.unwrap().is_none());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
 #[ignore = "opt-in synthetic OS credential-vault CRUD; set FLUXER_SESSION_VAULT_TEST=1"]
 async fn synthetic_vault_roundtrip_is_scoped_and_cleans_up() {
@@ -253,6 +253,18 @@ async fn synthetic_vault_roundtrip_is_scoped_and_cleans_up() {
             .ok_or(StoreError::InvalidRecord)?;
         if reloaded.account_key() != saved().account_key()
             || reloaded.token.expose_secret() != "synthetic-session-secret"
+        {
+            return Err(StoreError::InvalidRecord);
+        }
+        let mut replaced = reloaded;
+        replaced.selected_channel = None;
+        primary.save(replaced).await?;
+        if primary
+            .load()
+            .await?
+            .ok_or(StoreError::InvalidRecord)?
+            .selected_channel
+            .is_some()
         {
             return Err(StoreError::InvalidRecord);
         }

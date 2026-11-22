@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::codec;
 use crate::{SavedSession, SessionStore, StoreError, StoreFuture};
 
-/// One application-scoped encrypted Secret Service item. Construction itself
-/// does not access or unlock the vault. Operations never fall back to plaintext.
+#[cfg(target_os = "macos")]
+mod keychain;
+
+/// One application-scoped credential item. Construction does not access or
+/// unlock the vault. Operations never fall back to plaintext.
 #[derive(Clone)]
 pub struct OsSessionStore {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     application: String,
+    #[cfg(target_os = "macos")]
+    operations: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 impl Default for OsSessionStore {
     fn default() -> Self {
@@ -18,13 +23,17 @@ impl Default for OsSessionStore {
 impl OsSessionStore {
     pub fn new() -> Self {
         Self {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             application: "app.fluxer.Native".into(),
+            #[cfg(target_os = "macos")]
+            operations: Default::default(),
         }
     }
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub(crate) fn synthetic(application: String) -> Self {
-        Self { application }
+        let mut store = Self::new();
+        store.application = application;
+        store
     }
     #[cfg(target_os = "linux")]
     fn attributes(&self) -> std::collections::HashMap<&str, &str> {
@@ -101,7 +110,11 @@ impl SessionStore for OsSessionStore {
                 let secret = item.secret().await.map_err(|_| StoreError::Unavailable)?;
                 codec::decode(secret.as_bytes()).map(Some)
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                self.keychain_operation(keychain::load).await
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 Err(StoreError::Unsupported)
             }
@@ -125,7 +138,12 @@ impl SessionStore for OsSessionStore {
                     .map_err(|_| StoreError::Unavailable)?;
                 Ok(())
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                self.keychain_operation(move |application| keychain::save(application, session))
+                    .await
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = session;
                 Err(StoreError::Unsupported)
@@ -148,7 +166,11 @@ impl SessionStore for OsSessionStore {
                 }
                 Ok(())
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                self.keychain_operation(keychain::clear).await
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 Err(StoreError::Unsupported)
             }

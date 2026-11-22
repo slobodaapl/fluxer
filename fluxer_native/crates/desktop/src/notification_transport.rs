@@ -26,7 +26,7 @@ enum Command {
         channel: Option<Snowflake>,
     },
     ClearAll,
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     Inspect(sync::Sender<usize>),
 }
 pub(super) struct Transport {
@@ -41,7 +41,7 @@ impl Transport {
     pub fn new(feedback: sync::SyncSender<Feedback>, streaming: Arc<AtomicU8>) -> Self {
         Self::start(feedback, None, streaming)
     }
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     fn at(feedback: sync::SyncSender<Feedback>, address: Option<String>) -> Self {
         Self::start(feedback, address, Arc::default())
     }
@@ -451,7 +451,7 @@ async fn run(
                     session.clear(None, None, &feedback).await;
                 }
             }
-            #[cfg(test)]
+            #[cfg(all(test, target_os = "linux"))]
             Input::Command(Some(Command::Inspect(reply))) => {
                 let _ = reply.send(session.as_ref().map_or(0, |s| s.targets.len()));
             }
@@ -479,6 +479,6 @@ async fn run(
         }
     }
 }
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "notification_transport_tests.rs"]
 mod tests;

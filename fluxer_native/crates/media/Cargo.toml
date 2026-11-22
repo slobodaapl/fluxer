@@ -5,15 +5,21 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-livekit = { version = "=0.10.1", features = ["rustls-tls-native-roots", "glib-main-loop"] }
+livekit = { version = "=0.10.1", features = ["rustls-tls-native-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 futures-util = "0.3"
 thiserror.workspace = true
 serde.workspace = true
 fluxer-system-audio = { path = "../system-audio" }
-cpal = "0.16"
 wasmtime = { version = "50.0.1", default-features = false, features = ["cache", "cranelift", "gc-drc", "runtime", "std", "parallel-compilation"] }
 getrandom = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+livekit = { version = "=0.10.1", features = ["glib-main-loop"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+# CoreAudio device enumeration must not create input Audio Units.
+cpal = "0.18.2"
 
 [build-dependencies]
 cc = "=1.11.1"

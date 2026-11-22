@@ -13,7 +13,7 @@ pub(crate) fn devices() -> Result<Vec<AudioDevice>> {
             .map_err(|e| MediaError::Audio(e.to_string()))?
             .enumerate()
             .filter_map(|(index, d)| {
-                let label = d.name().ok()?;
+                let label = d.description().ok()?.name().to_owned();
                 Some(AudioDevice {
                     id: format!("input:{index}:{label}"),
                     label,
@@ -30,8 +30,8 @@ fn find(id: Option<&str>) -> Result<cpal::Device> {
             .map_err(|e| MediaError::Audio(e.to_string()))?
             .enumerate()
             .find_map(|(i, d)| {
-                let label = d.name().ok()?;
-                (format!("input:{i}:{label}") == id).then_some(d)
+                let description = d.description().ok()?;
+                (format!("input:{i}:{}", description.name()) == id).then_some(d)
             })
             .ok_or(MediaError::UnknownDevice("input"));
     }
@@ -54,16 +54,15 @@ impl PlatformInput {
             .map_err(|e| MediaError::Audio(e.to_string()))?;
         let format = default.sample_format();
         let config: cpal::StreamConfig = default.into();
-        if config.channels > 2 || config.channels == 0 || !config.sample_rate.0.is_multiple_of(100)
-        {
+        if config.channels > 2 || config.channels == 0 || !config.sample_rate.is_multiple_of(100) {
             return Err(MediaError::Audio(
                 "Microphone must provide mono or stereo PCM at a standard audio sample rate".into(),
             ));
         }
         let stream = match format {
-            cpal::SampleFormat::F32 => typed::<f32>(&device, &config, pcm, events),
-            cpal::SampleFormat::I16 => typed::<i16>(&device, &config, pcm, events),
-            cpal::SampleFormat::U16 => typed::<u16>(&device, &config, pcm, events),
+            cpal::SampleFormat::F32 => typed::<f32>(&device, config, pcm, events),
+            cpal::SampleFormat::I16 => typed::<i16>(&device, config, pcm, events),
+            cpal::SampleFormat::U16 => typed::<u16>(&device, config, pcm, events),
             _ => {
                 return Err(MediaError::Audio(format!(
                     "Unsupported microphone sample format: {format:?}"
@@ -82,19 +81,18 @@ impl PlatformInput {
 }
 fn typed<T: cpal::SizedSample>(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     pcm: async_mpsc::Sender<Pcm>,
     events: async_mpsc::Sender<MediaEvent>,
-) -> std::result::Result<cpal::Stream, cpal::BuildStreamError>
+) -> std::result::Result<cpal::Stream, cpal::Error>
 where
     i16: cpal::FromSample<T>,
 {
-    let rate = config.sample_rate.0;
+    let rate = config.sample_rate;
     let channels = u32::from(config.channels);
     device.build_input_stream(
         config,
         move |data: &[T], _| {
-            use cpal::Sample;
             let data = data.iter().map(|v| v.to_sample::<i16>()).collect();
             let _ = pcm.try_send(Pcm {
                 data,

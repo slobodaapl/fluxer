@@ -697,6 +697,7 @@ mod tests {
         assert!(parse_range("bytes 5-4/6").is_none());
         assert!(parse_range("bytes 0-6/6").is_none());
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn generated_mp4_starts_and_seeks_without_fetching_full_file() {
         use fluxer_media::{FilePlaybackOptions, FilePlaybackStatus, FilePlayer};

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! List input sources, or sample a named source's peak for two seconds locally.
 //! No audio is stored, played or sent to a server.
-use fluxer_system_audio::MicrophoneInput;
-
+#[cfg(target_os = "linux")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use fluxer_system_audio::MicrophoneInput;
+
     println!("Inputs: {:?}", MicrophoneInput::devices()?);
     let Some(id) = std::env::args().nth(1) else {
         return Ok(());
@@ -29,4 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("No microphone frames received".into());
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("This probe requires the Linux PipeWire microphone backend.");
+    std::process::exit(1);
 }

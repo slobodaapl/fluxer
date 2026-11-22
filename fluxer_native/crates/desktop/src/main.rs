@@ -3756,6 +3756,14 @@ fn main() {
                 KeyBinding::new("cmd-q", Quit, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
+            #[cfg(target_os = "macos")]
+            cx.set_menus(vec![
+                gpui::Menu {
+                    name: "Fluxer Native".into(),
+                    items: vec![gpui::MenuItem::action("Quit Fluxer Native", Quit)],
+                },
+                input::edit_menu(),
+            ]);
             cx.on_window_closed(|cx| {
                 if cx.windows().is_empty() {
                     cx.quit();

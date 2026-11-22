@@ -30,6 +30,7 @@ pub(super) struct Snapshot {
     pub call: Option<CallControlSnapshot>,
 }
 #[derive(Clone, Debug)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) enum Action {
     Activate {
         action: Box<Action>,

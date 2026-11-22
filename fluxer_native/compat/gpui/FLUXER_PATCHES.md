@@ -6,7 +6,13 @@ The workspace uses a local Cargo patch; registry caches remain untouched.
 
 * `src/platform.rs`, `src/window.rs`: allow a platform to supply a nonblocking
   dirty-window wake. Entity notifications and full-window refreshes request it.
-  Other platforms retain their existing display links through the default hook.
+* `src/platform/mac/window.rs`: schedule one deferred dirty-window draw when a
+  visible AppKit window has no display link. Regular frames still use the link
+  when it is running. This lets asynchronous changes such as session restore
+  repaint during launch without waiting for a click or resize.
+* `src/elements/text.rs`: preserve original font runs across width probes and
+  cache the truncation width. CoreText can then paint the complete device label
+  after flex layout expands a dropdown beyond its minimum size.
 * `src/platform/linux/wayland/redraw.rs`: coalesce wakes and cancel obsolete
   work when a regular frame arrives. Dirty content gets one 100 ms recovery
   deadline if the compositor delays its frame callback. Configure, output and

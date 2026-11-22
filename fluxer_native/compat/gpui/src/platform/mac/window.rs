@@ -487,8 +487,8 @@ impl MacWindowState {
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
         if let Some(mut display_link) =
             DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
+            && display_link.start().log_err().is_some()
         {
-            display_link.start().log_err();
             self.display_link = Some(display_link);
         }
     }
@@ -935,6 +935,7 @@ impl Drop for MacWindow {
         this.renderer.destroy();
         let window = this.native_window;
         this.display_link.take();
+        this.request_frame_callback.take();
         unsafe {
             this.native_window.setDelegate_(nil);
         }
@@ -1378,6 +1379,36 @@ impl PlatformWindow for MacWindow {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
+    }
+
+    fn redraw_requester(&self) -> Option<Rc<dyn Fn()>> {
+        let state = Arc::downgrade(&self.0);
+        let executor = self.0.lock().executor.clone();
+        let pending = Rc::new(Cell::new(false));
+        Some(Rc::new(move || {
+            if pending.replace(true) {
+                return;
+            }
+            let state = state.clone();
+            let pending = pending.clone();
+            // Defer until the app has finished processing its dirty views.
+            // A visible window can lack a display link during activation or
+            // after a link fails. AppKit may still be presenting its layer.
+            executor
+                .spawn(async move {
+                    pending.set(false);
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
+                    let lock = state.lock();
+                    if lock.display_link.is_none()
+                        && unsafe { lock.native_window.isVisible() == YES }
+                    {
+                        request_frame(&state, lock);
+                    }
+                })
+                .detach();
+        }))
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>) {
@@ -2154,8 +2185,13 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
 unsafe extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
-    let mut lock = window_state.lock();
+    request_frame(&window_state, window_state.lock());
+}
 
+fn request_frame(
+    window_state: &Mutex<MacWindowState>,
+    mut lock: parking_lot::MutexGuard<'_, MacWindowState>,
+) {
     if let Some(mut callback) = lock.request_frame_callback.take() {
         drop(lock);
         callback(Default::default());

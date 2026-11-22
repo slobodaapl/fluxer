@@ -56,6 +56,7 @@ struct Shared {
     seek_generation: u64,
     pending_seek: bool,
 }
+#[cfg_attr(not(ffmpeg_file_playback), allow(dead_code))]
 enum Command {
     Play,
     Pause,
@@ -67,6 +68,7 @@ enum Command {
 }
 pub trait PlaybackSource: Read + Seek + Send {}
 impl<T: Read + Seek + Send> PlaybackSource for T {}
+#[cfg_attr(not(ffmpeg_file_playback), allow(dead_code))]
 enum Source {
     Path(PathBuf),
     Reader(Box<dyn PlaybackSource>),
@@ -132,7 +134,12 @@ impl FilePlayer {
         #[cfg(not(ffmpeg_file_playback))]
         {
             let _ = (source, cancel, interrupt, waiting, options, fake);
-            Err("Native file playback requires FFmpeg on Linux".into())
+            Err(if cfg!(target_os = "linux") {
+                "Native file playback requires FFmpeg"
+            } else {
+                "Native file playback is unavailable on this platform"
+            }
+            .into())
         }
         #[cfg(ffmpeg_file_playback)]
         {

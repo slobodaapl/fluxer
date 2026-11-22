@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#[path = "../link_webrtc.rs"]
+mod link_webrtc;
+
 fn main() {
+    link_webrtc::main();
     deep_filter_model();
     println!("cargo:rerun-if-changed=native/pipewire_runtime.cpp");
     println!("cargo:rerun-if-changed=native/file_playback.c");

@@ -243,7 +243,7 @@ pub fn tooltip(timestamp: &Timestamp, prefs: &Preferences, current: i64) -> Stri
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod icu {
     use std::{
         ffi::{CString, c_char, c_void},
@@ -281,11 +281,30 @@ mod icu {
         relative_numeric: FormatRelative,
         relative_close: Close,
     }
-    #[link(name = "dl")]
+    #[cfg_attr(target_os = "linux", link(name = "dl"))]
     unsafe extern "C" {
         fn dlopen(name: *const c_char, flags: i32) -> *mut c_void;
         fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
         fn dlclose(handle: *mut c_void) -> i32;
+    }
+    #[cfg(target_os = "macos")]
+    fn open_library() -> *mut c_void {
+        unsafe { dlopen(c"/usr/lib/libicucore.A.dylib".as_ptr(), 1) }
+    }
+    #[cfg(target_os = "linux")]
+    fn open_library() -> *mut c_void {
+        let handle = unsafe { dlopen(c"libicui18n.so".as_ptr(), 1) };
+        if !handle.is_null() {
+            return handle;
+        }
+        for version in (60..=100).rev() {
+            let library = CString::new(format!("libicui18n.so.{version}")).unwrap();
+            let handle = unsafe { dlopen(library.as_ptr(), 1) };
+            if !handle.is_null() {
+                return handle;
+            }
+        }
+        std::ptr::null_mut()
     }
     fn api() -> Option<&'static Api> {
         static API: OnceLock<Option<Api>> = OnceLock::new();
@@ -293,22 +312,14 @@ mod icu {
             // ICU C exports are version-suffixed on Linux. Resolve every symbol
             // as one version before accepting it. Keep the successful DSO open
             // for process lifetime; no ICU object/pointer is shared across threads.
-            let mut handle = dlopen(c"libicui18n.so".as_ptr(), 1);
+            let handle = open_library();
             if handle.is_null() {
-                for version in (60..=100).rev() {
-                    let library = CString::new(format!("libicui18n.so.{version}")).ok()?;
-                    handle = dlopen(library.as_ptr(), 1);
-                    if !handle.is_null() {
-                        break;
-                    }
-                }
-                if handle.is_null() {
-                    return None;
-                }
+                return None;
             }
-            for suffix in
-                std::iter::once(String::new()).chain((60..=100).rev().map(|n| format!("_{n}")))
-            {
+            let suffixes = std::iter::once(String::new());
+            #[cfg(target_os = "linux")]
+            let suffixes = suffixes.chain((60..=100).rev().map(|n| format!("_{n}")));
+            for suffix in suffixes {
                 macro_rules! symbol {
                     ($name:literal, $ty:ty) => {{
                         let name = CString::new(format!("{}{}", $name, suffix)).ok()?;
@@ -433,7 +444,7 @@ mod icu {
         }
     }
 }
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod icu {
     pub(super) fn relative_numeric(_: &str, _: f64, _: i32) -> Option<String> {
         None
@@ -446,7 +457,7 @@ mod icu {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
     #[test]
