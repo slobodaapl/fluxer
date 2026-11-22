@@ -5,6 +5,7 @@ use serde::{
     de::{MapAccess, Visitor},
 };
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, OnceLock},
 };
@@ -518,7 +519,7 @@ pub fn preview(message: &Message) -> String {
         return preview.clone();
     }
     let mut rendering = message.clone();
-    rendering.content = source;
+    rendering.content = source.into_owned();
     let document = crate::message_markup::document(
         &rendering,
         &ClientState::default(),
@@ -565,24 +566,26 @@ pub(super) fn preview_text(
 
 /// Forward snapshots are flat objects on the Fluxer wire, without an author
 /// or message ID. Keep their text selectable even when the outer body is empty.
-pub fn display_text(message: &Message) -> String {
-    let mut parts = Vec::new();
-    if !message.content.is_empty() {
-        parts.push(message.content.as_str());
-    }
-    if let Some(snapshots) = message
+pub fn display_text(message: &Message) -> Cow<'_, str> {
+    let mut forwarded = message
         .extra
         .get("message_snapshots")
         .and_then(serde_json::Value::as_array)
-    {
-        parts.extend(
-            snapshots
-                .iter()
-                .filter_map(|snapshot| snapshot.get("content").and_then(serde_json::Value::as_str))
-                .filter(|text| !text.is_empty()),
-        );
+        .into_iter()
+        .flatten()
+        .filter_map(|snapshot| snapshot.get("content").and_then(serde_json::Value::as_str))
+        .filter(|text| !text.is_empty());
+    let Some(first) = forwarded.next() else {
+        return Cow::Borrowed(&message.content);
+    };
+    let mut text = message.content.clone();
+    for part in std::iter::once(first).chain(forwarded) {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(part);
     }
-    parts.join("\n\n")
+    Cow::Owned(text)
 }
 
 #[cfg(test)]

@@ -1,7 +1,11 @@
 use crate::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Deref,
+    sync::Arc,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
@@ -38,6 +42,54 @@ pub struct PrivateCall {
     pub ringing: BTreeSet<Snowflake>,
 }
 
+/// Snapshots share unchanged channels and message records. Editing a message
+/// copies the channel index and the edited record only when they are shared.
+#[derive(Clone, Debug, Default)]
+pub struct ChannelMessageCache(Arc<BTreeMap<Snowflake, Arc<Message>>>);
+
+impl Deref for ChannelMessageCache {
+    type Target = BTreeMap<Snowflake, Arc<Message>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ChannelMessageCache {
+    pub fn insert(&mut self, id: Snowflake, message: Message) {
+        Arc::make_mut(&mut self.0).insert(id, Arc::new(message));
+    }
+
+    pub fn get_mut(&mut self, id: &Snowflake) -> Option<&mut Message> {
+        if !self.contains_key(id) {
+            return None;
+        }
+        Arc::make_mut(&mut self.0).get_mut(id).map(Arc::make_mut)
+    }
+
+    fn remove(&mut self, id: &Snowflake) -> Option<Arc<Message>> {
+        if !self.contains_key(id) {
+            return None;
+        }
+        Arc::make_mut(&mut self.0).remove(id)
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(Snowflake) -> bool) {
+        Arc::make_mut(&mut self.0).retain(|id, _| keep(*id));
+    }
+}
+
+impl FromIterator<(Snowflake, Message)> for ChannelMessageCache {
+    fn from_iter<T: IntoIterator<Item = (Snowflake, Message)>>(messages: T) -> Self {
+        Self(Arc::new(
+            messages
+                .into_iter()
+                .map(|(id, message)| (id, Arc::new(message)))
+                .collect(),
+        ))
+    }
+}
+
 /// One state belongs to one authenticated account. A caller switching accounts
 /// must replace it, avoiding accidental cross-account messages and drafts.
 #[derive(Clone, Debug, Default)]
@@ -49,7 +101,7 @@ pub struct ClientState {
     /// includes the `threads` field, even when that array is empty.
     pub thread_guilds: BTreeSet<Snowflake>,
     pub channels: BTreeMap<Snowflake, Channel>,
-    pub messages: BTreeMap<Snowflake, BTreeMap<Snowflake, Message>>,
+    pub messages: BTreeMap<Snowflake, ChannelMessageCache>,
     pub members: BTreeMap<(Snowflake, Snowflake), Member>,
     pub member_lists: BTreeMap<(Snowflake, Snowflake), MemberList>,
     pub read_states: BTreeMap<Snowflake, ReadState>,
@@ -121,7 +173,8 @@ impl ClientState {
         Ok(detached
             .messages
             .get_mut(&message.channel_id)
-            .and_then(|messages| messages.remove(&message.id)))
+            .and_then(|messages| messages.remove(&message.id))
+            .map(Arc::unwrap_or_clone))
     }
     fn cache_user(&mut self, user: User) {
         if let Some(me) = self.current_user.as_ref().filter(|me| me.id == user.id) {
@@ -143,7 +196,7 @@ impl ClientState {
         self.messages
             .get(&channel)
             .into_iter()
-            .flat_map(|m| m.values())
+            .flat_map(|m| m.values().map(Arc::as_ref))
     }
     pub fn guild_channels(&self, guild: Snowflake) -> Vec<&Channel> {
         let mut channels: Vec<_> = self
@@ -654,7 +707,7 @@ impl ClientState {
                 else {
                     return Ok(ApplyOutcome::Ignored);
                 };
-                let updated: Message = patch(event, message, data)?;
+                let updated: Message = patch(event, message.as_ref(), data)?;
                 self.messages
                     .get_mut(&reference.channel_id)
                     .unwrap()

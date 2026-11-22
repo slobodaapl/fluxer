@@ -3,6 +3,7 @@
 //! MessageLayoutSpec.ts, MessageGroupSpacing.ts and ChannelMessageStream.tsx.
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use fluxer_core::Message;
+use std::borrow::Borrow;
 
 pub(super) const COZY_AVATAR_SIZE: f32 = 40.;
 pub(super) const COZY_GUTTER: f32 = 12.;
@@ -12,7 +13,7 @@ const GROUP_TIMEOUT_MS: i64 = 7 * 60 * 1000;
 const SUPPRESS_NOTIFICATIONS: u32 = 1 << 12;
 const IS_CROSSPOST: u32 = 1 << 1;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct MessageRowLayout {
     pub starts_group: bool,
     pub date_divider: Option<String>,
@@ -23,16 +24,19 @@ struct Moment {
     millis: i64,
     day: NaiveDate,
     short_time: String,
-    date_label: String,
 }
 
-pub(super) fn message_layouts(messages: &[Message]) -> Vec<MessageRowLayout> {
+pub(super) fn message_layouts(messages: &[impl Borrow<Message>]) -> Vec<MessageRowLayout> {
     layouts_in_zone(messages, &Local)
 }
 
-fn layouts_in_zone<Tz: TimeZone>(messages: &[Message], zone: &Tz) -> Vec<MessageRowLayout> {
+fn layouts_in_zone<Tz: TimeZone>(
+    messages: &[impl Borrow<Message>],
+    zone: &Tz,
+) -> Vec<MessageRowLayout> {
     let moments: Vec<_> = messages
         .iter()
+        .map(Borrow::borrow)
         .map(|message| {
             DateTime::parse_from_rfc3339(&message.timestamp)
                 .ok()
@@ -42,7 +46,6 @@ fn layouts_in_zone<Tz: TimeZone>(messages: &[Message], zone: &Tz) -> Vec<Message
                         millis: local.timestamp_millis(),
                         day: local.date_naive(),
                         short_time: local.time().format("%H:%M").to_string(),
-                        date_label: local.date_naive().format("%A, %B %-d, %Y").to_string(),
                     }
                 })
         })
@@ -51,6 +54,7 @@ fn layouts_in_zone<Tz: TimeZone>(messages: &[Message], zone: &Tz) -> Vec<Message
     let mut last_date: Option<NaiveDate> = None;
     messages
         .iter()
+        .map(Borrow::borrow)
         .enumerate()
         .map(|(index, message)| {
             let moment = moments[index].as_ref();
@@ -58,16 +62,21 @@ fn layouts_in_zone<Tz: TimeZone>(messages: &[Message], zone: &Tz) -> Vec<Message
             // Keep their original header time instead of inventing date labels.
             let date_divider = moment
                 .filter(|moment| last_date != Some(moment.day))
-                .map(|moment| moment.date_label.clone());
+                .map(|moment| moment.day.format("%A, %B %-d, %Y").to_string());
             let divider = date_divider.is_some();
             last_date = moment.map(|moment| moment.day);
             let starts_group = group_start.is_none_or(|start| {
-                new_group(&messages[start], message, moments[start].as_ref(), moment)
+                new_group(
+                    messages[start].borrow(),
+                    message,
+                    moments[start].as_ref(),
+                    moment,
+                )
             });
             let space_before = if starts_group && !divider {
                 group_start
                     .map(|start| {
-                        if display_system(&messages[start]) && display_system(message) {
+                        if display_system(messages[start].borrow()) && display_system(message) {
                             8
                         } else {
                             16

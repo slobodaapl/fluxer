@@ -165,7 +165,7 @@ impl Fluxer {
             .and_then(|id| self.message_actions.row_focus.get(id))
         {
             focus.focus(window);
-            self.timeline.scroll_to_item(target);
+            self.timeline.list.scroll_to_reveal_item(target);
             cx.notify();
         }
     }
@@ -378,9 +378,9 @@ impl Fluxer {
                 self.emoji_target = None;
             }
             MessageAction::Copy => {
-                cx.write_to_clipboard(ClipboardItem::new_string(chat_helpers::display_text(
-                    &message,
-                )));
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    chat_helpers::display_text(&message).into_owned(),
+                ));
                 if let Some(focus) = self.message_actions.previous_focus.take() {
                     focus.focus(window);
                 }
@@ -441,7 +441,7 @@ impl Fluxer {
 
     pub(super) fn message_toolbar(
         &self,
-        message: &Message,
+        message: &Arc<Message>,
         focused: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -481,7 +481,7 @@ impl Fluxer {
                         move |this, event: &ClickEvent, window, cx| {
                             cx.stop_propagation();
                             this.perform_message_action(
-                                message.clone(),
+                                message.as_ref().clone(),
                                 action,
                                 event.position(),
                                 event.modifiers().shift,
@@ -500,7 +500,7 @@ impl Fluxer {
                     cx.listener(move |this, event: &ClickEvent, window, cx| {
                         cx.stop_propagation();
                         this.open_message_menu(
-                            message.clone(),
+                            message.as_ref().clone(),
                             event.position(),
                             MessageMenuContext::Timeline,
                             window,

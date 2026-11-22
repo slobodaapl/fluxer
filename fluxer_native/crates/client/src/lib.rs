@@ -758,7 +758,7 @@ pub enum Event {
     Mentions(MentionsSnapshot),
     LiveMessageCreated {
         account_id: Snowflake,
-        message: Box<fluxer_core::Message>,
+        message: Arc<fluxer_core::Message>,
     },
     PresenceMutation(RelationshipMutationStatus),
     DisplaySettingsMutation(RelationshipMutationStatus),
@@ -831,6 +831,7 @@ pub enum Event {
     Search(SearchSnapshot),
     Pins(PinsSnapshot),
     History(HistorySnapshot),
+    HistoryCacheEvicted(Snowflake),
     PinMutation {
         channel_id: Snowflake,
         message_id: Snowflake,
@@ -982,9 +983,18 @@ impl Controller {
                     .build()
                 {
                     Ok(runtime) => runtime.block_on(async move {
+                        let mut worker = worker::Worker::new(tx, worker_frames)
+                            .with_call_snapshot(worker_call_snapshot)
+                            .with_session_store(store);
                         tokio::select! {
-                            _ = worker::Worker::new(tx,worker_frames).with_call_snapshot(worker_call_snapshot).with_session_store(store).run(rx) => {},
+                            biased;
                             _ = shutdown_rx => {},
+                            _ = worker.run(rx) => {},
+                        }
+                        let save = worker.take_selection_save();
+                        drop(worker);
+                        if let Some(task) = save {
+                            let _ = task.await;
                         }
                     }),
                     Err(error) => {

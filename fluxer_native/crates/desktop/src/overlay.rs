@@ -144,6 +144,7 @@ impl super::Fluxer {
         self.message_text.clear();
         self.clear_browser();
         self.message_actions.reset();
+        self.timeline = crate::timeline::Timeline::new();
         self.message_content.reset();
         self.message_links.clear_prompt();
         self.image_viewer.reset();

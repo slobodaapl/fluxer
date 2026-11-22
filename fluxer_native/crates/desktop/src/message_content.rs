@@ -61,14 +61,23 @@ impl Fluxer {
     ) -> Arc<MessageDocument> {
         self.message_content
             .update_mentions(message.channel_id, message.id, &message.mentions);
-        let mut rendering = message.clone();
-        rendering.content = chat_helpers::display_text(message);
+        let rendering;
+        let message = match chat_helpers::display_text(message) {
+            std::borrow::Cow::Borrowed(_) => message,
+            std::borrow::Cow::Owned(content) => {
+                rendering = Message {
+                    content,
+                    ..message.clone()
+                };
+                &rendering
+            }
+        };
         let redaction = streamer_mode::Redaction {
             effects: self.streaming(),
             invite: self.message_links.invite_endpoint(),
         };
         self.message_content.cache.get_with_redaction(
-            &rendering,
+            message,
             &self.state,
             self.media_endpoint.as_deref(),
             context,
@@ -79,7 +88,6 @@ impl Fluxer {
         &self,
         document: Arc<MessageDocument>,
         message: &Message,
-        timeline: Option<ScrollHandle>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextInput> {
@@ -88,7 +96,6 @@ impl Fluxer {
         let input = cx.new(|cx| {
             let mut input = TextInput::read_only_document(document, window, cx);
             input.set_emoji_reduced_motion(self.interface.reduced_motion());
-            input.set_inline_timeline(timeline);
             input
         });
         cx.subscribe_in(
@@ -198,8 +205,7 @@ impl Fluxer {
             });
             input.clone()
         } else {
-            let input =
-                self.message_text_input(document, &source, Some(self.timeline.clone()), window, cx);
+            let input = self.message_text_input(document, &source, window, cx);
             input.update(cx, |input, _| input.set_inline_visible_only());
             self.message_content.replies.insert(key, input.clone());
             input

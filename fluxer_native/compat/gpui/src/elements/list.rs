@@ -66,6 +66,7 @@ struct StateInner {
     logical_scroll_top: Option<ListOffset>,
     alignment: ListAlignment,
     overdraw: Pixels,
+    estimated_item_height: Pixels,
     reset: bool,
     #[allow(clippy::type_complexity)]
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
@@ -155,6 +156,7 @@ pub struct ListPrepaintState {
 #[derive(Clone)]
 enum ListItem {
     Unmeasured {
+        estimated_height: Pixels,
         focus_handle: Option<FocusHandle>,
     },
     Measured {
@@ -174,7 +176,7 @@ impl ListItem {
 
     fn focus_handle(&self) -> Option<FocusHandle> {
         match self {
-            ListItem::Unmeasured { focus_handle } | ListItem::Measured { focus_handle, .. } => {
+            ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle.clone()
             }
         }
@@ -182,7 +184,7 @@ impl ListItem {
 
     fn contains_focused(&self, window: &Window, cx: &App) -> bool {
         match self {
-            ListItem::Unmeasured { focus_handle } | ListItem::Measured { focus_handle, .. } => {
+            ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle
                     .as_ref()
                     .is_some_and(|handle| handle.contains_focused(window, cx))
@@ -214,6 +216,17 @@ impl ListState {
     /// be measured even though they are not visible. This can help ensure
     /// that the list doesn't flicker or pop in when scrolling.
     pub fn new(item_count: usize, alignment: ListAlignment, overdraw: Pixels) -> Self {
+        Self::with_estimated_item_height(item_count, alignment, overdraw, px(0.))
+    }
+
+    /// Construct a list that uses an estimated height for rows outside the
+    /// measured range. This lets its scrollbar navigate unmeasured rows.
+    pub fn with_estimated_item_height(
+        item_count: usize,
+        alignment: ListAlignment,
+        overdraw: Pixels,
+        estimated_item_height: Pixels,
+    ) -> Self {
         let this = Self(Rc::new(RefCell::new(StateInner {
             last_layout_bounds: None,
             last_padding: None,
@@ -221,6 +234,7 @@ impl ListState {
             logical_scroll_top: None,
             alignment,
             overdraw,
+            estimated_item_height: estimated_item_height.max(px(0.)),
             scroll_handler: None,
             reset: false,
             scrollbar_drag_start_height: None,
@@ -281,10 +295,14 @@ impl ListState {
         old_items.seek_forward(&Count(old_range.end), Bias::Right);
 
         let mut spliced_count = 0;
+        let estimated_height = state.estimated_item_height;
         new_items.extend(
             focus_handles.into_iter().map(|focus_handle| {
                 spliced_count += 1;
-                ListItem::Unmeasured { focus_handle }
+                ListItem::Unmeasured {
+                    estimated_height,
+                    focus_handle,
+                }
             }),
             (),
         );
@@ -449,7 +467,11 @@ impl ListState {
             .scrollbar_drag_start_height
             .unwrap_or_else(|| state.items.summary().height);
 
-        Size::new(Pixels::ZERO, Pixels::ZERO.max(height - bounds.size.height))
+        let padding = state.last_padding.unwrap_or_default();
+        Size::new(
+            Pixels::ZERO,
+            Pixels::ZERO.max(height + padding.top + padding.bottom - bounds.size.height),
+        )
     }
 
     /// Returns the current scroll offset adjusted for the scrollbar
@@ -710,7 +732,7 @@ impl StateInner {
                 ListAlignment::Bottom => {
                     scroll_top = ListOffset {
                         item_ix: cursor.start().0,
-                        offset_in_item: rendered_height - available_height,
+                        offset_in_item: (rendered_height - available_height).max(px(0.)),
                     };
                     self.logical_scroll_top = None;
                 }
@@ -1029,6 +1051,7 @@ impl Element for List {
         {
             let new_items = SumTree::from_iter(
                 state.items.iter().map(|item| ListItem::Unmeasured {
+                    estimated_height: state.estimated_item_height,
                     focus_handle: item.focus_handle(),
                 }),
                 (),
@@ -1114,11 +1137,14 @@ impl sum_tree::Item for ListItem {
 
     fn summary(&self, _: ()) -> Self::Summary {
         match self {
-            ListItem::Unmeasured { focus_handle } => ListItemSummary {
+            ListItem::Unmeasured {
+                estimated_height,
+                focus_handle,
+            } => ListItemSummary {
                 count: 1,
                 rendered_count: 0,
                 unrendered_count: 1,
-                height: px(0.),
+                height: *estimated_height,
                 has_focus_handles: focus_handle.is_some(),
             },
             ListItem::Measured {

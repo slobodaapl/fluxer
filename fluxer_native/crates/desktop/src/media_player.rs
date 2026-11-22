@@ -846,6 +846,15 @@ impl PlaybackUi {
             }
         }
     }
+    pub fn retain_timeline(&mut self, messages: &[std::sync::Arc<fluxer_core::Message>]) {
+        if !self.players.is_empty() {
+            self.seen.extend(
+                messages
+                    .iter()
+                    .flat_map(|message| crate::rich_message::playable_keys(message, "timeline")),
+            );
+        }
+    }
     pub fn set_context(&mut self, key: String, reference: crate::media_actions::MediaReference) {
         self.contexts.insert(key, reference);
     }

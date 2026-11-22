@@ -7,8 +7,12 @@ use crate::{
 };
 use fluxer_core::Channel;
 use fluxer_protocol::SearchResponse;
+use std::collections::VecDeque;
 
 const HISTORY_LIMIT: u8 = 50;
+const HISTORY_WINDOW: usize = 200;
+const CACHED_MESSAGES_PER_CHANNEL: usize = HISTORY_WINDOW + 250;
+const CACHED_CHANNELS: usize = 50;
 fn merge_forum_patch(target: &mut Value, patch: &Value) {
     match (target, patch) {
         (Value::Object(target), Value::Object(patch)) => {
@@ -151,6 +155,7 @@ pub(super) struct NavigationState {
     result_channels: BTreeMap<Snowflake, Channel>,
     pins: BTreeMap<Snowflake, PinsJob>,
     history: BTreeMap<Snowflake, HistoryJob>,
+    recent_message_channels: VecDeque<Snowflake>,
     mutations: BTreeMap<(Snowflake, Snowflake), Mutation>,
     acks: BTreeMap<Snowflake, AckJob>,
     pin_acks: BTreeMap<Snowflake, Mutation>,
@@ -173,6 +178,7 @@ impl NavigationState {
             result_channels: BTreeMap::new(),
             pins: BTreeMap::new(),
             history: BTreeMap::new(),
+            recent_message_channels: VecDeque::new(),
             mutations: BTreeMap::new(),
             acks: BTreeMap::new(),
             pin_acks: BTreeMap::new(),
@@ -522,7 +528,7 @@ impl Worker {
                         .as_ref()
                         .is_some_and(|me| message.mentions.iter().any(|user| user.id == me.id))
                 })
-                .cloned()
+                .map(|message| message.as_ref().clone())
                 .collect();
             snapshot
                 .messages
@@ -612,6 +618,7 @@ impl Worker {
         self.navigation.result_channels.clear();
         self.navigation.pins.clear();
         self.navigation.history.clear();
+        self.navigation.recent_message_channels.clear();
         self.navigation.mutations.clear();
         self.navigation.acks.clear();
         self.navigation.pin_acks.clear();
@@ -620,6 +627,7 @@ impl Worker {
         self.navigation.demo_pins.clear();
     }
     pub(super) fn navigation_context(&mut self, channel: Snowflake) {
+        self.touch_message_channel(channel);
         if let Some(previous) = self
             .state
             .selected_channel
@@ -640,10 +648,82 @@ impl Worker {
         for (id, history) in &mut self.navigation.history {
             if *id != channel {
                 history.task = None;
-                history.snapshot.loading = false;
             }
         }
         self.navigation.acks.retain(|id, _| *id == channel);
+    }
+
+    fn touch_message_channel(&mut self, channel: Snowflake) {
+        let recent = &mut self.navigation.recent_message_channels;
+        recent.retain(|id| *id != channel);
+        recent.push_back(channel);
+        if recent.len() > CACHED_CHANNELS {
+            recent.pop_front();
+        }
+    }
+
+    pub(super) fn bound_message_cache(&mut self) {
+        if self.demo {
+            return;
+        }
+        let selected = self.state.selected_channel;
+        let recent = &self.navigation.recent_message_channels;
+        while self.state.messages.len() > CACHED_CHANNELS {
+            let victim =
+                self.state
+                    .messages
+                    .keys()
+                    .copied()
+                    .find(|id| Some(*id) != selected && !recent.contains(id))
+                    .or_else(|| {
+                        recent.iter().copied().find(|id| {
+                            Some(*id) != selected && self.state.messages.contains_key(id)
+                        })
+                    });
+            let Some(victim) = victim else { break };
+            self.state.messages.remove(&victim);
+            self.navigation.history.remove(&victim);
+            self.emit(Event::HistoryCacheEvicted(victim));
+        }
+        for (channel, messages) in &mut self.state.messages {
+            if messages.len() <= CACHED_MESSAGES_PER_CHANNEL {
+                continue;
+            }
+            let history = self.navigation.history.get(channel);
+            let mut keep = BTreeSet::new();
+            if let Some(history) = history {
+                keep.extend(history.snapshot.message_ids.iter().copied());
+                // Live arrivals can race the HTTP response for a page.
+                keep.extend(history.arrived.iter().rev().take(HISTORY_WINDOW).copied());
+            }
+            // Forums and message-started threads use the starter as a preview.
+            if messages.contains_key(channel) {
+                keep.insert(*channel);
+            }
+            // Keep the active window and use the rest of the budget for recent
+            // records. Gaps outside the window must be fetched from the server.
+            for id in messages.keys().rev() {
+                if keep.len() >= CACHED_MESSAGES_PER_CHANNEL {
+                    break;
+                }
+                keep.insert(*id);
+            }
+            messages.retain(|id| keep.contains(&id));
+        }
+        // Empty conversations and cancelled first pages may have no records.
+        let mut expired = Vec::new();
+        self.navigation.history.retain(|channel, _| {
+            let keep = Some(*channel) == selected
+                || self.state.messages.contains_key(channel)
+                || (self.state.channels.contains_key(channel) && recent.contains(channel));
+            if !keep {
+                expired.push(*channel);
+            }
+            keep
+        });
+        for channel in expired {
+            self.emit(Event::HistoryCacheEvicted(channel));
+        }
     }
     pub(super) fn require_history(&self, channel: Snowflake) -> Result<()> {
         let target = self
@@ -1074,6 +1154,40 @@ impl Worker {
         });
         Ok(())
     }
+    pub(super) fn open_channel_history(&mut self, channel: Snowflake) -> Result<()> {
+        self.require_history(channel)?;
+        let last = self.state.channels[&channel].last_message_id;
+        if let Some(job) = self.navigation.history.get_mut(&channel)
+            && !job.snapshot.loading
+            && job.snapshot.error.is_none()
+            && job.snapshot.latest
+            && !job.snapshot.has_newer
+            && job.snapshot.message_ids.last().copied() == last
+            && job.snapshot.message_ids.iter().all(|id| {
+                self.state
+                    .messages
+                    .get(&channel)
+                    .is_some_and(|messages| messages.contains_key(id))
+            })
+        {
+            // Reopening at the live edge only needs the latest page.
+            let excess = job
+                .snapshot
+                .message_ids
+                .len()
+                .saturating_sub(HISTORY_LIMIT.into());
+            if excess != 0 {
+                job.snapshot.message_ids.drain(..excess);
+                job.snapshot.has_older = true;
+            }
+            job.snapshot.target = None;
+            let snapshot = job.snapshot.clone();
+            self.emit(Event::History(snapshot));
+            return Ok(());
+        }
+        self.request_history(channel, HistoryRequest::Latest)
+    }
+
     pub(super) fn request_history(
         &mut self,
         channel: Snowflake,
@@ -1120,12 +1234,13 @@ impl Worker {
         } else {
             Some(self.client()?.clone())
         };
-        let demo = self
-            .navigation
-            .demo_archive
-            .get(&channel)
-            .cloned()
-            .unwrap_or_else(|| self.state.channel_messages(channel).cloned().collect());
+        let demo = self.demo.then(|| {
+            self.navigation
+                .demo_archive
+                .get(&channel)
+                .cloned()
+                .unwrap_or_else(|| self.state.channel_messages(channel).cloned().collect())
+        });
         let task = tokio::spawn(async move {
             let result = if let Some(client) = client {
                 let (before, after, around) = match request {
@@ -1146,7 +1261,7 @@ impl Worker {
                     .map_err(error)
             } else {
                 Ok(Value::Array(
-                    demo_history(&demo, request)
+                    demo_history(demo.as_deref().unwrap_or_default(), request)
                         .into_iter()
                         .map(|message| serde_json::to_value(message).expect("message serializes"))
                         .collect(),
@@ -1225,7 +1340,7 @@ impl Worker {
         if !self.demo {
             self.sync_selected_guild().await?;
         }
-        self.persist_selection().await;
+        self.persist_selection();
         Ok(())
     }
     pub(super) async fn mark_read(&mut self, channels: Vec<Snowflake>) -> Result<()> {
@@ -1623,19 +1738,23 @@ impl Worker {
     }
 
     pub(super) fn navigation_message_inserted(&mut self, channel: Snowflake, id: Snowflake) {
+        self.touch_message_channel(channel);
         let Some(history) = self.navigation.history.get_mut(&channel) else {
             return;
         };
         if history.snapshot.loading {
             history.arrived.insert(id);
+            if history.arrived.len() > HISTORY_WINDOW {
+                history.arrived.pop_first();
+            }
             return;
         }
         if history.snapshot.latest {
             history.snapshot.message_ids.push(id);
             history.snapshot.message_ids.sort_unstable();
             history.snapshot.message_ids.dedup();
-            if history.snapshot.message_ids.len() > 200 {
-                let excess = history.snapshot.message_ids.len() - 200;
+            if history.snapshot.message_ids.len() > HISTORY_WINDOW {
+                let excess = history.snapshot.message_ids.len() - HISTORY_WINDOW;
                 history.snapshot.message_ids.drain(..excess);
                 history.snapshot.has_older = true;
             }
@@ -2496,8 +2615,8 @@ impl Worker {
                             );
                             job.snapshot.message_ids.sort_unstable();
                             job.snapshot.message_ids.dedup();
-                            if job.snapshot.message_ids.len() > 200 {
-                                let excess = job.snapshot.message_ids.len() - 200;
+                            if job.snapshot.message_ids.len() > HISTORY_WINDOW {
+                                let excess = job.snapshot.message_ids.len() - HISTORY_WINDOW;
                                 job.snapshot.message_ids.drain(..excess);
                                 job.snapshot.has_older = true;
                             }
@@ -2646,10 +2765,10 @@ fn apply_history_page(
     }
     snapshot.message_ids.sort_unstable();
     snapshot.message_ids.dedup();
-    if snapshot.message_ids.len() > 200 {
-        let excess = snapshot.message_ids.len() - 200;
+    if snapshot.message_ids.len() > HISTORY_WINDOW {
+        let excess = snapshot.message_ids.len() - HISTORY_WINDOW;
         if matches!(request, HistoryRequest::Before(_)) {
-            snapshot.message_ids.truncate(200);
+            snapshot.message_ids.truncate(HISTORY_WINDOW);
             snapshot.has_newer = true;
             snapshot.latest = false;
         } else {

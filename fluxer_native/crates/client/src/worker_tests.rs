@@ -1984,6 +1984,68 @@ impl SessionStore for PendingSessionVault {
     }
 }
 
+struct SlowSelectionStore {
+    inner: fluxer_session::MemorySessionStore,
+    started: async_mpsc::UnboundedSender<Option<Snowflake>>,
+    permits: tokio::sync::Semaphore,
+}
+
+impl SessionStore for SlowSelectionStore {
+    fn load(&self) -> fluxer_session::StoreFuture<'_, Option<SavedSession>> {
+        self.inner.load()
+    }
+    fn save(&self, session: SavedSession) -> fluxer_session::StoreFuture<'_, ()> {
+        Box::pin(async move {
+            self.started.send(session.selected_channel).unwrap();
+            self.permits.acquire().await.unwrap().forget();
+            self.inner.save(session).await
+        })
+    }
+    fn clear(&self) -> fluxer_session::StoreFuture<'_, ()> {
+        self.inner.clear()
+    }
+}
+
+#[tokio::test]
+async fn selection_saves_coalesce_without_blocking_state_and_finish_before_logout() {
+    let (started, mut writes) = async_mpsc::unbounded_channel();
+    let store = Arc::new(SlowSelectionStore {
+        inner: fluxer_session::MemorySessionStore::default(),
+        started,
+        permits: tokio::sync::Semaphore::new(0),
+    });
+    let (worker, events) = worker();
+    let mut worker = worker.with_session_store(store.clone());
+    worker.saved_session = Some(stored_worker_session());
+    worker.state = ClientState::demo();
+
+    worker.state.selected_channel = Some(11.into());
+    worker.persist_selection();
+    assert_eq!(writes.recv().await, Some(Some(11.into())));
+    worker.state.selected_channel = Some(12.into());
+    worker.persist_selection();
+    worker.state.selected_channel = Some(13.into());
+    worker.persist_selection();
+    worker.snapshot();
+    assert!(events.try_iter().any(|event| {
+        matches!(event, Event::State(state) if state.selected_channel == Some(13.into()))
+    }));
+    assert!(store.load().await.unwrap().is_none());
+
+    let logout = tokio::spawn(async move { worker.command(Command::Logout).await });
+    store.permits.add_permits(1);
+    assert_eq!(writes.recv().await, Some(Some(13.into())));
+    assert!(!logout.is_finished());
+    store.permits.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), logout)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(store.load().await.unwrap().is_none());
+    assert!(writes.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn cancelled_restore_cannot_later_replace_a_new_account_or_open_capture() {
     let (worker, _) = worker();

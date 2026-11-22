@@ -568,7 +568,7 @@ impl Fluxer {
             .collect()
     }
 
-    pub(super) fn visible_messages(&self) -> Vec<Message> {
+    pub(super) fn visible_messages(&self) -> Vec<Arc<Message>> {
         visible_window_messages(&self.state, &self.search_ui.histories)
     }
     pub(super) fn jump_message(&mut self, message: &Message, cx: &mut Context<Self>) {
@@ -668,6 +668,9 @@ impl Fluxer {
         else {
             return;
         };
+        // The target may be outside the materialized rows. Bring it into the
+        // viewport before refining its position with its actual height.
+        self.timeline.scroll_to_top_of_item(index);
         self.search_ui.center_scheduled = true;
         let entity = cx.entity().downgrade();
         window.on_next_frame(move |_, cx| {
@@ -677,14 +680,16 @@ impl Fluxer {
                 {
                     return;
                 }
-                if let Some(bounds) = this.timeline.bounds_for_item(index) {
-                    let viewport = this.timeline.bounds();
-                    let y = viewport.origin.y + viewport.size.height / 2.
-                        - bounds.origin.y
-                        - bounds.size.height / 2.;
-                    this.timeline.set_offset(point(this.timeline.offset().x, y));
-                    this.search_ui.pending_center = None;
+                let bounds = this
+                    .message_actions
+                    .row_bounds
+                    .borrow()
+                    .get(&target)
+                    .copied();
+                if let Some(bounds) = bounds {
+                    this.timeline.center_row(bounds);
                 }
+                this.search_ui.pending_center = None;
                 this.search_ui.center_scheduled = false;
                 cx.notify();
             });
@@ -833,7 +838,7 @@ impl Fluxer {
             .find_map(|window| window.downcast::<Fluxer>())
             .and_then(|window| window.is_active(cx))
             .unwrap_or(false);
-        let at_bottom = self.timeline.max_offset().height + self.timeline.offset().y <= px(4.);
+        let at_bottom = self.timeline.near_bottom(px(4.));
         let latest = self
             .search_ui
             .histories
@@ -938,7 +943,7 @@ impl Fluxer {
                 .into_any_element();
         }
         let key = (message.channel_id, message.id);
-        let text = chat_helpers::display_text(&message);
+        let has_text = !chat_helpers::display_text(&message).is_empty();
         if self.search_ui.text.len() > 96 {
             self.search_ui.text.clear();
         }
@@ -950,7 +955,7 @@ impl Fluxer {
             });
             input.clone()
         } else {
-            let input = self.message_text_input(document, &message, None, window, cx);
+            let input = self.message_text_input(document, &message, window, cx);
             self.search_ui.text.insert(key, input.clone());
             input
         };
@@ -1072,7 +1077,7 @@ impl Fluxer {
                             ),
                     ),
             )
-            .when(!text.is_empty(), |view| {
+            .when(has_text, |view| {
                 view.child(
                     div()
                         .id(("browse-text", message.id.0))
@@ -1755,25 +1760,23 @@ fn browse_state(title: &str, detail: Option<String>) -> AnyElement {
 fn visible_window_messages(
     state: &ClientState,
     histories: &BTreeMap<Snowflake, HistorySnapshot>,
-) -> Vec<Message> {
+) -> Vec<Arc<Message>> {
     let Some(channel) = state.selected_channel else {
+        return Vec::new();
+    };
+    let Some(messages) = state.messages.get(&channel) else {
         return Vec::new();
     };
     if let Some(history) = histories.get(&channel) {
         return history
             .message_ids
             .iter()
-            .filter_map(|id| {
-                state
-                    .messages
-                    .get(&channel)
-                    .and_then(|messages| messages.get(id))
-            })
+            .filter_map(|id| messages.get(id))
             .cloned()
             .collect();
     }
-    let mut messages = state
-        .channel_messages(channel)
+    let mut messages = messages
+        .values()
         .rev()
         .take(120)
         .cloned()

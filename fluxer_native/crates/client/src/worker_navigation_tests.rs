@@ -94,6 +94,116 @@ async fn finish_history(worker: &mut Worker) {
     .unwrap();
 }
 
+#[tokio::test]
+async fn reopening_uses_verified_latest_page_and_refetches_after_a_stale_or_cancelled_request() {
+    let (mut worker, events) = demo();
+    let channel = Snowflake(11);
+    worker.state.load_history(channel, messages(100, 249));
+    worker
+        .state
+        .channels
+        .get_mut(&channel)
+        .unwrap()
+        .last_message_id = Some(249.into());
+    let token = install_history(&mut worker, history(100..250, true));
+
+    worker.open_channel_history(channel).unwrap();
+    let Event::History(ready) = events.try_recv().unwrap() else {
+        panic!("warm navigation should present a ready page");
+    };
+    assert!(!ready.loading && ready.latest && ready.has_older);
+    assert_eq!(
+        ready.message_ids,
+        (200..250).map(Snowflake).collect::<Vec<_>>()
+    );
+    assert_eq!(worker.navigation.history[&channel].token, token);
+
+    worker
+        .state
+        .channels
+        .get_mut(&channel)
+        .unwrap()
+        .last_message_id = Some(250.into());
+    worker.open_channel_history(channel).unwrap();
+    assert!(worker.navigation.history[&channel].task.is_some());
+    let refreshing = worker.navigation.history[&channel].token;
+
+    worker.navigation_context(13.into());
+    assert!(worker.navigation.history[&channel].task.is_none());
+    worker
+        .state
+        .channels
+        .get_mut(&channel)
+        .unwrap()
+        .last_message_id = Some(249.into());
+    worker.open_channel_history(channel).unwrap();
+    assert_ne!(worker.navigation.history[&channel].token, refreshing);
+    assert!(worker.navigation.history[&channel].task.is_some());
+}
+
+#[test]
+fn large_history_cache_preserves_the_selected_window_and_evicts_cold_channels() {
+    let (mut worker, events) = demo();
+    worker.demo = false;
+    let selected = Snowflake(11);
+    let mut snapshot = history(50..250, false);
+    snapshot.loading = true;
+    install_history(&mut worker, snapshot);
+    worker.touch_message_channel(selected);
+    worker.state.load_history(selected, messages(1, 20_000));
+
+    for id in 30_000..30_200 {
+        worker.navigation_message_inserted(selected, id.into());
+        worker.state.load_history(selected, messages(id, id));
+    }
+    for id in 100..100 + CACHED_CHANNELS as u64 {
+        let channel = Snowflake(id);
+        let mut message = messages(1, 1).pop().unwrap();
+        message.channel_id = channel;
+        worker.touch_message_channel(channel);
+        worker.state.load_history(channel, vec![message]);
+        install_history(
+            &mut worker,
+            HistorySnapshot {
+                channel_id: channel,
+                ..history([1], true)
+            },
+        );
+    }
+
+    worker.snapshot();
+    let cache = &worker.state.messages[&selected];
+    assert_eq!(worker.state.messages.len(), CACHED_CHANNELS);
+    assert_eq!(worker.navigation.history.len(), CACHED_CHANNELS);
+    assert_eq!(cache.len(), CACHED_MESSAGES_PER_CHANNEL);
+    assert!((50..250).all(|id| cache.contains_key(&Snowflake(id))));
+    assert!((30_000..30_200).all(|id| cache.contains_key(&Snowflake(id))));
+    assert!(cache.contains_key(&selected));
+    assert!(!cache.contains_key(&Snowflake(1_000)));
+    assert!(!worker.state.messages.contains_key(&Snowflake(100)));
+    assert!(
+        events
+            .try_iter()
+            .any(|event| matches!(event, Event::HistoryCacheEvicted(Snowflake(100))))
+    );
+
+    let id = Snowflake(123);
+    let untouched = Snowflake(124);
+    let before = worker.state.clone();
+    assert!(Arc::ptr_eq(&before.messages[&selected][&id], &cache[&id]));
+    assert!(worker.state.edit_message(selected, id, "edited".into()));
+    assert!(worker.state.delete_message(selected, Snowflake(125)));
+    let after = &worker.state.messages[&selected];
+    assert_eq!(before.messages[&selected][&id].content, "message 123");
+    assert_eq!(after[&id].content, "edited");
+    assert!(Arc::ptr_eq(
+        &before.messages[&selected][&untouched],
+        &after[&untouched]
+    ));
+    assert!(before.messages[&selected].contains_key(&Snowflake(125)));
+    assert!(!after.contains_key(&Snowflake(125)));
+}
+
 #[test]
 fn around_history_matches_source_balanced_window_and_known_latest_rules() {
     let mut window = history([], true);

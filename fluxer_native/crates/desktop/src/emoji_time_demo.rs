@@ -42,7 +42,7 @@ pub(super) fn populate(view: &mut Fluxer, channel: Snowflake, author: &User) -> 
                 .join("\n"),
         );
     }
-    let mut messages = BTreeMap::new();
+    let mut messages = fluxer_core::ChannelMessageCache::default();
     for (index, content) in rows.into_iter().enumerate() {
         let id = Snowflake(70_000 + index as u64);
         let mut message = Message::text(id, channel, author.clone(), content);

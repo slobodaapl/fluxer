@@ -82,6 +82,7 @@ mod stream_layout;
 mod stream_view;
 mod streamer_mode;
 mod thread_view;
+mod timeline;
 mod video_perf;
 mod visible_image;
 mod webhooks_view;
@@ -504,7 +505,7 @@ struct Fluxer {
     testing_microphone: bool,
     levels: (f32, f32),
     pending_messages: BTreeMap<Snowflake, String>,
-    timeline: ScrollHandle,
+    timeline: timeline::Timeline,
     last_typing: std::time::Instant,
 }
 
@@ -744,7 +745,7 @@ impl Fluxer {
             testing_microphone: false,
             levels: (0., 0.),
             pending_messages: BTreeMap::new(),
-            timeline: ScrollHandle::new(),
+            timeline: timeline::Timeline::new(),
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
         window.focus(&view.focus);
@@ -1259,8 +1260,7 @@ impl Fluxer {
                             .next_back()
                             .map(|message| message.id)
                     });
-                    let near_bottom =
-                        self.timeline.max_offset().height + self.timeline.offset().y <= px(48.);
+                    let near_bottom = self.timeline.near_bottom(px(48.));
                     let previous_voice_channel = self.state.voice.channel_id;
                     let previous_user = self.state.current_user.as_ref().map(|user| user.id);
                     // A forum search installs its rows in the channel snapshot before
@@ -1387,6 +1387,7 @@ impl Fluxer {
                             self.media_ui.reset();
                             self.context.connection_audio.clear();
                             self.message_actions.reset();
+                            self.timeline = timeline::Timeline::new();
                             self.message_content.reset();
                             // Authentication may publish an empty transition after
                             // discovery. Drop private UI while retaining public routing.
@@ -2019,6 +2020,9 @@ impl Fluxer {
                 Event::Search(snapshot) => self.on_search_snapshot(snapshot, cx),
                 Event::Pins(snapshot) => self.on_pins_snapshot(snapshot, cx),
                 Event::History(snapshot) => self.on_history_snapshot(snapshot, cx),
+                Event::HistoryCacheEvicted(channel) => {
+                    self.search_ui.histories.remove(&channel);
+                }
                 Event::PinMutation {
                     channel_id,
                     message_id,
@@ -2706,6 +2710,7 @@ impl Fluxer {
         self.media_ui.reset();
         self.context.connection_audio.clear();
         self.message_actions.reset();
+        self.timeline = timeline::Timeline::new();
         self.message_content.reset();
         self.message_links.reset();
         self.image_viewer.reset();

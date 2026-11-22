@@ -102,6 +102,7 @@ fn live_media_message<'a>(
             .messages
             .get(&reference.message.channel_id)?
             .get(&reference.message.id)
+            .map(Arc::as_ref)
     }
 }
 
@@ -215,7 +216,7 @@ impl Fluxer {
                         return;
                     };
                     let reference = MediaReference::new(
-                        Arc::new(message),
+                        message,
                         MediaTarget {
                             snapshot_index: snapshot,
                             asset,
@@ -801,7 +802,7 @@ mod tests {
     use super::{MediaReference, MediaTarget, live_media_message, media_menu_title};
     use crate::media_context_policy::MediaAsset;
     use fluxer_core::{ClientState, Message, Snowflake};
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::sync::Arc;
     fn reference(surface: &'static str) -> MediaReference {
         MediaReference::new(
             Arc::new(Message {
@@ -822,14 +823,12 @@ mod tests {
         let mut state = ClientState::default();
         state.messages.insert(
             Snowflake(11),
-            BTreeMap::from([(Snowflake(1), reference.message.as_ref().clone())]),
+            [(Snowflake(1), reference.message.as_ref().clone())]
+                .into_iter()
+                .collect(),
         );
         assert!(live_media_message(&state, None, &reference).is_some());
-        state
-            .messages
-            .get_mut(&Snowflake(11))
-            .unwrap()
-            .remove(&Snowflake(1));
+        state.delete_message(Snowflake(11), Snowflake(1));
         assert!(live_media_message(&state, Some(&reference.message), &reference).is_none());
     }
     #[test]

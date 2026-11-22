@@ -276,7 +276,7 @@ impl Fluxer {
                             .messages
                             .values()
                             .flat_map(|messages| messages.values())
-                            .cloned()
+                            .map(|message| message.as_ref().clone())
                             .collect();
                         for message in &mut messages {
                             message.mentions =

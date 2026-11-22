@@ -111,7 +111,7 @@ impl Fluxer {
             (&alex, 86_430, "And the new day's messages group normally."),
         ];
         let mention_fixture = std::env::args().any(|arg| arg == "--demo-mentions");
-        let mut fixture = BTreeMap::new();
+        let mut fixture = fluxer_core::ChannelMessageCache::default();
         for (index, (author, seconds, content)) in messages.into_iter().enumerate() {
             let id = Snowflake(20_000 + index as u64);
             let mut message = Message::text(id, channel, author.clone(), content);
@@ -169,7 +169,7 @@ impl Fluxer {
             }
         }
         if std::env::args().any(|arg| arg == "--demo-rich-blocks") {
-            fixture.clear();
+            fixture = fluxer_core::ChannelMessageCache::default();
             let now = chrono::Utc::now().timestamp();
             let samples = vec![
                 "# Heading one\nA regular paragraph.\n## Heading two\n### Heading three\n#### Heading four\n##### Heading five\n###### Heading six".to_owned(),
@@ -213,7 +213,7 @@ impl Fluxer {
         } else {
             fixture_emoji_endpoint()
         };
-        self.timeline.set_offset(point(px(0.), px(0.)));
+        self.timeline.scroll_to_top_of_item(0);
         if std::env::var("FLUXER_MESSAGE_LINK_DEMO").as_deref() == Ok("1")
             && let (Some(handle), Some(message)) = (
                 cx.windows().first().copied(),

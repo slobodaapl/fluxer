@@ -209,7 +209,7 @@ impl Fluxer {
             return chat_helpers::preview(message);
         }
         let mut rendering = message.clone();
-        rendering.content = chat_helpers::display_text(message);
+        rendering.content = chat_helpers::display_text(message).into_owned();
         let document =
             self.streamer_document(&rendering, message_markup::MessageContext::InlinePreview);
         chat_helpers::preview_text(message, &document)

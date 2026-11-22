@@ -95,11 +95,13 @@ impl Fluxer {
         }
         let concealed_key =
             rich_message::attachment_reveal_key(&hidden.id.to_string(), Snowflake(41_001));
-        let mut messages = BTreeMap::from([
+        let mut messages: fluxer_core::ChannelMessageCache = [
             (direct.id, direct),
             (embeds.id, embeds),
             (hidden.id, hidden),
-        ]);
+        ]
+        .into_iter()
+        .collect();
         let spacers = if std::env::args().any(|arg| arg == "--demo-gifs-overflow") {
             100
         } else {

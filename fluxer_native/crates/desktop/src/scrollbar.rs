@@ -1,18 +1,69 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-//! A narrow, always discoverable scrollbar backed by the timeline's real scroll handle.
+//! A narrow, always discoverable scrollbar for scrolling divs and lists.
 use gpui::{prelude::*, *};
 use std::{cell::Cell, rc::Rc};
 
 pub(super) struct Scrollbar {
     id: ElementId,
-    handle: ScrollHandle,
+    handle: ScrollTarget,
 }
 
 impl Scrollbar {
     pub fn new(id: impl Into<ElementId>, handle: ScrollHandle) -> Self {
         Self {
             id: id.into(),
-            handle,
+            handle: ScrollTarget::Div(handle),
+        }
+    }
+
+    pub fn for_list(id: impl Into<ElementId>, list: ListState) -> Self {
+        Self {
+            id: id.into(),
+            handle: ScrollTarget::List(list),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ScrollTarget {
+    Div(ScrollHandle),
+    List(ListState),
+}
+
+impl ScrollTarget {
+    fn height(&self) -> Pixels {
+        match self {
+            Self::Div(handle) => handle.bounds().size.height,
+            Self::List(list) => list.viewport_bounds().size.height,
+        }
+    }
+    fn max_offset(&self) -> Pixels {
+        match self {
+            Self::Div(handle) => handle.max_offset().height,
+            Self::List(list) => list.max_offset_for_scrollbar().height,
+        }
+    }
+    fn offset(&self) -> Pixels {
+        match self {
+            Self::Div(handle) => handle.offset().y,
+            Self::List(list) => list.scroll_px_offset_for_scrollbar().y,
+        }
+        .clamp(-self.max_offset(), px(0.))
+    }
+    fn set_offset(&self, y: Pixels) {
+        let y = y.clamp(-self.max_offset(), px(0.));
+        match self {
+            Self::Div(handle) => handle.set_offset(point(handle.offset().x, y)),
+            Self::List(list) => list.set_offset_from_scrollbar(point(px(0.), y)),
+        }
+    }
+    fn dragging(&self, active: bool) {
+        if let Self::List(list) = self {
+            if active {
+                list.scrollbar_drag_started();
+            } else {
+                list.scrollbar_drag_ended();
+            }
         }
     }
 }
@@ -126,11 +177,13 @@ impl Element for Scrollbar {
         );
         let Some(thumb) = thumb(
             track.size.height.into(),
-            self.handle.bounds().size.height.into(),
-            self.handle.max_offset().height.into(),
-            self.handle.offset().y.into(),
+            self.handle.height().into(),
+            self.handle.max_offset().into(),
+            self.handle.offset().into(),
         ) else {
-            drag.set(None);
+            if drag.replace(None).is_some() {
+                self.handle.dragging(false);
+            }
             return None;
         };
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
@@ -186,19 +239,17 @@ impl Element for Scrollbar {
             if thumb_bounds.contains(&event.position) {
                 drag.set(Some(Drag {
                     pointer_y: event.position.y.into(),
-                    offset_y: handle.offset().y.into(),
+                    offset_y: handle.offset().into(),
                     thumb: geometry,
                 }));
+                handle.dragging(true);
             } else {
                 let direction = if event.position.y < thumb_bounds.top() {
                     1.
                 } else {
                     -1.
                 };
-                let offset = handle.offset();
-                let y = (offset.y + handle.bounds().size.height * (0.9 * direction))
-                    .clamp(-handle.max_offset().height, px(0.));
-                handle.set_offset(point(offset.x, y));
+                handle.set_offset(handle.offset() + handle.height() * (0.9 * direction));
             }
             window.refresh();
             cx.stop_propagation();
@@ -218,16 +269,14 @@ impl Element for Scrollbar {
                     .is_some_and(|button| button == MouseButton::Left)
                 {
                     drag.set(None);
+                    handle.dragging(false);
                 } else {
                     let y = drag_offset(
                         start.offset_y,
                         f32::from(event.position.y) - start.pointer_y,
                         start.thumb,
                     );
-                    handle.set_offset(point(
-                        handle.offset().x,
-                        px(y).max(-handle.max_offset().height),
-                    ));
+                    handle.set_offset(px(y));
                     cx.stop_propagation();
                 }
                 window.refresh();
@@ -237,11 +286,13 @@ impl Element for Scrollbar {
         });
 
         let drag = state.drag.clone();
+        let handle = self.handle.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
             if phase == DispatchPhase::Capture
                 && event.button == MouseButton::Left
                 && drag.replace(None).is_some()
             {
+                handle.dragging(false);
                 window.refresh();
                 cx.stop_propagation();
             }
@@ -250,10 +301,7 @@ impl Element for Scrollbar {
         let hitbox = state.hitbox.clone();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase.bubble() && hitbox.should_handle_scroll(window) {
-                let offset = handle.offset();
-                let y = (offset.y + event.delta.pixel_delta(px(20.)).y)
-                    .clamp(-handle.max_offset().height, px(0.));
-                handle.set_offset(point(offset.x, y));
+                handle.set_offset(handle.offset() + event.delta.pixel_delta(px(20.)).y);
                 window.refresh();
                 cx.stop_propagation();
             }

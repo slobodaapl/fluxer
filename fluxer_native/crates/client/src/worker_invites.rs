@@ -427,7 +427,7 @@ impl Worker {
             if let Err(message) = self.sync_selected_guild().await {
                 self.emit(Event::Error(message));
             }
-            self.persist_selection().await;
+            self.persist_selection();
             self.snapshot();
         }
         self.invite_status(InviteStatus::Opened { guild_id });

@@ -16,7 +16,10 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{sync::mpsc as async_mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc as async_mpsc, watch},
+    task::JoinHandle,
+};
 
 #[path = "worker_attachments.rs"]
 mod attachment_flow;
@@ -248,6 +251,7 @@ pub(crate) struct Worker {
     channels: channel_flow::ChannelJobs,
     attachments: attachment_flow::AttachmentState,
     session_store: Option<Arc<dyn SessionStore>>,
+    selection_save: Option<(watch::Sender<SavedSession>, JoinHandle<()>)>,
     audio_key: Option<String>,
     audio_preferences: crate::audio_preferences::AudioPreferences,
     saved_session: Option<SavedSession>,
@@ -354,6 +358,7 @@ impl Worker {
             channels: channel_flow::ChannelJobs::new(),
             attachments: attachment_flow::AttachmentState::new(),
             session_store: None,
+            selection_save: None,
             audio_key: None,
             audio_preferences: crate::audio_preferences::AudioPreferences::default(),
             saved_session: None,
@@ -505,30 +510,64 @@ impl Worker {
         .await
     }
 
-    async fn persist_active_session(&self) -> Result<()> {
+    async fn persist_active_session(&mut self) -> Result<()> {
+        self.finish_selection_save().await;
         let (Some(store), Some(session)) = (&self.session_store, &self.saved_session) else {
             return Ok(());
         };
-        tokio::time::timeout(Duration::from_secs(15), store.save(session.clone()))
+        Self::save_session(store.as_ref(), session.clone()).await
+    }
+
+    async fn save_session(store: &dyn SessionStore, session: SavedSession) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(15), store.save(session))
             .await
             .map_err(|_| "Your session could not be saved: the keyring timed out")?
             .map_err(|_| "Your session could not be saved. Unlock your keyring; this sign-in will otherwise be lost on restart".to_owned())
     }
 
-    async fn persist_selection(&mut self) {
+    fn persist_selection(&mut self) {
         if self.demo {
             return;
         }
-        if let Some(session) = &mut self.saved_session {
-            session.locale = self.locale.clone();
-            session.selected_guild = self.selected_guild;
-            session.selected_channel = self.state.selected_channel.or(self.restore_channel);
-            if let Some(user) = &self.state.current_user {
-                session.user = serde_json::to_value(user).ok();
-            }
+        let (Some(store), Some(session)) = (&self.session_store, &mut self.saved_session) else {
+            return;
+        };
+        session.locale = self.locale.clone();
+        session.selected_guild = self.selected_guild;
+        session.selected_channel = self.state.selected_channel.or(self.restore_channel);
+        if let Some(user) = &self.state.current_user {
+            session.user = serde_json::to_value(user).ok();
         }
-        if let Err(message) = self.persist_active_session().await {
-            self.emit(Event::Error(message));
+        if let Some((latest, _)) = &self.selection_save {
+            latest.send_replace(session.clone());
+            return;
+        }
+        // One writer per account. Rapid navigation replaces the queued
+        // selection while an OS credential write is in flight.
+        let (latest, mut selections) = watch::channel(session.clone());
+        let store = store.clone();
+        let events = self.events.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let session = selections.borrow_and_update().clone();
+                if let Err(message) = Self::save_session(store.as_ref(), session).await {
+                    let _ = events.send(Event::Error(message));
+                }
+                if selections.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
+        self.selection_save = Some((latest, task));
+    }
+
+    pub(crate) fn take_selection_save(&mut self) -> Option<JoinHandle<()>> {
+        self.selection_save.take().map(|(_, task)| task)
+    }
+
+    async fn finish_selection_save(&mut self) {
+        if let Some(task) = self.take_selection_save() {
+            let _ = task.await;
         }
     }
 
@@ -637,7 +676,8 @@ impl Worker {
             screen_sharing: self.state.voice.screen_share,
         })
     }
-    fn snapshot(&self) {
+    fn snapshot(&mut self) {
+        self.bound_message_cache();
         let next = self.call_control_snapshot();
         if let Ok(mut snapshot) = self.call_snapshot.lock() {
             *snapshot = next;
@@ -682,7 +722,7 @@ impl Worker {
             .ok_or_else(|| "Media engine unavailable".into())
     }
 
-    pub(crate) async fn run(mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
+    pub(crate) async fn run(&mut self, mut commands: async_mpsc::UnboundedReceiver<Command>) {
         self.snapshot();
         let (idle_tx, mut idle_rx) = async_mpsc::unbounded_channel();
         let idle_watch = idle_flow::start(idle_tx);
@@ -1079,6 +1119,7 @@ impl Worker {
     }
 
     async fn reset(&mut self) {
+        self.finish_selection_save().await;
         if let Some(task) = self.connections_task.take() {
             task.abort();
         }
@@ -1383,6 +1424,7 @@ impl Worker {
                 // AuthSessionLifecycle.logout clears durable local credentials
                 // before best-effort server notification. A failed clear must
                 // not falsely report logout and restore the account next boot.
+                self.finish_selection_save().await;
                 if !self.demo
                     && let Some(store) = &self.session_store
                 {
@@ -1554,7 +1596,7 @@ impl Worker {
                 }
                 self.locale = locale.clone();
                 self.state.settings.locale = locale;
-                self.persist_selection().await;
+                self.persist_selection();
                 self.snapshot();
             }
             Command::CancelOwnBanner => self.cancel_own_banner(),
@@ -1896,7 +1938,7 @@ impl Worker {
                 self.selected_guild = Some(guild_id);
                 if !self.demo {
                     self.sync_selected_guild().await?;
-                    self.persist_selection().await;
+                    self.persist_selection();
                 }
                 self.snapshot();
             }
@@ -4069,15 +4111,15 @@ impl Worker {
         self.state.selected_channel = Some(channel);
         if !forum {
             self.request_channel_slowmode(channel);
-            self.request_history(channel, navigation_flow::HistoryRequest::Latest)?;
-        }
-        if !self.demo {
-            self.sync_selected_guild().await?;
+            self.open_channel_history(channel)?;
         }
         self.attachment_snapshot(channel);
         self.restore_channel = None;
-        self.persist_selection().await;
+        self.persist_selection();
         self.snapshot();
+        if !self.demo {
+            self.sync_selected_guild().await?;
+        }
         Ok(())
     }
 
@@ -4522,7 +4564,7 @@ impl Worker {
                         {
                             self.emit(Event::LiveMessageCreated {
                                 account_id: account.id,
-                                message: Box::new(message),
+                                message,
                             });
                         }
                     }
@@ -4575,7 +4617,7 @@ impl Worker {
                             // path once Identify/READY has completed.
                             self.restore_channel = Some(channel);
                         }
-                        self.persist_selection().await;
+                        self.persist_selection();
                     }
                     if name == "GUILD_SYNC"
                         && let (Some(guild), Some(session)) = (

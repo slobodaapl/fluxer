@@ -348,7 +348,6 @@ pub struct TextInput {
     inline_reveal: bool,
     inline_pointer_focus: bool,
     inline_visible_only: bool,
-    inline_timeline: Option<gpui::ScrollHandle>,
     hover_interactive: bool,
     focus_handle: FocusHandle,
     pub content: SharedString,
@@ -409,7 +408,6 @@ impl TextInput {
             inline_reveal: false,
             inline_pointer_focus: false,
             inline_visible_only: false,
-            inline_timeline: None,
             hover_interactive: false,
             focus_handle: cx.focus_handle().tab_stop(true),
             content: "".into(),
@@ -608,9 +606,6 @@ impl TextInput {
                 })
             })
             .collect()
-    }
-    pub fn set_inline_timeline(&mut self, timeline: Option<gpui::ScrollHandle>) {
-        self.inline_timeline = timeline;
     }
     fn queue_inline_reveal(&mut self, cx: &mut Context<Self>) {
         self.inline_reveal = true;
@@ -2229,12 +2224,10 @@ impl Element for TextElement {
             content_height,
             line_height: window.line_height(),
         };
-        // Lists consume a prepaint request; the timeline uses a scrolling Div.
-        // Table geometry is updated on the next frame before requesting the
-        // vertical reveal, so nested list retries see the correct target.
+        // Apply horizontal table changes before asking the containing list to
+        // reveal the focused run vertically.
         let revealing = input.inline_reveal && input.focus_handle.is_focused(window);
         let mut table_adjustment = None;
-        let mut timeline_changed = false;
         if revealing
             && let Some(range) = input.inline_focus.as_ref()
             && let Some((line, left, right)) = inline_target_line(&layout, range)
@@ -2261,26 +2254,7 @@ impl Element for TextElement {
                     point(bounds.left() + left, bounds.top() + line.y - input.scroll_y),
                     size((right - left).max(px(1.)), line.height),
                 );
-                if let Some(timeline) = input.inline_timeline.as_ref() {
-                    let viewport = timeline.bounds();
-                    if viewport.size.height > px(0.) {
-                        let old = timeline.offset();
-                        let next = reveal_offset(
-                            -old.y,
-                            target.top(),
-                            target.bottom(),
-                            viewport.top(),
-                            viewport.bottom(),
-                            timeline.max_offset().height,
-                        );
-                        if next != -old.y {
-                            timeline.set_offset(point(old.x, -next));
-                            timeline_changed = true;
-                        }
-                    }
-                } else {
-                    window.request_autoscroll(target);
-                }
+                window.request_autoscroll(target);
             }
         }
         let position = layout.position_for_index(input.cursor_offset());
@@ -2429,10 +2403,7 @@ impl Element for TextElement {
             ));
         }
         if revealing {
-            // The parent Div has already been laid out. Notifications during
-            // prepaint do not schedule a frame, so refresh after this frame to
-            // apply the horizontal change and then the timeline offset.
-            if table_adjustment.is_some() || timeline_changed {
+            if table_adjustment.is_some() {
                 window.on_next_frame(|window, _| window.refresh());
             }
             self.input.update(cx, |input, cx| {

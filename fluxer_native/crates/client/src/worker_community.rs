@@ -176,7 +176,7 @@ impl Worker {
         };
         if left.is_some() && self.selected_guild == left {
             self.selected_guild = None;
-            self.persist_selection().await;
+            self.persist_selection();
         }
         self.emit(Event::CommunityMutation {
             created: event.result.as_ref().ok().copied().flatten(),

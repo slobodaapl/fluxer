@@ -102,6 +102,426 @@ impl Fluxer {
             .into_any_element()
     }
 
+    fn chat_message_row(
+        &mut self,
+        message: Arc<Message>,
+        layout: message_grouping::MessageRowLayout,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = message.id;
+        let is_pin = pin_system_message::is_pin_system_message(&message);
+        let has_text = !is_pin && !chat_helpers::display_text(&message).is_empty();
+        if has_text {
+            let document =
+                self.message_document(&message, message_markup::MessageContext::Standard);
+            let document = if fluxer_core::compact_messages(&self.state.user_settings) {
+                Arc::new(document.with_author_name(
+                    &message,
+                    &self.streaming().name(message.author.display_name()),
+                ))
+            } else {
+                document
+            };
+            if let Some(input) = self.message_text.get(&id) {
+                input.update(cx, |input, cx| {
+                    input.set_emoji_reduced_motion(self.interface.reduced_motion());
+                    input.update_message_document(document, cx);
+                });
+            } else {
+                let input = self.message_text_input(document, &message, window, cx);
+                self.message_text.insert(id, input);
+            }
+        }
+        let pin_content = self.pin_system_message(&message, cx);
+        let reply_preview = self.message_reply_preview(&message, window, cx);
+        let row_focus = self
+            .message_actions
+            .row_focus
+            .get(&id)
+            .expect("visible message focus")
+            .clone();
+        let focused = row_focus.contains_focused(window, cx);
+        let toolbar = self.message_toolbar(&message, focused, cx);
+        let context_message = message.clone();
+        let keyboard_message = message.clone();
+        let group = SharedString::from(format!("message-{id}"));
+        let timestamp_label = layout.short_time.clone();
+        let timestamp_tooltip = message.timestamp.clone();
+        let gutter = if is_pin {
+            pin_system_message::gutter()
+        } else if fluxer_core::compact_messages(&self.state.user_settings) {
+            div()
+                .w(px(40.))
+                .flex_shrink_0()
+                .text_size(px(11.))
+                .text_color(rgb(MUTED))
+                .child(timestamp_label.clone())
+                .into_any_element()
+        } else if layout.starts_group {
+            div()
+                .w(px(COZY_AVATAR_SIZE))
+                .flex_shrink_0()
+                .pt(px(2.))
+                .child(
+                    self.profile_trigger(
+                        div()
+                            .id(("profile-avatar", id.0))
+                            .size(px(COZY_AVATAR_SIZE))
+                            .child(rich_message::avatar(
+                                &message.author,
+                                self.media_endpoint.as_deref(),
+                                COZY_AVATAR_SIZE,
+                            )),
+                        message.author.clone(),
+                        self.state
+                            .channels
+                            .get(&message.channel_id)
+                            .and_then(|channel| channel.guild_id),
+                        crate::profile_triggers::message_is_webhook(&message),
+                        cx,
+                    ),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .id(("grouped-message-time", id.0))
+                .w(px(COZY_AVATAR_SIZE))
+                .h(px(COZY_LINE_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_end()
+                .text_size(px(11.))
+                .text_color(rgb(MUTED))
+                .invisible()
+                .group_hover(group.clone(), |style| style.visible())
+                .when(
+                    focused || self.message_actions.active_message() == Some(id),
+                    |label| label.visible(),
+                )
+                .tooltip(move |_, cx| {
+                    cx.new(|_| MessageTimestampTooltip(timestamp_tooltip.clone()))
+                        .into()
+                })
+                .child(timestamp_label)
+                .into_any_element()
+        };
+        let row = div()
+            .id(("message", id.0))
+            .relative()
+            .group(group)
+            .track_focus(&row_focus)
+            .px(px(16.))
+            .py(px(
+                if fluxer_core::compact_messages(&self.state.user_settings) {
+                    0.
+                } else {
+                    COZY_SPACING_Y
+                },
+            ))
+            .text_size(px(fluxer_core::message_font_size(
+                &self.state.user_settings,
+            )))
+            .rounded_md()
+            .hover(|row| row.bg(rgb(0x25222f)))
+            .focus(|row| row.bg(rgb(0x2f293c)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_message_menu(
+                        context_message.as_ref().clone(),
+                        event.position,
+                        message_actions::MessageMenuContext::Timeline,
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "up" | "down")
+                    && event.keystroke.modifiers == Modifiers::default()
+                    && this
+                        .message_actions
+                        .row_focus
+                        .get(&id)
+                        .is_some_and(|focus| focus.is_focused(window))
+                {
+                    this.move_message_focus(id, event.keystroke.key == "down", window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                if event.keystroke.key == "f10" && event.keystroke.modifiers.shift {
+                    this.open_message_menu(
+                        keyboard_message.as_ref().clone(),
+                        this.message_menu_anchor(id),
+                        message_actions::MessageMenuContext::Timeline,
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
+            }))
+            .child(self.message_bounds_marker(id))
+            .when(
+                self.search_ui.highlight == Some((message.channel_id, message.id)),
+                |view| {
+                    view.bg(rgb(0x37304f))
+                        .border_l_2()
+                        .border_color(rgb(ACCENT))
+                        .pl_2()
+                },
+            )
+            .child(self.visible_message_marker(&message, cx))
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .gap(px(COZY_GUTTER))
+            .line_height(px(fluxer_core::message_font_size(
+                &self.state.user_settings,
+            ) * 1.375))
+            .child(gutter)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0()
+                    .when(
+                        (layout.starts_group
+                            || fluxer_core::compact_messages(&self.state.user_settings))
+                            && (!fluxer_core::compact_messages(&self.state.user_settings)
+                                || !has_text)
+                            && !is_pin,
+                        |body| {
+                            body.child(
+                                div()
+                                    .h(px(COZY_LINE_HEIGHT))
+                                    .flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .id(("profile-name", id.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(crate::emoji_sprites::unicode_text(
+                                                &self
+                                                    .streaming()
+                                                    .name(message.author.display_name()),
+                                                14.,
+                                                window.scale_factor() > 1.,
+                                                cx,
+                                            ))
+                                            .map(|view| {
+                                                self.profile_trigger(
+                                                    view,
+                                                    message.author.clone(),
+                                                    self.state
+                                                        .channels
+                                                        .get(&message.channel_id)
+                                                        .and_then(|channel| channel.guild_id),
+                                                    crate::profile_triggers::message_is_webhook(
+                                                        &message,
+                                                    ),
+                                                    cx,
+                                                )
+                                            }),
+                                    )
+                                    .child(
+                                        div().text_size(px(12.)).text_color(rgb(MUTED)).child(
+                                            message_actions::message_time(&message.timestamp),
+                                        ),
+                                    )
+                                    .when(message.edited_timestamp.is_some(), |row| {
+                                        row.child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(rgb(MUTED))
+                                                .child("(edited)"),
+                                        )
+                                    }),
+                            )
+                        },
+                    )
+                    .when_some(pin_content, |view, content| view.child(content))
+                    .when_some(reply_preview, |view, preview| view.child(preview))
+                    .when(has_text, |view| {
+                        view.child(
+                            div()
+                                .flex()
+                                .items_start()
+                                .gap_1()
+                                .w_full()
+                                .min_w_0()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .line_height(px(fluxer_core::message_font_size(
+                                            &self.state.user_settings,
+                                        ) * 1.375))
+                                        .child(
+                                            self.message_text
+                                                .get(&id)
+                                                .expect("cached message")
+                                                .clone(),
+                                        ),
+                                )
+                                .when(
+                                    !layout.starts_group && message.edited_timestamp.is_some(),
+                                    |body| {
+                                        body.child(
+                                            div()
+                                                .pb(px(2.))
+                                                .text_size(px(10.))
+                                                .text_color(rgb(MUTED))
+                                                .child("(edited)"),
+                                        )
+                                    },
+                                ),
+                        )
+                    })
+                    .when(!is_pin, |view| {
+                        view.child(rich_message::media(
+                            &message,
+                            rich_message::MediaMotion {
+                                enabled: !(self.image_viewer.is_open()
+                                    || self.playback.modal.is_open()),
+                                autoplay: media_animation::effective_gif_autoplay(
+                                    &self.state.user_settings,
+                                    self.interface.reduced_motion(),
+                                ),
+                                surface: "timeline",
+                                redaction: streamer_mode::Redaction {
+                                    effects: self.streaming(),
+                                    invite: self.message_links.invite_endpoint(),
+                                },
+                                hide_downloads: crate::media_context_policy::hide_media_downloads(
+                                    message.channel_id,
+                                    crate::media_context_policy::MediaKind::Image,
+                                    &self.state.channels,
+                                ),
+                            },
+                            &self.revealed_media,
+                            &mut self.playback,
+                            window,
+                            cx,
+                        ))
+                    })
+                    .child(self.sticker_message(&message))
+                    .when(!message.reactions.is_empty(), |view| {
+                        view.child(
+                            div().flex().gap_1().flex_wrap().children(
+                                message
+                                    .reactions
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, reaction)| {
+                                        let emoji = chat_helpers::reaction_key(&reaction.emoji);
+                                        controls::quiet_button(
+                                            SharedString::from(format!(
+                                                "reaction-chip-{id}-{index}"
+                                            )),
+                                            "",
+                                        )
+                                        .flex()
+                                        .items_center()
+                                        .gap_1()
+                                        .child(if let Some(emoji_id) = reaction.emoji.id {
+                                            if let Some(endpoint) = self.media_endpoint.as_deref() {
+                                                img(SharedString::from(format!(
+                                                    "{}/emojis/{emoji_id}.webp?size=48",
+                                                    endpoint.trim_end_matches('/')
+                                                )))
+                                                .size(px(16.))
+                                                .object_fit(ObjectFit::Contain)
+                                                .into_any_element()
+                                            } else {
+                                                div().size(px(16.)).into_any_element()
+                                            }
+                                        } else {
+                                            crate::emoji_sprites::unicode_art(
+                                                &reaction.emoji.name,
+                                                16.,
+                                                window.scale_factor() > 1.,
+                                                cx,
+                                            )
+                                        })
+                                        .child(reaction.count.to_string())
+                                        .h(px(24.))
+                                        .px_2()
+                                        .py_0()
+                                        .text_size(px(12.))
+                                        .rounded_md()
+                                        .border_1()
+                                        .border_color(rgb(if reaction.me {
+                                            ACCENT
+                                        } else {
+                                            0x413b4c
+                                        }))
+                                        .bg(rgb(if reaction.me { 0x3c3256 } else { 0x2d2939 }))
+                                        .on_click(
+                                            cx.listener(move |this, _, _, cx| {
+                                                this.command(
+                                                    Command::React {
+                                                        message_id: id,
+                                                        emoji: emoji.clone(),
+                                                    },
+                                                    cx,
+                                                )
+                                            }),
+                                        )
+                                    }),
+                            ),
+                        )
+                    }),
+            )
+            // Paint the solid toolbar after text/media. Absolute
+            // positioning alone does not put it above siblings;
+            // selectable text used to paint through its backing.
+            .child(toolbar);
+        // Keep exactly one scroll child per message. Dividers and
+        // inter-group spacing live INSIDE this wrapper, so history
+        // centering and roving keyboard indices remain unchanged.
+        div()
+            .id(("timeline-entry", id.0))
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .when_some(layout.date_divider, |entry, label| {
+                entry.child(
+                    div()
+                        .h(px(20.))
+                        .my(px(16.))
+                        .px(px(20.))
+                        .flex()
+                        .items_center()
+                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c)))
+                        .child(
+                            div()
+                                .px_3()
+                                .text_size(px(12.))
+                                .text_color(rgb(MUTED))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c))),
+                )
+            })
+            .when(
+                layout.space_before > 0
+                    && !fluxer_core::compact_messages(&self.state.user_settings),
+                |entry| entry.child(div().h(px(layout.space_before as f32)).flex_shrink_0()),
+            )
+            .child(row)
+            .into_any_element()
+    }
+
     pub(super) fn chat(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let channel = self
             .state
@@ -267,22 +687,35 @@ impl Fluxer {
         let messages = self.visible_messages();
         let layouts = message_layouts(&messages);
         self.message_actions.row_order = messages.iter().map(|message| message.id).collect();
-        let tab_entry = messages.last().map(|message| message.id);
-        let visible: BTreeSet<_> = messages.iter().map(|message| message.id).collect();
+        let visible: BTreeSet<_> = self.message_actions.row_order.iter().copied().collect();
+        let has_pending =
+            selected.is_some_and(|channel| self.outbox.channels.contains_key(&channel));
+        let conversation_empty = messages.is_empty() && !has_pending;
         self.message_text.retain(|id, _| visible.contains(id));
         self.message_actions
             .row_focus
             .retain(|id, _| visible.contains(id));
-        self.message_actions
-            .row_bounds
-            .borrow_mut()
-            .retain(|id, _| visible.contains(id));
+        self.message_actions.row_bounds.borrow_mut().clear();
         for id in &visible {
-            let handle = self
-                .message_actions
+            self.message_actions
                 .row_focus
                 .entry(*id)
                 .or_insert_with(|| cx.focus_handle());
+        }
+        self.timeline.sync(
+            selected,
+            &self.message_actions.row_order,
+            &self.message_actions.row_focus,
+            has_pending || conversation_empty,
+        );
+        let top = self.timeline.list.logical_scroll_top().item_ix;
+        let tab_entry = if self.timeline.near_bottom(px(4.)) {
+            messages.last()
+        } else {
+            messages.get(top)
+        }
+        .map(|message| message.id);
+        for (id, handle) in &mut self.message_actions.row_focus {
             *handle = handle.clone().tab_stop(Some(*id) == tab_entry);
         }
         self.message_content.retain_replies(selected, &visible);
@@ -291,43 +724,12 @@ impl Fluxer {
         retained.extend(
             messages
                 .iter()
-                .filter_map(|m| chat_helpers::referenced_message(&self.state, m))
-                .map(|m| (m.channel_id, m.id)),
+                .filter_map(|message| message.message_reference.as_ref())
+                .filter_map(|reference| reference.message_id.map(|id| (reference.channel_id, id))),
         );
         self.message_content.retain_documents(&retained);
-        for message in messages
-            .iter()
-            .filter(|message| !pin_system_message::is_pin_system_message(message))
-        {
-            let document = self.message_document(message, message_markup::MessageContext::Standard);
-            let document = if fluxer_core::compact_messages(&self.state.user_settings)
-                && !document.text.is_empty()
-            {
-                Arc::new(document.with_author_name(
-                    message,
-                    &self.streaming().name(message.author.display_name()),
-                ))
-            } else {
-                document
-            };
-            if let Some(input) = self.message_text.get(&message.id) {
-                input.update(cx, |input, cx| {
-                    input.set_emoji_reduced_motion(self.interface.reduced_motion());
-                    input.update_message_document(document, cx);
-                });
-            } else {
-                let input = self.message_text_input(
-                    document,
-                    message,
-                    Some(self.timeline.clone()),
-                    window,
-                    cx,
-                );
-                self.message_text.insert(message.id, input);
-            }
-        }
-        let pending_rows = self.pending_message_rows(window, cx);
-        let conversation_empty = messages.is_empty() && pending_rows.is_empty();
+        self.playback.retain_timeline(&messages);
+        let rows = messages.into_iter().zip(layouts).collect::<Vec<_>>();
         let can_attach = self.attachment_block_reason().is_none();
         div()
             .id("chat-file-drop-target")
@@ -354,7 +756,13 @@ impl Fluxer {
             .child(
                 div()
                     .id("channel-header")
-                    .when_some(self.state.selected_channel, |view, channel| crate::context_actions::trigger(view, crate::context_actions::Target::Channel(channel), cx))
+                    .when_some(self.state.selected_channel, |view, channel| {
+                        crate::context_actions::trigger(
+                            view,
+                            crate::context_actions::Target::Channel(channel),
+                            cx,
+                        )
+                    })
                     .h(px(if self.pane == Pane::Call { 38. } else { 60. }))
                     .flex_shrink_0()
                     .px_5()
@@ -363,65 +771,167 @@ impl Fluxer {
                     .justify_between()
                     .border_b_1()
                     .border_color(rgb(PANEL))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().child(crate::emoji_sprites::unicode_text(&title, 18., window.scale_factor() > 1., cx)))
-                    .when_some(self.state.selected_channel.and_then(|id| self.state.channels.get(&id)).and_then(|c| c.topic.clone()).filter(|t| !t.is_empty()), |view, topic| view.child(div().flex_1().min_w_0().px_3().child(topic)))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).min_w_0().child(
+                        crate::emoji_sprites::unicode_text(
+                            &title,
+                            18.,
+                            window.scale_factor() > 1.,
+                            cx,
+                        ),
+                    ))
+                    .when_some(
+                        self.state
+                            .selected_channel
+                            .and_then(|id| self.state.channels.get(&id))
+                            .and_then(|c| c.topic.clone())
+                            .filter(|t| !t.is_empty()),
+                        |view, topic| view.child(div().flex_1().min_w_0().px_3().child(topic)),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_1()
-                            .when_some(private_call, |view, channel| view.child(
-                                quiet_button("start-private-call", "Start voice call").on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.command(Command::StartPrivateCall { channel_id: channel }, cx);
-                                        this.pane = Pane::Call;
+                            .when_some(private_call, |view, channel| {
+                                view.child(
+                                    quiet_button("start-private-call", "Start voice call")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.command(
+                                                Command::StartPrivateCall {
+                                                    channel_id: channel,
+                                                },
+                                                cx,
+                                            );
+                                            this.pane = Pane::Call;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .when_some(group_add, |view, channel| {
+                                view.child(
+                                    quiet_button("group-add-friends", "Add friends").on_click(
+                                        cx.listener(move |this, _, _, cx| {
+                                            this.add_friends_to_group(channel, cx)
+                                        }),
+                                    ),
+                                )
+                            })
+                            .when_some(thread_parent, |view, (parent, name)| {
+                                view.child(
+                                    icon_button(
+                                        "thread-parent",
+                                        Icon::Back,
+                                        format!("Back to #{name}"),
+                                    )
+                                    .on_click(
+                                        cx.listener(move |this, _, _, cx| this.select(parent, cx)),
+                                    ),
+                                )
+                            })
+                            .when_some(membership_action, |view, (thread, join)| {
+                                view.child(
+                                    quiet_button(
+                                        "thread-membership",
+                                        if join { "Join thread" } else { "Leave thread" },
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.set_thread_membership(thread, join, cx)
+                                        },
+                                    )),
+                                )
+                            })
+                            .when_some(manage_thread, |view, thread| {
+                                view.child(
+                                    quiet_button(
+                                        "archive-thread",
+                                        if archived {
+                                            "Unarchive thread"
+                                        } else {
+                                            "Archive thread"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.manage_thread(thread, Some(!archived), None, cx)
+                                        },
+                                    )),
+                                )
+                                .child(
+                                    quiet_button(
+                                        "lock-thread",
+                                        if locked {
+                                            "Unlock thread"
+                                        } else {
+                                            "Lock thread"
+                                        },
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.manage_thread(
+                                                thread,
+                                                if archived { Some(false) } else { None },
+                                                Some(!locked),
+                                                cx,
+                                            )
+                                        },
+                                    )),
+                                )
+                            })
+                            .when_some(can_browse_archived, |view, parent| {
+                                view.child(
+                                    quiet_button("browse-archived-threads", "Archived threads")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.load_archived_threads(parent, None, cx)
+                                        })),
+                                )
+                            })
+                            .when_some(can_create_thread, |view, parent| {
+                                view.child(quiet_button("new-thread", "New thread").on_click(
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.open_thread_form(parent, window, cx)
+                                    }),
+                                ))
+                            })
+                            .when(has_guild_members || group_add.is_some(), |view| {
+                                view.child(quiet_button("members-toggle", "Members").on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.members_open = !this.members_open;
+                                        this.members_request_generation =
+                                            this.members_request_generation.wrapping_add(1);
+                                        this.members_start = 0;
+                                        this.members_identity = if this.members_open {
+                                            this.state
+                                                .selected_channel
+                                                .and_then(|id| this.state.channels.get(&id))
+                                                .and_then(|channel| {
+                                                    channel.guild_id.and_then(|guild| {
+                                                        this.state.guilds.get(&guild).map(|guild| {
+                                                            fluxer_core::member_list_identity(
+                                                                guild, channel,
+                                                            )
+                                                        })
+                                                    })
+                                                })
+                                        } else {
+                                            None
+                                        };
+                                        this.members_scroll = UniformListScrollHandle::new();
+                                        this.command(
+                                            Command::SetMemberList {
+                                                channel_id: if this.members_open {
+                                                    this.state.selected_channel
+                                                } else {
+                                                    None
+                                                },
+                                                start: 0,
+                                            },
+                                            cx,
+                                        );
                                         cx.notify();
                                     }),
-                                ),
-                            ))
-                            .when_some(group_add, |view, channel| view.child(
-                                quiet_button("group-add-friends", "Add friends").on_click(
-                                    cx.listener(move |this, _, _, cx| this.add_friends_to_group(channel, cx)),
-                                ),
-                            ))
-                            .when_some(thread_parent, |view, (parent, name)| view.child(
-                                icon_button("thread-parent", Icon::Back, format!("Back to #{name}")).on_click(
-                                    cx.listener(move |this, _, _, cx| this.select(parent, cx)),
-                                ),
-                            ))
-                            .when_some(membership_action, |view, (thread, join)| view.child(
-                                quiet_button("thread-membership", if join { "Join thread" } else { "Leave thread" })
-                                    .on_click(cx.listener(move |this, _, _, cx| this.set_thread_membership(thread, join, cx))),
-                            ))
-                            .when_some(manage_thread, |view, thread| view
-                                .child(quiet_button("archive-thread", if archived { "Unarchive thread" } else { "Archive thread" })
-                                    .on_click(cx.listener(move |this, _, _, cx| this.manage_thread(thread, Some(!archived), None, cx))))
-                                .child(quiet_button("lock-thread", if locked { "Unlock thread" } else { "Lock thread" })
-                                    .on_click(cx.listener(move |this, _, _, cx| this.manage_thread(thread, if archived { Some(false) } else { None }, Some(!locked), cx))))
-                            )
-                            .when_some(can_browse_archived, |view, parent| view.child(
-                                quiet_button("browse-archived-threads", "Archived threads").on_click(
-                                    cx.listener(move |this, _, _, cx| this.load_archived_threads(parent, None, cx)),
-                                ),
-                            ))
-                            .when_some(can_create_thread, |view, parent| view.child(
-                                quiet_button("new-thread", "New thread").on_click(
-                                    cx.listener(move |this, _, window, cx| this.open_thread_form(parent, window, cx)),
-                                ),
-                            ))
-                            .when(has_guild_members || group_add.is_some(), |view| view.child(
-                                quiet_button("members-toggle", "Members").on_click(cx.listener(|this, _, _, cx| {
-                                    this.members_open = !this.members_open;
-                                    this.members_request_generation = this.members_request_generation.wrapping_add(1);
-                                    this.members_start = 0;
-                                    this.members_identity = if this.members_open {
-                                        this.state.selected_channel.and_then(|id| this.state.channels.get(&id)).and_then(|channel| channel.guild_id.and_then(|guild| this.state.guilds.get(&guild).map(|guild| fluxer_core::member_list_identity(guild,channel))))
-                                    } else { None };
-                                    this.members_scroll = UniformListScrollHandle::new();
-                                    this.command(Command::SetMemberList { channel_id: if this.members_open { this.state.selected_channel } else { None }, start: 0 }, cx);
-                                    cx.notify();
-                                }))
-                            ))
+                                ))
+                            })
                             .child(self.inbox_button(cx))
                             .child(
                                 icon_button("search", Icon::Search, "Search messages · Ctrl+F")
@@ -435,12 +945,21 @@ impl Fluxer {
                             ),
                     ),
             )
-            .when_some(can_browse_archived, |view, parent| view.child(self.render_archived_threads(parent, cx)))
-            .when(self.thread_form.is_some() && self.thread_form == can_create_thread, |view| {
-                view.child(self.render_thread_form(cx))
+            .when_some(can_browse_archived, |view, parent| {
+                view.child(self.render_archived_threads(parent, cx))
             })
+            .when(
+                self.thread_form.is_some() && self.thread_form == can_create_thread,
+                |view| view.child(self.render_thread_form(cx)),
+            )
             .when(archived, |view| {
-                view.child(div().px_5().py_2().text_color(rgb(MUTED)).child("Archived thread"))
+                view.child(
+                    div()
+                        .px_5()
+                        .py_2()
+                        .text_color(rgb(MUTED))
+                        .child("Archived thread"),
+                )
             })
             .when(
                 self.pane == Pane::Chat
@@ -461,9 +980,10 @@ impl Fluxer {
                 voice_channel.filter(|_| self.pane != Pane::Call),
                 |view, channel| view.child(self.voice_participant_pane(channel, cx)),
             )
-            .when(self.pane != Pane::Call && !self.available_cameras.is_empty(), |view| {
-                view.child(self.camera_strip(cx))
-            })
+            .when(
+                self.pane != Pane::Call && !self.available_cameras.is_empty(),
+                |view| view.child(self.camera_strip(cx)),
+            )
             .when(
                 self.pane != Pane::Call && !self.available_streams.is_empty(),
                 |v| {
@@ -509,7 +1029,15 @@ impl Fluxer {
                                     let identity = identity.clone();
                                     div()
                                         .id(("available-stream-context", index))
-                                        .map(|view| crate::context_actions::trigger(view, crate::context_actions::Target::Stream(identity.clone()), cx))
+                                        .map(|view| {
+                                            crate::context_actions::trigger(
+                                                view,
+                                                crate::context_actions::Target::Stream(
+                                                    identity.clone(),
+                                                ),
+                                                cx,
+                                            )
+                                        })
                                         .flex()
                                         .items_center()
                                         .gap_1()
@@ -565,369 +1093,30 @@ impl Fluxer {
                     .min_w_0()
                     .flex()
                     .child(
-                        div()
-                            .id("timeline")
-                            .track_scroll(&self.timeline)
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .px_0()
-                            .py_3()
-                            .flex()
-                            .flex_col()
-                            .gap_0()
-                            .when(conversation_empty, |v| {
-                                v.child(muted(
-                                    "This conversation is ready. Send the first message.",
-                                ))
-                            })
-                            .children(messages.into_iter().zip(layouts).map(|(message, layout)| {
-                                let id = message.id;
-                                let is_pin = pin_system_message::is_pin_system_message(&message);
-                                let has_text =
-                                    !is_pin && !chat_helpers::display_text(&message).is_empty();
-                                let pin_content = self.pin_system_message(&message, cx);
-                                let reply_preview =
-                                    self.message_reply_preview(&message, window, cx);
-                                let row_focus = self
-                                    .message_actions
-                                    .row_focus
-                                    .get(&id)
-                                    .expect("visible message focus")
-                                    .clone();
-                                let focused = row_focus.contains_focused(window, cx);
-                                let toolbar = self.message_toolbar(&message, focused, cx);
-                                let context_message = message.clone();
-                                let keyboard_message = message.clone();
-                                let group = SharedString::from(format!("message-{id}"));
-                                let timestamp_label = layout.short_time.clone();
-                                let timestamp_tooltip = message.timestamp.clone();
-                                let gutter = if is_pin {
-                                    pin_system_message::gutter()
-                                } else if fluxer_core::compact_messages(&self.state.user_settings) {
-                                    div().w(px(40.)).flex_shrink_0().text_size(px(11.)).text_color(rgb(MUTED)).child(timestamp_label.clone()).into_any_element()
-                                } else if layout.starts_group {
-                                    div().w(px(COZY_AVATAR_SIZE)).flex_shrink_0().pt(px(2.))
-                                        .child(self.profile_trigger(div().id(("profile-avatar",id.0)).size(px(COZY_AVATAR_SIZE)).child(rich_message::avatar(&message.author,self.media_endpoint.as_deref(),COZY_AVATAR_SIZE)),message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx))
+                        list(
+                            self.timeline.list.clone(),
+                            cx.processor(move |this, index: usize, window, cx| {
+                                if let Some((message, layout)) = rows.get(index).cloned() {
+                                    this.chat_message_row(message, layout, window, cx)
+                                } else if conversation_empty {
+                                    muted("This conversation is ready. Send the first message.")
                                         .into_any_element()
                                 } else {
                                     div()
-                                        .id(("grouped-message-time", id.0))
-                                        .w(px(COZY_AVATAR_SIZE))
-                                        .h(px(COZY_LINE_HEIGHT))
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .justify_end()
-                                        .text_size(px(11.))
-                                        .text_color(rgb(MUTED))
-                                        .invisible()
-                                        .group_hover(group.clone(), |style| style.visible())
-                                        .when(
-                                            focused
-                                                || self.message_actions.active_message()
-                                                    == Some(id),
-                                            |label| label.visible(),
-                                        )
-                                        .tooltip(move |_, cx| {
-                                            cx.new(|_| {
-                                                MessageTimestampTooltip(timestamp_tooltip.clone())
-                                            })
-                                            .into()
-                                        })
-                                        .child(timestamp_label)
-                                        .into_any_element()
-                                };
-                                let row =
-                                    div()
-                                        .id(("message", id.0))
-                                        .relative()
-                                        .group(group)
-                                        .track_focus(&row_focus)
-                                        .px(px(16.))
-                                        .py(px(if fluxer_core::compact_messages(&self.state.user_settings) { 0. } else { COZY_SPACING_Y }))
-                                        .text_size(px(fluxer_core::message_font_size(&self.state.user_settings)))
-                                        .rounded_md()
-                                        .hover(|row| row.bg(rgb(0x25222f)))
-                                        .focus(|row| row.bg(rgb(0x2f293c)))
-                                        .on_mouse_down(
-                                            MouseButton::Right,
-                                            cx.listener(
-                                                move |this, event: &MouseDownEvent, window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.open_message_menu(
-                                        context_message.clone(),
-                                        event.position,
-                                        message_actions::MessageMenuContext::Timeline,
-                                        window,
-                                        cx,
-                                    );
-                                                },
-                                            ),
-                                        )
-                                        .on_key_down(cx.listener(
-                                            move |this, event: &KeyDownEvent, window, cx| {
-                                                if matches!(
-                                                    event.keystroke.key.as_str(),
-                                                    "up" | "down"
-                                                ) && event.keystroke.modifiers
-                                                    == Modifiers::default()
-                                                    && this
-                                                        .message_actions
-                                                        .row_focus
-                                                        .get(&id)
-                                                        .is_some_and(|focus| {
-                                                            focus.is_focused(window)
-                                                        })
-                                                {
-                                                    this.move_message_focus(
-                                                        id,
-                                                        event.keystroke.key == "down",
-                                                        window,
-                                                        cx,
-                                                    );
-                                                    cx.stop_propagation();
-                                                    return;
-                                                }
-                                                if event.keystroke.key == "f10"
-                                                    && event.keystroke.modifiers.shift
-                                                {
-                                                    this.open_message_menu(
-                                            keyboard_message.clone(),
-                                            this.message_menu_anchor(id),
-                                            message_actions::MessageMenuContext::Timeline,
-                                            window,
-                                            cx,
-                                        );
-                                                    cx.stop_propagation();
-                                                }
-                                            },
-                                        ))
-                                        .child(self.message_bounds_marker(id))
-                                        .when(
-                                            self.search_ui.highlight
-                                                == Some((message.channel_id, message.id)),
-                                            |view| {
-                                                view.bg(rgb(0x37304f))
-                                                    .border_l_2()
-                                                    .border_color(rgb(ACCENT))
-                                                    .pl_2()
-                                            },
-                                        )
-                                        .child(self.visible_message_marker(&message, cx))
                                         .w_full()
-                                        .min_w_0()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .gap(px(COZY_GUTTER))
-                                        .line_height(px(fluxer_core::message_font_size(&self.state.user_settings) * 1.375))
-                                        .child(gutter)
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .flex()
-                                                .flex_col()
-                                                .gap_0()
-                                                .when((layout.starts_group || fluxer_core::compact_messages(&self.state.user_settings)) && (!fluxer_core::compact_messages(&self.state.user_settings) || !has_text) && !is_pin, |body| {
-                                                    body.child(
-                                            div()
-                                                .h(px(COZY_LINE_HEIGHT))
-                                                .flex()
-                                                .gap_2()
-                                                .items_center()
-                                                .child(
-                                                    div().id(("profile-name",id.0)).font_weight(FontWeight::SEMIBOLD).child(
-                                                        crate::emoji_sprites::unicode_text(&self.streaming().name(message.author.display_name()), 14., window.scale_factor() > 1., cx),
-                                                    ).map(|view|self.profile_trigger(view,message.author.clone(),self.state.channels.get(&message.channel_id).and_then(|channel|channel.guild_id),crate::profile_triggers::message_is_webhook(&message),cx)),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(12.))
-                                                        .text_color(rgb(MUTED))
-                                                        .child(message_actions::message_time(
-                                                            &message.timestamp,
-                                                        )),
-                                                )
-                                                .when(message.edited_timestamp.is_some(), |row| {
-                                                    row.child(
-                                                        div()
-                                                            .text_size(px(10.))
-                                                            .text_color(rgb(MUTED))
-                                                            .child("(edited)"),
-                                                    )
-                                                }),
-                                        )
-                                                })
-                                                .when_some(pin_content, |view, content| view.child(content))
-                                                .when_some(reply_preview, |view, preview| {
-                                                    view.child(preview)
-                                                })
-                                                .when(has_text, |view| {
-                                                    view.child(
-                                                        div()
-                                                            .flex()
-                                                            .items_start()
-                                                            .gap_1()
-                                                            .w_full()
-                                                            .min_w_0()
-                                                            .child(
-                                                                div()
-                                                                    .flex_1()
-                                                                    .min_w_0()
-                                                                    .line_height(px(fluxer_core::message_font_size(&self.state.user_settings) * 1.375))
-                                                                    .child(
-                                                                        self.message_text
-                                                                            .get(&id)
-                                                                            .expect(
-                                                                                "cached message",
-                                                                            )
-                                                                            .clone(),
-                                                                    ),
-                                                            )
-                                                            .when(
-                                                                !layout.starts_group
-                                                                    && message
-                                                                        .edited_timestamp
-                                                                        .is_some(),
-                                                                |body| {
-                                                                    body.child(
-                                                                        div()
-                                                                            .pb(px(2.))
-                                                                            .text_size(px(10.))
-                                                                            .text_color(rgb(MUTED))
-                                                                            .child("(edited)"),
-                                                                    )
-                                                                },
-                                                            ),
-                                                    )
-                                                })
-                                                .when(!is_pin, |view| {
-                                                    view.child(rich_message::media(
-                                                        &message,
-                                                        rich_message::MediaMotion {
-                                                            enabled: !(self.image_viewer.is_open() || self.playback.modal.is_open()),
-                                                            autoplay: media_animation::effective_gif_autoplay(&self.state.user_settings, self.interface.reduced_motion()),
-                                                            surface: "timeline",
-                                                            redaction: streamer_mode::Redaction { effects: self.streaming(), invite: self.message_links.invite_endpoint() },
- hide_downloads: crate::media_context_policy::hide_media_downloads(message.channel_id, crate::media_context_policy::MediaKind::Image, &self.state.channels),
-                                                        },
-                                                        &self.revealed_media,
-                                                        &mut self.playback,
-                                                        window,
-                                                        cx,
-                                                    ))
-                                                })
-                                                .child(self.sticker_message(&message))
-                                                .when(!message.reactions.is_empty(), |view| {
-                                                    view.child(
-                                                        div().flex().gap_1().flex_wrap().children(
-                                                            message
-                                                                .reactions
-                                                                .iter()
-                                                                .enumerate()
-                                                                .map(|(index, reaction)| {
-                                                                    let emoji =
-                                                                        chat_helpers::reaction_key(
-                                                                            &reaction.emoji,
-                                                                        );
-                                                                    controls::quiet_button(
-                                                        SharedString::from(format!(
-                                                            "reaction-chip-{id}-{index}"
-                                                        )),
-                                                        "",
-                                                    )
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .child(if let Some(emoji_id) = reaction.emoji.id {
-                                                        if let Some(endpoint) = self.media_endpoint.as_deref() {
-                                                            img(SharedString::from(format!("{}/emojis/{emoji_id}.webp?size=48", endpoint.trim_end_matches('/'))))
-                                                                .size(px(16.)).object_fit(ObjectFit::Contain).into_any_element()
-                                                        } else {
-                                                            div().size(px(16.)).into_any_element()
-                                                        }
-                                                    } else {
-                                                        crate::emoji_sprites::unicode_art(&reaction.emoji.name, 16., window.scale_factor() > 1., cx)
-                                                    })
-                                                    .child(reaction.count.to_string())
-                                                    .h(px(24.))
-                                                    .px_2()
-                                                    .py_0()
-                                                    .text_size(px(12.))
-                                                    .rounded_md()
-                                                    .border_1()
-                                                    .border_color(rgb(if reaction.me {
-                                                        ACCENT
-                                                    } else {
-                                                        0x413b4c
-                                                    }))
-                                                    .bg(rgb(if reaction.me {
-                                                        0x3c3256
-                                                    } else {
-                                                        0x2d2939
-                                                    }))
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                                        this.command(
-                                                            Command::React {
-                                                                message_id: id,
-                                                                emoji: emoji.clone(),
-                                                            },
-                                                            cx,
-                                                        )
-                                                    }))
-                                                                }),
-                                                        ),
-                                                    )
-                                                }),
-                                        )
-                                        // Paint the solid toolbar after text/media. Absolute
-                                        // positioning alone does not put it above siblings;
-                                        // selectable text used to paint through its backing.
-                                        .child(toolbar);
-                                // Keep exactly one scroll child per message. Dividers and
-                                // inter-group spacing live INSIDE this wrapper, so history
-                                // centering and roving keyboard indices remain unchanged.
-                                div()
-                                    .id(("timeline-entry", id.0))
-                                    .w_full()
-                                    .min_w_0()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .flex_col()
-                                    .when_some(layout.date_divider, |entry, label| {
-                                        entry.child(
-                                            div()
-                                                .h(px(20.))
-                                                .my(px(16.))
-                                                .px(px(20.))
-                                                .flex()
-                                                .items_center()
-                                                .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c)))
-                                                .child(
-                                                    div()
-                                                        .px_3()
-                                                        .text_size(px(12.))
-                                                        .text_color(rgb(MUTED))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .child(label),
-                                                )
-                                                .child(div().flex_1().h(px(2.)).bg(rgb(0x403a4c))),
-                                        )
-                                    })
-                                    .when(layout.space_before > 0 && !fluxer_core::compact_messages(&self.state.user_settings), |entry| {
-                                        entry.child(
-                                            div().h(px(layout.space_before as f32)).flex_shrink_0(),
-                                        )
-                                    })
-                                    .child(row)
-                            }))
-                            .children(pending_rows),
+                                        .children(this.pending_message_rows(window, cx))
+                                        .into_any_element()
+                                }
+                            }),
+                        )
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .py_3(),
                     )
-                    .child(scrollbar::Scrollbar::new(
+                    .child(scrollbar::Scrollbar::for_list(
                         "chat-scrollbar",
-                        self.timeline.clone(),
+                        self.timeline.list.clone(),
                     )),
             )
             .when(self.forwarding.is_some(), |view| {
@@ -967,8 +1156,15 @@ impl Fluxer {
                                                 .min_w_0()
                                                 .overflow_hidden()
                                                 .child(crate::emoji_sprites::unicode_text(
-                                                    &format!("Replying to {} · {}", self.streaming().name(message.author.display_name()), self.streamer_preview(message)),
-                                                    12., window.scale_factor() > 1., cx,
+                                                    &format!(
+                                                        "Replying to {} · {}",
+                                                        self.streaming()
+                                                            .name(message.author.display_name()),
+                                                        self.streamer_preview(message)
+                                                    ),
+                                                    12.,
+                                                    window.scale_factor() > 1.,
+                                                    cx,
                                                 )),
                                         )
                                         .child(
@@ -1028,7 +1224,9 @@ impl Fluxer {
                                 )),
                         )
                     })
-                    .when(self.sticker_picker_open, |view| view.child(self.sticker_picker(cx)))
+                    .when(self.sticker_picker_open, |view| {
+                        view.child(self.sticker_picker(cx))
+                    })
                     .child(
                         div()
                             .flex()
@@ -1040,12 +1238,23 @@ impl Fluxer {
                             .border_1()
                             .border_color(rgb(0x40394d))
                             .child(self.attachment_button(cx))
-                            .child(quiet_button("composer-sticker", "Stickers").on_click(cx.listener(|this, _, _, cx| { this.sticker_picker_open = !this.sticker_picker_open; if this.sticker_picker_open { this.gif_picker.reset(); this.emoji_target = None; } cx.notify(); })))
+                            .child(quiet_button("composer-sticker", "Stickers").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.sticker_picker_open = !this.sticker_picker_open;
+                                    if this.sticker_picker_open {
+                                        this.gif_picker.reset();
+                                        this.emoji_target = None;
+                                    }
+                                    cx.notify();
+                                }),
+                            ))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .when(self.gif_picker_available(), |view| {
-                                view.child(quiet_button("composer-gif", "GIF").on_click(cx.listener(
-                                    |this, _, window, cx| this.toggle_gif_picker(window, cx),
-                                )))
+                                view.child(quiet_button("composer-gif", "GIF").on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.toggle_gif_picker(window, cx)
+                                    }),
+                                ))
                             })
                             .child(
                                 icon_button("composer-emoji", Icon::React, "Choose emoji")
@@ -1072,7 +1281,10 @@ impl Fluxer {
                                         "Send message"
                                     },
                                 )
-                                .when(self.message_pending() || self.slowmode_remaining() > 0, |button| button.opacity(0.5))
+                                .when(
+                                    self.message_pending() || self.slowmode_remaining() > 0,
+                                    |button| button.opacity(0.5),
+                                )
                                 .text_color(rgb(ACCENT))
                                 .on_click(cx.listener(
                                     |this, _, window, cx| this.send_from_composer(window, cx),
@@ -1085,7 +1297,15 @@ impl Fluxer {
                                 .px_2()
                                 .text_size(px(10.))
                                 .text_color(rgb(MUTED))
-                                .child(if self.slowmode_remaining() > 0 { format!("Slowmode · {}:{:02} remaining",self.slowmode_remaining()/60,self.slowmode_remaining()%60) } else { "Enter to send · Shift+Enter for a new line".into() }),
+                                .child(if self.slowmode_remaining() > 0 {
+                                    format!(
+                                        "Slowmode · {}:{:02} remaining",
+                                        self.slowmode_remaining() / 60,
+                                        self.slowmode_remaining() % 60
+                                    )
+                                } else {
+                                    "Enter to send · Shift+Enter for a new line".into()
+                                }),
                         )
                     }),
             )

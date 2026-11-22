@@ -367,7 +367,7 @@ impl Fluxer {
                         .and_then(|channel| channel.guild_id);
                     let webhook = crate::profile_triggers::message_is_webhook(&message);
                     self.open_user_profile_at(
-                        message.author,
+                        message.author.clone(),
                         guild,
                         webhook,
                         trigger_bounds.unwrap_or_else(|| Bounds::new(anchor, size(px(0.), px(0.)))),

@@ -114,7 +114,7 @@ impl Fluxer {
                             .messages
                             .get(&Snowflake(11))
                             .and_then(|messages| messages.get(&Snowflake(1001)))
-                            .cloned()
+                            .map(|message| message.as_ref().clone())
                         {
                             view.open_message_menu(
                                 message,
