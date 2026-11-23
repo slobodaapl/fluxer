@@ -68,6 +68,7 @@ struct OpenMenu {
     context: MessageMenuContext,
     anchor: Point<Pixels>,
     selected: usize,
+    selected_text: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ConfirmationChoice {
@@ -322,16 +323,45 @@ impl Fluxer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Opening the menu moves focus off the text. Clicking a menu item may
+        // also clear the timeline selection before its action is dispatched.
+        let selected_text = if context == MessageMenuContext::Timeline
+            && self.state.selected_channel == Some(message.channel_id)
+        {
+            self.message_menu_selection(message.id, window, cx)
+        } else {
+            None
+        };
         self.message_actions.previous_focus = window.focused(cx);
         self.message_actions.menu = Some(OpenMenu {
             message,
             context,
             anchor,
             selected: 0,
+            selected_text,
         });
         self.message_actions.deleting = None;
         self.message_actions.focus.focus(window);
         cx.notify();
+    }
+
+    fn message_menu_selection(
+        &mut self,
+        message: Snowflake,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let input = self.message_text.get(&message)?.read(cx);
+        let selection = self.timeline.text_selection.borrow().transcript();
+        if let Some(selection) = selection {
+            selection.for_message(message, input.content.len())?;
+            return Some(self.chat_selection_text(selection, cx));
+        }
+        input
+            .focus_handle(cx)
+            .is_focused(window)
+            .then(|| input.selected_text())
+            .flatten()
     }
 
     pub(super) fn perform_message_action(
@@ -355,7 +385,7 @@ impl Fluxer {
         {
             return;
         }
-        self.message_actions.menu = None;
+        let menu = self.message_actions.menu.take();
         match action {
             MessageAction::React => {
                 self.open_emoji(EmojiTarget::Reaction(message.id), anchor, window, cx)
@@ -378,9 +408,14 @@ impl Fluxer {
                 self.emoji_target = None;
             }
             MessageAction::Copy => {
-                cx.write_to_clipboard(ClipboardItem::new_string(
-                    chat_helpers::display_text(&message).into_owned(),
-                ));
+                let text = menu
+                    .filter(|menu| {
+                        menu.message.id == message.id
+                            && menu.message.channel_id == message.channel_id
+                    })
+                    .and_then(|menu| menu.selected_text)
+                    .unwrap_or_else(|| chat_helpers::display_text(&message).into_owned());
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
                 if let Some(focus) = self.message_actions.previous_focus.take() {
                     focus.focus(window);
                 }
@@ -661,7 +696,13 @@ impl Fluxer {
                 .when(index == menu.selected, |row| row.bg(rgb(0x443953)))
                 .hover(|row| row.bg(rgb(0x443953)))
                 .child(icon(action.icon(), 16.))
-                .child(action.label(message.pinned))
+                .child(
+                    if action == MessageAction::Copy && menu.selected_text.is_some() {
+                        "Copy selection"
+                    } else {
+                        action.label(message.pinned)
+                    },
+                )
                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                     if *hovered {
                         if let Some(menu) = this.message_actions.menu.as_mut() {

@@ -255,6 +255,27 @@ impl MessageDocument {
         }
         result
     }
+
+    pub(super) fn copy_transcript(
+        &self,
+        message: Snowflake,
+        selection: crate::timeline::TranscriptRange,
+        revealed: &BTreeSet<u32>,
+    ) -> String {
+        let Some(mut range) = selection.for_message(message, self.text.len()) else {
+            return String::new();
+        };
+        // Compact mode includes the author in the projected text. The
+        // transcript already prints the author's name in the header.
+        if let [author, separator, ..] = self.spans.as_slice()
+            && matches!(author.target, Some(MessageTarget::Author { .. }))
+            && author.range.start == 0
+        {
+            range.start = range.start.max(separator.range.end);
+        }
+        self.copy_range(range, revealed)
+    }
+
     fn push(&mut self, text: &str, run: &Run, emoji: Option<CustomEmoji>) {
         if text.is_empty() {
             return;
@@ -1313,6 +1334,29 @@ mod tests {
             let _ = doc.copy_range(start..start + 1, &revealed);
         }
     }
+
+    #[test]
+    fn compact_transcript_body_excludes_author_and_concealed_spoilers() {
+        use crate::timeline::{TextPosition, TextSelection};
+
+        let source = "café\nsecond line ||hidden||!";
+        let msg = message(source);
+        let doc = render(source).with_author_name(&msg, "Émilie");
+        let mut selection = TextSelection::default();
+        selection.begin(TextPosition {
+            message: msg.id,
+            offset: 0,
+        });
+        selection.extend(TextPosition {
+            message: Snowflake(msg.id.0 + 1),
+            offset: 1,
+        });
+        assert_eq!(
+            doc.copy_transcript(msg.id, selection.transcript().unwrap(), &BTreeSet::new()),
+            "café\nsecond line !"
+        );
+    }
+
     #[test]
     fn custom_emoji_resolves_registered_metadata_safe_media_and_copy_alias() {
         let mut state = ClientState::default();

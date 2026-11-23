@@ -2,10 +2,91 @@
 //! The chat viewport, with scroll positions anchored to message IDs.
 use fluxer_core::Snowflake;
 use gpui::{FocusHandle, ListAlignment, ListOffset, ListState, Pixels, px};
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, ops::Range, rc::Rc};
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct TextPosition {
+    pub message: Snowflake,
+    pub offset: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct TranscriptRange {
+    first: TextPosition,
+    last: TextPosition,
+}
+
+impl TranscriptRange {
+    pub fn contains(&self, message: Snowflake) -> bool {
+        (self.first.message..=self.last.message).contains(&message)
+    }
+
+    pub fn for_message(&self, message: Snowflake, len: usize) -> Option<Range<usize>> {
+        if !self.contains(message) {
+            return None;
+        }
+        let start = if message == self.first.message {
+            self.first.offset.min(len)
+        } else {
+            0
+        };
+        let end = if message == self.last.message {
+            self.last.offset.min(len)
+        } else {
+            len
+        };
+        (start < end).then_some(start..end)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct TextSelection {
+    endpoints: Option<(TextPosition, TextPosition)>,
+    pub dragging: bool,
+}
+
+impl TextSelection {
+    pub fn begin(&mut self, anchor: TextPosition) {
+        self.endpoints = Some((anchor, anchor));
+        self.dragging = true;
+    }
+
+    pub fn extend(&mut self, end: TextPosition) -> bool {
+        let Some((anchor, previous)) = self.endpoints else {
+            return false;
+        };
+        self.endpoints = Some((anchor, end));
+        end != previous && (anchor.message != previous.message || anchor.message != end.message)
+    }
+
+    pub fn clear(&mut self) -> bool {
+        let changed = self.transcript().is_some();
+        *self = Self::default();
+        changed
+    }
+
+    pub fn transcript(&self) -> Option<TranscriptRange> {
+        let (anchor, end) = self.endpoints?;
+        (anchor.message != end.message).then_some(TranscriptRange {
+            first: anchor.min(end),
+            last: anchor.max(end),
+        })
+    }
+
+    fn retain(&mut self, messages: &[Snowflake]) {
+        if let Some((anchor, end)) = self.endpoints
+            && [anchor, end]
+                .iter()
+                .any(|position| messages.binary_search(&position.message).is_err())
+        {
+            self.clear();
+        }
+    }
+}
 
 pub(super) struct Timeline {
     pub list: ListState,
+    pub text_selection: Rc<RefCell<TextSelection>>,
     channel: Option<Snowflake>,
     rows: Vec<Option<Snowflake>>,
     initial_top: Option<usize>,
@@ -20,6 +101,7 @@ impl Timeline {
                 px(180.),
                 px(80.),
             ),
+            text_selection: Rc::default(),
             channel: None,
             rows: Vec::new(),
             initial_top: None,
@@ -37,6 +119,7 @@ impl Timeline {
             self.channel = channel;
             self.rows.clear();
             self.list.reset(0);
+            self.text_selection.borrow_mut().clear();
         }
         let rows = messages
             .iter()
@@ -47,6 +130,7 @@ impl Timeline {
         if self.rows == rows {
             return;
         }
+        self.text_selection.borrow_mut().retain(messages);
         let old_top = self.list.logical_scroll_top();
         let anchor = self.rows.get(old_top.item_ix).copied().flatten();
         let prefix = self
@@ -122,6 +206,33 @@ impl Timeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcript_uses_partial_endpoints_in_either_drag_direction() {
+        let first = TextPosition {
+            message: Snowflake(2),
+            offset: 3,
+        };
+        let last = TextPosition {
+            message: Snowflake(4),
+            offset: 5,
+        };
+        for (anchor, end) in [(first, last), (last, first)] {
+            let mut selection = TextSelection::default();
+            selection.begin(anchor);
+            assert!(selection.transcript().is_none());
+            assert!(selection.extend(end));
+            let range = selection.transcript().unwrap();
+            assert_eq!(range.for_message(Snowflake(1), 10), None);
+            assert_eq!(range.for_message(first.message, 10), Some(3..10));
+            assert_eq!(range.for_message(first.message, 3), None);
+            assert_eq!(range.for_message(Snowflake(3), 10), Some(0..10));
+            assert_eq!(range.for_message(last.message, 10), Some(0..5));
+            assert_eq!(range.for_message(Snowflake(5), 10), None);
+            assert!(selection.extend(anchor));
+            assert!(selection.transcript().is_none());
+        }
+    }
 
     #[test]
     fn paginating_preserves_the_visible_message_and_offset() {

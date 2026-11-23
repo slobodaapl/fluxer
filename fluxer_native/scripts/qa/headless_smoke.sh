@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 if [[ $# != 4 ]]; then
-    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|media|stream|forum|private-call}" >&2
+    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|selection|media|stream|forum|private-call}" >&2
     exit 2
 fi
 umbriel="$(realpath "$1")"
@@ -13,7 +13,7 @@ artifacts="$(realpath -m "$3")"
 scenario="$4"
 script_dir="$(dirname "$(realpath "$0")")"
 case "$scenario" in
-    messages) demo=--demo-messages ;;
+    messages|selection) demo=--demo-messages ;;
     media) demo=--demo-media ;;
     stream) demo=--demo-stream ;;
     forum) demo=--demo ;;
@@ -135,6 +135,46 @@ case "$scenario" in
         screenshot send-button-sent
         wtype -s 150 'Sent by pressing Enter.' -k Return
         screenshot send-enter-sent
+        ;;
+    selection)
+        # Snap to the newest messages before selecting across several rows.
+        python3 "$script_dir/headless_pointer.py" 760 420 5000
+        screenshot newest
+        python3 "$script_dir/headless_pointer.py" 380 232 715 562
+        screenshot selected
+        wtype -s 150 -M ctrl -s 80 -k c -s 80 -m ctrl
+        timeout 3 wl-paste --no-newline > "$artifacts/selection.txt"
+        test "$(rg -c '^Alex — ' "$artifacts/selection.txt")" -eq 2
+        test "$(rg -c '^Sam — ' "$artifacts/selection.txt")" -eq 1
+        rg -Fxq "And the new day's messages group normally." "$artifacts/selection.txt"
+        if rg -Fq "private spoiler text" "$artifacts/selection.txt"; then
+            echo "Chat selection copied a concealed spoiler" >&2
+            exit 1
+        fi
+        python3 "$script_dir/headless_pointer.py" 760 420 -5000
+        screenshot scrolled-away
+        wl-copy "Clipboard sentinel"
+        wtype -s 150 -M ctrl -s 80 -k c -s 80 -m ctrl
+        timeout 3 wl-paste --no-newline > "$artifacts/selection-after-scroll.txt"
+        cmp "$artifacts/selection.txt" "$artifacts/selection-after-scroll.txt"
+        python3 "$script_dir/headless_pointer.py" 760 420 5000
+        screenshot newest-again
+        copy_from_menu() {
+            wl-copy "Clipboard sentinel"
+            python3 "$script_dir/headless_pointer.py" "$2" 260 right
+            screenshot "$1"
+            click "$(($2 + 85))" 377
+            timeout 3 wl-paste --no-newline > "$artifacts/$1.txt"
+        }
+        copy_from_menu multi-message-menu 540
+        cmp "$artifacts/selection.txt" "$artifacts/multi-message-menu.txt"
+        python3 "$script_dir/headless_pointer.py" 380 260 482 260
+        copy_from_menu single-message-selection-menu 435
+        rg -qx 'Custom emoji: ?' "$artifacts/single-message-selection-menu.txt"
+        click 835 260
+        copy_from_menu whole-message-menu 540
+        rg -Fxq 'Custom emoji: <:native_wave:123456789012345678> and standard Unicode 👋. **Formatting remains selectable.**' \
+            "$artifacts/whole-message-menu.txt"
         ;;
     media)
         click 590 350

@@ -1,9 +1,12 @@
 // Adapted from GPUI 0.2.2 input example (Apache-2.0), Zed Industries.
 use crate::context_menu::{ContextMenu, ContextMenuEvent, ContextMenuItem};
 use crate::message_markup::{MessageDocument, MessageTarget};
+use crate::timeline::{TextPosition, TextSelection, TranscriptRange};
 use std::ops::Range;
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    rc::Rc,
     sync::Arc,
 };
 #[path = "code_highlight.rs"]
@@ -333,6 +336,7 @@ pub struct TextInput {
     pub completion_enter_guard: bool,
     completion_dismissed: Option<composer_completion::Trigger>,
     message_document: Option<Arc<MessageDocument>>,
+    timeline_selection: Option<(fluxer_core::Snowflake, Rc<RefCell<TextSelection>>)>,
     highlighted: Vec<code_highlight::Token>,
     highlight_generation: u64,
     highlight_ticket: Option<code_highlight::Ticket>,
@@ -393,6 +397,7 @@ impl TextInput {
             completion_enter_guard: false,
             completion_dismissed: None,
             message_document: None,
+            timeline_selection: None,
             highlighted: Vec::new(),
             highlight_generation: 0,
             highlight_ticket: None,
@@ -459,7 +464,8 @@ impl TextInput {
         let focus = input.focus_handle.clone();
         cx.defer_in(window, move |_, window, cx| {
             cx.on_focus(&focus, window, |this, window, cx| {
-                if std::mem::take(&mut this.inline_pointer_focus) {
+                if std::mem::take(&mut this.inline_pointer_focus) || this.timeline_range().is_some()
+                {
                     return;
                 }
                 if this.inline_focus.is_some() {
@@ -1233,6 +1239,15 @@ impl TextInput {
         self.is_selecting = true;
 
         let index = self.index_for_mouse_position(event.position);
+        if let Some((message, selection)) = &self.timeline_selection
+            && event.click_count == 1
+            && !event.modifiers.shift
+        {
+            selection.borrow_mut().begin(TextPosition {
+                message: *message,
+                offset: index,
+            });
+        }
         self.inline_press = if self.message_document.is_some()
             && event.click_count == 1
             && !event.modifiers.shift
@@ -1370,19 +1385,29 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.secret && !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                if let Some(document) = self.message_document.as_ref() {
-                    if message_text::valid(document) {
-                        document.copy_range(self.selected_range.clone(), &self.revealed_spoilers)
-                    } else {
-                        String::new()
-                    }
-                } else {
-                    self.content[self.selected_range.clone()].to_string()
-                },
-            ));
+        if self.timeline_range().is_some() {
+            cx.propagate();
+            return;
         }
+        if let Some(text) = self.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    pub(super) fn selected_text(&self) -> Option<String> {
+        if self.secret || self.selected_range.is_empty() {
+            return None;
+        }
+        let range = self.selected_range.clone();
+        Some(if let Some(document) = self.message_document.as_ref() {
+            if message_text::valid(document) {
+                document.copy_range(range, &self.revealed_spoilers)
+            } else {
+                String::new()
+            }
+        } else {
+            self.content[range].to_string()
+        })
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only || self.secret {
@@ -1397,6 +1422,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.clear_completed_timeline_selection(cx);
         self.inline_focus = None;
         let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
@@ -1415,7 +1441,39 @@ impl TextInput {
         }
     }
 
-    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+    pub(super) fn set_timeline_selection(
+        &mut self,
+        message: fluxer_core::Snowflake,
+        selection: Rc<RefCell<TextSelection>>,
+    ) {
+        self.timeline_selection = Some((message, selection));
+    }
+
+    fn timeline_range(&self) -> Option<TranscriptRange> {
+        self.timeline_selection.as_ref()?.1.borrow().transcript()
+    }
+
+    fn clear_completed_timeline_selection(&self, cx: &mut Context<Self>) {
+        if let Some((_, selection)) = &self.timeline_selection {
+            let mut selection = selection.borrow_mut();
+            if !selection.dragging && selection.clear() {
+                cx.refresh_windows();
+            }
+        }
+    }
+
+    pub(super) fn copy_transcript(&self, range: TranscriptRange) -> String {
+        let Some((message, _)) = self.timeline_selection.as_ref() else {
+            return String::new();
+        };
+        self.message_document
+            .as_ref()
+            .map_or_else(String::new, |document| {
+                document.copy_transcript(*message, range, &self.revealed_spoilers)
+            })
+    }
+
+    pub(super) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() {
             return 0;
         }
@@ -1453,6 +1511,7 @@ impl TextInput {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.clear_completed_timeline_selection(cx);
         self.inline_focus = None;
         let offset = composer_tokens::snap(&self.composer_tokens(), offset);
         self.history.group = None;
@@ -2282,14 +2341,25 @@ impl Element for TextElement {
             .y
             .clamp(px(0.), (layout.height() - bounds.size.height).max(px(0.)));
         let mut selections = Vec::new();
-        let focused_inline = input
-            .inline_focus
+        let timeline_range = input
+            .timeline_selection
             .as_ref()
-            .filter(|_| input.focus_handle.is_focused(window));
-        let selection = if !input.selected_range.is_empty() {
-            Some(&input.selected_range)
+            .and_then(|(message, selection)| {
+                selection
+                    .borrow()
+                    .transcript()
+                    .map(|range| (*message, range))
+            });
+        let selection = if let Some((message, range)) = timeline_range {
+            range.for_message(message, input.content.len())
+        } else if input.focus_handle.is_focused(window) {
+            if input.selected_range.is_empty() {
+                input.inline_focus.clone()
+            } else {
+                Some(input.selected_range.clone())
+            }
         } else {
-            focused_inline
+            None
         };
         if let Some(range) = selection {
             for line in &layout.lines {
@@ -2481,9 +2551,7 @@ impl Element for TextElement {
                 }
             }
             for selection in prepaint.selections.drain(..) {
-                if focus.is_focused(window) {
-                    window.paint_quad(selection);
-                }
+                window.paint_quad(selection);
             }
             for line in &prepaint.layout.lines {
                 let origin = point(
@@ -2905,6 +2973,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-a", SelectAll, Some("SelectableText")),
         KeyBinding::new("ctrl-c", Copy, Some("SelectableText")),
         KeyBinding::new("cmd-c", Copy, Some("SelectableText")),
+        KeyBinding::new("ctrl-c", Copy, Some("ChatTimeline")),
+        KeyBinding::new("cmd-c", Copy, Some("ChatTimeline")),
         KeyBinding::new("enter", ActivateInline, Some("SelectableText")),
         KeyBinding::new("space", ActivateInline, Some("SelectableText")),
     ]);

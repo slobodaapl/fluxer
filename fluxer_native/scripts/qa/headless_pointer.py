@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Click a virtual Wayland pointer from within headless_smoke.sh."""
+"""Click, drag or scroll a virtual Wayland pointer in headless_smoke.sh."""
 import os
 from pathlib import Path
 import socket
@@ -32,10 +32,17 @@ def main():
     ):
         raise SystemExit("Run inside the private headless smoke session")
 
-    x, y = map(int, sys.argv[1:])
+    if len(sys.argv) not in (3, 4, 5):
+        raise SystemExit("Usage: headless_pointer.py X Y [right | SCROLL_PIXELS | END_X END_Y]")
+    x, y = map(int, sys.argv[1:3])
+    right_click = sys.argv[3:] == ["right"]
+    action = [] if right_click else list(map(int, sys.argv[3:]))
     width, height = 1280, 720
-    if not (0 <= x < width and 0 <= y < height):
-        raise SystemExit("Click is outside the 1280x720 headless output")
+    positions = [(x, y)]
+    if len(action) == 2:
+        positions.append(tuple(action))
+    if any(not (0 <= px < width and 0 <= py < height) for px, py in positions):
+        raise SystemExit("Pointer position is outside the 1280x720 headless output")
 
     manager_name = b"zwlr_virtual_pointer_manager_v1"
     # wl_display.get_registry and sync. Drain registry globals through the sync reply.
@@ -64,8 +71,24 @@ def main():
         timestamp = int(time.monotonic() * 1000) & 0xFFFFFFFF
         send(wayland, 5, 1, words(timestamp, x, y, width, height))
         send(wayland, 5, 4)
-        for state in (1, 0):
-            send(wayland, 5, 2, words(timestamp, 0x110, state))  # Linux BTN_LEFT
+        if len(action) == 1:
+            # A vertical finger scroll uses pixel deltas in Wayland fixed-point units.
+            send(wayland, 5, 5, words(1))
+            send(wayland, 5, 3, words(timestamp, 0, (action[0] * 256) & 0xFFFFFFFF))
+            send(wayland, 5, 4)
+            send(wayland, 5, 6, words(timestamp, 0))
+            send(wayland, 5, 4)
+        else:
+            button = 0x111 if right_click else 0x110  # Linux BTN_RIGHT / BTN_LEFT
+            send(wayland, 5, 2, words(timestamp, button, 1))
+            send(wayland, 5, 4)
+            if action:
+                end_x, end_y = action
+                time.sleep(0.1)
+                timestamp = int(time.monotonic() * 1000) & 0xFFFFFFFF
+                send(wayland, 5, 1, words(timestamp, end_x, end_y, width, height))
+                send(wayland, 5, 4)
+            send(wayland, 5, 2, words(timestamp, button, 0))
             send(wayland, 5, 4)
         send(wayland, 1, 0, words(6))
         for object_id, opcode, payload in reply:
@@ -74,7 +97,7 @@ def main():
             if object_id == 6 and opcode == 0:
                 break
         else:
-            raise SystemExit("Compositor disconnected before processing the click")
+            raise SystemExit("Compositor disconnected before processing the pointer input")
 
 
 if __name__ == "__main__":

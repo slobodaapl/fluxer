@@ -4,6 +4,50 @@ use crate::controls::{Icon, icon, icon_button, quiet_button};
 use crate::message_grouping::{
     COZY_AVATAR_SIZE, COZY_GUTTER, COZY_LINE_HEIGHT, COZY_SPACING_Y, message_layouts,
 };
+use crate::timeline::{TextPosition, TranscriptRange};
+use chrono::{DateTime, FixedOffset, Local, TimeDelta};
+
+#[derive(Default)]
+struct ChatTranscript {
+    text: String,
+    previous: Option<(Snowflake, Option<DateTime<FixedOffset>>)>,
+}
+
+impl ChatTranscript {
+    fn push(&mut self, author: Snowflake, name: &str, timestamp: &str, body: &str) {
+        let time = DateTime::parse_from_rfc3339(timestamp).ok();
+        let starts_group = self
+            .previous
+            .is_none_or(|(previous_author, previous_time)| {
+                previous_author != author
+                    || time
+                        .zip(previous_time)
+                        .is_some_and(|(time, previous_time)| {
+                            time - previous_time > TimeDelta::minutes(5)
+                        })
+            });
+
+        if self.previous.is_some() {
+            self.text.push('\n');
+            if starts_group {
+                self.text.push('\n');
+            }
+        }
+        if starts_group {
+            let time_label = match time {
+                Some(time) => time
+                    .with_timezone(&Local)
+                    .format("%b %-d, %Y %H:%M %:z")
+                    .to_string(),
+                None if timestamp.is_empty() => "Unknown time".into(),
+                None => timestamp.to_owned(),
+            };
+            self.text.push_str(&format!("{name} — {time_label}\n"));
+        }
+        self.text.push_str(body);
+        self.previous = Some((author, time));
+    }
+}
 
 impl Fluxer {
     fn sticker_message(&self, message: &Message) -> AnyElement {
@@ -102,6 +146,116 @@ impl Fluxer {
             .into_any_element()
     }
 
+    fn timeline_document(&mut self, message: &Message) -> Arc<message_markup::MessageDocument> {
+        let document = self.message_document(message, message_markup::MessageContext::Standard);
+        if fluxer_core::compact_messages(&self.state.user_settings) {
+            Arc::new(document.with_author_name(
+                message,
+                &self.streaming().name(message.author.display_name()),
+            ))
+        } else {
+            document
+        }
+    }
+
+    fn clear_chat_selection(
+        &mut self,
+        event: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.button == MouseButton::Left {
+            let mut selection = self.timeline.text_selection.borrow_mut();
+            let previous = selection.transcript();
+            selection.clear();
+            drop(selection);
+            if previous.is_some() {
+                self.redraw_chat_selection(previous, None, cx);
+            }
+        }
+    }
+
+    fn redraw_chat_selection(
+        &self,
+        previous: Option<TranscriptRange>,
+        current: Option<TranscriptRange>,
+        cx: &mut Context<Self>,
+    ) {
+        for (&id, input) in &self.message_text {
+            let len = input.read(cx).content.len();
+            if previous.and_then(|range| range.for_message(id, len))
+                != current.and_then(|range| range.for_message(id, len))
+            {
+                App::notify(cx, input.entity_id());
+            }
+        }
+    }
+
+    fn extend_chat_selection(&self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let mut selection = self.timeline.text_selection.borrow_mut();
+        if !selection.dragging {
+            return;
+        }
+        let viewport = self.timeline.list.viewport_bounds();
+        let row_bounds = self.message_actions.row_bounds.borrow();
+        // A bottom-aligned list stores its logical scroll position at the
+        // end of the history. Hit-test the rows GPUI actually painted.
+        let Some((&id, _)) = row_bounds
+            .iter()
+            .filter(|(_, bounds)| bounds.intersects(&viewport))
+            .min_by_key(|(_, bounds)| {
+                (bounds.top() - position.y)
+                    .max(position.y - bounds.bottom())
+                    .max(px(0.))
+            })
+        else {
+            return;
+        };
+        let offset = self
+            .message_text
+            .get(&id)
+            .map_or(0, |input| input.read(cx).index_for_mouse_position(position));
+        let previous = selection.transcript();
+        if selection.extend(TextPosition {
+            message: id,
+            offset,
+        }) {
+            let current = selection.transcript();
+            drop(selection);
+            self.redraw_chat_selection(previous, current, cx);
+        }
+    }
+
+    pub(super) fn chat_selection_text(
+        &mut self,
+        selection: TranscriptRange,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let mut transcript = ChatTranscript::default();
+        for message in self.visible_messages() {
+            if !selection.contains(message.id)
+                || pin_system_message::is_pin_system_message(&message)
+                || chat_helpers::display_text(&message).is_empty()
+            {
+                continue;
+            }
+            let body = if let Some(input) = self.message_text.get(&message.id) {
+                input.read(cx).copy_transcript(selection)
+            } else {
+                self.timeline_document(&message).copy_transcript(
+                    message.id,
+                    selection,
+                    &BTreeSet::new(),
+                )
+            };
+            if !body.trim().is_empty() {
+                let author = self.streaming().name(message.author.display_name());
+                transcript.push(message.author.id, &author, &message.timestamp, &body);
+            }
+        }
+        transcript.text
+    }
+
     fn chat_message_row(
         &mut self,
         message: Arc<Message>,
@@ -113,23 +267,18 @@ impl Fluxer {
         let is_pin = pin_system_message::is_pin_system_message(&message);
         let has_text = !is_pin && !chat_helpers::display_text(&message).is_empty();
         if has_text {
-            let document =
-                self.message_document(&message, message_markup::MessageContext::Standard);
-            let document = if fluxer_core::compact_messages(&self.state.user_settings) {
-                Arc::new(document.with_author_name(
-                    &message,
-                    &self.streaming().name(message.author.display_name()),
-                ))
-            } else {
-                document
-            };
+            let document = self.timeline_document(&message);
             if let Some(input) = self.message_text.get(&id) {
                 input.update(cx, |input, cx| {
+                    input.set_timeline_selection(id, self.timeline.text_selection.clone());
                     input.set_emoji_reduced_motion(self.interface.reduced_motion());
                     input.update_message_document(document, cx);
                 });
             } else {
                 let input = self.message_text_input(document, &message, window, cx);
+                input.update(cx, |input, _| {
+                    input.set_timeline_selection(id, self.timeline.text_selection.clone());
+                });
                 self.message_text.insert(id, input);
             }
         }
@@ -695,7 +844,6 @@ impl Fluxer {
         self.message_actions
             .row_focus
             .retain(|id, _| visible.contains(id));
-        self.message_actions.row_bounds.borrow_mut().clear();
         for id in &visible {
             self.message_actions
                 .row_focus
@@ -730,6 +878,7 @@ impl Fluxer {
         self.message_content.retain_documents(&retained);
         self.playback.retain_timeline(&messages);
         let rows = messages.into_iter().zip(layouts).collect::<Vec<_>>();
+        let row_bounds = self.message_actions.row_bounds.clone();
         let can_attach = self.attachment_block_reason().is_none();
         div()
             .id("chat-file-drop-target")
@@ -1095,6 +1244,47 @@ impl Fluxer {
                     .min_h_0()
                     .min_w_0()
                     .flex()
+                    .key_context("ChatTimeline")
+                    .capture_any_mouse_down(cx.listener(Self::clear_chat_selection))
+                    .on_mouse_down_out(cx.listener(Self::clear_chat_selection))
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            this.extend_chat_selection(event.position, cx);
+                        } else {
+                            this.timeline.text_selection.borrow_mut().dragging = false;
+                        }
+                    }))
+                    .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                        if event.button == MouseButton::Left {
+                            this.extend_chat_selection(event.position, cx);
+                            this.timeline.text_selection.borrow_mut().dragging = false;
+                        }
+                    }))
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, _| {
+                            this.timeline.text_selection.borrow_mut().dragging = false;
+                        }),
+                    )
+                    .on_action(cx.listener(|this, _: &input::Copy, _, cx| {
+                        let selection = this.timeline.text_selection.borrow().transcript();
+                        if let Some(selection) = selection {
+                            let text = this.chat_selection_text(selection, cx);
+                            if !text.is_empty() {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            }
+                        } else {
+                            cx.propagate();
+                        }
+                    }))
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |_, _, _, _| row_bounds.borrow_mut().clear(),
+                        )
+                        .absolute()
+                        .size(px(0.)),
+                    )
                     .child(
                         list(
                             self.timeline.list.clone(),
@@ -1573,5 +1763,48 @@ impl Fluxer {
             })
             .child(list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatTranscript;
+    use fluxer_core::Snowflake;
+
+    #[test]
+    fn transcript_groups_by_author_and_gap_between_consecutive_messages() {
+        let mut transcript = ChatTranscript::default();
+        for (author, time, body) in [
+            (1, "12:00:00", "First\nline break"),
+            (1, "12:05:00", "Exactly five minutes later"),
+            (1, "12:10:00", "Another five minutes later"),
+            (1, "12:15:00.001", "After a longer pause"),
+            (2, "12:15:01", "Different author with the same name"),
+        ] {
+            transcript.push(
+                Snowflake(author),
+                "Alex",
+                &format!("2026-11-11T{time}Z"),
+                body,
+            );
+        }
+        let groups = transcript.text.split("\n\n").collect::<Vec<_>>();
+        assert_eq!(groups.len(), 3);
+        let bodies = groups
+            .iter()
+            .map(|group| {
+                let (header, body) = group.split_once('\n').expect("group header");
+                assert!(header.starts_with("Alex — "));
+                body
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bodies,
+            [
+                "First\nline break\nExactly five minutes later\nAnother five minutes later",
+                "After a longer pause",
+                "Different author with the same name",
+            ],
+        );
     }
 }
