@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 if [[ $# != 4 ]]; then
-    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|selection|media|stream|fullscreen|forum|private-call}" >&2
+    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|selection|composer-keys|media|stream|fullscreen|forum|private-call}" >&2
     exit 2
 fi
 umbriel="$(realpath "$1")"
@@ -13,7 +13,7 @@ artifacts="$(realpath -m "$3")"
 scenario="$4"
 script_dir="$(dirname "$(realpath "$0")")"
 case "$scenario" in
-    messages|selection) demo=--demo-messages ;;
+    messages|selection|composer-keys) demo=--demo-messages ;;
     media) demo=--demo-media ;;
     stream|fullscreen) demo=--demo-stream ;;
     forum) demo=--demo ;;
@@ -179,6 +179,55 @@ case "$scenario" in
         copy_from_menu whole-message-menu 540
         rg -Fxq 'Custom emoji: <:native_wave:123456789012345678> and standard Unicode 👋. **Formatting remains selectable.**' \
             "$artifacts/whole-message-menu.txt"
+        ;;
+    composer-keys)
+        assert_clipboard() {
+            timeout 3 wl-paste --no-newline > "$artifacts/$1.txt"
+            printf '%s' "$2" | cmp - "$artifacts/$1.txt"
+        }
+        copy_draft() {
+            wtype -s 100 -M ctrl -k a -k c -m ctrl
+        }
+        click 505 639
+        wtype -s 100 "keep café" -M ctrl -k BackSpace -m ctrl
+        copy_draft
+        assert_clipboard word-backspace "keep "
+        wtype -s 100 -M ctrl -k z -m ctrl
+        copy_draft
+        assert_clipboard undo-word-backspace "keep café"
+        wtype -s 100 -k Home -M ctrl -k Delete -m ctrl
+        copy_draft
+        assert_clipboard word-delete " café"
+
+        wtype -s 100 alpha -M shift -k Return -m shift beta -M shift -k Return -m shift gamma
+        wtype -s 100 -M ctrl -k Home -k Down -M shift -k Down -m shift -k Insert -m ctrl
+        assert_clipboard paragraph-selection $'beta\n'
+        wtype -s 100 -M ctrl -k a -k b -m ctrl
+        copy_draft
+        assert_clipboard bold $'**alpha\nbeta\ngamma**'
+        wtype -s 100 -M ctrl -k b -m ctrl
+        copy_draft
+        assert_clipboard bold-toggle $'alpha\nbeta\ngamma'
+        wtype -s 100 -M ctrl -k z -m ctrl
+        copy_draft
+        assert_clipboard undo-bold-toggle $'**alpha\nbeta\ngamma**'
+
+        wtype -s 100 café -M ctrl -k a -M shift -k s -m shift -m ctrl
+        copy_draft
+        assert_clipboard strikethrough "~~café~~"
+
+        wl-copy "plain café"
+        wtype -s 100 -M ctrl -k a -M shift -k v -m shift -m ctrl
+        copy_draft
+        assert_clipboard plain-text "plain café"
+        wl-copy "Clipboard sentinel"
+        wtype -s 100 -M shift -k Delete -m shift
+        assert_clipboard cut-alias "plain café"
+        wl-copy "insert paste"
+        wtype -s 100 -M shift -k Insert -m shift
+        copy_draft
+        assert_clipboard paste-alias "insert paste"
+        screenshot composer-shortcuts
         ;;
     media)
         click 590 350

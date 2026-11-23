@@ -316,6 +316,7 @@ actions!(
         End,
         ShowCharacterPalette,
         Paste,
+        PastePlainText,
         Cut,
         Copy,
         Undo,
@@ -325,6 +326,23 @@ actions!(
         Quit,
     ]
 );
+
+#[derive(Clone, Copy, Debug, PartialEq, gpui::Action)]
+#[action(namespace = text_input, no_json)]
+struct DeleteWord {
+    forward: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, gpui::Action)]
+#[action(namespace = text_input, no_json)]
+struct MoveParagraph {
+    forward: bool,
+    extend: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, gpui::Action)]
+#[action(namespace = text_input, no_json)]
+struct FormatSelection(&'static str);
 
 pub struct TextInput {
     context_menu: Option<Entity<ContextMenu>>,
@@ -1069,6 +1087,18 @@ impl TextInput {
     fn document_end(&mut self, _: &DocumentEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(self.content.len(), cx);
     }
+    fn move_paragraph(&mut self, action: &MoveParagraph, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            cx.propagate();
+            return;
+        }
+        let offset = paragraph_offset(&self.content, self.cursor_offset(), action.forward);
+        if action.extend {
+            self.select_to(offset, cx);
+        } else {
+            self.move_to(offset, cx);
+        }
+    }
     fn select_document_home(
         &mut self,
         _: &SelectDocumentHome,
@@ -1197,21 +1227,51 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        let range = if self.selected_range.is_empty() {
-            self.previous_boundary(self.cursor_offset())..self.cursor_offset()
-        } else {
-            self.selected_range.clone()
-        };
-        self.replace_text_in_range(Some(self.range_to_utf16(&range)), "", window, cx)
+        self.delete_to(self.previous_boundary(self.cursor_offset()), window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_to(self.next_boundary(self.cursor_offset()), window, cx);
+    }
+
+    fn delete_word(&mut self, action: &DeleteWord, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_composing() {
+            cx.propagate();
+            return;
+        }
+        let boundary = word_offset(&self.content, self.cursor_offset(), action.forward);
+        self.history.group = None;
+        self.delete_to(boundary, window, cx);
+        self.history.group = None;
+    }
+
+    fn delete_to(&mut self, boundary: usize, window: &mut Window, cx: &mut Context<Self>) {
         let range = if self.selected_range.is_empty() {
-            self.cursor_offset()..self.next_boundary(self.cursor_offset())
+            let caret = self.cursor_offset();
+            caret.min(boundary)..caret.max(boundary)
         } else {
             self.selected_range.clone()
         };
-        self.replace_text_in_range(Some(self.range_to_utf16(&range)), "", window, cx)
+        self.replace_text_in_range(Some(self.range_to_utf16(&range)), "", window, cx);
+    }
+
+    fn format_selection(
+        &mut self,
+        action: &FormatSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() || self.is_composing() {
+            cx.propagate();
+            return;
+        }
+        let range =
+            composer_tokens::edit_range(&self.composer_tokens(), self.selected_range.clone());
+        let (edit, text, selection) = markdown_wrap_edit(&self.content, range, action.0);
+        let reversed = self.selection_reversed;
+        self.replace_text_in_range(Some(self.range_to_utf16(&edit)), &text, window, cx);
+        self.selected_range = selection;
+        self.selection_reversed = reversed;
     }
 
     fn on_mouse_down(
@@ -1370,12 +1430,25 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        self.paste_clipboard(self.attachment_paste && !self.secret, window, cx);
+    }
+
+    fn paste_plain_text(
+        &mut self,
+        _: &PastePlainText,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.paste_clipboard(false, window, cx);
+    }
+
+    fn paste_clipboard(&mut self, allow_image: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only {
             return;
         }
         self.history.group = None;
         if let Some(item) = cx.read_from_clipboard() {
-            match paste_payload(item, self.attachment_paste && !self.secret) {
+            match paste_payload(item, allow_image) {
                 PastePayload::Text(text) => self.replace_text_in_range(None, &text, window, cx),
                 PastePayload::Image(image) => cx.emit(image),
                 PastePayload::Empty => {}
@@ -2791,6 +2864,8 @@ impl Render for TextInput {
                 "SelectableText InputContextMenu"
             } else if self.chat_picker {
                 "TextInput ChatPicker InputContextMenu"
+            } else if self.attachment_paste {
+                "TextInput MultilineInput InputContextMenu MessageComposer"
             } else if self.multiline {
                 "TextInput MultilineInput InputContextMenu"
             } else {
@@ -2806,6 +2881,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::activate_inline))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::up))
@@ -2818,6 +2894,8 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::document_end))
             .on_action(cx.listener(Self::select_document_home))
             .on_action(cx.listener(Self::select_document_end))
+            .on_action(cx.listener(Self::move_paragraph))
+            .on_action(cx.listener(Self::format_selection))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
@@ -2830,6 +2908,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::end))
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::paste))
+            .on_action(cx.listener(Self::paste_plain_text))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::undo))
@@ -2895,6 +2974,16 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-f10", OpenTextContextMenu, Some("InputContextMenu")),
         KeyBinding::new("backspace", Backspace, Some("TextInput")),
         KeyBinding::new("delete", Delete, Some("TextInput")),
+        KeyBinding::new(
+            "ctrl-backspace",
+            DeleteWord { forward: false },
+            Some("TextInput"),
+        ),
+        KeyBinding::new(
+            "ctrl-delete",
+            DeleteWord { forward: true },
+            Some("TextInput"),
+        ),
         KeyBinding::new("left", Left, Some("TextInput")),
         KeyBinding::new("right", Right, Some("TextInput")),
         KeyBinding::new("up", Up, Some("MultilineInput")),
@@ -2920,6 +3009,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-shift-right", SelectWordRight, Some("TextInput")),
         KeyBinding::new("ctrl-a", SelectAll, Some("TextInput")),
         KeyBinding::new("ctrl-v", Paste, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-v", PastePlainText, Some("TextInput")),
+        KeyBinding::new("ctrl-insert", Copy, Some("TextInput")),
+        KeyBinding::new("shift-insert", Paste, Some("TextInput")),
+        KeyBinding::new("shift-delete", Cut, Some("TextInput")),
         KeyBinding::new("ctrl-c", Copy, Some("TextInput")),
         KeyBinding::new("ctrl-x", Cut, Some("TextInput")),
         KeyBinding::new("ctrl-z", Undo, Some("TextInput")),
@@ -2927,12 +3020,45 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("ctrl-y", Redo, Some("TextInput")),
         KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
         KeyBinding::new("cmd-v", Paste, Some("TextInput")),
+        KeyBinding::new("cmd-shift-v", PastePlainText, Some("TextInput")),
         KeyBinding::new("cmd-c", Copy, Some("TextInput")),
         KeyBinding::new("cmd-x", Cut, Some("TextInput")),
         KeyBinding::new("cmd-z", Undo, Some("TextInput")),
         KeyBinding::new("cmd-shift-z", Redo, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
+        KeyBinding::new(
+            "ctrl-up",
+            MoveParagraph {
+                forward: false,
+                extend: false,
+            },
+            Some("MultilineInput"),
+        ),
+        KeyBinding::new(
+            "ctrl-down",
+            MoveParagraph {
+                forward: true,
+                extend: false,
+            },
+            Some("MultilineInput"),
+        ),
+        KeyBinding::new(
+            "ctrl-shift-up",
+            MoveParagraph {
+                forward: false,
+                extend: true,
+            },
+            Some("MultilineInput"),
+        ),
+        KeyBinding::new(
+            "ctrl-shift-down",
+            MoveParagraph {
+                forward: true,
+                extend: true,
+            },
+            Some("MultilineInput"),
+        ),
         KeyBinding::new("left", Left, Some("SelectableText")),
         KeyBinding::new("right", Right, Some("SelectableText")),
         KeyBinding::new("up", Up, Some("SelectableText")),
@@ -2978,8 +3104,33 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", ActivateInline, Some("SelectableText")),
         KeyBinding::new("space", ActivateInline, Some("SelectableText")),
     ]);
+    for (key, marker) in [("b", "**"), ("i", "*"), ("u", "__"), ("shift-s", "~~")] {
+        for modifier in ["ctrl", "cmd"] {
+            cx.bind_keys([KeyBinding::new(
+                &format!("{modifier}-{key}"),
+                FormatSelection(marker),
+                Some("MessageComposer"),
+            )]);
+        }
+    }
     #[cfg(target_os = "macos")]
     cx.bind_keys([
+        KeyBinding::new(
+            "alt-backspace",
+            DeleteWord { forward: false },
+            Some("TextInput"),
+        ),
+        KeyBinding::new(
+            "alt-delete",
+            DeleteWord { forward: true },
+            Some("TextInput"),
+        ),
+        KeyBinding::new(
+            "cmd-backspace",
+            DeleteWord { forward: false },
+            Some("MessageComposer"),
+        ),
+        KeyBinding::new("cmd-alt-shift-v", PastePlainText, Some("TextInput")),
         KeyBinding::new("cmd-up", DocumentHome, Some("TextInput")),
         KeyBinding::new("cmd-down", DocumentEnd, Some("TextInput")),
         KeyBinding::new("cmd-shift-up", SelectDocumentHome, Some("TextInput")),
@@ -3024,6 +3175,62 @@ fn word_offset(text: &str, offset: usize, forward: bool) -> usize {
             .take_while(|start| *start < offset)
             .last()
             .unwrap_or(0)
+    }
+}
+
+fn paragraph_offset(text: &str, offset: usize, forward: bool) -> usize {
+    if forward {
+        text[offset..]
+            .find('\n')
+            .map_or(text.len(), |next| offset + next + 1)
+    } else {
+        let prefix = &text[..offset];
+        prefix
+            .strip_suffix('\n')
+            .unwrap_or(prefix)
+            .rfind('\n')
+            .map_or(0, |previous| previous + 1)
+    }
+}
+
+fn markdown_wrap_edit(
+    text: &str,
+    selection: Range<usize>,
+    marker: &str,
+) -> (Range<usize>, String, Range<usize>) {
+    let selected = &text[selection.clone()];
+    let width = marker.len();
+    let marker_byte = marker.as_bytes()[0];
+    let is_format_run = |count: usize| {
+        if marker == "*" {
+            count % 2 == 1
+        } else {
+            count >= width
+        }
+    };
+    let leading = |text: &str| text.bytes().take_while(|byte| *byte == marker_byte).count();
+    let trailing = |text: &str| {
+        text.bytes()
+            .rev()
+            .take_while(|byte| *byte == marker_byte)
+            .count()
+    };
+
+    let left = leading(selected);
+    let right = trailing(selected);
+    if is_format_run(left) && is_format_run(right) && selected.len() >= left + right {
+        let inner = &selected[width..selected.len() - width];
+        let restored = selection.start..selection.start + inner.len();
+        (selection, inner.to_owned(), restored)
+    } else if is_format_run(trailing(&text[..selection.start]))
+        && is_format_run(leading(&text[selection.end..]))
+    {
+        let start = selection.start - width;
+        let end = selection.end + width;
+        (start..end, selected.to_owned(), start..end - 2 * width)
+    } else {
+        let restored = selection.start + width..selection.end + width;
+        (selection, format!("{marker}{selected}{marker}"), restored)
     }
 }
 
@@ -3134,12 +3341,47 @@ mod tests {
         context_click_selection, input_menu_items,
     };
     use super::{
-        PastePayload, grapheme_offset, logical_lines, marked_selection, normalize_insert,
-        paste_payload, row_for_index, selection_unit, utf16_offset, visual_ranges, word_offset,
+        PastePayload, grapheme_offset, logical_lines, markdown_wrap_edit, marked_selection,
+        normalize_insert, paragraph_offset, paste_payload, row_for_index, selection_unit,
+        utf16_offset, visual_ranges, word_offset,
     };
     use crate::context_menu::ContextMenuItem;
     use gpui::ClipboardItem;
     use std::ops::Range;
+
+    #[test]
+    fn paragraph_shortcuts_use_explicit_newlines_and_valid_unicode_offsets() {
+        let text = "café\n雪\n\nend";
+        assert_eq!(paragraph_offset(text, 3, false), 0);
+        assert_eq!(paragraph_offset(text, 3, true), 6);
+        assert_eq!(paragraph_offset(text, 6, false), 0);
+        assert_eq!(paragraph_offset(text, 9, false), 6);
+        assert_eq!(paragraph_offset(text, 9, true), 10);
+        assert_eq!(paragraph_offset(text, 10, true), 11);
+        assert_eq!(paragraph_offset(text, 11, false), 10);
+        assert_eq!(paragraph_offset(text, 11, true), text.len());
+    }
+
+    #[test]
+    fn formatting_toggles_keep_unicode_selected_and_preserve_nested_bold() {
+        assert_eq!(
+            markdown_wrap_edit("café", 0..5, "**"),
+            (0..5, "**café**".into(), 2..7)
+        );
+        assert_eq!(
+            markdown_wrap_edit("**café**", 0..9, "**"),
+            (0..9, "café".into(), 0..5)
+        );
+        assert_eq!(
+            markdown_wrap_edit("**café**", 2..7, "*"),
+            (2..7, "*café*".into(), 3..8)
+        );
+        assert_eq!(
+            markdown_wrap_edit("***café***", 3..8, "*"),
+            (2..9, "café".into(), 2..7)
+        );
+    }
+
     fn edit_snapshot(text: &str, selection: Range<usize>, reversed: bool) -> EditSnapshot {
         EditSnapshot {
             text: text.to_owned().into(),
