@@ -13,7 +13,7 @@ use crate::audio_contract::DIRECT_CAPTURE_MAX_READ_SAMPLES;
 use crate::direct_buffer::CapturedFrame;
 use crate::direct_buffer::DirectAudioBuffer;
 use crate::pipewire::common::{
-    InventorySnapshot, READY_TIMEOUT_MS, daemon_reachable as common_daemon_reachable,
+    InventorySnapshot, LinkKey, READY_TIMEOUT_MS, daemon_reachable as common_daemon_reachable,
     next_direct_sink_name,
 };
 use crate::pipewire::event_loop::{
@@ -99,6 +99,7 @@ pub struct PipeWireDirectCapture {
     tx: PwSender<DirectCommand>,
     thread: Mutex<Option<JoinHandle<()>>>,
     identity: Mutex<SelfIdentity>,
+    owned_links: Arc<Mutex<Vec<LinkKey>>>,
 }
 
 impl PipeWireDirectCapture {
@@ -118,7 +119,7 @@ impl PipeWireDirectCapture {
         let inputs = DirectWorkerInputs {
             samples: samples.clone(),
             inventory,
-            owned_link_snapshot,
+            owned_link_snapshot: owned_link_snapshot.clone(),
             sink_node_name,
             clock,
         };
@@ -135,6 +136,7 @@ impl PipeWireDirectCapture {
                 tx,
                 thread: Mutex::new(Some(handle)),
                 identity: Mutex::new(SelfIdentity::default()),
+                owned_links: owned_link_snapshot,
             }),
             _ => {
                 let _ = tx.send(DirectCommand::Shutdown);
@@ -187,6 +189,13 @@ impl PipeWireDirectCapture {
             channels: meta.channels,
             timestamp_us: meta.timestamp_us,
         })
+    }
+
+    pub fn has_sources(&self) -> Option<bool> {
+        self.owned_links
+            .try_lock()
+            .ok()
+            .map(|links| !links.is_empty())
     }
 
     pub fn stop(&self) {

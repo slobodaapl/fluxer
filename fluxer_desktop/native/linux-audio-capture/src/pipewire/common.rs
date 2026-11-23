@@ -142,7 +142,9 @@ fn client_identity_props(client: &PropMap) -> PropMap {
 }
 
 fn is_client_identity_key(key: &str) -> bool {
-    key.starts_with("application.") || key.starts_with("pipewire.sec.")
+    key.starts_with("application.")
+        || key.starts_with("pipewire.sec.")
+        || key == "pipewire.access.portal.app_id"
 }
 
 pub(crate) struct MetadataWatch {
@@ -168,6 +170,7 @@ pub(crate) fn is_routable_media_class(class: &str) -> bool {
             | MEDIA_CLASS_CAPTURE_STREAM
             | "Audio/Source"
             | "Audio/Sink"
+            | "Audio/Sink/Virtual"
     )
 }
 

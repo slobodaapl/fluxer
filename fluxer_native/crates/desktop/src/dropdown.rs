@@ -12,6 +12,7 @@ pub struct Selected(pub String);
 pub struct Dropdown {
     label: &'static str,
     options: Vec<(String, String)>,
+    section_headers: Vec<(usize, &'static str)>,
     device_inventory: Option<Vec<(String, String)>>,
     selected: Option<String>,
     open: bool,
@@ -43,6 +44,7 @@ impl Dropdown {
         Self {
             label,
             options,
+            section_headers: Vec::new(),
             device_inventory: None,
             selected,
             open: false,
@@ -145,8 +147,26 @@ impl Dropdown {
         // Preserve the exact selection, even if unplugged: displaying an
         // unavailable choice must never silently switch a live microphone.
         self.options = options;
+        self.section_headers.clear();
         self.open = false;
         cx.notify();
+    }
+
+    pub fn set_sections(
+        &mut self,
+        sections: impl IntoIterator<Item = (&'static str, Vec<(String, String)>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut options = Vec::new();
+        let mut headers = Vec::new();
+        for (label, entries) in sections {
+            if !entries.is_empty() {
+                headers.push((options.len(), label));
+                options.extend(entries);
+            }
+        }
+        self.set_options(options, cx);
+        self.section_headers = headers;
     }
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -349,7 +369,7 @@ impl Render for Dropdown {
                                                     |(index, (id, label))| {
                                                         let selected =
                                                             Some(id.as_str()) == self.selected();
-                                                        div()
+                                                        let row = div()
                                                             .id(index)
                                                             .h(px(34.))
                                                             .px_2()
@@ -387,7 +407,35 @@ impl Render for Dropdown {
                                                                     cx.stop_propagation();
                                                                     this.choose(index, cx);
                                                                 },
-                                                            ))
+                                                            ));
+                                                        // Keep each header and its first option in
+                                                        // the same scroll item. Selection and
+                                                        // keyboard indexes still count options only.
+                                                        if let Some((_, header)) = self
+                                                            .section_headers
+                                                            .iter()
+                                                            .find(|(start, _)| *start == index)
+                                                        {
+                                                            div()
+                                                                .child(
+                                                                    div()
+                                                                        .px_2()
+                                                                        .pt_2()
+                                                                        .pb_1()
+                                                                        .text_size(px(12.))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .text_color(rgb(
+                                                                            super::MUTED,
+                                                                        ))
+                                                                        .child(*header),
+                                                                )
+                                                                .child(row)
+                                                                .into_any_element()
+                                                        } else {
+                                                            row.into_any_element()
+                                                        }
                                                     },
                                                 )),
                                         ),

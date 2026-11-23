@@ -9,7 +9,7 @@ for executable in dbus-run-session pipewire wireplumber pipewire-pulse pactl pyt
     command -v "$executable" >/dev/null || { printf 'Missing executable %s\n' "$executable" >&2; exit 1; }
 done
 if [[ "${2:-}" != --preflight ]]; then
-    for executable in cargo curl timeout pacat pw-dump; do
+    for executable in cargo curl timeout pacat pw-dump pw-loopback; do
         command -v "$executable" >/dev/null || { printf 'Missing executable %s\n' "$executable" >&2; exit 1; }
     done
 fi
@@ -96,7 +96,7 @@ for scenario in loopback microphone output watch share; do
         microphone) script=test_microphone_capture.py ;;
         output) script=test_output_routing.py; args=(--media) ;;
         watch) script=test_output_routing.py; args=(--screen-watch) ;;
-        share) script=test_shared_audio_capture.py ;;
+        share) script=test_shared_audio_capture.py; args=(--verify-system-isolation) ;;
     esac
     if timeout --kill-after=10s "${FLUXER_AUDIO_SMOKE_TIMEOUT:-160s}" \
         python3 "$qa_scripts/$script" "${args[@]}" > "$qa_artifacts/audio-$scenario.log" 2>&1; then

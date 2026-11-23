@@ -77,8 +77,10 @@ struct VoiceConnectJob {
     task: JoinHandle<(MediaEngine, Result<MediaEvents>)>,
 }
 
+#[derive(Default)]
 struct PendingShare {
     audio: Option<SharedAudioSelection>,
+    follow_window_audio: bool,
 }
 
 struct ThreadCreation {
@@ -2973,7 +2975,10 @@ impl Worker {
                     return Err("Screen sharing on this platform supports video only".into());
                 }
                 options.validate().map_err(error)?;
-                self.pending_share = Some(PendingShare { audio });
+                self.pending_share = Some(PendingShare {
+                    audio,
+                    follow_window_audio: options.follow_window_audio,
+                });
                 self.active_share_audio = false;
                 self.state.voice.screen_share = false;
                 self.snapshot();
@@ -5516,8 +5521,16 @@ impl Worker {
             let Some(request) = self.pending_share.take() else {
                 return Ok(());
             };
-            let has_audio = request.audio.is_some();
-            let audio_started = if let Some(selection) = request.audio {
+            let automatic = request.audio.is_none() && request.follow_window_audio;
+            let selection = request.audio.or_else(|| {
+                if automatic {
+                    self.media.as_ref()?.screen_audio_selection()
+                } else {
+                    None
+                }
+            });
+            let has_audio = selection.is_some();
+            let audio_started = if let Some(selection) = selection {
                 match self.media.as_mut() {
                     Some(media) => media.start_shared_audio(selection).await.map_err(error),
                     None => Err("Screen-share audio transport is unavailable".into()),
@@ -5525,7 +5538,12 @@ impl Worker {
             } else {
                 Ok(())
             };
-            self.complete_share_start(has_audio, audio_started).await?;
+            if automatic && let Err(message) = audio_started {
+                self.emit(Event::Error(format!("Window audio unavailable: {message}")));
+                self.complete_share_start(false, Ok(())).await?;
+            } else {
+                self.complete_share_start(has_audio, audio_started).await?;
+            }
         } else {
             // A queued stop from the previous source must not stop its live replacement.
             if running {

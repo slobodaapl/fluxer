@@ -112,9 +112,9 @@ use fluxer_core::{
     ChannelType, ClientState, Message, Snowflake, VoiceParticipant, can_send_message,
 };
 use fluxer_media::{
-    AudioApplication, AudioMixSettings, AudioSettings, InputMode, MediaEvent,
-    NoiseSuppressionBackend, ParticipantAudioSettings, ScreenShareOptions, ScreenSource,
-    ScreenSourceKind, SharedAudioSelection, SharedAudioSettings, VideoSource,
+    AudioMixSettings, AudioSettings, InputMode, MediaEvent, NoiseSuppressionBackend,
+    ParticipantAudioSettings, ScreenShareOptions, ScreenSource, ScreenSourceKind,
+    SharedAudioSelection, SharedAudioSettings, VideoSource,
 };
 use gpui::{prelude::*, *};
 use image_viewer::ImageViewer;
@@ -317,7 +317,10 @@ fn picker(
 }
 
 fn screen_source_id(source: &ScreenSource) -> String {
-    format!("{:?}:{}", source.kind, source.id)
+    match &source.wayland_id {
+        Some(identifier) => format!("wayland:{:?}:{identifier}", source.kind),
+        None => format!("{:?}:{}", source.kind, source.id),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -473,7 +476,6 @@ struct Fluxer {
     fps_picker: Entity<Dropdown>,
     resolution_picker: Entity<Dropdown>,
     screen_picker: Entity<Dropdown>,
-    share_audio_picker: Entity<Dropdown>,
     sources: Vec<ScreenSource>,
     share_fps: u32,
     share_size: (u32, u32),
@@ -499,9 +501,10 @@ struct Fluxer {
     participants: BTreeMap<String, (String, ParticipantAudioSettings)>,
     active_speakers: BTreeSet<String>,
     available_streams: BTreeSet<String>,
-    applications: Vec<AudioApplication>,
-    shared_audio: bool,
     share_audio_enabled: bool,
+    share_portal_audio: bool,
+    shared_audio: bool,
+    shared_audio_has_source: bool,
     shared_audio_settings: SharedAudioSettings,
     testing_microphone: bool,
     levels: (f32, f32),
@@ -708,13 +711,6 @@ impl Fluxer {
                 cx,
             ),
             screen_picker: picker("Display or window", &[], None, window, cx),
-            share_audio_picker: picker(
-                "Audio source",
-                &[("system", "System audio")],
-                Some("system"),
-                window,
-                cx,
-            ),
             sources: Vec::new(),
             share_fps: 30,
             share_size: (1920, 1080),
@@ -740,9 +736,10 @@ impl Fluxer {
             participants: BTreeMap::new(),
             active_speakers: BTreeSet::new(),
             available_streams: BTreeSet::new(),
-            applications: Vec::new(),
+            share_audio_enabled: true,
+            share_portal_audio: false,
             shared_audio: false,
-            share_audio_enabled: fluxer_media::MediaEngine::shared_audio_supported(),
+            shared_audio_has_source: false,
             shared_audio_settings: SharedAudioSettings::default(),
             testing_microphone: false,
             levels: (0., 0.),
@@ -849,10 +846,8 @@ impl Fluxer {
             },
         )
         .detach();
-        for dropdown in [&view.screen_picker, &view.share_audio_picker] {
-            cx.subscribe(dropdown, |_, _, _: &Selected, cx| cx.notify())
-                .detach();
-        }
+        cx.subscribe(&view.screen_picker, |_, _, _: &Selected, cx| cx.notify())
+            .detach();
         cx.subscribe(&view.search_ui.scope, |this, _, _: &Selected, cx| {
             this.change_search_scope(cx)
         })
@@ -917,7 +912,6 @@ impl Fluxer {
                     &this.fps_picker,
                     &this.resolution_picker,
                     &this.screen_picker,
-                    &this.share_audio_picker,
                 ] {
                     picker.update(cx, |picker, cx| picker.dismiss(cx));
                 }
@@ -1799,13 +1793,29 @@ impl Fluxer {
                     .join(" · ");
                 }
                 Event::ScreenSources(sources) => {
+                    let options = |kind| {
+                        sources
+                            .iter()
+                            .filter(|source| source.kind == kind)
+                            .map(|source| {
+                                let label = if kind == ScreenSourceKind::Screen {
+                                    source
+                                        .label
+                                        .strip_prefix("Display · ")
+                                        .unwrap_or(&source.label)
+                                } else {
+                                    &source.label
+                                };
+                                (screen_source_id(source), label.to_owned())
+                            })
+                            .collect()
+                    };
                     self.screen_picker.update(cx, |picker, cx| {
-                        picker.set_options(
-                            sources
-                                .iter()
-                                .filter(|source| source.kind != ScreenSourceKind::SystemPicker)
-                                .map(|s| (screen_source_id(s), s.label.clone()))
-                                .collect(),
+                        picker.set_sections(
+                            [
+                                ("Displays", options(ScreenSourceKind::Screen)),
+                                ("Applications", options(ScreenSourceKind::Window)),
+                            ],
                             cx,
                         )
                     });
@@ -1843,18 +1853,13 @@ impl Fluxer {
                         }
                     }
                 }
-                Event::AudioApplications(apps) => {
-                    let options = std::iter::once(("system".into(), "System audio".into()))
-                        .chain(
-                            apps.iter()
-                                .map(|app| (format!("app:{}", app.process_id), app.label.clone())),
-                        )
-                        .collect();
-                    self.share_audio_picker
-                        .update(cx, |picker, cx| picker.set_options(options, cx));
-                    self.applications = apps;
+                Event::AudioApplications(_) => {}
+                Event::SharedAudioStatus(active) => {
+                    self.shared_audio = active;
+                    if !active {
+                        self.shared_audio_has_source = false;
+                    }
                 }
-                Event::SharedAudioStatus(active) => self.shared_audio = active,
                 Event::MessageEdited {
                     channel_id,
                     content,
@@ -2061,6 +2066,9 @@ impl Fluxer {
                     MediaEvent::ScreenShareStopped => {
                         self.sharing = false;
                         self.retire_local_preview(VideoSource::ScreenShare, cx);
+                    }
+                    MediaEvent::SharedAudioSources(linked) => {
+                        self.shared_audio_has_source = linked;
                     }
                     MediaEvent::VideoEnded {
                         track_id,
@@ -3420,21 +3428,24 @@ impl Fluxer {
     }
 
     fn start_screen_share(&mut self, source: ScreenSource, cx: &mut Context<Self>) {
-        let audio =
-            if self.share_audio_enabled && fluxer_media::MediaEngine::shared_audio_supported() {
-                let Some(selection) = self.selected_share_audio(cx) else {
-                    self.error = Some("Choose an available audio source before sharing.".into());
-                    cx.notify();
-                    return;
-                };
-                Some(selection)
+        let supported = fluxer_media::MediaEngine::shared_audio_supported();
+        let include_audio = supported
+            && if source.kind == ScreenSourceKind::SystemPicker {
+                self.share_portal_audio
             } else {
-                None
+                self.share_audio_enabled
             };
+        let follow_window_audio = include_audio && source.kind == ScreenSourceKind::Window;
+        let audio = (include_audio && !follow_window_audio).then_some(SharedAudioSelection::System);
+        if include_audio && self.shared_audio_settings.muted {
+            self.shared_audio_settings.muted = false;
+            self.command(Command::SetSharedAudio(self.shared_audio_settings), cx);
+        }
         self.command(
             Command::StartShare {
                 options: ScreenShareOptions {
                     source,
+                    follow_window_audio,
                     fps: self.share_fps,
                     max_width: self.share_size.0,
                     max_height: self.share_size.1,

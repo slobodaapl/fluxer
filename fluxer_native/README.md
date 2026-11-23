@@ -145,18 +145,24 @@ Your camera and screen share appear as previews in the call. Right-click your
 own participant row to show or hide each preview independently while capture
 continues.
 
-On Linux, the sharing pane enables **Include audio** by default and lets you
-choose system audio or one playback application before opening the system
-screen/window picker. Video and the selected audio start together after screen
-capture succeeds. Turning Include audio off starts an explicit video-only share.
+On Linux, choose a display or window in the share picker and leave
+**Include audio** enabled. A window shares its app's playback. A display shares
+desktop playback. Wayland uses the selected toplevel's app ID or the matching
+XWayland process. Steam and Proton audio can be matched by the game's Steam app
+ID even when the playback process has a Wine name. X11 uses the selected
+window's process.
+
+On Wayland compositors without direct source selection, the system picker
+offers desktop audio as an opt-in because the portal does not report the owning
+app. PipeWire captures original playback streams and excludes Fluxer playback
+and loopback mixes in both modes. Audio starts after the first video frame.
 The voice panel reports whether audio is shared and offers a stream-audio mute
 button. Microphone mute and deafen do not mute the outgoing stream; use its own
 mute control. Stop sharing releases both video and audio.
 
-If requested audio cannot start, sharing stops with an error instead of silently
-falling back to video only. Application refresh uses a synchronized PipeWire
-inventory and preserves the selected source. Audio sharing on other platforms
-remains migration work.
+If the app has yet to produce a matching playback stream, the call shows
+**Waiting for playback**. If PipeWire cannot open the app's audio tap, the
+window keeps sharing video. Audio sharing on other platforms remains migration work.
 
 The incoming stream viewer supports watching several streams at once. **Tile
 all** fits the watched streams to the available stage, preserving each video's

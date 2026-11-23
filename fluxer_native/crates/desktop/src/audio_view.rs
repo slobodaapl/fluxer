@@ -119,9 +119,6 @@ impl Fluxer {
                                         } else {
                                             this.pane = Pane::Screens;
                                             this.command(Command::RefreshScreenSources, cx);
-                                            if fluxer_media::MediaEngine::shared_audio_supported() {
-                                                this.command(Command::RefreshAudioApplications, cx);
-                                            }
                                         }
                                     },
                                 )),
@@ -214,6 +211,8 @@ impl Fluxer {
                                 .child(if self.shared_audio {
                                     if self.shared_audio_settings.muted {
                                         "Screen sharing · audio muted"
+                                    } else if !self.shared_audio_has_source {
+                                        "Screen sharing · waiting for playback"
                                     } else {
                                         "Screen and audio sharing"
                                     }
@@ -670,141 +669,76 @@ impl Fluxer {
             .into_any_element()
     }
 
-    pub(super) fn selected_share_audio(&self, cx: &App) -> Option<SharedAudioSelection> {
-        self.share_audio_picker.read(cx).selected().and_then(|id| {
-            if id == "system" {
-                Some(SharedAudioSelection::System)
-            } else {
-                id.strip_prefix("app:")
-                    .filter(|pid| self.applications.iter().any(|app| app.process_id == *pid))
-                    .map(|pid| SharedAudioSelection::Application {
-                        process_id: pid.into(),
-                    })
-            }
-        })
-    }
-
-    pub(super) fn shared_audio_controls(&self, cx: &mut Context<Self>) -> AnyElement {
-        let supported = fluxer_media::MediaEngine::shared_audio_supported();
+    fn shared_audio_controls(&self, kind: ScreenSourceKind, cx: &mut Context<Self>) -> AnyElement {
+        let portal = kind == ScreenSourceKind::SystemPicker;
+        let enabled = if portal {
+            self.share_portal_audio
+        } else {
+            self.share_audio_enabled
+        };
+        let detail = if kind == ScreenSourceKind::Window {
+            "Share sound from the selected window's app."
+        } else {
+            "Share desktop playback, excluding this call."
+        };
         audio_section("Audio")
-            .when(supported, |view| {
-                view.child(
-                    audio_setting_row(
-                        "Include audio",
-                        "Start the selected audio source with your screen share.",
-                    )
-                    .child(
-                        toggle(
-                            "include-share-audio",
-                            self.share_audio_enabled,
-                            "Include screen share audio",
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
+            .child(audio_setting_row("Include audio", detail).child(
+                toggle("include-share-audio", enabled, "Include audio").on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        if portal {
+                            this.share_portal_audio = !this.share_portal_audio;
+                        } else {
                             this.share_audio_enabled = !this.share_audio_enabled;
-                            cx.notify();
-                        })),
-                    ),
-                )
-            })
-            .when(!supported, |view| {
-                view.child(audio_description(
-                    "Audio sharing is unavailable on this platform.",
+                        }
+                        cx.notify();
+                    },
+                )),
+            ))
+            .when(enabled, |view| {
+                view.child(audio_value(
+                    "Shared audio volume",
+                    format!("{:.0}%", self.shared_audio_settings.gain * 100.),
                 ))
-            })
-            .when(supported && self.share_audio_enabled, |view| {
-                view.child(self.share_audio_picker.clone())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(audio_description("Choose system audio or an application."))
-                            .child(div().flex_1())
-                            .child(
-                                icon_button(
-                                    "refresh-apps",
-                                    Icon::Refresh,
-                                    "Refresh audio applications",
-                                )
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.command(Command::RefreshAudioApplications, cx)
-                                    },
-                                )),
-                            ),
-                    )
-                    .child(audio_value(
-                        "Shared audio volume",
-                        format!("{:.0}%", self.shared_audio_settings.gain * 100.),
-                    ))
-                    .child(slider(
-                        "shared-audio-volume",
-                        self.shared_audio_settings.gain,
-                        0.,
-                        2.,
-                        0.01,
-                        "Shared audio volume",
-                        cx.listener(|this, value: &f32, _, cx| {
-                            this.shared_audio_settings.gain = *value;
-                            this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
-                        }),
-                    ))
-                    .child(
-                        audio_setting_row(
-                            "Mute shared audio",
-                            "Independent of your microphone and deafen controls.",
-                        )
-                        .child(
-                            toggle(
-                                "share-audio-mute",
-                                self.shared_audio_settings.muted,
-                                "Mute shared audio",
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.shared_audio_settings.muted =
-                                    !this.shared_audio_settings.muted;
-                                this.command(
-                                    Command::SetSharedAudio(this.shared_audio_settings),
-                                    cx,
-                                );
-                            })),
-                        ),
-                    )
+                .child(slider(
+                    "shared-audio-volume",
+                    self.shared_audio_settings.gain,
+                    0.,
+                    2.,
+                    0.01,
+                    "Shared audio volume",
+                    cx.listener(|this, value: &f32, _, cx| {
+                        this.shared_audio_settings.gain = *value;
+                        this.command(Command::SetSharedAudio(this.shared_audio_settings), cx);
+                    }),
+                ))
             })
             .into_any_element()
     }
 
     pub(super) fn screens(&self, cx: &mut Context<Self>) -> AnyElement {
-        let system_picker = self
-            .sources
-            .iter()
-            .find(|source| source.kind == ScreenSourceKind::SystemPicker)
-            .cloned();
         let selected = self
             .screen_picker
             .read(cx)
             .selected()
             .and_then(|id| {
-                self.sources.iter().find(|source| {
-                    source.kind != ScreenSourceKind::SystemPicker && screen_source_id(source) == id
-                })
+                self.sources
+                    .iter()
+                    .find(|source| screen_source_id(source) == id)
+            })
+            .or_else(|| {
+                self.sources
+                    .iter()
+                    .find(|source| source.kind == ScreenSourceKind::SystemPicker)
             })
             .cloned();
-        let instruction = match (
-            system_picker.is_some(),
-            fluxer_media::MediaEngine::shared_audio_supported(),
-        ) {
-            (true, true) => {
-                "Choose your quality and audio, then select a display or window in the system dialog."
-            }
-            (true, false) => {
-                "Choose your video quality, then select a display or window in the system dialog."
-            }
-            (false, true) => {
-                "Choose a display or window, then set the quality and audio you want to share."
-            }
-            (false, false) => "Choose a display or window and set the video quality.",
-        };
+        let has_sources = self
+            .sources
+            .iter()
+            .any(|source| source.kind != ScreenSourceKind::SystemPicker);
+        let audio_kind = selected
+            .as_ref()
+            .map(|source| source.kind)
+            .filter(|_| fluxer_media::MediaEngine::shared_audio_supported());
         div()
             .id("screen-sources")
             .flex_1()
@@ -835,26 +769,29 @@ impl Fluxer {
                                 ),
                             ),
                     )
-                    .child(audio_description(instruction))
-                    .when(system_picker.is_none(), |view| {
-                        view.child(self.screen_picker.clone())
-                    })
+                    .when(has_sources, |view| view.child(self.screen_picker.clone()))
                     .child(
                         audio_section("Video quality")
                             .child(self.fps_picker.clone())
                             .child(self.resolution_picker.clone()),
                     )
-                    .child(self.shared_audio_controls(cx))
+                    .when_some(audio_kind, |view, kind| {
+                        view.child(self.shared_audio_controls(kind, cx))
+                    })
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .when_some(system_picker, |view, source| {
+                            .when_some(selected, |view, source| {
                                 view.child(
                                     quiet_button(
-                                        "choose-screen-source",
-                                        "Choose display or window…",
+                                        "start-screen-share",
+                                        if source.kind == ScreenSourceKind::SystemPicker {
+                                            "Choose display or window…"
+                                        } else {
+                                            "Share"
+                                        },
                                     )
                                     .bg(rgb(ACCENT))
                                     .text_color(rgb(TEXT))
@@ -863,16 +800,6 @@ impl Fluxer {
                                             this.start_screen_share(source.clone(), cx)
                                         },
                                     )),
-                                )
-                            })
-                            .when_some(selected, |view, source| {
-                                view.child(
-                                    quiet_button("start-screen-share", "Share screen")
-                                        .bg(rgb(ACCENT))
-                                        .text_color(rgb(TEXT))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.start_screen_share(source.clone(), cx)
-                                        })),
                                 )
                             })
                             .child(

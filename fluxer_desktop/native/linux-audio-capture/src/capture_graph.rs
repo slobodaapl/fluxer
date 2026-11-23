@@ -26,6 +26,13 @@ fn group(props: &PropMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
+fn is_audio_sink(props: &PropMap) -> bool {
+    matches!(
+        props.get("media.class").map(String::as_str),
+        Some("Audio/Sink" | "Audio/Sink/Virtual")
+    )
+}
+
 impl<'a> CaptureGraph<'a> {
     pub(crate) fn new(
         nodes: &'a HashMap<u32, PropMap>,
@@ -40,20 +47,32 @@ impl<'a> CaptureGraph<'a> {
     }
 
     fn is_sink_mix(&self, props: &PropMap) -> bool {
-        self.nodes.iter().any(|(id, sink)| {
-            if sink.get("media.class").map(String::as_str) != Some("Audio/Sink") {
+        let output_group = group(props);
+        self.nodes.iter().any(|(id, peer)| {
+            let sink = is_audio_sink(peer);
+            let input = peer.get("media.class").map(String::as_str) == Some("Stream/Input/Audio");
+            if !sink && !input {
                 return false;
             }
-            if let Some(output_group) = group(props)
-                && group(sink) == Some(output_group)
-            {
+            // Virtual sinks and loopbacks can both replay a mix that already
+            // contains excluded audio. Tap the original playback streams.
+            if output_group.is_some_and(|group_id| group(peer) == Some(group_id)) {
                 return true;
             }
-            // Do not admit a mix while its sibling sink's full info is still pending.
+            // Withhold a possible mix until the sibling's group is known.
             self.pending.contains(id)
+                && (sink || output_group.is_some())
                 && props.get("client.id").is_some()
-                && props.get("client.id") == sink.get("client.id")
+                && props.get("client.id") == peer.get("client.id")
         })
+    }
+
+    pub(crate) fn playback_source(&self, id: u32) -> Option<&PropMap> {
+        let props = self.nodes.get(&id)?;
+        (props.get("media.class").map(String::as_str) == Some(MEDIA_CLASS_PLAYBACK_STREAM)
+            && !self.pending.contains(&id)
+            && !self.is_sink_mix(props))
+        .then_some(props)
     }
 
     fn targets(&self, id: u32, props: &PropMap, capture_sink: u32) -> Vec<String> {
@@ -63,12 +82,7 @@ impl<'a> CaptureGraph<'a> {
             .filter(|(source, sink)| {
                 *source == id
                     && *sink != capture_sink
-                    && self
-                        .nodes
-                        .get(sink)
-                        .and_then(|node| node.get("media.class"))
-                        .map(String::as_str)
-                        == Some("Audio/Sink")
+                    && self.nodes.get(sink).is_some_and(is_audio_sink)
             })
             .map(|(_, sink)| sink.to_string())
             .collect();
@@ -97,7 +111,7 @@ impl<'a> CaptureGraph<'a> {
             views.push(view);
             for (id, sink) in self.nodes {
                 if self.pending.contains(id)
-                    || sink.get("media.class").map(String::as_str) != Some("Audio/Sink")
+                    || !is_audio_sink(sink)
                     || !(sink.get("node.name") == Some(&destination)
                         || sink.get("object.serial") == Some(&destination)
                         || destination.parse::<u32>().ok() == Some(*id))
@@ -145,15 +159,9 @@ impl<'a> CaptureGraph<'a> {
         sink_global_id: u32,
         identity: &SelfIdentity,
     ) -> bool {
-        let Some(props) = self.nodes.get(&id) else {
+        let Some(props) = self.playback_source(id) else {
             return false;
         };
-        if self.pending.contains(&id)
-            || props.get("media.class").map(String::as_str) != Some(MEDIA_CLASS_PLAYBACK_STREAM)
-            || self.is_sink_mix(props)
-        {
-            return false;
-        }
         // Capture original application streams, before a virtual sink mixes in call audio.
         // Follow the sink's output destination so selecting physical speakers still includes
         // applications playing through a virtual surround/EQ sink.

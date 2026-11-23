@@ -162,9 +162,29 @@ def unload_owned_modules(marker, baseline, created):
     return errors
 
 
+def wait_loopback_route(process, name, capture_sink, playback_sink):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError("Synthetic monitor loopback exited before linking")
+        objects = run_json(["pw-dump"])
+        nodes = {node_properties(entry).get("node.name"): entry["id"] for entry in objects
+                 if entry["type"] == "PipeWire:Interface:Node"}
+        links = {(int(props["link.output.node"]), int(props["link.input.node"]))
+                 for entry in objects if entry["type"] == "PipeWire:Interface:Link"
+                 for props in (node_properties(entry),)}
+        if ((nodes.get(capture_sink), nodes.get(f"input.{name}")) in links
+                and (nodes.get(f"output.{name}"), nodes.get(playback_sink)) in links):
+            return
+        time.sleep(0.05)
+    raise RuntimeError("Monitor loopback did not connect the two isolated sinks")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true", help="Run pure fixtures without accessing audio services")
+    parser.add_argument("--verify-system-isolation", action="store_true",
+                        help="Check system capture with a synthetic call and monitor loopback in the private audio graph")
     args = parser.parse_args()
     if args.self_test:
         result = unittest.TextTestRunner().run(unittest.defaultTestLoader.loadTestsFromTestCase(FixtureTests))
@@ -172,6 +192,13 @@ def main():
     for executable in ("pactl", "pacat", "pw-dump", "cargo"):
         if shutil.which(executable) is None:
             raise RuntimeError(f"Required executable is unavailable: {executable}")
+    if args.verify_system_isolation:
+        runtime = os.environ.get("PIPEWIRE_RUNTIME_DIR", "")
+        if (not Path(runtime).name.startswith("fluxer-audio.")
+                or runtime != os.environ.get("XDG_RUNTIME_DIR")
+                or os.environ.get("PULSE_SERVER") != f"unix:{runtime}/pulse/native"
+                or run_json(["pactl", "--format=json", "list", "cards"])):
+            raise RuntimeError("System isolation tests require the private audio smoke graph")
 
     marker = uuid.uuid4().hex
     sinks = [f"{PREFIX}{marker}-{suffix}" for suffix in ("a", "b")]
@@ -179,7 +206,7 @@ def main():
     baseline_nodes = {node_key(entry) for entry in run_json(["pw-dump"])
                       if entry.get("type") == "PipeWire:Interface:Node"}
     created = []
-    playback = tests = feeder = reader = None
+    playback = tests = feeder = reader = loopback = None
     stop = threading.Event()
     errors = []
     cleanup_errors = []
@@ -199,15 +226,24 @@ def main():
         print("Using two isolated virtual sinks and an owned synthetic playback process.", flush=True)
         playback = subprocess.Popen(
             ["pacat", "--playback", "--raw", "--format=float32le", "--rate=48000", "--channels=2",
+             "--property=application.id=app.fluxer.AudioFixture",
              f"--client-name=SyntheticAudioTone-{marker}", f"--stream-name=SyntheticShareTone-{marker}",
              f"--device={sinks[0]}"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, bufsize=0)
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, bufsize=0,
+            env={**os.environ, "SteamAppId": "424242"})
         feeder = threading.Thread(target=feed_tone, args=(playback, stop, errors), daemon=True)
         feeder.start()
         wait_playback_route(playback, observed[0])
         env = os.environ.copy()
         env["FLUXER_SHARED_AUDIO_TEST_PROCESS"] = str(playback.pid)
         env["FLUXER_SHARED_AUDIO_TEST_OUTPUT"] = f"output:pipewire:{observed[1]}"
+        if args.verify_system_isolation:
+            name = f"synthetic-monitor-{marker}"
+            loopback = subprocess.Popen(["pw-loopback", "--name", name, "--capture", observed[1],
+                                        "--playback", observed[0], "--capture-props",
+                                        "{ stream.capture.sink = true }"])
+            wait_loopback_route(loopback, name, observed[1], observed[0])
+            env["FLUXER_SHARED_AUDIO_TEST_LOOPBACK"] = str(loopback.pid)
         runner = Path(__file__).resolve().with_name("test_media_loopback.py")
         # Playback and the test runner are siblings; the native capture backend
         # deliberately excludes descendants of the Rust process to prevent echo.
@@ -242,6 +278,7 @@ def main():
         consume_lines(lines, test_pids)
         stop.set()
         terminate(playback)
+        terminate(loopback)
         if feeder is not None:
             feeder.join(timeout=5)
         if playback is not None and playback.stdin is not None:

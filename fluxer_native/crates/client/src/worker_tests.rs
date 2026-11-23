@@ -1085,6 +1085,7 @@ async fn replacement_revokes_pending_share_and_advertises_no_stream_without_capt
     worker.state.voice.screen_share = true;
     worker.pending_share = Some(PendingShare {
         audio: Some(SharedAudioSelection::System),
+        ..Default::default()
     });
     worker.active_share_audio = true;
     assert!(worker.revoke_share_for_replacement());
@@ -1124,9 +1125,9 @@ async fn capture_events_drive_sharing_state_gateway_and_ui_without_opening_media
     let (tx, mut gateway) = async_mpsc::channel(8);
     worker.gateway_commands = Some(tx);
     // A previous share's stopped notification can precede a replacement start.
-    worker.pending_share = Some(PendingShare { audio: None });
+    worker.pending_share = Some(PendingShare::default());
     worker.screen_event(false, false).await.unwrap();
-    worker.pending_share = Some(PendingShare { audio: None });
+    worker.pending_share = Some(PendingShare::default());
     worker.screen_event(true, true).await.unwrap();
     assert!(worker.state.voice.screen_share);
     // A stale stop must not clear a replacement source that is still capturing.
@@ -1181,6 +1182,7 @@ async fn unified_share_defers_requested_audio_until_capture_and_cancel_revokes_l
         audio: Some(SharedAudioSelection::Application {
             process_id: "456".into(),
         }),
+        ..Default::default()
     });
     worker.screen_event(true, false).await.unwrap();
     assert!(!worker.state.voice.screen_share && !worker.active_share_audio);
@@ -1217,6 +1219,7 @@ async fn requested_share_audio_failure_rolls_back_pending_video_and_server_state
     let (mut worker, events, mut gateway) = watch_worker();
     worker.pending_share = Some(PendingShare {
         audio: Some(SharedAudioSelection::System),
+        ..Default::default()
     });
     let message = worker
         .complete_share_start(true, Err("Selected audio route could not start".into()))
@@ -1314,6 +1317,7 @@ async fn disabling_audio_while_picker_is_pending_preserves_video_only_consent() 
     let (mut worker, events, mut gateway) = watch_worker();
     worker.pending_share = Some(PendingShare {
         audio: Some(SharedAudioSelection::System),
+        ..Default::default()
     });
     worker.command(Command::StopSharedAudio).await.unwrap();
     assert!(worker.pending_share.as_ref().unwrap().audio.is_none());
@@ -1340,6 +1344,7 @@ async fn unified_share_gateway_failure_revokes_pending_and_active_sources() {
     drop(gateway);
     worker.pending_share = Some(PendingShare {
         audio: Some(SharedAudioSelection::System),
+        ..Default::default()
     });
     assert!(worker.complete_share_start(true, Ok(())).await.is_err());
     assert!(worker.pending_share.is_none());

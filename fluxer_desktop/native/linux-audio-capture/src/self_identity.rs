@@ -6,6 +6,35 @@ use std::path::Path;
 
 use crate::routing::SelfIdentity;
 
+#[cfg(target_os = "linux")]
+pub fn steam_app_for_process(pid: u32) -> Option<u32> {
+    use std::io::Read;
+
+    // Inspect only PID candidates from window or playback metadata and keep
+    // only Steam's numeric launch identity. Never retain the environment.
+    let mut environment = Vec::new();
+    fs::File::open(format!("/proc/{pid}/environ"))
+        .ok()?
+        .take(1024 * 1024)
+        .read_to_end(&mut environment)
+        .ok()?;
+    [
+        b"SteamAppId=".as_slice(),
+        b"STEAM_COMPAT_APP_ID=",
+        b"SteamGameId=",
+    ]
+    .into_iter()
+    .find_map(|key| {
+        environment.split(|byte| *byte == 0).find_map(|entry| {
+            let value: u32 = std::str::from_utf8(entry.strip_prefix(key)?)
+                .ok()?
+                .parse()
+                .ok()?;
+            (value > 0).then_some(value)
+        })
+    })
+}
+
 const PRODUCT_DISPLAY_NAMES: &[&str] = &["Fluxer", "Fluxer Canary"];
 const PRODUCT_DISPLAY_PREFIXES: &[&str] = &[
     "Fluxer ", "fluxer ", "Fluxer-", "fluxer-", "Fluxer_", "fluxer_", "Fluxer.", "fluxer.",
@@ -63,7 +92,7 @@ pub fn parse_ppid_from_stat(blob: &str) -> Option<u32> {
     ppid.parse::<u32>().ok()
 }
 
-fn add_descendant_pids(out: &mut SelfIdentity, own_pid: u32) -> std::io::Result<()> {
+pub fn add_descendant_pids(out: &mut SelfIdentity, own_pid: u32) -> std::io::Result<()> {
     let mut entries: Vec<(u32, u32)> = Vec::new();
     for entry in fs::read_dir(Path::new("/proc"))? {
         let Ok(entry) = entry else { continue };

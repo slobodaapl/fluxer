@@ -121,6 +121,11 @@ impl MicrophoneInput {
 }
 
 pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw::Error> {
+    Ok(enumerate_audio_inventory()?.enriched_node_values())
+}
+
+pub(crate) fn enumerate_audio_inventory()
+-> Result<crate::pipewire::common::InventorySnapshot, pw::Error> {
     use crate::pipewire::common::{InventorySnapshot, collect_props};
     use std::{
         cell::{Cell, RefCell},
@@ -162,14 +167,16 @@ pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw
                         | "Audio/Sink"
                         | "Audio/Sink/Virtual"
                         | "Stream/Output/Audio"
+                        | "Stream/Input/Audio"
                 )
             ) {
                 return;
             }
-            globals
-                .borrow_mut()
-                .nodes
-                .insert(global.id, collect_props(Some(props)));
+            {
+                let mut snapshot = globals.borrow_mut();
+                snapshot.nodes.insert(global.id, collect_props(Some(props)));
+                snapshot.pending_node_info.insert(global.id);
+            }
             // Stream globals can omit process identity. Bind the complete NodeInfo
             // properties, then enrich from Client identity like the shared engine.
             if let Ok(node) = bind_registry.bind::<pw::node::Node, _>(global) {
@@ -181,12 +188,13 @@ pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw
                         if info.change_mask().contains(pw::node::NodeChangeMask::PROPS)
                             && let Some(props) = info.props()
                         {
-                            info_inventory
-                                .borrow_mut()
+                            let mut snapshot = info_inventory.borrow_mut();
+                            snapshot
                                 .nodes
                                 .entry(id)
                                 .or_default()
                                 .extend(collect_props(Some(props)));
+                            snapshot.pending_node_info.remove(&id);
                         }
                     })
                     .register();
@@ -236,8 +244,7 @@ pub(crate) fn enumerate_audio_nodes() -> Result<Vec<crate::routing::PropMap>, pw
     if !done.get() {
         return Err(pw::Error::CreationFailed);
     }
-    let snapshot = inventory.borrow().enriched_node_values();
-    Ok(snapshot)
+    Ok(std::mem::take(&mut *inventory.borrow_mut()))
 }
 
 impl Drop for MicrophoneInput {

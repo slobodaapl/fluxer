@@ -94,3 +94,70 @@ pub fn resolve_x11_window_pid(token: &str) -> Result<Option<u32>, ResolveError> 
 pub fn resolve_x11_window_pid(_token: &str) -> Result<Option<u32>, ResolveError> {
     Err(ResolveError::LibX11Unavailable)
 }
+
+#[cfg(target_os = "linux")]
+pub fn resolve_xwayland_window_pid(app_id: &str, title: &str) -> Option<u32> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+    use x11rb::rust_connection::RustConnection;
+
+    if app_id.is_empty() || title.is_empty() {
+        return None;
+    }
+    let (conn, screen) = RustConnection::connect(None).ok()?;
+    let atom = |name| {
+        conn.intern_atom(true, name)
+            .ok()?
+            .reply()
+            .ok()
+            .map(|r| r.atom)
+    };
+    let clients = atom(b"_NET_CLIENT_LIST")?;
+    let net_name = atom(b"_NET_WM_NAME")?;
+    let net_pid = atom(b"_NET_WM_PID")?;
+    let root = conn.setup().roots.get(screen)?.root;
+    let windows = conn
+        .get_property(false, root, clients, AtomEnum::WINDOW, 0, 4096)
+        .ok()?
+        .reply()
+        .ok()?;
+    let property = |window, property| {
+        conn.get_property(false, window, property, AtomEnum::ANY, 0, 1024)
+            .ok()?
+            .reply()
+            .ok()
+    };
+    let mut matched = None;
+    for window in windows.value32()? {
+        let Some(class) = property(window, u32::from(AtomEnum::WM_CLASS)) else {
+            continue;
+        };
+        if !class
+            .value
+            .split(|byte| *byte == 0)
+            .any(|part| part.eq_ignore_ascii_case(app_id.as_bytes()))
+        {
+            continue;
+        }
+        let Some(name) = property(window, net_name)
+            .filter(|name| !name.value.is_empty())
+            .or_else(|| property(window, u32::from(AtomEnum::WM_NAME)))
+        else {
+            continue;
+        };
+        if name.value != title.as_bytes() {
+            continue;
+        }
+        let Some(pid) = property(window, net_pid)
+            .and_then(|pid| pid.value32()?.next())
+            .filter(|pid| *pid > 1 && std::path::PathBuf::from(format!("/proc/{pid}")).is_dir())
+        else {
+            continue;
+        };
+        if matched.is_some_and(|previous| previous != pid) {
+            return None;
+        }
+        matched = Some(pid);
+    }
+    matched
+}

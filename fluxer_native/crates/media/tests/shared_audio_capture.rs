@@ -2,7 +2,13 @@
 //! Real application capture -> MediaEngine shared audio -> encoded local SFU
 //! -> decoded PCM. Only a runner-owned non-Fluxer pacat process is captured;
 //! microphone capture stays muted and output targets an isolated null sink.
-use fluxer_media::{MediaEngine, MediaEvent, SharedAudioSelection, SharedAudioSettings};
+#![cfg(target_os = "linux")]
+
+use fluxer_media::{
+    MediaEngine, MediaEvent, ScreenShareOptions, ScreenSourceKind, SharedAudioSelection,
+    SharedAudioSettings,
+};
+use fluxer_system_audio::{SpeakerOutput, SystemAudio};
 use futures_util::StreamExt;
 use livekit::{prelude::*, webrtc::audio_stream::native::NativeAudioStream};
 use std::{
@@ -75,6 +81,75 @@ async fn wait_stats(
     .await
     .unwrap_or_else(|_| panic!("shared capture phase '{phase}' never reached expected decoded PCM"))
 }
+
+async fn verify_pipewire_isolation(output: &str, app_pid: &str, loopback_pid: &str) {
+    // Use the same PipeWire player as the real call. The Python runner has
+    // already linked its sink monitor to a separate loopback playback node.
+    let mut frames_rendered = 0;
+    let call_tone = SpeakerOutput::start(
+        Some(output),
+        move |samples| {
+            for frame in samples.as_chunks_mut::<2>().0 {
+                let phase = frames_rendered as f32 * std::f32::consts::TAU / 30.0;
+                frame.fill(phase.sin() * 0.3);
+                frames_rendered = (frames_rendered + 1) % 30;
+            }
+        },
+        |error| panic!("synthetic call output failed: {error}"),
+    )
+    .expect("synthetic call output on isolated sink");
+    let apps = SystemAudio::applications().expect("application picker inventory");
+    assert!(apps.iter().any(|app| app.process_id == app_pid));
+    let self_pid = std::process::id().to_string();
+    assert!(
+        apps.iter()
+            .all(|app| app.process_id != loopback_pid && app.process_id != self_pid)
+    );
+    for selection in [
+        SharedAudioSelection::Application {
+            process_id: app_pid.into(),
+        },
+        SharedAudioSelection::WindowApplication {
+            app_id: "app.fluxer.AudioFixture".into(),
+        },
+        SharedAudioSelection::WindowApplication {
+            app_id: "steam_app_424242".into(),
+        },
+        SharedAudioSelection::System,
+    ] {
+        let capture = SystemAudio::start(selection.clone()).expect("private PipeWire tap");
+        let mut pcm = Vec::with_capacity(96_000);
+        timeout(Duration::from_secs(6), async {
+            while pcm.len() < 96_000 {
+                if let Some(frame) = capture.read() {
+                    assert_eq!((frame.sample_rate, frame.channels), (48_000, 2));
+                    pcm.extend(
+                        frame
+                            .samples
+                            .iter()
+                            .map(|sample| (sample * 32768.).clamp(-32768., 32767.) as i16),
+                    );
+                } else {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        })
+        .await
+        .expect("at least one second of captured synthetic PCM");
+        let app_level = tone(&pcm, 0, 440.) + tone(&pcm, 1, 880.);
+        let echo_level = tone(&pcm, 0, 1600.) + tone(&pcm, 1, 1600.);
+        assert!(app_level > 0.08, "{selection:?} lost the application audio");
+        assert!(
+            echo_level < 0.005,
+            "{selection:?} captured the call tone directly or via the loopback: {echo_level:.5}"
+        );
+        eprintln!(
+            "shared_audio_capture: {selection:?} app={app_level:.5} call echo={echo_level:.5}"
+        );
+    }
+    drop(call_tone);
+}
+
 async fn fixture(encrypted: bool) {
     println!("FLUXER_SHARED_AUDIO_PROCESS {}", std::process::id());
     std::io::stdout().flush().unwrap();
@@ -93,6 +168,10 @@ async fn fixture(encrypted: bool) {
     );
     let output = std::env::var("FLUXER_SHARED_AUDIO_TEST_OUTPUT").expect("isolated output sink");
     assert!(output.starts_with("output:pipewire:fluxer-output-test-"));
+    let mut publisher = MediaEngine::new().unwrap();
+    if !encrypted && let Ok(loopback_pid) = std::env::var("FLUXER_SHARED_AUDIO_TEST_LOOPBACK") {
+        verify_pipewire_isolation(&output, &process_id, &loopback_pid).await;
+    }
     let publisher_token = std::env::var("FLUXER_MEDIA_TEST_TOKEN_A").unwrap();
     let receiver_token = std::env::var("FLUXER_MEDIA_TEST_TOKEN_B").unwrap();
     const KEY: &str = "synthetic-shared-audio-passphrase";
@@ -118,7 +197,6 @@ async fn fixture(encrypted: bool) {
     let (receiver, mut receiver_events) = Room::connect(&endpoint, &receiver_token, options)
         .await
         .expect("raw receiver connects without hardware");
-    let mut publisher = MediaEngine::new().unwrap();
     publisher.set_output_device(&output).unwrap();
     publisher.set_muted(true).unwrap();
     publisher.set_deafened(true).unwrap();
@@ -147,8 +225,56 @@ async fn fixture(encrypted: bool) {
         applications.iter().any(|app| app.process_id == process_id),
         "real synthetic app appears in source picker; apps={applications:?}"
     );
+    let selection = match std::env::var("FLUXER_SHARED_AUDIO_TEST_WINDOW") {
+        Ok(app_id) if !encrypted => {
+            let sources = publisher.screen_sources().expect("unified source picker");
+            assert!(
+                sources
+                    .iter()
+                    .any(|source| source.kind == ScreenSourceKind::Screen)
+            );
+            assert!(
+                sources
+                    .iter()
+                    .all(|source| source.kind != ScreenSourceKind::SystemPicker)
+            );
+            let source = sources
+                .into_iter()
+                .find(|source| {
+                    source.kind == ScreenSourceKind::Window
+                        && source.label.ends_with(&format!(" · {app_id}"))
+                })
+                .expect("synthetic Steam window in the same picker as displays");
+            publisher
+                .start_screen_share(ScreenShareOptions {
+                    source,
+                    follow_window_audio: true,
+                    max_width: 640,
+                    max_height: 480,
+                    ..Default::default()
+                })
+                .await
+                .expect("publish selected Wayland window");
+            timeout(Duration::from_secs(7), async {
+                while !publisher.screen_capture_has_frame() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("selected window produced video");
+            let selection = publisher
+                .screen_audio_selection()
+                .expect("window selected an audio route");
+            assert_eq!(
+                selection,
+                SharedAudioSelection::WindowApplication { app_id }
+            );
+            selection
+        }
+        _ => SharedAudioSelection::Application { process_id },
+    };
     publisher
-        .start_shared_audio(SharedAudioSelection::Application { process_id })
+        .start_shared_audio(selection)
         .await
         .expect("real native application capture publishes");
     assert!(publisher.is_sharing_audio());

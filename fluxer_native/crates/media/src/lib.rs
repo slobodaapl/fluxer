@@ -20,6 +20,8 @@ mod pipewire_runtime;
 mod playback;
 mod publish;
 mod screen;
+#[cfg(target_os = "linux")]
+mod screen_wayland;
 mod subscriptions;
 mod video_events;
 pub use video_events::MediaEvents;
@@ -173,6 +175,7 @@ pub enum MediaEvent {
     CameraStarted(u64),
     CameraStopped(u64),
     SharedAudioStopped,
+    SharedAudioSources(bool),
     AudioLevels {
         input: f32,
         output: f32,
@@ -1606,8 +1609,21 @@ impl MediaEngine {
             let _lifecycle = lifecycle;
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let mut announced_sources = None;
+            let mut next_source_check = std::time::Instant::now();
             while !stop.load(Ordering::Acquire) {
                 interval.tick().await;
+                let now = std::time::Instant::now();
+                if now >= next_source_check {
+                    next_source_check = now + std::time::Duration::from_millis(250);
+                    if let Some(linked) = capture.has_sources()
+                        && announced_sources != Some(linked)
+                        && let Some(tx) = &events
+                        && tx.try_send(MediaEvent::SharedAudioSources(linked)).is_ok()
+                    {
+                        announced_sources = Some(linked);
+                    }
+                }
                 let Some(frame) = capture.read() else {
                     continue;
                 };
@@ -1815,6 +1831,11 @@ impl MediaEngine {
             }
         }
     }
+
+    pub fn screen_audio_selection(&self) -> Option<SharedAudioSelection> {
+        self.screen.as_ref()?.audio_source()
+    }
+
     pub async fn stop_screen_share(&mut self) -> Result<()> {
         self.screen_preview.take();
         let had_video = self.screen.is_some() || self.screen_publication.is_some();

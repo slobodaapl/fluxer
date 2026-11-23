@@ -15,8 +15,8 @@ Python 3 installed.
 fluxer_native/scripts/qa/private_audio_smoke.sh /tmp/fluxer-audio-preflight --preflight
 ```
 
-The full run additionally needs Cargo, `curl`, GNU `timeout`, `pacat`, and
-`pw-dump`. Start a separate LiveKit development server bound to
+The full run additionally needs Cargo, `curl`, GNU `timeout`, `pacat`, `pw-dump`
+and `pw-loopback`. Start a separate LiveKit development server bound to
 `127.0.0.1:7880` with its loopback node IP and default development credentials
 (`devkey` and `secret`). Run it outside the private D-Bus session. The smoke
 script checks the local listener and leaves the server lifecycle to its caller.
@@ -37,7 +37,7 @@ more time for an initial build. Use a fresh artifact directory for each run.
 | Microphone | A synthetic input reaches the receiver. |
 | Output | Playback follows the selected synthetic output. |
 | Watch | The screen-share audio watch follows the selected synthetic output. |
-| Share | A synthetic local application source reaches its subscriber. |
+| Share | A synthetic local application reaches its subscriber. Application and system capture both exclude a generated call tone, including when a monitor loopback replays it. |
 
 The artifact directory keeps daemon logs, PulseAudio socket information, the
 card inventory, and a log for each scenario. The script reports each result,

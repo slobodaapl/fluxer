@@ -156,6 +156,79 @@ fn surround_mix_cannot_reintroduce_call_audio_or_duplicate_the_game() {
 }
 
 #[test]
+fn loopback_replay_cannot_reintroduce_call_audio_in_either_mode() {
+    let mut nodes = surround_graph();
+    nodes.insert(
+        601,
+        props(&[
+            ("media.class", "Stream/Input/Audio"),
+            ("node.link-group", "loopback-123-20"),
+            ("client.id", "602"),
+            ("stream.capture.sink", "true"),
+            ("target.object", "virtual.arctis"),
+        ]),
+    );
+    nodes.insert(
+        602,
+        props(&[
+            ("media.class", MEDIA_CLASS_PLAYBACK_STREAM),
+            ("node.link-group", "loopback-123-20"),
+            ("client.id", "602"),
+            ("application.process.id", "123"),
+            ("target.object", "headset"),
+        ]),
+    );
+    nodes
+        .get_mut(&400)
+        .unwrap()
+        .insert("application.process.id".into(), "456".into());
+    let system = RoutingRule {
+        include_when: vec![PropMap::new()],
+        ..Default::default()
+    };
+    assert_eq!(selected(&nodes, &HashSet::new(), &system, ""), [400]);
+    assert_eq!(selected(&nodes, &HashSet::from([601]), &system, ""), [400]);
+    for (pid, expected) in [("123", &[][..]), ("456", &[400][..])] {
+        let application = RoutingRule {
+            include_when: vec![props(&[("application.process.id", pid)])],
+            ..Default::default()
+        };
+        assert_eq!(
+            selected(&nodes, &HashSet::new(), &application, ""),
+            expected
+        );
+    }
+}
+
+#[test]
+fn window_audio_uses_application_id_and_never_admits_its_loopback() {
+    let mut nodes = surround_graph();
+    nodes.get_mut(&400).unwrap().extend(props(&[
+        ("application.id", "org.example.Game.desktop"),
+        ("application.process.binary", "game"),
+    ]));
+    nodes.insert(
+        401,
+        props(&[
+            ("media.class", MEDIA_CLASS_PLAYBACK_STREAM),
+            ("application.id", "org.other.Game"),
+            ("application.process.binary", "game"),
+        ]),
+    );
+    nodes
+        .get_mut(&58)
+        .unwrap()
+        .extend(props(&[("application.id", "org.example.Game")]));
+    let rule = RoutingRule {
+        window_app_id: Some("org.example.Game".into()),
+        ..Default::default()
+    };
+    assert_eq!(selected(&nodes, &HashSet::new(), &rule, ""), [400]);
+    nodes.get_mut(&400).unwrap().remove("application.id");
+    assert_eq!(selected(&nodes, &HashSet::new(), &rule, ""), [400]);
+}
+
+#[test]
 fn device_selection_and_exclusion_follow_virtual_sink_destinations() {
     let nodes = surround_graph();
     let mut rule = RoutingRule {

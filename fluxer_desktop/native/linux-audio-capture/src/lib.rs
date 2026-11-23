@@ -339,6 +339,7 @@ fn parse_routing_rule(value: &Object) -> Result<RoutingRule> {
         only_default_audio_sink: read_optional_bool(value, "onlyDefaultSpeakers")?
             .or(read_optional_bool(value, "only_default_speakers")?)
             .unwrap_or(false),
+        window_app_id: None,
     })
 }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-use crate::{MediaError, MediaEvent, Result};
+use crate::{MediaError, MediaEvent, Result, SharedAudioSelection};
 use livekit::webrtc::{
     desktop_capturer::{
         CaptureError, DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions,
@@ -11,7 +11,7 @@ use livekit::webrtc::{
 use serde::{Deserialize, Serialize};
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -30,6 +30,8 @@ pub struct ScreenSource {
     pub id: u64,
     pub label: String,
     pub kind: ScreenSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wayland_id: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScreenShareOptions {
@@ -38,6 +40,8 @@ pub struct ScreenShareOptions {
     pub max_width: u32,
     pub max_height: u32,
     pub max_bitrate: u64,
+    #[serde(default)]
+    pub follow_window_audio: bool,
 }
 impl Default for ScreenShareOptions {
     fn default() -> Self {
@@ -46,11 +50,13 @@ impl Default for ScreenShareOptions {
                 id: 0,
                 label: "Choose a display or window".into(),
                 kind: ScreenSourceKind::SystemPicker,
+                wayland_id: None,
             },
             fps: 30,
             max_width: 1920,
             max_height: 1080,
             max_bitrate: 4_000_000,
+            follow_window_audio: false,
         }
     }
 }
@@ -108,9 +114,12 @@ pub(crate) fn sources() -> Result<Vec<ScreenSource>> {
         session_type.as_deref(),
         wayland_display.as_deref(),
     ) {
-        // Constructing/enumerating WebRTC capturers on Wayland may create
-        // portal sessions. The descriptor is inert; capture opens the system
-        // dialog only after the user explicitly starts this source.
+        // Keep a single picker. Where the compositor exposes sources,
+        // enumerate both displays and windows; elsewhere the portal owns it.
+        #[cfg(target_os = "linux")]
+        if let Ok(sources) = crate::screen_wayland::sources() {
+            return Ok(sources);
+        }
         return Ok(vec![ScreenShareOptions::default().source]);
     }
     let mut result = Vec::new();
@@ -124,6 +133,7 @@ pub(crate) fn sources() -> Result<Vec<ScreenSource>> {
                         id: s.id(),
                         label: s.title(),
                         kind,
+                        wayland_id: None,
                     }),
             );
         }
@@ -179,6 +189,7 @@ impl ScreenStopHandle {
 pub(crate) struct ScreenSession {
     stop: Arc<AtomicBool>,
     has_frame: Arc<AtomicBool>,
+    audio_source: Arc<Mutex<Option<SharedAudioSelection>>>,
     thread: thread::Thread,
 }
 impl ScreenSession {
@@ -198,6 +209,12 @@ impl ScreenSession {
     pub fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Acquire)
     }
+    pub fn audio_source(&self) -> Option<SharedAudioSelection> {
+        if !self.has_frame() {
+            return None;
+        }
+        self.audio_source.lock().ok()?.clone()
+    }
 }
 impl Drop for ScreenSession {
     fn drop(&mut self) {
@@ -216,96 +233,146 @@ pub(crate) fn start(
     let stop_thread = stop.clone();
     let has_frame = Arc::new(AtomicBool::new(false));
     let first_frame_ready = has_frame.clone();
-    // DesktopCapturer must be created, driven, and dropped on its capture thread.
+    let audio_source = Arc::new(Mutex::new(None));
+    #[cfg(target_os = "linux")]
+    let capture_audio_source = audio_source.clone();
+    // All capture resources are created, driven and dropped on their owner thread.
     let capture_thread = thread::Builder::new()
         .name("fluxer-screen-capture".into())
         .spawn(move || {
-            let Some(mut capturer) = DesktopCapturer::new(options(config.source.kind)) else {
-                stop_thread.store(true, Ordering::Release);
-                let _ = tx.try_send(MediaEvent::Error(
-                    "Screen capture is unavailable; check OS permissions".into(),
-                ));
-                let _ = tx.try_send(MediaEvent::ScreenShareStopped);
-                return;
-            };
-            let selected = if config.source.kind == ScreenSourceKind::SystemPicker {
-                None
-            } else {
-                match capturer
-                    .get_source_list()
-                    .into_iter()
-                    .find(|s| s.id() == config.source.id)
-                {
-                    Some(s) => Some(s),
-                    None => {
-                        stop_thread.store(true, Ordering::Release);
-                        let _ = tx.try_send(MediaEvent::Error(
-                            "The selected capture source disappeared".into(),
-                        ));
-                        let _ = tx.try_send(MediaEvent::ScreenShareStopped);
-                        return;
-                    }
-                }
-            };
-            let start = Instant::now();
-            let stopped_callback = stop_thread.clone();
-            let call_stopped_callback = call_stopped.clone();
-            let tx_callback = tx.clone();
-            let mut first_frame = true;
-            capturer.start_capture(selected, move |result| {
-                if stopped_callback.load(Ordering::Acquire)
-                    || call_stopped_callback.load(Ordering::Acquire)
+            let started = Instant::now();
+            let interval = Duration::from_secs_f64(1.0 / config.fps as f64);
+            let stop_for_frame = stop_thread.clone();
+            let call_for_frame = call_stopped.clone();
+            let tx_for_frame = tx.clone();
+            let max_size = (config.max_width, config.max_height);
+            let publish = move |data: &[u8], stride: u32, width: u32, height: u32| {
+                if stop_for_frame.load(Ordering::Acquire)
+                    || call_for_frame.load(Ordering::Acquire)
+                    || width == 0
+                    || height == 0
+                    || width > 16384
+                    || height > 16384
                 {
                     return;
                 }
-                match result {
-                    Ok(frame) => {
-                        let w = frame.width();
-                        let h = frame.height();
-                        if w <= 0 || h <= 0 || w > 16384 || h > 16384 {
-                            return;
-                        }
-                        let mut buffer = I420Buffer::new(w as u32, h as u32);
-                        let (sy, su, sv) = buffer.strides();
-                        let (y, u, v) = buffer.data_mut();
-                        // libwebrtc desktop frames contain BGRA bytes (libyuv ARGB).
-                        argb_to_i420(frame.data(), frame.stride(), y, sy, u, su, v, sv, w, h);
-                        let (out_w, out_h) =
-                            fit_dimensions(w as u32, h as u32, config.max_width, config.max_height);
-                        if out_w != w as u32 || out_h != h as u32 {
-                            buffer = buffer.scale(out_w as i32, out_h as i32);
-                        }
-                        source.capture_frame(&VideoFrame {
-                            rotation: VideoRotation::VideoRotation0,
-                            timestamp_us: start.elapsed().as_micros() as i64,
-                            frame_metadata: None,
-                            buffer,
-                        });
-                        if first_frame {
-                            first_frame_ready.store(true, Ordering::Release);
-                            let _ = tx_callback.try_send(MediaEvent::ScreenShareStarted);
-                            first_frame = false;
-                        }
-                    }
+                let mut buffer = I420Buffer::new(width, height);
+                let (sy, su, sv) = buffer.strides();
+                let (y, u, v) = buffer.data_mut();
+                // Both WebRTC and Wayland shared memory deliver little-endian BGRA.
+                argb_to_i420(
+                    data,
+                    stride,
+                    y,
+                    sy,
+                    u,
+                    su,
+                    v,
+                    sv,
+                    width as i32,
+                    height as i32,
+                );
+                let (out_w, out_h) = fit_dimensions(width, height, max_size.0, max_size.1);
+                if out_w != width || out_h != height {
+                    buffer = buffer.scale(out_w as i32, out_h as i32);
+                }
+                source.capture_frame(&VideoFrame {
+                    rotation: VideoRotation::VideoRotation0,
+                    timestamp_us: started.elapsed().as_micros() as i64,
+                    frame_metadata: None,
+                    buffer,
+                });
+                if !first_frame_ready.swap(true, Ordering::AcqRel) {
+                    let _ = tx_for_frame.try_send(MediaEvent::ScreenShareStarted);
+                }
+            };
+            let running = || {
+                !stop_thread.load(Ordering::Acquire)
+                    && !call_stopped.load(Ordering::Acquire)
+                    && !tx.is_closed()
+            };
+            let result = (|| -> std::result::Result<(), String> {
+                #[cfg(target_os = "linux")]
+                if let Some(identifier) = &config.source.wayland_id {
+                    return crate::screen_wayland::capture_source(
+                        config.source.kind,
+                        identifier,
+                        interval,
+                        running,
+                        |app_id, title| {
+                            if config.follow_window_audio
+                                && !app_id.trim().is_empty()
+                                && !app_id.eq_ignore_ascii_case("app.fluxer.Native")
+                                && let Ok(mut target) = capture_audio_source.lock()
+                            {
+                                let pid = x11::resolve_xwayland_window_pid(app_id, title);
+                                *target = match pid {
+                                    Some(pid) if pid == std::process::id() => None,
+                                    Some(pid) => Some(SharedAudioSelection::WindowProcess { pid }),
+                                    None => Some(SharedAudioSelection::WindowApplication {
+                                        app_id: app_id.to_owned(),
+                                    }),
+                                };
+                            }
+                        },
+                        |data, w, h| publish(data, w * 4, w, h),
+                    )
+                    .map_err(|e| e.to_string());
+                }
+                let Some(mut capturer) = DesktopCapturer::new(options(config.source.kind)) else {
+                    return Err("Screen capture is unavailable; check OS permissions".into());
+                };
+                let selected = if config.source.kind == ScreenSourceKind::SystemPicker {
+                    None
+                } else {
+                    Some(
+                        capturer
+                            .get_source_list()
+                            .into_iter()
+                            .find(|s| s.id() == config.source.id)
+                            .ok_or("The selected capture source disappeared")?,
+                    )
+                };
+                #[cfg(target_os = "linux")]
+                if config.follow_window_audio
+                    && config.source.kind == ScreenSourceKind::Window
+                    && let Ok(Some(pid)) =
+                        x11::resolve_x11_window_pid(&config.source.id.to_string())
+                    && pid != std::process::id()
+                    && let Ok(mut target) = capture_audio_source.lock()
+                {
+                    *target = Some(SharedAudioSelection::WindowProcess { pid });
+                }
+                let stopped_callback = stop_thread.clone();
+                let tx_callback = tx.clone();
+                capturer.start_capture(selected, move |result| match result {
+                    Ok(frame) => publish(
+                        frame.data(),
+                        frame.stride(),
+                        frame.width() as u32,
+                        frame.height() as u32,
+                    ),
                     Err(CaptureError::Permanent) => {
-                        stopped_callback.store(true, Ordering::Release);
-                        let _ = tx_callback.try_send(MediaEvent::Error(
-                            "Screen capture ended or permission was denied".into(),
-                        ));
+                        if !stopped_callback.swap(true, Ordering::AcqRel) {
+                            let _ = tx_callback.try_send(MediaEvent::Error(
+                                "Screen capture ended or permission was denied".into(),
+                            ));
+                        }
                     }
                     Err(CaptureError::Temporary) => {}
+                });
+                while running() {
+                    let tick = Instant::now();
+                    capturer.capture_frame();
+                    thread::park_timeout(interval.saturating_sub(tick.elapsed()));
                 }
-            });
-            let interval = Duration::from_secs_f64(1.0 / config.fps as f64);
-            while !stop_thread.load(Ordering::Acquire)
-                && !call_stopped.load(Ordering::Acquire)
-                && !tx.is_closed()
+                Ok(())
+            })();
+            if let Err(error) = result
+                && running()
             {
-                let tick = Instant::now();
-                capturer.capture_frame();
-                thread::park_timeout(interval.saturating_sub(tick.elapsed()));
+                let _ = tx.try_send(MediaEvent::Error(error));
             }
-            drop(capturer);
             stop_thread.store(true, Ordering::Release);
             let _ = tx.try_send(MediaEvent::ScreenShareStopped);
         })
@@ -313,9 +380,15 @@ pub(crate) fn start(
     Ok(ScreenSession {
         stop,
         has_frame,
+        audio_source,
         thread: capture_thread.thread().clone(),
     })
 }
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+#[path = "../../../../fluxer_desktop/native/linux-portals/src/x11.rs"]
+mod x11;
 
 pub(crate) fn fit_dimensions(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let scale = (max_w as f64 / w as f64)
@@ -337,6 +410,7 @@ mod tests {
         let mut session = ScreenSession {
             stop: Arc::new(AtomicBool::new(false)),
             has_frame: ready.clone(),
+            audio_source: Default::default(),
             thread: thread::current(),
         };
         assert!(
@@ -420,6 +494,7 @@ mod tests {
         let mut session = ScreenSession {
             stop,
             has_frame: Arc::new(AtomicBool::new(false)),
+            audio_source: Default::default(),
             thread: worker.thread().clone(),
         };
         assert!(!session.is_stopped());

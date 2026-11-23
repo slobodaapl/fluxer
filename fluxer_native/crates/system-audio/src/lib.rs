@@ -51,6 +51,8 @@ pub struct Application {
 pub enum Selection {
     System,
     Application { process_id: String },
+    WindowProcess { pid: u32 },
+    WindowApplication { app_id: String },
 }
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
@@ -117,22 +119,28 @@ impl SystemAudio {
     }
 
     /// Enumerates playback applications without starting capture or moving any
-    /// audio routes. The current Fluxer process is excluded from the picker.
+    /// audio routes. Fluxer playback and downstream mixes are excluded.
     pub fn applications() -> Result<Vec<Application>, Error> {
         #[cfg(target_os = "linux")]
         {
-            let nodes = microphone::enumerate_audio_nodes().map_err(|_| Error::Unavailable)?;
+            let snapshot =
+                microphone::enumerate_audio_inventory().map_err(|_| Error::Unavailable)?;
+            let nodes = snapshot.enriched_nodes();
+            let graph = capture_graph::CaptureGraph::new(
+                &nodes,
+                &snapshot.pending_node_info,
+                &snapshot.links,
+            );
             let identity = native_identity();
             let mut entries = std::collections::BTreeMap::new();
-            for properties in nodes {
-                if properties.get("media.class").map(String::as_str) != Some("Stream/Output/Audio")
-                {
+            for &id in nodes.keys() {
+                let Some(properties) = graph.playback_source(id) else {
                     continue;
-                }
+                };
                 let Some(pid) = properties.get("application.process.id") else {
                     continue;
                 };
-                if identity.matches(&properties) {
+                if identity.matches(properties) {
                     continue;
                 }
                 let label = properties
@@ -156,10 +164,11 @@ impl SystemAudio {
     pub fn start(selection: Selection) -> Result<Self, Error> {
         #[cfg(target_os = "linux")]
         {
-            let backend =
-                pipewire_bridge::PipeWireDirectCapture::open().ok_or(Error::Unavailable)?;
-            backend.populate_self_identity(native_identity());
-            let include_when = match selection {
+            let mut rule = routing::RoutingRule {
+                skip_hardware_devices: true,
+                ..Default::default()
+            };
+            rule.include_when = match selection {
                 Selection::System => vec![routing::PropPattern::new()],
                 Selection::Application { process_id } => {
                     if process_id.is_empty()
@@ -173,12 +182,31 @@ impl SystemAudio {
                         process_id,
                     )])]
                 }
+                Selection::WindowProcess { pid } if pid > 1 && pid != std::process::id() => {
+                    if let Some(app_id) = self_identity::steam_app_for_process(pid) {
+                        rule.window_app_id = Some(format!("steam_app_{app_id}"));
+                    }
+                    let mut owner = routing::SelfIdentity::default();
+                    owner.add_pid(pid.to_string());
+                    let _ = self_identity::add_descendant_pids(&mut owner, pid);
+                    owner
+                        .pids
+                        .into_iter()
+                        .map(|pid| {
+                            routing::PropPattern::from([("application.process.id".into(), pid)])
+                        })
+                        .collect()
+                }
+                Selection::WindowApplication { app_id } if !app_id.trim().is_empty() => {
+                    rule.window_app_id = Some(app_id);
+                    Vec::new()
+                }
+                _ => return Err(Error::InvalidSource),
             };
-            if !backend.start(routing::RoutingRule {
-                include_when,
-                skip_hardware_devices: true,
-                ..Default::default()
-            }) {
+            let backend =
+                pipewire_bridge::PipeWireDirectCapture::open().ok_or(Error::Unavailable)?;
+            backend.populate_self_identity(native_identity());
+            if !backend.start(rule) {
                 return Err(Error::Unavailable);
             }
             Ok(Self { backend })
@@ -204,11 +232,22 @@ impl SystemAudio {
             None
         }
     }
+
+    pub fn has_sources(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        {
+            self.backend.has_sources()
+        }
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
     pub fn stop(&self) {
         #[cfg(target_os = "linux")]
         self.backend.stop();
     }
 }
+
 impl Drop for SystemAudio {
     fn drop(&mut self) {
         self.stop();

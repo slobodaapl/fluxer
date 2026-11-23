@@ -113,6 +113,7 @@ pub struct RoutingRule {
     pub skip_hardware_devices: bool,
     pub only_audio_sinks: bool,
     pub only_default_audio_sink: bool,
+    pub window_app_id: Option<String>,
 }
 
 pub fn matches_pattern(candidate: &PropMap, expected: &PropPattern) -> bool {
@@ -181,6 +182,10 @@ pub fn should_route_node(
         return false;
     }
 
+    if let Some(app_id) = &rule.window_app_id {
+        return matches_any(properties, &rule.include_when)
+            || matches_window_app(properties, app_id);
+    }
     if !rule.include_when.is_empty() {
         return matches_any(properties, &rule.include_when);
     }
@@ -191,6 +196,43 @@ pub fn should_route_node(
     }
 
     false
+}
+
+fn desktop_id(value: &str) -> &str {
+    value.strip_suffix(".desktop").unwrap_or(value)
+}
+
+fn matches_window_app(properties: &PropMap, app_id: &str) -> bool {
+    let app_id = desktop_id(app_id);
+    #[cfg(target_os = "linux")]
+    if let Some(steam_id) = app_id
+        .strip_prefix("steam_app_")
+        .and_then(|id| id.parse::<u32>().ok())
+        .filter(|id| *id > 0)
+    {
+        return ["application.process.id", "pipewire.sec.pid"]
+            .iter()
+            .filter_map(|key| properties.get(*key)?.parse::<u32>().ok())
+            .any(|pid| crate::self_identity::steam_app_for_process(pid) == Some(steam_id));
+    }
+    // An explicit sandbox or application ID takes precedence over a binary
+    // name. Two apps can use the same generic player or executable.
+    if let Some(identity) = ["pipewire.access.portal.app_id", "application.id"]
+        .iter()
+        .filter_map(|key| properties.get(*key))
+        .find(|value| !value.is_empty())
+    {
+        return desktop_id(identity).eq_ignore_ascii_case(app_id);
+    }
+    let executable = if app_id.split('.').count() >= 3 {
+        app_id.rsplit('.').next().unwrap_or(app_id)
+    } else {
+        app_id
+    };
+    ["application.process.binary", "application.name"]
+        .iter()
+        .filter_map(|key| properties.get(*key))
+        .any(|value| value.eq_ignore_ascii_case(app_id) || value.eq_ignore_ascii_case(executable))
 }
 
 pub fn targets_default_sink(
