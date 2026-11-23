@@ -104,7 +104,7 @@ mod wayland_redraw_regressions;
 mod wayland_serial_regressions;
 
 use attachment_composer::AttachmentUi;
-use call_view::{StreamFrame, Viewer};
+use call_view::{StreamFrame, Viewer, ViewerFullscreen};
 use dropdown::{Dropdown, Selected};
 use emoji_picker::EmojiPickerState;
 use fluxer_client::{Command, Controller, Event, VoiceStatus};
@@ -487,6 +487,7 @@ struct Fluxer {
     reshare_required: bool,
     editing: Option<Snowflake>,
     viewer: Viewer<Arc<RenderImage>>,
+    viewer_fullscreen: ViewerFullscreen,
     camera_viewer: Viewer<Arc<RenderImage>>,
     local_preview_images: BTreeMap<VideoSource, Arc<RenderImage>>,
     available_cameras: BTreeSet<String>,
@@ -722,6 +723,7 @@ impl Fluxer {
             reshare_required: false,
             editing: None,
             viewer: Viewer::default(),
+            viewer_fullscreen: ViewerFullscreen::default(),
             camera_viewer: Viewer::default(),
             local_preview_images: BTreeMap::new(),
             available_cameras: BTreeSet::new(),
@@ -748,6 +750,16 @@ impl Fluxer {
             last_typing: std::time::Instant::now() - Duration::from_secs(10),
         };
         window.focus(&view.focus);
+        cx.on_focus_lost(window, |_, window, cx| {
+            // A focused control can disappear when the viewer closes. Restore
+            // the root so window shortcuts keep working before another click.
+            cx.defer_in(window, |this, window, cx| {
+                if !this.focus.contains_focused(window, cx) {
+                    window.focus(&this.focus);
+                }
+            });
+        })
+        .detach();
         cx.subscribe_in(
             &view.profile_ui.popup,
             window,
@@ -3469,6 +3481,16 @@ impl Fluxer {
 impl Render for Fluxer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let render_started = std::time::Instant::now();
+        let viewer_open = self.pane == Pane::Call
+            && self.viewer.focused.is_some()
+            && !self.session_restoring
+            && self.state.current_user.is_some();
+        let restore_fullscreen = self
+            .viewer_fullscreen
+            .should_restore(window.is_fullscreen(), viewer_open);
+        if restore_fullscreen {
+            self.exit_fullscreen(window);
+        }
         self.role_mention
             .update(cx, |popup, cx| popup.reconcile(&self.state, window, cx));
         let output = self
@@ -3662,15 +3684,18 @@ impl Render for Fluxer {
                 }
                 if event.keystroke.key=="escape" && this.pane == Pane::Settings {this.close_settings(window,cx);cx.stop_propagation();return;}
                 if event.keystroke.key=="escape" && this.search_ui.open.is_some() && this.emoji_target.is_none() && this.forwarding.is_none(){this.close_browser(window,cx);cx.stop_propagation();return;}
-                if event.keystroke.key == "escape" && this.pane == Pane::Call {
+                if event.keystroke.key == "escape" {
                     if window.is_fullscreen() {
-                        window.toggle_fullscreen();
-                    } else if this.viewer.expanded {
+                        this.exit_fullscreen(window);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if this.pane == Pane::Call && this.viewer.expanded {
                         this.viewer.expanded = false;
                         cx.notify();
+                        cx.stop_propagation();
+                        return;
                     }
-                    cx.stop_propagation();
-                    return;
                 }
                 if event.keystroke.key == "tab" {
                     if event.keystroke.modifiers.shift { window.focus_prev(); } else { window.focus_next(); }
@@ -3686,6 +3711,14 @@ impl Render for Fluxer {
             .when(self.demo,|v|v.child(div().px_4().py_1().bg(rgb(0x4c3b22)).text_size(px(12.)).child(if self.avatar_demo_endpoint.is_some() { "OFFLINE AVATAR DEMO · Local images and synthetic roster · No call or capture" } else if self.attachments.fixture { "OFFLINE ATTACHMENT DEMO · Local staging only · No files are uploaded" } else if self.demo_stream { "OFFLINE VIEWER FIXTURE · Synthetic images and participants · No call, capture, or session restore" } else { "OFFLINE DEMO · Local sample messages · Calls require a connected account" })))
             .when(self.error.is_some(),|v|v.child(div().px_3().py_1().gap_3().bg(rgb(0x613342)).flex().items_center().justify_between().child(div().flex_1().min_w_0().child(self.error.clone().unwrap_or_default())).child(controls::icon_button("dismiss-error",controls::Icon::Close,"Dismiss error").on_click(cx.listener(|this,_,_,cx|{this.error=None;cx.notify();})))))
             .child(self.streamer_banner(cx))
+            .when(window.is_fullscreen() && !viewer_open && !restore_fullscreen, |view| {
+                view.child(
+                    div().flex().justify_end().px_3().py_1().bg(rgb(PANEL)).child(
+                        controls::quiet_button("exit-window-fullscreen", "Exit fullscreen")
+                            .on_click(cx.listener(|this, _, window, _| this.exit_fullscreen(window))),
+                    ),
+                )
+            })
             .children(incoming_calls.into_iter().map(|(channel, name)| {
                 div().px_4().py_2().gap_3().bg(rgb(PANEL)).flex().items_center()
                     .child(div().flex_1().child(format!("Incoming call · {name}")))

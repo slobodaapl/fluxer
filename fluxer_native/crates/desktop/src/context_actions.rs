@@ -1155,7 +1155,7 @@ impl Fluxer {
                 self.pane = Pane::Call;
             }
             (Target::Stream(_), "stream-tiles") => self.viewer.layout = StreamLayout::Tiled,
-            (Target::Stream(_), "fullscreen") => window.toggle_fullscreen(),
+            (Target::Stream(_), "fullscreen") => self.toggle_viewer_fullscreen(window),
             (Target::Stream(_), "stream-chat") => self.viewer.chat_open = !self.viewer.chat_open,
             (Target::Member { guild, user }, action) if action.starts_with("timeout-") => {
                 let duration = match action.strip_prefix("timeout-").unwrap_or("") {

@@ -4,7 +4,7 @@ set -euo pipefail
 umask 077
 
 if [[ $# != 4 ]]; then
-    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|selection|media|stream|forum|private-call}" >&2
+    echo "Usage: $0 UMBRIEL FLUXER-DESKTOP ARTIFACT-DIRECTORY {messages|selection|media|stream|fullscreen|forum|private-call}" >&2
     exit 2
 fi
 umbriel="$(realpath "$1")"
@@ -15,7 +15,7 @@ script_dir="$(dirname "$(realpath "$0")")"
 case "$scenario" in
     messages|selection) demo=--demo-messages ;;
     media) demo=--demo-media ;;
-    stream) demo=--demo-stream ;;
+    stream|fullscreen) demo=--demo-stream ;;
     forum) demo=--demo ;;
     private-call) demo=--demo-private-call ;;
     *) echo "Unknown scenario: $scenario" >&2; exit 2 ;;
@@ -93,7 +93,11 @@ wait_for() {
     return 1
 }
 wait_for test -S "$UMBRIEL_SOCKET"
-"$desktop" "$demo" >"$artifacts/app.log" 2>&1 &
+wayland_debug=
+if [[ "$scenario" == fullscreen ]]; then
+    wayland_debug=client
+fi
+WAYLAND_DEBUG="$wayland_debug" "$desktop" "$demo" >"$artifacts/app.log" 2>&1 &
 app_pid=$!
 app_is_focused() {
     kill -0 "$app_pid" && "$umbriel" focused-window 2>/dev/null | rg -qi 'fluxer'
@@ -189,6 +193,40 @@ case "$scenario" in
         screenshot main-stage
         click 535 605
         screenshot second-participant
+        ;;
+    fullscreen)
+        fullscreen_requests() {
+            local count
+            count="$(rg -c "xdg_toplevel#[0-9]+\\.$1\\(" "$artifacts/app.log" || true)"
+            [[ "${count:-0}" -eq "$2" ]]
+        }
+        click 1148 62
+        wait_for fullscreen_requests set_fullscreen 1
+        screenshot viewer-fullscreen
+        click 1190 52
+        wait_for fullscreen_requests unset_fullscreen 1
+        screenshot back-to-chat-restored
+        click 380 116
+        screenshot returned-to-viewer
+        click 1148 62
+        wait_for fullscreen_requests set_fullscreen 2
+        screenshot viewer-fullscreen-again
+        click 1254 52
+        screenshot one-stream-left
+        fullscreen_requests unset_fullscreen 1
+        click 1254 52
+        wait_for fullscreen_requests unset_fullscreen 2
+        screenshot last-stream-restored
+        "$umbriel" msg window-toggle-fullscreen
+        screenshot chat-fullscreen
+        wtype -s 150 -k Escape
+        wait_for fullscreen_requests unset_fullscreen 3
+        screenshot chat-escape-restored
+        "$umbriel" msg window-toggle-fullscreen
+        screenshot chat-fullscreen-again
+        click 1207 43
+        wait_for fullscreen_requests unset_fullscreen 4
+        screenshot chat-button-restored
         ;;
     forum)
         click 134 302

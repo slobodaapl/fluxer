@@ -3,6 +3,34 @@
 use crate::stream_layout::StreamLayout;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, Default)]
+pub(super) enum ViewerFullscreen {
+    #[default]
+    Inactive,
+    Entering,
+    Active,
+}
+
+impl ViewerFullscreen {
+    pub fn should_restore(&mut self, fullscreen: bool, viewer_open: bool) -> bool {
+        match (*self, fullscreen) {
+            (Self::Inactive, _) | (Self::Entering, false) => false,
+            (Self::Active, false) => {
+                *self = Self::Inactive;
+                false
+            }
+            (_, true) if viewer_open => {
+                *self = Self::Active;
+                false
+            }
+            (_, true) => {
+                *self = Self::Inactive;
+                true
+            }
+        }
+    }
+}
+
 pub struct StreamFrame<T> {
     pub track_id: String,
     pub watch_generation: u64,
@@ -128,6 +156,31 @@ impl<T> Viewer<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewer_fullscreen_restores_after_leaving_even_if_entry_is_pending() {
+        let mut fullscreen = ViewerFullscreen::Entering;
+        assert!(!fullscreen.should_restore(false, false));
+        assert!(fullscreen.should_restore(true, false));
+        assert!(!fullscreen.should_restore(true, false));
+
+        let mut fullscreen = ViewerFullscreen::Entering;
+        assert!(!fullscreen.should_restore(true, true));
+        assert!(fullscreen.should_restore(true, false));
+    }
+
+    #[test]
+    fn compositor_fullscreen_stays_independent_of_viewer_lifecycle() {
+        let mut fullscreen = ViewerFullscreen::default();
+        assert!(!fullscreen.should_restore(true, true));
+        assert!(!fullscreen.should_restore(true, false));
+
+        let mut fullscreen = ViewerFullscreen::Entering;
+        assert!(!fullscreen.should_restore(true, true));
+        assert!(!fullscreen.should_restore(false, true));
+        assert!(!fullscreen.should_restore(true, false));
+    }
+
     #[test]
     fn transport_replacement_keeps_focus_and_intent_but_releases_old_pixels() {
         let mut viewer = Viewer::default();

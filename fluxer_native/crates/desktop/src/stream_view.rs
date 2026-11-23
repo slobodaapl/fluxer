@@ -4,6 +4,22 @@ use crate::controls::{Icon, icon_button, quiet_button, slider};
 use crate::{stream_grid::StreamGrid, stream_layout::StreamLayout};
 
 impl Fluxer {
+    pub(super) fn toggle_viewer_fullscreen(&mut self, window: &Window) {
+        if window.is_fullscreen() {
+            self.exit_fullscreen(window);
+        } else {
+            self.viewer_fullscreen = ViewerFullscreen::Entering;
+            window.toggle_fullscreen();
+        }
+    }
+
+    pub(super) fn exit_fullscreen(&mut self, window: &Window) {
+        self.viewer_fullscreen = ViewerFullscreen::Inactive;
+        if window.is_fullscreen() {
+            window.toggle_fullscreen();
+        }
+    }
+
     pub(super) fn watch_stream(&mut self, identity: String, watch: bool, cx: &mut Context<Self>) {
         let changed = self.viewer.desired.contains(&identity) != watch;
         if watch {
@@ -617,8 +633,8 @@ impl Fluxer {
                                 "Fullscreen"
                             },
                         )
-                        .on_click(cx.listener(|_, _, window, cx| {
-                            window.toggle_fullscreen();
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.toggle_viewer_fullscreen(window);
                             cx.notify();
                         })),
                     )
