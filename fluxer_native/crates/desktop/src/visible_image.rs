@@ -186,6 +186,8 @@ impl Element for VisibleImage {
         let image = (self.build)()
             .w(bounds.size.width)
             .h(bounds.size.height)
+            // Keep the allocated viewport when Img supplies its intrinsic aspect ratio.
+            .min_h(bounds.size.height)
             .max_w_full();
         // The wrapper's stable global ID namespaces this child state. Without
         // its own ID GPUI renders frame zero and schedules no animation frame.

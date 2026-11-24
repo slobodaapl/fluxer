@@ -1676,7 +1676,7 @@ mod tests {
             Process::new("ffmpeg")
                 .args(["-v", "error", "-y", "-i"])
                 .arg(&base)
-                .args(["-vf", "setsar=2/1", "-c:v", "libx264"])
+                .args(["-vf", "setsar=4/3", "-c:v", "libx264"])
                 .arg(&wide)
                 .status()
                 .unwrap()
@@ -1718,9 +1718,16 @@ mod tests {
         wait(&player, |s| {
             s.status == FilePlaybackStatus::Paused && s.width > 0
         });
-        assert_eq!(
-            (player.snapshot().width, player.snapshot().height),
-            (160, 40)
+        let frame = player.take_frame().unwrap();
+        assert_eq!((frame.width, frame.height), (107, 40));
+        assert_eq!(frame.bgra.len(), 107 * 40 * 4);
+        // The last displayed row must be packed correctly even when the
+        // scaler's intermediate row includes padding after its last pixel.
+        let row = &frame.bgra[39 * 107 * 4..];
+        assert!(row[0] > 200 && row[2] < 40, "expected blue at bottom left");
+        assert!(
+            row[106 * 4..][..3].iter().all(|&channel| channel > 200),
+            "expected white at bottom right"
         );
         for path in [base, rotated, rotated_270, wide] {
             let _ = std::fs::remove_file(path);

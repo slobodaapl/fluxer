@@ -18,7 +18,7 @@ typedef struct {
     AVCodecContext *video, *audio;
     int vi, ai, draining, active, eof, flush_video, flush_audio;
     AVPacket *packet;
-    AVFrame *frame;
+    AVFrame *frame, *bgra;
     struct SwsContext *scale;
     SwrContext *resample;
     enum AVSampleFormat audio_format;
@@ -47,7 +47,7 @@ static AVCodecContext *open_codec(AVFormatContext *f, int index, char *error, si
 void flux_decoder_free(FluxDecoder *d) {
     if (!d) return;
     avcodec_free_context(&d->video); avcodec_free_context(&d->audio);
-    av_packet_free(&d->packet); av_frame_free(&d->frame); avformat_close_input(&d->format);
+    av_packet_free(&d->packet); av_frame_free(&d->frame); av_frame_free(&d->bgra); avformat_close_input(&d->format);
     avio_context_free(&d->custom_io);
     sws_freeContext(d->scale); swr_free(&d->resample); av_channel_layout_uninit(&d->audio_layout); free(d);
 }
@@ -60,7 +60,8 @@ static FluxDecoder *finish_open(FluxDecoder *d, int r, char *error, size_t len) 
     if (d->vi >= 0 && !(d->video = open_codec(d->format, d->vi, error, len))) goto fail;
     if (d->ai >= 0 && !(d->audio = open_codec(d->format, d->ai, error, len))) goto fail;
     d->packet = av_packet_alloc(); d->frame = av_frame_alloc();
-    if (!d->packet || !d->frame) { snprintf(error, len, "Out of memory"); goto fail; }
+    if (d->video) d->bgra = av_frame_alloc();
+    if (!d->packet || !d->frame || (d->video && !d->bgra)) { snprintf(error, len, "Out of memory"); goto fail; }
     d->active = -1;
     d->origin = d->format->start_time == AV_NOPTS_VALUE ? 0 : (double)d->format->start_time / AV_TIME_BASE;
     return d;
@@ -130,20 +131,31 @@ static int convert_frame(FluxDecoder *d, int stream, FluxDecoded *out, char *err
         turns = ((turns % 4) + 4) % 4;
         d->scale = sws_getCachedContext(d->scale, f->width, f->height, f->format, width, height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
         if (!d->scale) { snprintf(error, len, "Unable to convert video"); return -1; }
+        // Let FFmpeg choose the scaler's row alignment and padding. Rust expects
+        // tightly packed pixels, so copy only the visible bytes from each row.
+        AVFrame *bgra = d->bgra;
+        if (!bgra->buf[0] || bgra->width != width || bgra->height != height) {
+            av_frame_unref(bgra);
+            bgra->format = AV_PIX_FMT_BGRA;
+            bgra->width = width;
+            bgra->height = height;
+            int r = av_frame_get_buffer(bgra, 0);
+            if (r < 0) { error_text(error, len, r); return -1; }
+        }
+        int rows = sws_scale(d->scale, (const uint8_t *const *)f->data, f->linesize, 0, f->height, bgra->data, bgra->linesize);
+        if (rows < 0) { error_text(error, len, rows); return -1; }
+        if (rows != height) { snprintf(error, len, "Incomplete video frame"); return -1; }
         out->kind = 1; out->width = turns % 2 ? height : width; out->height = turns % 2 ? width : height;
         out->len = (size_t)width * height * 4;
         out->data = malloc(out->len); if (!out->data) { snprintf(error, len, "Out of memory"); return -1; }
-        unsigned char *source = turns ? malloc(out->len) : out->data;
-        if (!source) { free(out->data); out->data = NULL; snprintf(error, len, "Out of memory"); return -1; }
-        uint8_t *dst[] = {source, NULL, NULL, NULL}; int stride[] = { width * 4, 0, 0, 0 };
-        sws_scale(d->scale, (const uint8_t *const *)f->data, f->linesize, 0, f->height, dst, stride);
-        if (turns) {
+        if (!turns) {
+            av_image_copy_plane(out->data, width * 4, bgra->data[0], bgra->linesize[0], width * 4, height);
+        } else {
             for (int y = 0; y < height; y++) for (int x = 0; x < width; x++) {
                 int dx = turns == 1 ? y : turns == 2 ? width - 1 - x : height - 1 - y;
                 int dy = turns == 1 ? width - 1 - x : turns == 2 ? height - 1 - y : x;
-                memcpy(out->data + ((size_t)dy * out->width + dx) * 4, source + ((size_t)y * width + x) * 4, 4);
+                memcpy(out->data + ((size_t)dy * out->width + dx) * 4, bgra->data[0] + (size_t)y * bgra->linesize[0] + x * 4, 4);
             }
-            free(source);
         }
         return 1;
     }
