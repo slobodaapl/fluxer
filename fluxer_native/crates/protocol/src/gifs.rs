@@ -47,6 +47,11 @@ pub struct GifFormat {
 #[derive(Clone, Debug, Deserialize)]
 pub struct GifCategory {
     pub name: String,
+    #[serde(default)]
+    pub proxy_src: String,
+    #[serde(default)]
+    pub src: String,
+    pub gif: Option<Gif>,
 }
 
 #[derive(Clone, Debug)]
@@ -66,6 +71,22 @@ pub struct GifResults {
 pub struct GifShare {
     pub id: String,
     pub url: String,
+}
+
+impl GifCategory {
+    pub fn image_preview(&self) -> Option<&str> {
+        self.gif.as_ref().and_then(Gif::image_preview).or_else(|| {
+            [&self.proxy_src, &self.src]
+                .into_iter()
+                .map(String::as_str)
+                .find(|source| {
+                    web_url(source).is_some_and(|url| {
+                        let path = url.path().to_ascii_lowercase();
+                        !path.ends_with(".mp4") && !path.ends_with(".webm")
+                    })
+                })
+        })
+    }
 }
 
 impl Gif {
@@ -170,6 +191,42 @@ fn provider_slug(provider: &str, source: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn featured_categories_keep_their_preview_and_allow_text_only_categories() {
+        let category: GifCategory = serde_json::from_value(json!({
+            "name": "high five",
+            "src": "https://origin.example/high-five.gif",
+            "proxy_src": "https://media.example/full.gif",
+            "gif": {
+                "id": "1", "slug": "high-five", "provider": "klipy", "title": "High five",
+                "url": "https://klipy.com/gifs/high-five", "proxy_src": "https://media.example/full.gif",
+                "media": {"tinywebp": {"proxy_src": "https://media.example/tiny.webp"}}
+            }
+        }))
+        .unwrap();
+        assert_eq!(category.name, "high five");
+        assert_eq!(
+            category.image_preview(),
+            Some("https://media.example/tiny.webp")
+        );
+
+        let category: GifCategory = serde_json::from_value(json!({
+            "name": "good luck", "proxy_src": "https://media.example/luck.gif", "gif": null
+        }))
+        .unwrap();
+        assert_eq!(
+            category.image_preview(),
+            Some("https://media.example/luck.gif")
+        );
+
+        let category: GifCategory = serde_json::from_value(json!({
+            "name": "hello", "proxy_src": "https://media.example/preview.mp4"
+        }))
+        .unwrap();
+        assert_eq!(category.image_preview(), None);
+    }
 
     #[test]
     fn gif_share_uses_the_provider_slug_instead_of_the_preview_or_numeric_id() {

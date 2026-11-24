@@ -313,6 +313,41 @@ pub(super) fn quiet_button(
         })
         .child(label.into())
 }
+
+pub(super) fn composer_popover(popup: Stateful<Div>, preferred: Size<Pixels>) -> impl IntoElement {
+    canvas(
+        move |anchor, window, cx| {
+            let bounds = composer_popover_bounds(anchor.origin, preferred, window.viewport_size());
+            let mut popup = popup
+                .w(bounds.size.width)
+                .h(bounds.size.height)
+                .into_any_element();
+            popup.layout_as_root(bounds.size.map(AvailableSpace::Definite), window, cx);
+            window.defer_draw(popup, bounds.origin, 0);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .top_0()
+    .right_0()
+    .size(px(0.))
+}
+
+fn composer_popover_bounds(
+    anchor: Point<Pixels>,
+    preferred: Size<Pixels>,
+    viewport: Size<Pixels>,
+) -> Bounds<Pixels> {
+    let margin = px(12.);
+    let bottom = anchor.y - px(8.);
+    let width = preferred
+        .width
+        .min((viewport.width - margin * 2.).max(px(0.)));
+    let height = preferred.height.min((bottom - margin).max(px(0.)));
+    let right = anchor.x.min(viewport.width - margin).max(width + margin);
+    Bounds::new(point(right - width, bottom - height), size(width, height))
+}
+
 pub(super) fn toggle(
     id: impl Into<ElementId>,
     enabled: bool,
@@ -491,7 +526,19 @@ pub(super) fn fonts() -> Vec<std::borrow::Cow<'static, [u8]>> {
 
 #[cfg(test)]
 mod tests {
-    use super::quantize;
+    use super::{composer_popover_bounds, quantize};
+    use gpui::{point, px, size};
+
+    #[test]
+    fn composer_popover_stays_above_a_multi_line_message_bar() {
+        let anchor = point(px(850.), px(400.));
+        let bounds =
+            composer_popover_bounds(anchor, size(px(410.), px(456.)), size(px(880.), px(600.)));
+        assert_eq!(bounds.top(), px(12.));
+        assert_eq!(bounds.bottom(), anchor.y - px(8.));
+        assert_eq!(bounds.right(), anchor.x);
+        assert_eq!(bounds.size.width, px(410.));
+    }
     #[test]
     fn slider_clamps_and_rounds_to_the_control_step() {
         assert_eq!(quantize(-200., 0., 200., 1.), 0.);

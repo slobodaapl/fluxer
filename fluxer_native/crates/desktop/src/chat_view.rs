@@ -1326,9 +1326,6 @@ impl Fluxer {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .when(self.gif_picker.open, |view| {
-                        view.child(div().flex().justify_end().child(self.gif_picker_panel(cx)))
-                    })
                     .when(self.editing.is_none(), |view| {
                         view.child(self.attachment_strip(cx))
                     })
@@ -1422,6 +1419,7 @@ impl Fluxer {
                     })
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .items_center()
                             .gap_2()
@@ -1443,25 +1441,9 @@ impl Fluxer {
                             ))
                             .child(div().flex_1().min_w_0().child(self.composer.clone()))
                             .when(self.gif_picker_available(), |view| {
-                                view.child(quiet_button("composer-gif", "GIF").on_click(
-                                    cx.listener(|this, _, window, cx| {
-                                        this.toggle_gif_picker(window, cx)
-                                    }),
-                                ))
+                                view.child(self.gif_picker_button(cx))
                             })
-                            .child(
-                                icon_button("composer-emoji", Icon::React, "Choose emoji")
-                                    .on_click(cx.listener(
-                                        |this, event: &ClickEvent, window, cx| {
-                                            this.open_emoji(
-                                                EmojiTarget::Composer,
-                                                event.position(),
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    )),
-                            )
+                            .child(self.composer_emoji_button(cx))
                             .child(
                                 icon_button(
                                     "send",
@@ -1482,7 +1464,13 @@ impl Fluxer {
                                 .on_click(cx.listener(
                                     |this, _, window, cx| this.send_from_composer(window, cx),
                                 )),
-                            ),
+                            )
+                            .when(self.gif_picker_visible(), |view| {
+                                view.child(self.gif_picker_popover(cx))
+                            })
+                            .when(self.emoji_target == Some(EmojiTarget::Composer), |view| {
+                                view.child(self.emoji_panel(window, cx))
+                            }),
                     )
                     .when(self.pane != Pane::Call, |view| {
                         view.child(

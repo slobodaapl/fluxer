@@ -870,7 +870,7 @@ impl Fluxer {
         .detach();
         cx.observe(&view.search, |_, _, cx| cx.notify()).detach();
         cx.observe(&view.gif_picker.search, |this, _, cx| {
-            this.gif_search_changed(cx)
+            this.gif_search_changed(true, cx)
         })
         .detach();
         cx.observe(&view.emoji_search, |this, _, cx| {
@@ -3748,7 +3748,7 @@ impl Render for Fluxer {
             .child(self.context.menu.clone())
             .child(self.message_action_overlay(window,cx))
             .child(deferred(self.message_link_overlay(window,cx)).with_priority(11))
-            .when(self.emoji_target.is_some(), |view| view.child(self.emoji_panel(window, cx)))
+            .when(self.emoji_target.is_some_and(|target| target != EmojiTarget::Composer), |view| view.child(self.emoji_panel(window, cx)))
             .when(self.search_ui.confirm.is_some(),|view|view.child(self.pin_confirmation(cx)));
         let rendered = rendered
             .child(self.image_viewer_overlay(window, cx))

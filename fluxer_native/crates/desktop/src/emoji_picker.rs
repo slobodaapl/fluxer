@@ -5,6 +5,8 @@ use std::{cell::Cell, rc::Rc, time::Instant};
 
 pub(super) const COLUMNS: usize = 8;
 const CELL: f32 = 40.;
+const PICKER_WIDTH: f32 = 410.;
+const PICKER_HEIGHT: f32 = 456.;
 
 pub(super) struct EmojiPickerState {
     catalog: Option<chat_helpers::EmojiCatalog>,
@@ -15,6 +17,7 @@ pub(super) struct EmojiPickerState {
     tone: Option<String>,
     hovered: Option<usize>,
     anchor: Point<Pixels>,
+    composer_button_bounds: Rc<Cell<Bounds<Pixels>>>,
     opened: Instant,
     prepared_ms: f64,
     perf: bool,
@@ -32,6 +35,7 @@ impl EmojiPickerState {
             tone: None,
             hovered: None,
             anchor: point(px(0.), px(0.)),
+            composer_button_bounds: Rc::default(),
             opened: Instant::now(),
             prepared_ms: 0.,
             perf: std::env::var_os("FLUXER_EMOJI_PERF").is_some(),
@@ -42,6 +46,20 @@ impl EmojiPickerState {
 }
 
 impl Fluxer {
+    pub(super) fn composer_emoji_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let bounds = self.emoji_picker.composer_button_bounds.clone();
+        controls::icon_button("composer-emoji", controls::Icon::React, "Choose emoji")
+            .relative()
+            .child(
+                canvas(move |rect, _, _| bounds.set(rect), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .on_click(cx.listener(|this, event: &ClickEvent, window, cx| {
+                this.open_emoji(EmojiTarget::Composer, event.position(), window, cx);
+            }))
+    }
+
     pub(super) fn open_emoji(
         &mut self,
         target: EmojiTarget,
@@ -147,11 +165,7 @@ impl Fluxer {
             .choices
             .get(self.emoji_picker.hovered.unwrap_or(self.emoji_index));
         let anchor = self.emoji_picker.anchor;
-        let origin = picker_origin(
-            anchor,
-            self.emoji_target == Some(EmojiTarget::Composer),
-            window.viewport_size(),
-        );
+        let composer = self.emoji_target == Some(EmojiTarget::Composer);
         let choices = self.emoji_picker.choices.clone();
         let perf = self.emoji_picker.perf;
         let opened = self.emoji_picker.opened;
@@ -159,13 +173,18 @@ impl Fluxer {
         let painted = self.emoji_picker.painted.clone();
         let visible = self.emoji_picker.visible_cells.clone();
         let count = choices.len();
-        let popup = div().id("emoji-popover").w(px(410.)).h(px(456.).min(window.viewport_size().height-px(24.)))
+        let popup = div().id("emoji-popover")
             .occlude().flex().flex_col().overflow_hidden().rounded_lg().border_1().border_color(rgb(0x514861))
             .bg(rgb(PANEL)).shadow_lg()
             .on_mouse_down_out(cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                 // Let the trigger's own click toggle the picker, instead of
                 // closing on mouse-down and reopening on click.
-                if (event.position.x-anchor.x).abs() > px(24.) || (event.position.y-anchor.y).abs() > px(24.) {
+                let on_trigger = if composer {
+                    this.emoji_picker.composer_button_bounds.get().contains(&event.position)
+                } else {
+                    (event.position.x-anchor.x).abs() <= px(24.) && (event.position.y-anchor.y).abs() <= px(24.)
+                };
+                if !on_trigger {
                     this.close_emoji_focus(window, cx);
                 }
             }))
@@ -223,13 +242,19 @@ impl Fluxer {
             .child(canvas(|_,_,_|{}, move |_,_,_,_| {
                 if perf && !painted.replace(true) { eprintln!("emoji_perf first_paint_ms={:.3} prepare_ms={prepared_ms:.3} cached_choices={count} max_visible_cells={}",opened.elapsed().as_secs_f64()*1000.,visible.get()); }
             }).absolute().size_full());
+        if composer {
+            return controls::composer_popover(popup, size(px(PICKER_WIDTH), px(PICKER_HEIGHT)))
+                .into_any_element();
+        }
+
+        let viewport = window.viewport_size();
         deferred(
             div().absolute().top_0().left_0().child(
                 anchored()
                     .anchor(Corner::TopLeft)
-                    .position(origin)
+                    .position(picker_origin(anchor, viewport))
                     .snap_to_window_with_margin(px(12.))
-                    .child(popup),
+                    .child(popup.w(px(PICKER_WIDTH)).h(picker_height(viewport))),
             ),
         )
         .with_priority(if self.emoji_target == Some(EmojiTarget::CustomStatus) {
@@ -320,16 +345,16 @@ impl Render for PickerTooltip {
     }
 }
 
-fn picker_origin(anchor: Point<Pixels>, composer: bool, viewport: Size<Pixels>) -> Point<Pixels> {
-    let width = px(410.);
-    let height = px(456.).min(viewport.height - px(24.));
-    let left = if composer {
-        anchor.x - width + px(20.)
-    } else {
-        anchor.x - px(24.)
-    };
+fn picker_height(viewport: Size<Pixels>) -> Pixels {
+    px(PICKER_HEIGHT).min(viewport.height - px(24.))
+}
+
+fn picker_origin(anchor: Point<Pixels>, viewport: Size<Pixels>) -> Point<Pixels> {
+    let width = px(PICKER_WIDTH);
+    let height = picker_height(viewport);
+    let left = anchor.x - px(24.);
     let below = anchor.y + px(20.);
-    let top = if !composer && below + height <= viewport.height - px(12.) {
+    let top = if below + height <= viewport.height - px(12.) {
         below
     } else {
         anchor.y - height - px(8.)
@@ -381,19 +406,11 @@ mod tests {
     fn reaction_popup_stays_beside_trigger_and_flips_above_near_bottom() {
         let viewport = size(px(1280.), px(820.));
         assert_eq!(
-            picker_origin(point(px(420.), px(209.)), false, viewport),
+            picker_origin(point(px(420.), px(209.)), viewport),
             point(px(396.), px(229.))
         );
-        let above = picker_origin(point(px(1000.), px(750.)), false, viewport);
+        let above = picker_origin(point(px(1000.), px(750.)), viewport);
         assert!(above.y + px(456.) < px(750.));
         assert!(above.x + px(410.) <= viewport.width - px(12.));
-    }
-    #[test]
-    fn composer_popup_fits_minimum_window_and_stays_above_composer() {
-        let viewport = size(px(880.), px(600.));
-        let origin = picker_origin(point(px(846.), px(540.)), true, viewport);
-        assert!(origin.x >= px(12.) && origin.y >= px(12.));
-        assert!(origin.x + px(410.) <= viewport.width - px(12.));
-        assert!(origin.y + px(456.) <= px(540.));
     }
 }
