@@ -354,6 +354,7 @@ pub struct TextInput {
     pub completion_enter_guard: bool,
     completion_dismissed: Option<composer_completion::Trigger>,
     message_document: Option<Arc<MessageDocument>>,
+    rich_layouts: RefCell<[Option<CachedRichLayout>; 2]>,
     timeline_selection: Option<(fluxer_core::Snowflake, Rc<RefCell<TextSelection>>)>,
     highlighted: Vec<code_highlight::Token>,
     highlight_generation: u64,
@@ -384,7 +385,7 @@ pub struct TextInput {
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
-    last_layout: Option<DocumentLayout>,
+    last_layout: Option<Rc<DocumentLayout>>,
     last_bounds: Option<Bounds<Pixels>>,
     last_visible_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -415,6 +416,7 @@ impl TextInput {
             completion_enter_guard: false,
             completion_dismissed: None,
             message_document: None,
+            rich_layouts: RefCell::default(),
             timeline_selection: None,
             highlighted: Vec::new(),
             highlight_generation: 0,
@@ -553,6 +555,7 @@ impl TextInput {
         self.emoji_cache = message_text::EmojiCache::new(cx);
         self.copy_feedback.reset();
         self.message_document = Some(document.clone());
+        self.clear_rich_layouts();
         code_highlight::schedule(self, document, cx);
         self.inline_press = None;
         self.hover_interactive = false;
@@ -646,6 +649,7 @@ impl TextInput {
         };
         if let Some(id) = message_text::hidden_at(document, &self.revealed_spoilers, index) {
             self.revealed_spoilers.insert(id);
+            self.clear_rich_layouts();
             self.inline_focus = None;
             self.last_layout = None;
             cx.notify();
@@ -1959,6 +1963,91 @@ struct DocumentLayout {
     content_height: Pixels,
     line_height: Pixels,
 }
+
+struct CachedRichLayout {
+    width: Option<Pixels>,
+    font_size: Pixels,
+    line_height: Pixels,
+    rem_size: Pixels,
+    base: TextRun,
+    table_scrolls: BTreeMap<usize, Pixels>,
+    preview: bool,
+    layout: Rc<DocumentLayout>,
+}
+
+impl TextInput {
+    fn clear_rich_layouts(&mut self) {
+        *self.rich_layouts.get_mut() = [None, None];
+    }
+
+    fn rich_layout(
+        &self,
+        document: &MessageDocument,
+        base: &TextRun,
+        font_size: Pixels,
+        line_height: Pixels,
+        width: Option<Pixels>,
+        window: &mut Window,
+    ) -> Rc<DocumentLayout> {
+        // Keep relative timestamp labels current. For other documents, reuse
+        // the last two widths: flex measurement can ask for an intrinsic size
+        // before assigning the final width used to paint and hit-test.
+        let cacheable = document.timestamps.is_empty();
+        let rem_size = window.rem_size();
+        if cacheable
+            && let Some(cached) = self.rich_layouts.borrow().iter().flatten().find(|cached| {
+                cached.width == width
+                    && cached.font_size == font_size
+                    && cached.line_height == line_height
+                    && cached.rem_size == rem_size
+                    && cached.base == *base
+                    && cached.table_scrolls == self.table_scrolls
+                    && cached.preview == self.inline_visible_only
+            })
+        {
+            return cached.layout.clone();
+        }
+        let runs = message_text::highlight_runs(
+            message_text::runs(document, base, &self.revealed_spoilers),
+            &self.highlighted,
+        );
+        let layout = Rc::new(if self.inline_visible_only {
+            message_text::reply_preview_layout(
+                document,
+                &runs,
+                font_size,
+                line_height,
+                width,
+                window,
+            )
+        } else {
+            message_text::layout(
+                document,
+                &runs,
+                font_size,
+                line_height,
+                width,
+                &self.table_scrolls,
+                window,
+            )
+        });
+        if cacheable {
+            let mut layouts = self.rich_layouts.borrow_mut();
+            layouts[1] = layouts[0].take();
+            layouts[0] = Some(CachedRichLayout {
+                width,
+                font_size,
+                line_height,
+                rem_size,
+                base: base.clone(),
+                table_scrolls: self.table_scrolls.clone(),
+                preview: self.inline_visible_only,
+                layout: layout.clone(),
+            });
+        }
+        layout
+    }
+}
 /// A table row may be taller than an individual cell's wrapped content. Use
 /// the cell rectangle before comparing line positions, including its padding.
 fn table_line_for_position<'a>(
@@ -2090,7 +2179,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
-    layout: DocumentLayout,
+    layout: Rc<DocumentLayout>,
     scroll: Point<Pixels>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
@@ -2126,44 +2215,24 @@ impl Element for TextElement {
                 let text_style = window.text_style();
                 let font_size = text_style.font_size.to_pixels(window.rem_size());
                 let line_height = window.line_height();
-                let runs = message_text::highlight_runs(
-                    message_text::runs(
-                        &document,
-                        &text_style.to_run(document.text.len()),
-                        &input.revealed_spoilers,
-                    ),
-                    &input.highlighted,
-                );
-                let table_scrolls = input.table_scrolls.clone();
-                let inline_preview = input.inline_visible_only;
+                let base = text_style.to_run(document.text.len());
+                let input = self.input.clone();
                 let mut style = Style::default();
                 style.size.width = relative(1.).into();
                 return (
-                    window.request_measured_layout(style, move |known, available, window, _| {
+                    window.request_measured_layout(style, move |known, available, window, cx| {
                         let width = known.width.or(match available.width {
                             gpui::AvailableSpace::Definite(width) => Some(width),
                             _ => None,
                         });
-                        let layout = if inline_preview {
-                            message_text::reply_preview_layout(
-                                &document,
-                                &runs,
-                                font_size,
-                                line_height,
-                                width,
-                                window,
-                            )
-                        } else {
-                            message_text::layout(
-                                &document,
-                                &runs,
-                                font_size,
-                                line_height,
-                                width,
-                                &table_scrolls,
-                                window,
-                            )
-                        };
+                        let layout = input.read(cx).rich_layout(
+                            &document,
+                            &base,
+                            font_size,
+                            line_height,
+                            width,
+                            window,
+                        );
                         let measured_width = layout
                             .lines
                             .iter()
@@ -2254,107 +2323,82 @@ impl Element for TextElement {
             underline: None,
             strikethrough: None,
         };
-        let mut lines = Vec::new();
-        let mut ellipsis = None;
-        let mut code_headers = Vec::new();
-        let mut table_cells = Vec::new();
-        let mut table_regions = Vec::new();
-        let mut content_height = px(0.);
-        let composer_tokens = input.composer_tokens();
-        if let Some(document) = input.message_document.as_ref() {
-            let runs = message_text::highlight_runs(
-                message_text::runs(document, &base, &input.revealed_spoilers),
-                &input.highlighted,
-            );
-            let width = Some(bounds.size.width.max(px(1.)));
-            let document_layout = if input.inline_visible_only {
-                message_text::reply_preview_layout(
-                    document,
-                    &runs,
-                    font_size,
-                    window.line_height(),
-                    width,
-                    window,
-                )
-            } else {
-                message_text::layout(
-                    document,
-                    &runs,
-                    font_size,
-                    window.line_height(),
-                    width,
-                    &input.table_scrolls,
-                    window,
-                )
-            };
-            ellipsis = document_layout.ellipsis;
-            code_headers = document_layout.code_headers;
-            lines = document_layout.lines;
-            table_cells = document_layout.table_cells;
-            table_regions = document_layout.table_regions;
-            content_height = document_layout.content_height;
-        } else if input.multiline && !empty {
-            for paragraph in logical_lines(&display) {
-                let paragraph_runs =
-                    decoration_runs(&base, &paragraph, input.marked_range.as_ref());
-                let breaks = inline_emoji::wrap_breaks_with_tokens(
-                    &display[paragraph.clone()],
-                    font_size,
-                    &paragraph_runs,
-                    Some(bounds.size.width.max(px(1.))),
-                    &composer_tokens::clip(&composer_tokens, &paragraph),
-                    window,
-                );
-                for range in visual_ranges(paragraph, &breaks) {
-                    let runs = decoration_runs(&base, &range, input.marked_range.as_ref());
-                    let layout = inline_emoji::shape_line_with_tokens(
-                        &display[range.clone()],
+        let line_height = window.line_height();
+        let layout = if let Some(document) = input.message_document.as_ref() {
+            input.rich_layout(
+                document,
+                &base,
+                font_size,
+                line_height,
+                Some(bounds.size.width.max(px(1.))),
+                window,
+            )
+        } else {
+            let composer_tokens = input.composer_tokens();
+            let mut lines = Vec::new();
+            if input.multiline && !empty {
+                for paragraph in logical_lines(&display) {
+                    let paragraph_runs =
+                        decoration_runs(&base, &paragraph, input.marked_range.as_ref());
+                    let breaks = inline_emoji::wrap_breaks_with_tokens(
+                        &display[paragraph.clone()],
                         font_size,
-                        &runs,
-                        &composer_tokens::clip(&composer_tokens, &range),
+                        &paragraph_runs,
+                        Some(bounds.size.width.max(px(1.))),
+                        &composer_tokens::clip(&composer_tokens, &paragraph),
                         window,
                     );
-                    lines.push(VisualLine {
-                        range,
-                        layout,
-                        indent: px(0.),
-                        y: window.line_height() * lines.len(),
-                        height: window.line_height(),
-                        cell_right: None,
-                    });
+                    for range in visual_ranges(paragraph, &breaks) {
+                        let runs = decoration_runs(&base, &range, input.marked_range.as_ref());
+                        let layout = inline_emoji::shape_line_with_tokens(
+                            &display[range.clone()],
+                            font_size,
+                            &runs,
+                            &composer_tokens::clip(&composer_tokens, &range),
+                            window,
+                        );
+                        lines.push(VisualLine {
+                            range,
+                            layout,
+                            indent: px(0.),
+                            y: window.line_height() * lines.len(),
+                            height: window.line_height(),
+                            cell_right: None,
+                        });
+                    }
                 }
-            }
-        } else {
-            let range = 0..if empty { 0 } else { display.len() };
-            let runs = if empty {
-                vec![base.clone()]
             } else {
-                decoration_runs(&base, &range, input.marked_range.as_ref())
-            };
-            let layout = inline_emoji::shape_line_with_tokens(
-                &display,
-                font_size,
-                &runs,
-                &composer_tokens,
-                window,
-            );
-            lines.push(VisualLine {
-                range,
-                layout,
-                indent: px(0.),
-                y: window.line_height() * lines.len(),
-                height: window.line_height(),
-                cell_right: None,
-            });
-        }
-        let layout = DocumentLayout {
-            lines,
-            ellipsis,
-            code_headers,
-            table_cells,
-            table_regions,
-            content_height,
-            line_height: window.line_height(),
+                let range = 0..if empty { 0 } else { display.len() };
+                let runs = if empty {
+                    vec![base.clone()]
+                } else {
+                    decoration_runs(&base, &range, input.marked_range.as_ref())
+                };
+                let layout = inline_emoji::shape_line_with_tokens(
+                    &display,
+                    font_size,
+                    &runs,
+                    &composer_tokens,
+                    window,
+                );
+                lines.push(VisualLine {
+                    range,
+                    layout,
+                    indent: px(0.),
+                    y: window.line_height() * lines.len(),
+                    height: window.line_height(),
+                    cell_right: None,
+                });
+            }
+            Rc::new(DocumentLayout {
+                lines,
+                ellipsis: None,
+                code_headers: Vec::new(),
+                table_cells: Vec::new(),
+                table_regions: Vec::new(),
+                content_height: px(0.),
+                line_height,
+            })
         };
         // Apply horizontal table changes before asking the containing list to
         // reveal the focused run vertically.

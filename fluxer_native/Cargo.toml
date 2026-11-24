@@ -31,9 +31,9 @@ gpui = { path = "compat/gpui" }
 # Return Vulkan surface failures to GPUI so it can rebuild the swapchain.
 blade-graphics = { path = "compat/blade-graphics" }
 
-# Video capture, pixel handling and GPUI rendering must meet real-time budgets
-# in development builds too. Keep debug symbols/assertions and optimize only
-# the frame-processing crates rather than rebuilding every dependency.
+# Video capture, pixel handling, text shaping and GPUI rendering must meet
+# real-time budgets in development builds too. Keep debug symbols/assertions
+# and optimize only the latency-sensitive crates.
 [profile.dev.package.fluxer-desktop]
 opt-level = 2
 
@@ -41,6 +41,15 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.gpui]
+opt-level = 2
+
+[profile.dev.package.cosmic-text]
+opt-level = 2
+
+[profile.dev.package."rustybuzz:0.14.1"]
+opt-level = 2
+
+[profile.dev.package."ttf-parser:0.21.1"]
 opt-level = 2
 
 [profile.dev.package.image]

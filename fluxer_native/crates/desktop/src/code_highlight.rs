@@ -411,6 +411,7 @@ pub(super) fn schedule(
                 && CACHE_EPOCH.load(Ordering::Acquire) == cache_epoch
             {
                 input.highlighted = tokens;
+                input.clear_rich_layouts();
                 cx.notify();
             }
         });
